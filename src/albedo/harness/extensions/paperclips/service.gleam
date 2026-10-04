@@ -89,25 +89,21 @@ fn dispatch(
         |> result.map_error(failure),
       )
       let supplied = list.length(items)
-      let items = api.bounded_items(items, 350_000, resource)
-      let next = case
-        supplied == limit || list.length(items) < supplied,
-        list.last(items)
-      {
-        True, Ok(last) ->
-          json.string(api.page_token(
-            daemon.home,
-            "paperclips",
-            int.to_string(last.id),
-          ))
-        _, _ -> json.null()
-      }
+      let encoded = api.bounded_items(items, 350_000, 0, resource)
+      let items = list.map(encoded, fn(item) { item.0 })
+      let next =
+        api.next_page(
+          daemon.home,
+          "paperclips",
+          supplied == limit || list.length(items) < supplied,
+          list.last(items) |> result.map(fn(item) { int.to_string(item.id) }),
+        )
       Ok(api.reply(
         200,
         json.object([
-          #("items", json.array(items, resource)),
+          #("items", json.array(encoded, fn(item) { item.1 })),
           #("next", next),
-          #("page", descriptor(items, labels)),
+          #("page", descriptor(encoded, labels)),
         ]),
       ))
     }
@@ -369,23 +365,18 @@ fn notification(state: String, detail: Option(String)) -> json.Json {
 }
 
 fn descriptor(
-  items: List(ledger.Vent),
+  encoded: List(#(ledger.Vent, json.Json)),
   labels: dict.Dict(String, String),
 ) -> json.Json {
-  client_api.page(page(items, labels))
-}
-
-pub fn page(
-  items: List(ledger.Vent),
-  labels: dict.Dict(String, String),
-) -> client_api.Page {
-  client_api.Page(
+  let items = list.map(encoded, fn(item) { item.0 })
+  client_api.page(client_api.Page(
     title: "paperclips",
     summary: int.to_string(list.length(items)) <> " items",
     empty_state: "no paperclips",
     glance: Some(glance(items)),
     actions: actions(),
-    rows: list.map(items, fn(item) {
+    rows: list.map(encoded, fn(entry) {
+      let item = entry.0
       client_api.PageRow(
         id: int.to_string(item.id),
         text: api.content_preview(
@@ -401,10 +392,10 @@ pub fn page(
           presentation.detail(labels, item),
           4000,
         )),
-        resource: resource(item),
+        resource: entry.1,
       )
     }),
-  )
+  ))
 }
 
 fn actions() -> List(client_api.Action) {

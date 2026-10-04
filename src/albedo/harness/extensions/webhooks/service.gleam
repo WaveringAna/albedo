@@ -110,23 +110,25 @@ fn dispatch(
         hooks.list_page(daemon.ledger, session, after, limit + 1)
         |> result.map_error(failure),
       )
-      let items = bounded_items(list.take(found, limit), hook_view(req, _))
-      let next = case
-        list.length(items) < list.length(found),
-        list.last(items)
-      {
-        True, Ok(last) ->
-          json.string(api.page_token(
-            daemon.home,
-            "hooks:" <> option.unwrap(session, ""),
-            last.hook.id,
-          ))
-        _, _ -> json.null()
-      }
+      let encoded =
+        api.bounded_items(
+          list.take(found, limit),
+          api.response_limit - 1025,
+          1,
+          hook_view(req, _),
+        )
+      let items = list.map(encoded, fn(item) { item.0 })
+      let next =
+        api.next_page(
+          daemon.home,
+          "hooks:" <> option.unwrap(session, ""),
+          list.length(items) < list.length(found),
+          list.last(items) |> result.map(fn(item) { item.hook.id }),
+        )
       Ok(api.reply(
         200,
         json.object([
-          #("items", json.array(items, hook_view(req, _))),
+          #("items", json.array(encoded, fn(item) { item.1 })),
           #("next", next),
         ]),
       ))
@@ -363,18 +365,27 @@ fn dispatch(
         hooks.receipts(daemon.ledger, id, state, after, limit + 1)
         |> result.map_error(failure),
       )
-      let items = bounded_items(list.take(found, limit), receipt)
-      let next = case
-        list.length(items) < list.length(found),
-        list.last(items)
-      {
-        True, Ok(last) ->
-          json.string(api.page_token(daemon.home, binding, last.id))
-        _, _ -> json.null()
-      }
+      let encoded =
+        api.bounded_items(
+          list.take(found, limit),
+          api.response_limit - 1025,
+          1,
+          receipt,
+        )
+      let items = list.map(encoded, fn(item) { item.0 })
+      let next =
+        api.next_page(
+          daemon.home,
+          binding,
+          list.length(items) < list.length(found),
+          list.last(items) |> result.map(fn(item) { item.id }),
+        )
       Ok(api.reply(
         200,
-        json.object([#("items", json.array(items, receipt)), #("next", next)]),
+        json.object([
+          #("items", json.array(encoded, fn(item) { item.1 })),
+          #("next", next),
+        ]),
       ))
     }
     Get, ["deliveries", id] -> {
@@ -553,22 +564,6 @@ fn hook_view(
       json.nullable(overview.deferral, api.reason("delivery_deferred", _)),
     ),
   ])
-}
-
-fn bounded_items(
-  items: List(item),
-  encode: fn(item) -> json.Json,
-) -> List(item) {
-  let #(_, kept) =
-    list.fold(items, #(1024, []), fn(acc, item) {
-      let #(bytes, kept) = acc
-      let size = string.byte_size(json.to_string(encode(item))) + 1
-      case bytes + size < api.response_limit {
-        True -> #(bytes + size, [item, ..kept])
-        False -> #(api.response_limit, kept)
-      }
-    })
-  list.reverse(kept)
 }
 
 fn notification() -> json.Json {

@@ -314,7 +314,7 @@ pub fn catalog(
         None, Ok(discovery) if kind == "" || kind == "commands" -> {
           let commands =
             http_catalog.native_commands(runtime.installed(host), discovery)
-          use shown <- result.try(catalog_page(commands, 262_144))
+          use shown <- result.try(http_api.bounded_catalog(commands, 262_144))
           case
             list.length(commands) <= 200
             && list.length(shown) == list.length(commands)
@@ -381,13 +381,13 @@ pub fn catalog(
         False -> 0
       }
     }
-    use shown_candidates <- result.try(catalog_page(
+    use shown_candidates <- result.try(http_api.bounded_catalog(
       list.drop(candidates, offset("discovery"))
         |> list.take(limit)
         |> list.map(http_catalog.encode),
       262_144,
     ))
-    use shown_commands <- result.try(catalog_page(
+    use shown_commands <- result.try(http_api.bounded_catalog(
       list.drop(commands, offset("loaded")) |> list.take(limit),
       262_144,
     ))
@@ -481,33 +481,6 @@ pub fn catalog(
     ))
   }
   http_api.answer(outcome)
-}
-
-fn catalog_page(
-  values: List(json.Json),
-  budget: Int,
-) -> Result(List(json.Json), http_api.Failure) {
-  case values {
-    [] -> Ok([])
-    [first, ..rest] -> {
-      let bytes = string.byte_size(json.to_string(first))
-      case bytes > 65_536 {
-        True ->
-          Error(http_api.Failure(
-            503,
-            "catalog_item_unavailable",
-            "catalog item exceeds its encoded size limit",
-          ))
-        False ->
-          case bytes + 1 > budget {
-            True -> Ok([])
-            False ->
-              catalog_page(rest, budget - bytes - 1)
-              |> result.map(fn(rest) { [first, ..rest] })
-          }
-      }
-    }
-  }
 }
 
 pub fn input(

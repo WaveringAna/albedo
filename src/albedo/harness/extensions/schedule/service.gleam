@@ -83,25 +83,21 @@ fn dispatch(
         |> result.map_error(failure),
       )
       let supplied = list.length(items)
-      let items = api.bounded_items(items, 350_000, resource)
-      let next = case
-        supplied == limit || list.length(items) < supplied,
-        list.last(items)
-      {
-        True, Ok(last) ->
-          json.string(api.page_token(
-            daemon.home,
-            binding,
-            int.to_string(last.id),
-          ))
-        _, _ -> json.null()
-      }
+      let encoded = api.bounded_items(items, 350_000, 0, resource)
+      let items = list.map(encoded, fn(item) { item.0 })
+      let next =
+        api.next_page(
+          daemon.home,
+          binding,
+          supplied == limit || list.length(items) < supplied,
+          list.last(items) |> result.map(fn(item) { int.to_string(item.id) }),
+        )
       Ok(api.reply(
         200,
         json.object([
-          #("items", json.array(items, resource)),
+          #("items", json.array(encoded, fn(item) { item.1 })),
           #("next", next),
-          #("page", descriptor(items, session)),
+          #("page", descriptor(encoded, session)),
         ]),
       ))
     }
@@ -321,21 +317,25 @@ fn change(item: ledger.Job) -> json.Json {
   json.object([#("resource", resource(item)), #("notification", notification())])
 }
 
-fn descriptor(items: List(ledger.Job), session: String) -> json.Json {
+fn descriptor(
+  items: List(#(ledger.Job, json.Json)),
+  session: String,
+) -> json.Json {
   client_api.page(client_api.Page(
     title: "schedule",
     summary: int.to_string(list.length(items)) <> " jobs",
     empty_state: "no scheduled prompts",
     glance: None,
     actions: actions(session),
-    rows: list.map(items, fn(item) {
+    rows: list.map(items, fn(entry) {
+      let item = entry.0
       client_api.PageRow(
         id: int.to_string(item.id),
         text: api.content_preview(item.prompt, 1000),
         badge: Some(item.kind),
         tone: "plain",
         detail: None,
-        resource: resource(item),
+        resource: entry.1,
       )
     }),
   ))

@@ -146,16 +146,7 @@ pub fn reply(
   status: Int,
   value: json.Json,
 ) -> response.Response(mist.ResponseData) {
-  let encoded = json.to_string(value)
-  case string.byte_size(encoded) > response_limit {
-    True ->
-      fail(Failure(
-        503,
-        "response_limit",
-        "response exceeds its encoded byte limit",
-      ))
-    False -> raw(status, encoded)
-  }
+  raw(status, json.to_string(value))
 }
 
 pub fn raw(
@@ -229,22 +220,82 @@ pub fn content_preview(text: String, limit: Int) -> String {
   |> result.unwrap("")
 }
 
-/// Keep the ordered prefix whose encoded items fit within the byte budget.
+/// Retain each native item alongside the JSON used to measure its size.
 pub fn bounded_items(
   items: List(item),
   budget: Int,
+  overhead: Int,
   encode: fn(item) -> json.Json,
-) -> List(item) {
-  let #(kept, _, _) =
-    list.fold(items, #([], 0, False), fn(state, item) {
-      let #(kept, bytes, full) = state
-      let size = string.byte_size(json.to_string(encode(item)))
-      case full || bytes + size > budget {
-        True -> #(kept, bytes, True)
-        False -> #([item, ..kept], bytes + size, False)
+) -> List(#(item, json.Json)) {
+  bounded_prefix(
+    items,
+    budget,
+    fn(item) {
+      let value = encode(item)
+      Ok(#(value, string.byte_size(json.to_string(value)) + overhead))
+    },
+    [],
+  )
+  |> result.unwrap([])
+}
+
+/// Catalog entries have an individual limit as well as the page budget.
+pub fn bounded_catalog(
+  values: List(json.Json),
+  budget: Int,
+) -> Result(List(json.Json), Failure) {
+  bounded_prefix(
+    values,
+    budget,
+    fn(value) {
+      let bytes = string.byte_size(json.to_string(value))
+      case bytes > 65_536 {
+        True ->
+          Error(Failure(
+            503,
+            "catalog_item_unavailable",
+            "catalog item exceeds its encoded size limit",
+          ))
+        False -> Ok(#(value, bytes + 1))
       }
-    })
-  list.reverse(kept)
+    },
+    [],
+  )
+  |> result.map(fn(items) { list.map(items, fn(item) { item.1 }) })
+}
+
+fn bounded_prefix(
+  items: List(item),
+  budget: Int,
+  measure: fn(item) -> Result(#(json.Json, Int), Failure),
+  kept: List(#(item, json.Json)),
+) -> Result(List(#(item, json.Json)), Failure) {
+  case items {
+    [] -> Ok(list.reverse(kept))
+    [item, ..rest] -> {
+      use #(encoded, size) <- result.try(measure(item))
+      case size > budget {
+        True -> Ok(list.reverse(kept))
+        False ->
+          bounded_prefix(rest, budget - size, measure, [
+            #(item, encoded),
+            ..kept
+          ])
+      }
+    }
+  }
+}
+
+pub fn next_page(
+  home: String,
+  binding: String,
+  has_more: Bool,
+  last_state: Result(String, Nil),
+) -> json.Json {
+  case has_more, last_state {
+    True, Ok(state) -> json.string(page_token(home, binding, state))
+    _, _ -> json.null()
+  }
 }
 
 @external(erlang, "albedo_http_api", "image_slice")

@@ -101,7 +101,9 @@ fn dispatch(
         ledger.page(daemon.ledger, own, group.revision, offset, limit)
         |> result.map_error(failure),
       )
-      let members = api.bounded_items(group.members, 100_000, json.string)
+      let members =
+        api.bounded_items(group.members, 100_000, 0, json.string)
+        |> list.map(fn(item) { item.0 })
       let next = case group.total > offset + list.length(members) {
         True ->
           json.string(api.page_token(
@@ -285,7 +287,9 @@ fn change(
   notes: List(#(String, String)),
 ) -> json.Json {
   let members =
-    list.take(group.members, 200) |> api.bounded_items(100_000, json.string)
+    list.take(group.members, 200)
+    |> api.bounded_items(100_000, 0, json.string)
+    |> list.map(fn(item) { item.0 })
   bus.invalidate(list.map(notes, fn(note) { url(note.0) }), [], True)
   let targets =
     daemon.sessions()
@@ -361,6 +365,7 @@ fn descriptor(group: ledger.Group, members: List(String)) -> json.Json {
 }
 
 pub fn page(group: ledger.Group, members: List(String)) -> client_api.Page {
+  let etag = ledger.etag(group)
   let query = [
     #("workspace", client_api.Literal(json.string(group.workspace))),
     #("view", client_api.Literal(json.string("configuration"))),
@@ -392,7 +397,7 @@ pub fn page(group: ledger.Group, members: List(String)) -> client_api.Page {
           ),
           query: query,
           headers: [
-            #("If-Match", client_api.Literal(json.string(ledger.etag(group)))),
+            #("If-Match", client_api.Literal(json.string(etag))),
           ],
           body: client_api.form_body(["other_workspace"]),
         ),
@@ -429,7 +434,7 @@ pub fn page(group: ledger.Group, members: List(String)) -> client_api.Page {
         detail: None,
         resource: json.object([
           #("url", json.string(url(group.workspace))),
-          #("etag", json.string(ledger.etag(group))),
+          #("etag", json.string(etag)),
           #("value", json.object([#("member", json.string(member))])),
         ]),
       )

@@ -83,25 +83,21 @@ fn dispatch(
         |> result.map_error(failure),
       )
       let supplied = list.length(items)
-      let items = api.bounded_items(items, 350_000, resource(_, workspace))
-      let next = case
-        supplied == limit || list.length(items) < supplied,
-        list.last(items)
-      {
-        True, Ok(last) ->
-          json.string(api.page_token(
-            daemon.home,
-            "work:" <> workspace,
-            int.to_string(last.id),
-          ))
-        _, _ -> json.null()
-      }
+      let encoded = api.bounded_items(items, 350_000, 0, resource(_, workspace))
+      let items = list.map(encoded, fn(item) { item.0 })
+      let next =
+        api.next_page(
+          daemon.home,
+          "work:" <> workspace,
+          supplied == limit || list.length(items) < supplied,
+          list.last(items) |> result.map(fn(item) { int.to_string(item.id) }),
+        )
       Ok(api.reply(
         200,
         json.object([
-          #("items", json.array(items, resource(_, workspace))),
+          #("items", json.array(encoded, fn(item) { item.1 })),
           #("next", next),
-          #("page", descriptor(items, workspace)),
+          #("page", descriptor(encoded, workspace)),
         ]),
       ))
     }
@@ -410,28 +406,29 @@ fn notify(target: Option(String), item: work.Item, verb: String) -> json.Json {
   ])
 }
 
-fn descriptor(items: List(work.Item), workspace: String) -> json.Json {
-  client_api.page(page(items, workspace))
-}
-
-pub fn page(items: List(work.Item), workspace: String) -> client_api.Page {
-  client_api.Page(
+fn descriptor(
+  encoded: List(#(work.Item, json.Json)),
+  workspace: String,
+) -> json.Json {
+  let items = list.map(encoded, fn(item) { item.0 })
+  client_api.page(client_api.Page(
     title: "work",
     summary: int.to_string(list.length(items)) <> " items",
     empty_state: "nothing tracked yet",
     glance: Some(glance(items, workspace)),
     actions: actions(workspace),
-    rows: list.map(items, fn(item) {
+    rows: list.map(encoded, fn(entry) {
+      let item = entry.0
       client_api.PageRow(
         id: int.to_string(item.id),
         text: item.title,
         badge: Some(work.status_name(item.status)),
         tone: "plain",
         detail: Some(api.content_preview(item.notes, 4000)),
-        resource: resource(item, workspace),
+        resource: entry.1,
       )
     }),
-  )
+  ))
 }
 
 fn actions(workspace: String) -> List(client_api.Action) {
