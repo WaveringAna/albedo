@@ -1,8 +1,7 @@
-// Vertex's generateContent request body, its SSE decoding, and ADC
-// credential-shape branching (service-account vs. plain and
-// workforce-federated refresh tokens) have edge cases a fake E2E provider
-// can't exercise without a Vertex-shaped loopback server and real Google
-// credentials.
+//// Vertex's foreign wire options, raw tool schemas, malformed SSE fields,
+//// terminal-call safety and replay catch protocol regressions that the E2E
+//// OpenAI-shaped fake provider cannot exercise. These tests need neither
+//// Google credentials nor network calls; ADC tests cover shape selection only.
 
 import albedo/harness/extensions/vertex/auth
 import albedo/harness/extensions/vertex/stream
@@ -177,7 +176,7 @@ pub fn stream_decodes_text_thought_and_usage_test() -> Nil {
   assert at(value, ["reasoning_content"], decode.string) == "thinking"
   let assert Some(usage) = turn.usage
   assert usage.input_tokens == 3
-  assert usage.output_tokens == 1
+  assert usage.output_tokens == 3
   assert usage.reasoning_tokens == Some(2)
 }
 
@@ -267,4 +266,219 @@ pub fn from_text_rejects_a_credential_with_neither_shape_test() -> Nil {
 
 pub fn from_text_rejects_malformed_json_test() -> Nil {
   assert result.is_error(auth.from_text("not json"))
+}
+
+fn encoded(request: types.Request) -> Dynamic {
+  let assert Ok(openai_api.Exchange(body: raw, ..)) =
+    wire.encode("t", project, location, request)
+  let assert Ok(value) = json.parse(string_tree.to_string(raw), decode.dynamic)
+  value
+}
+
+pub fn raw_json_schema_keeps_refs_unions_and_constraints_test() -> Nil {
+  // A realistic MCP tool input: named reusable definition, nullable union,
+  // required properties and constraints must survive without normalization.
+  let schema_text =
+    "{\"type\":\"object\",\"$defs\":{\"path\":{\"type\":\"string\",\"minLength\":1}},\"properties\":{\"path\":{\"$ref\":\"#/$defs/path\"},\"limit\":{\"anyOf\":[{\"type\":\"integer\",\"minimum\":1},{\"type\":\"null\"}]}},\"required\":[\"path\"],\"additionalProperties\":false}"
+  let assert Ok(schema_value) = json.parse(schema_text, decode.dynamic)
+  let schema = types.encode_value(schema_value)
+  let req =
+    types.Request(..gemini_request([types.User("list")]), tools: [
+      types.Tool("list_files", "List files", schema, False),
+    ])
+  let value = encoded(req)
+  let assert [tool] = at(value, ["tools"], decode.list(decode.dynamic))
+  let assert [declaration] =
+    at(tool, ["functionDeclarations"], decode.list(decode.dynamic))
+  assert at(declaration, ["parametersJsonSchema"], decode.dynamic)
+    == schema_value
+  assert result.is_error(decode.run(
+    declaration,
+    decode.at(["parameters"], decode.dynamic),
+  ))
+  let formatted =
+    encoded(
+      types.Request(
+        ..req,
+        tools: [],
+        options: types.Options(
+          ..types.defaults,
+          format: Some(types.JsonSchema("files", schema, True)),
+        ),
+      ),
+    )
+  assert at(
+      formatted,
+      ["generationConfig", "responseJsonSchema"],
+      decode.dynamic,
+    )
+    == schema_value
+  assert at(formatted, ["generationConfig", "responseMimeType"], decode.string)
+    == "application/json"
+}
+
+pub fn json_object_format_requests_json_mime_type_test() -> Nil {
+  let value =
+    encoded(
+      types.Request(
+        ..gemini_request([types.User("hi")]),
+        options: types.Options(..types.defaults, format: Some(types.JsonObject)),
+      ),
+    )
+  assert at(value, ["generationConfig", "responseMimeType"], decode.string)
+    == "application/json"
+}
+
+fn with_effort(model: String, effort: String) -> types.Request {
+  types.Request(
+    ..request(model, [types.User("hi")]),
+    options: types.Options(..types.defaults, effort: Some(effort)),
+  )
+}
+
+pub fn effort_uses_budgets_for_25_and_levels_for_3_test() -> Nil {
+  list.each(
+    [
+      #("gemini-2.5-pro", "low", 1024),
+      #("gemini-2.5-pro", "high", 32_768),
+      #("gemini-2.5-flash", "medium", 8192),
+      #("gemini-2.5-flash", "minimal", 0),
+      #("gemini-2.5-flash-lite", "minimal", 0),
+    ],
+    fn(case_) {
+      let value = encoded(with_effort(case_.0, case_.1))
+      assert at(
+          value,
+          ["generationConfig", "thinkingConfig", "thinkingBudget"],
+          decode.int,
+        )
+        == case_.2
+      assert at(value, ["generationConfig", "maxOutputTokens"], decode.int)
+        == 100
+    },
+  )
+  list.each(
+    [
+      #("gemini-3-pro-preview", "low", "LOW"),
+      #("gemini-3-flash-preview", "minimal", "MINIMAL"),
+      #("gemini-3-flash-preview", "medium", "MEDIUM"),
+      #("gemini-3.1-pro-preview", "medium", "MEDIUM"),
+      #("gemini-3.1-flash-lite", "minimal", "MINIMAL"),
+      #("gemini-3.5-flash", "minimal", "MINIMAL"),
+      #("gemini-3.8-flash", "medium", "MEDIUM"),
+    ],
+    fn(case_) {
+      let value = encoded(with_effort(case_.0, case_.1))
+      assert at(
+          value,
+          ["generationConfig", "thinkingConfig", "thinkingLevel"],
+          decode.string,
+        )
+        == case_.2
+    },
+  )
+}
+
+pub fn unsupported_effort_is_not_silently_ignored_test() -> Nil {
+  list.each(
+    [
+      #("gemini-2.0-flash", "high"),
+      #("gemini-2.5-pro", "minimal"),
+      #("gemini-3-pro-preview", "medium"),
+      #("gemini-3-flash-preview", "xhigh"),
+      #("gemini-30-pro", "high"),
+      #("gemini-3.1-flash-image", "medium"),
+      #("gemini-3.8-flash", "minimal"),
+    ],
+    fn(case_) {
+      let assert Error(types.InvalidRequest(_)) =
+        wire.encode("t", project, location, with_effort(case_.0, case_.1))
+    },
+  )
+}
+
+pub fn malformed_present_fields_fail_instead_of_becoming_empty_output_test() -> Nil {
+  list.each(
+    [
+      "null", "[]", "{\"candidates\":null}", "{\"candidates\":{}}",
+      "{\"candidates\":[null]}", "{\"candidates\":[{\"content\":null}]}",
+      "{\"candidates\":[{\"content\":{\"parts\":{}}}]}",
+      "{\"candidates\":[{\"content\":{\"parts\":[null]}}]}",
+      "{\"candidates\":[{\"content\":{\"parts\":[{\"text\":1}]}}]}",
+      "{\"candidates\":[{\"content\":{\"parts\":[{\"thought\":\"yes\"}]}}]}",
+      "{\"candidates\":[{\"finishReason\":null}]}",
+      "{\"candidates\":[{\"content\":{\"parts\":[{\"functionCall\":null}]}}]}",
+      "{\"candidates\":[{\"content\":{\"parts\":[{\"functionCall\":{\"args\":{}}}]}}]}",
+      "{\"candidates\":[{\"content\":{\"parts\":[{\"functionCall\":{\"name\":\"run\",\"args\":[]}}]}}]}",
+      "{\"usageMetadata\":null}",
+      "{\"usageMetadata\":{\"thoughtsTokenCount\":\"2\"}}",
+      "{\"promptFeedback\":false}", "{\"error\":{\"message\":12}}",
+    ],
+    fn(data) {
+      let assert Error(types.InvalidEvent(_)) = stream.reducer().feed(data)
+    },
+  )
+}
+
+pub fn eof_without_finish_reason_rejects_text_and_calls_test() -> Nil {
+  list.each(
+    [
+      "{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"partial\"}]}}]}",
+      "{\"candidates\":[{\"content\":{\"parts\":[{\"functionCall\":{\"name\":\"run\",\"args\":{}}}]}}]}",
+    ],
+    fn(data) {
+      assert reduce([data]) == Error(types.UnexpectedEnd)
+    },
+  )
+}
+
+pub fn terminal_limits_and_errors_never_publish_executable_calls_test() -> Nil {
+  list.each(
+    [
+      #("MAX_TOKENS", types.LengthLimit),
+      #("SAFETY", types.ContentFiltered),
+      #("MALFORMED_FUNCTION_CALL", types.OtherFinish("MALFORMED_FUNCTION_CALL")),
+    ],
+    fn(case_) {
+      let assert Ok(turn) =
+        reduce([
+          "{\"candidates\":[{\"content\":{\"parts\":[{\"functionCall\":{\"name\":\"run\",\"args\":{}}}]}}]}",
+          "{\"candidates\":[{\"finishReason\":\"" <> case_.0 <> "\"}]}",
+        ])
+      assert turn.finish == case_.1
+      assert turn.tool_calls == []
+      assert turn.call_indices == []
+    },
+  )
+}
+
+pub fn streamed_parallel_calls_replay_into_second_step_test() -> Nil {
+  let assert Ok(turn) =
+    reduce([
+      "{\"candidates\":[{\"content\":{\"parts\":[{\"functionCall\":{\"name\":\"first\",\"args\":{\"path\":\"a\"}}},{\"functionCall\":{\"name\":\"second\",\"args\":{}}}]},\"finishReason\":\"STOP\"}]}",
+      "{\"usageMetadata\":{\"candidatesTokenCount\":2,\"thoughtsTokenCount\":3}}",
+    ])
+  let assert [item] = turn.output
+  let assert [first, second] = turn.tool_calls
+  let value =
+    body([
+      types.User("do both"),
+      types.Replay(item),
+      types.ToolOutput(first.id, "one", []),
+      types.ToolOutput(second.id, "two", []),
+    ])
+  let assert [_, model, results] =
+    at(value, ["contents"], decode.list(decode.dynamic))
+  let assert [a, b] = at(model, ["parts"], decode.list(decode.dynamic))
+  assert at(a, ["functionCall", "name"], decode.string) == "first"
+  assert at(b, ["functionCall", "name"], decode.string) == "second"
+  assert at(a, ["functionCall", "args", "path"], decode.string) == "a"
+  assert at(b, ["thoughtSignature"], decode.string)
+    == "skip_thought_signature_validator"
+  let assert [a, b] = at(results, ["parts"], decode.list(decode.dynamic))
+  assert at(a, ["functionResponse", "name"], decode.string) == "first"
+  assert at(b, ["functionResponse", "response", "output"], decode.string)
+    == "two"
+  let assert Some(usage) = turn.usage
+  assert usage.output_tokens == 5
 }

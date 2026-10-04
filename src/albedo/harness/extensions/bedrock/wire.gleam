@@ -19,6 +19,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import gleam/string_tree
+import gleam/uri
 
 pub type Auth {
   Bearer(key: String)
@@ -118,23 +119,47 @@ pub fn encode(
 /// `(host, region, service)` from a configured `baseUrl`. The SigV4
 /// service name follows each endpoint's own IAM action namespace
 /// (`bedrock:*` vs `bedrock-mantle:*`); mantle's has not been verified.
-fn target(base_url: String) -> Result(#(String, String, String), Error) {
-  let host =
-    base_url
-    |> string.replace("https://", "")
-    |> string.replace("http://", "")
-    |> string.trim
-    |> string.split("/")
-    |> list.first
-    |> result.unwrap("")
-  case string.split(host, ".") {
-    ["bedrock-runtime", region, ..] -> Ok(#(host, region, "bedrock"))
-    ["bedrock-mantle", region, ..] -> Ok(#(host, region, "bedrock-mantle"))
-    _ ->
-      Error(InvalidRequest(
-        "baseUrl must be a bedrock-runtime or bedrock-mantle host, e.g. https://bedrock-runtime.us-east-1.amazonaws.com",
-      ))
+pub fn target(base_url: String) -> Result(#(String, String, String), Error) {
+  let invalid =
+    InvalidRequest(
+      "baseUrl must be an HTTPS bedrock-runtime or bedrock-mantle AWS host with no credentials, port, query, fragment or path",
+    )
+  use parsed <- result.try(uri.parse(base_url) |> result.replace_error(invalid))
+  use <- bool.guard(
+    parsed.scheme != Some("https")
+      || parsed.userinfo != None
+      || parsed.port != None
+      || parsed.query != None
+      || parsed.fragment != None
+      || { parsed.path != "" && parsed.path != "/" },
+    Error(invalid),
+  )
+  use host <- result.try(option.to_result(parsed.host, invalid))
+  use #(service, region, suffix) <- result.try(case string.split(host, ".") {
+    ["bedrock-runtime", region, ..suffix] ->
+      Ok(#("bedrock", region, string.join(suffix, ".")))
+    ["bedrock-mantle", region, ..suffix] ->
+      Ok(#("bedrock-mantle", region, string.join(suffix, ".")))
+    _ -> Error(invalid)
+  })
+  let valid_region =
+    region != ""
+    && list.all(string.to_graphemes(region), fn(c) {
+      string.contains("abcdefghijklmnopqrstuvwxyz0123456789-", c)
+    })
+  let valid_suffix = case suffix {
+    "amazonaws.com"
+    | "api.aws"
+    | "amazonaws.com.cn"
+    | "api.amazonwebservices.com.cn"
+    | "c2s.ic.gov"
+    | "sc2s.sgov.gov"
+    | "cloud.adc-e.uk"
+    | "csp.hci.ic.gov" -> True
+    _ -> False
   }
+  use <- bool.guard(!valid_region || !valid_suffix, Error(invalid))
+  Ok(#(host, region, service))
 }
 
 fn add(acc: List(Message), input: Input) -> Result(List(Message), Error) {

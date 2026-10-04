@@ -35,7 +35,7 @@ fn resolve(
   Some({
     use #(project, location) <- result.try(location_config())
     Ok(extension.Upstream(
-      "https://" <> location <> "-aiplatform.googleapis.com",
+      wire.endpoint(location),
       types.ChatCompletions,
       fn(request, on_event) {
         use creds <- result.try(

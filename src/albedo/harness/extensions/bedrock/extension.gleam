@@ -57,15 +57,26 @@ fn resolve(
       context.profile,
       config_decoder(),
     ))
-    use auth <- result.try(authenticate(config))
     use base_url <- result.try(effective_base_url(
       config.base_url,
       aws_profile.region(),
     ))
+    use _ <- result.try(
+      wire.target(base_url)
+      |> result.map_error(fn(error) {
+        case error {
+          types.InvalidRequest(message) -> message
+          _ -> "invalid Bedrock endpoint"
+        }
+      }),
+    )
     Ok(extension.Upstream(
       base_url,
       types.ChatCompletions,
       fn(request, on_event) {
+        use auth <- result.try(
+          authenticate(config) |> result.map_error(types.InvalidRequest),
+        )
         use exchange <- result.try(wire.encode(
           auth,
           base_url,

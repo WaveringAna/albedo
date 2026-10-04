@@ -5,7 +5,7 @@ import albedo/openai_api/decoding
 import albedo/openai_api/replay
 import albedo/openai_api/stream as reducer
 import albedo/openai_api/types
-import gleam/dynamic.{type Dynamic}
+import gleam/dynamic
 import gleam/dynamic/decode
 import gleam/int
 import gleam/json
@@ -59,9 +59,43 @@ fn feed(
       types.InvalidEvent("invalid Vertex JSON: " <> decoding.json_error(error))
     }),
   )
-  case decode.run(value, decode.at(["error", "message"], decode.string)) {
-    Ok(message) -> Error(types.ProviderError(message))
-    Error(_) -> apply(state, parse_chunk(value))
+  use error <- result.try(
+    decode.run(
+      value,
+      object({
+        use error <- decode.optional_field(
+          "error",
+          None,
+          present(
+            object({
+              use message <- decode.optional_field("message", "", decode.string)
+              use status <- decode.optional_field("status", "", decode.string)
+              decode.success(case message, status {
+                "", "" -> "unknown Vertex stream error"
+                "", status -> status
+                message, _ -> message
+              })
+            }),
+          ),
+        )
+        decode.success(error)
+      }),
+    )
+    |> result.map_error(fn(_) {
+      types.InvalidEvent("invalid Vertex stream error")
+    }),
+  )
+  case error {
+    Some(message) -> Error(types.ProviderError(message))
+    None -> {
+      use chunk <- result.try(
+        decode.run(value, chunk_decoder())
+        |> result.map_error(fn(_) {
+          types.InvalidEvent("invalid Vertex stream chunk")
+        }),
+      )
+      apply(state, chunk)
+    }
   }
 }
 
@@ -69,10 +103,10 @@ fn apply(
   state: State,
   chunk: Chunk,
 ) -> Result(#(State, List(types.Event)), types.Error) {
-  case chunk.blocked, chunk.parts {
-    Some(reason), [] ->
+  case chunk.blocked {
+    Some(reason) ->
       Error(types.ProviderError("request blocked by Google (" <> reason <> ")"))
-    _, _ -> {
+    None -> {
       let #(blocks, events) =
         list.fold(chunk.parts, #(state.blocks, []), fn(acc, part) {
           let #(blocks, new) = add(acc.0, part)
@@ -130,25 +164,30 @@ fn calls(blocks: List(Block)) -> List(types.ToolCall) {
 
 fn finish(state: State) -> Result(types.Turn, types.Error) {
   let blocks = list.reverse(state.blocks)
-  let calls = calls(state.blocks)
-  case blocks, state.finish {
-    // An empty body is a failed attempt the loop may retry, not an answer.
-    [], None -> Error(types.UnexpectedEnd)
-    _, _ -> {
-      let finish = case calls {
-        [_, ..] -> types.ToolCalls
-        [] ->
-          case state.finish {
-            None | Some("STOP") -> types.Complete
-            Some("MAX_TOKENS") -> types.LengthLimit
-            Some("SAFETY")
-            | Some("RECITATION")
-            | Some("PROHIBITED_CONTENT")
-            | Some("BLOCKLIST")
-            | Some("SPII")
-            | Some("IMAGE_SAFETY") -> types.ContentFiltered
-            Some(other) -> types.OtherFinish(other)
+  case state.finish {
+    // Even a nonempty body can be truncated midway through a function call.
+    None -> Error(types.UnexpectedEnd)
+    Some(reason) -> {
+      let finish = case reason {
+        "STOP" ->
+          case calls(state.blocks) {
+            [] -> types.Complete
+            _ -> types.ToolCalls
           }
+        "MAX_TOKENS" -> types.LengthLimit
+        "SAFETY"
+        | "RECITATION"
+        | "PROHIBITED_CONTENT"
+        | "BLOCKLIST"
+        | "SPII"
+        | "IMAGE_SAFETY" -> types.ContentFiltered
+        other -> types.OtherFinish(other)
+      }
+      // The loop executes any nonempty tool_calls regardless of finish.
+      // Never publish calls from a limited, filtered or failed completion.
+      let calls = case finish {
+        types.ToolCalls -> calls(state.blocks)
+        _ -> []
       }
       let joined = fn(pick) { blocks |> list.filter_map(pick) |> string.concat }
       let text =
@@ -200,80 +239,119 @@ fn flat(chunks: List(String)) -> String {
   chunks |> list.reverse |> string.concat
 }
 
-fn parse_chunk(value: Dynamic) -> Chunk {
+// Validate object containers too: optional fields alone would accept a
+// scalar/null container as if every field were absent.
+fn object(decoder: decode.Decoder(a)) -> decode.Decoder(a) {
+  use _ <- decode.then(decode.dict(decode.string, decode.dynamic))
+  decoder
+}
+
+fn present(decoder: decode.Decoder(a)) -> decode.Decoder(Option(a)) {
+  use value <- decode.then(decoder)
+  decode.success(Some(value))
+}
+
+fn chunk_decoder() -> decode.Decoder(Chunk) {
   let candidate =
-    decode.run(value, decode.at(["candidates"], decode.list(decode.dynamic)))
-    |> result.unwrap([])
-    |> list.first
-    |> option.from_result
-  let parts = case candidate {
-    Some(c) ->
-      decode.run(
-        c,
-        decode.at(["content", "parts"], decode.list(part_decoder())),
+    object({
+      use parts <- decode.optional_field(
+        "content",
+        [],
+        object({
+          use parts <- decode.optional_field(
+            "parts",
+            [],
+            decode.list(part_decoder()),
+          )
+          decode.success(parts)
+        }),
       )
-      |> result.unwrap([])
-    None -> []
-  }
-  let finish = case candidate {
-    Some(c) ->
-      decode.run(c, decode.at(["finishReason"], decode.string))
-      |> option.from_result
-    None -> None
-  }
-  let blocked =
-    decode.run(
-      value,
-      decode.at(["promptFeedback", "blockReason"], decode.string),
+      use finish <- decode.optional_field(
+        "finishReason",
+        None,
+        present(decode.string),
+      )
+      decode.success(#(parts, finish))
+    })
+  object({
+    use candidates <- decode.optional_field(
+      "candidates",
+      [],
+      decode.list(candidate),
     )
-    |> option.from_result
-  let usage =
-    decode.run(value, decode.at(["usageMetadata"], usage_decoder()))
-    |> option.from_result
-  Chunk(parts, finish, usage, blocked)
+    use usage <- decode.optional_field(
+      "usageMetadata",
+      None,
+      present(usage_decoder()),
+    )
+    use blocked <- decode.optional_field(
+      "promptFeedback",
+      None,
+      object({
+        use reason <- decode.optional_field(
+          "blockReason",
+          None,
+          present(decode.string),
+        )
+        decode.success(reason)
+      }),
+    )
+    let #(parts, finish) = case candidates {
+      [first, ..] -> first
+      [] -> #([], None)
+    }
+    decode.success(Chunk(parts, finish, usage, blocked))
+  })
 }
 
 fn part_decoder() -> decode.Decoder(Part) {
-  use value <- decode.then(decode.dynamic)
-  let text =
-    decode.run(value, decode.at(["text"], decode.string)) |> result.unwrap("")
-  let thought =
-    decode.run(value, decode.at(["thought"], decode.bool))
-    |> result.unwrap(False)
-  let call =
-    decode.run(value, decode.at(["functionCall", "name"], decode.string))
-    |> option.from_result
-    |> option.map(fn(name) {
-      let args =
-        decode.run(value, decode.at(["functionCall", "args"], decode.dynamic))
-        |> result.map(types.encode_value)
-        |> result.map(json.to_string)
-        |> result.unwrap("{}")
-      #(name, args)
-    })
-  decode.success(Part(text, thought, call))
+  object({
+    use text <- decode.optional_field("text", "", decode.string)
+    use thought <- decode.optional_field("thought", False, decode.bool)
+    use call <- decode.optional_field(
+      "functionCall",
+      None,
+      present(
+        object({
+          use name <- decode.field("name", decode.string)
+          use args <- decode.optional_field("args", dynamic.properties([]), {
+            use _ <- decode.then(decode.dict(decode.string, decode.dynamic))
+            decode.dynamic
+          })
+          decode.success(#(name, json.to_string(types.encode_value(args))))
+        }),
+      ),
+    )
+    decode.success(Part(text, thought, call))
+  })
 }
 
 fn usage_decoder() -> decode.Decoder(types.Usage) {
-  use prompt <- decode.optional_field("promptTokenCount", 0, decode.int)
-  use candidates <- decode.optional_field("candidatesTokenCount", 0, decode.int)
-  use cached <- decode.optional_field(
-    "cachedContentTokenCount",
-    None,
-    decode.optional(decode.int),
-  )
-  use thoughts <- decode.optional_field(
-    "thoughtsTokenCount",
-    None,
-    decode.optional(decode.int),
-  )
-  decode.success(types.Usage(
-    prompt,
-    candidates,
-    cached,
-    None,
-    None,
-    None,
-    thoughts,
-  ))
+  object({
+    use prompt <- decode.optional_field("promptTokenCount", 0, decode.int)
+    use candidates <- decode.optional_field(
+      "candidatesTokenCount",
+      0,
+      decode.int,
+    )
+    use cached <- decode.optional_field(
+      "cachedContentTokenCount",
+      None,
+      present(decode.int),
+    )
+    use thoughts <- decode.optional_field(
+      "thoughtsTokenCount",
+      None,
+      present(decode.int),
+    )
+    decode.success(types.Usage(
+      prompt,
+      candidates + option.unwrap(thoughts, 0),
+      cached,
+      None,
+      None,
+      None,
+      thoughts,
+    ))
+  })
 }

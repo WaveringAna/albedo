@@ -1,8 +1,5 @@
-//// AWS SigV4 credentials from the shared config/credentials files' active
-//// profile: the same `credential_process` and static-key resolution the
-//// aws CLI itself uses. Re-read fresh on every call, so an external
-//// credential refresher (SSO wrapper, credential helper) just works; this
-//// does not parse sso_session or cache anything.
+//// AWS credential_process and static keys in the active shared profile.
+//// Re-read each call; SSO, role chaining and instance metadata are not resolved.
 
 import albedo/harness/extensions/bedrock/sigv4
 import gleam/bit_array
@@ -18,15 +15,22 @@ import gleam/string
 
 pub fn resolve() -> Result(sigv4.Credentials, String) {
   let profile = active_profile()
-  use config <- result.try(
-    section(config_path(), config_header(profile))
-    |> result.replace_error(
-      "no [" <> config_header(profile) <> "] profile in " <> config_path(),
-    ),
-  )
-  case dict.get(config, "credential_process") {
-    Ok(command) -> from_process(command)
-    Error(_) -> from_credentials_file(profile)
+  let config =
+    section(config_path(), config_header(profile)) |> result.unwrap(dict.new())
+  let shared = section(credentials_path(), profile) |> result.unwrap(dict.new())
+  // A complete static credential source wins over credential_process. Never
+  // mix keys or session tokens from two files.
+  case dict.has_key(shared, "aws_access_key_id") {
+    True -> credentials_from_section(shared, profile)
+    False ->
+      case dict.has_key(config, "aws_access_key_id") {
+        True -> credentials_from_section(config, profile)
+        False ->
+          case dict.get(config, "credential_process") {
+            Ok(command) -> from_process(command)
+            Error(_) -> credentials_from_section(config, profile)
+          }
+      }
   }
 }
 
@@ -60,24 +64,82 @@ fn active_profile() -> String {
 }
 
 fn from_process(command: String) -> Result(sigv4.Credentials, String) {
-  case
-    string.split(string.trim(command), " ")
-    |> list.filter(fn(part) { part != "" })
-  {
+  use argv <- result.try(command_argv(command))
+  case argv {
     [] -> Error("empty credential_process")
     [program, ..args] -> {
-      let #(status, output) = run_command(program, args, None, Some(15_000))
+      // A trusted user-configured AWS helper inherits the daemon environment.
+      // The usage feed keeps its separate allowlist; supervision stays shared.
+      let #(status, output) = run_command(program, args, None, Some(15_000), [])
       case status {
         0 -> credentials_from_process_output(output)
-        _ ->
-          Error(
-            "credential_process exited "
-            <> int.to_string(status)
-            <> ": "
-            <> output,
-          )
+        _ -> Error("credential_process exited " <> int.to_string(status))
       }
     }
+  }
+}
+
+/// Quote-aware argv only: no shell, interpolation, expansion or evaluation.
+pub fn command_argv(command: String) -> Result(List(String), String) {
+  argv_loop(string.to_graphemes(command), None, False, False, [], [])
+}
+
+fn argv_loop(
+  chars: List(String),
+  quote: option.Option(String),
+  escaped: Bool,
+  started: Bool,
+  word: List(String),
+  args: List(String),
+) -> Result(List(String), String) {
+  case chars {
+    [] ->
+      case quote, escaped {
+        None, False ->
+          Ok(
+            list.reverse(case started {
+              True -> [string.join(list.reverse(word), ""), ..args]
+              False -> args
+            }),
+          )
+        _, _ -> Error("credential_process has an unfinished quote or escape")
+      }
+    [char, ..rest] ->
+      case escaped {
+        True -> {
+          let word = case quote, char {
+            Some("\""), "\n" -> word
+            Some("\""), "\\"
+            | Some("\""), "\""
+            | Some("\""), "$"
+            | Some("\""), "`"
+            -> [char, ..word]
+            Some("\""), _ -> [char, "\\", ..word]
+            _, _ -> [char, ..word]
+          }
+          argv_loop(rest, quote, False, True, word, args)
+        }
+        False ->
+          case char, quote {
+            "\\", Some("'") ->
+              argv_loop(rest, quote, False, True, [char, ..word], args)
+            "\\", _ -> argv_loop(rest, quote, True, True, word, args)
+            "'", None -> argv_loop(rest, Some("'"), False, True, word, args)
+            "\"", None -> argv_loop(rest, Some("\""), False, True, word, args)
+            _, Some(q) if char == q ->
+              argv_loop(rest, None, False, True, word, args)
+            " ", None | "\t", None | "\n", None | "\r", None ->
+              case started {
+                True ->
+                  argv_loop(rest, None, False, False, [], [
+                    string.join(list.reverse(word), ""),
+                    ..args
+                  ])
+                False -> argv_loop(rest, None, False, False, [], args)
+              }
+            _, _ -> argv_loop(rest, quote, False, True, [char, ..word], args)
+          }
+      }
   }
 }
 
@@ -103,18 +165,7 @@ fn process_decoder() -> decode.Decoder(sigv4.Credentials) {
   decode.success(sigv4.Credentials(access, secret, token))
 }
 
-fn from_credentials_file(profile: String) -> Result(sigv4.Credentials, String) {
-  use creds <- result.try(
-    section(credentials_path(), profile)
-    |> result.replace_error(
-      "no [" <> profile <> "] section in " <> credentials_path(),
-    ),
-  )
-  credentials_from_section(creds, profile)
-}
-
-/// The pure half of `from_credentials_file`: an already-parsed `[profile]`
-/// section, without touching disk.
+/// Static credentials from one parsed profile section, without touching disk.
 pub fn credentials_from_section(
   creds: Dict(String, String),
   profile: String,
@@ -234,6 +285,7 @@ fn run_command(
   args: List(String),
   stdin: option.Option(String),
   timeout_ms: option.Option(Int),
+  environment: List(#(String, String)),
 ) -> #(Int, String)
 
 @external(erlang, "albedo_daemon", "env")

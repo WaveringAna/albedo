@@ -6,7 +6,7 @@
 %% carries is ever logged: both can hold credentials.
 -module(albedo_usage_core).
 
--export([advance/1, http_request/4, run_command/4, command_env/0, kill/1]).
+-export([advance/1, http_request/4, run_command/4, run_command/5, command_env/0, kill/1]).
 
 -define(ADVANCE_TIMEOUT_MS, 15000).
 -define(COMMAND_TIMEOUT_MS, 15000).
@@ -57,6 +57,11 @@ http_request(Method, Url, Headers, Body) ->
 %% command that cannot run or timed out answers 126: the feed routes around
 %% either the same way.
 run_command(Command, Args, Stdin, TimeoutMs) ->
+    run_command(Command, Args, Stdin, TimeoutMs, command_env()).
+
+%% Explicit port environment for trusted local credential helpers. The usage
+%% feed continues to use /4 and its unchanged allowlist.
+run_command(Command, Args, Stdin, TimeoutMs, Env) ->
     Timeout = case TimeoutMs of
         {some, Ms} when is_integer(Ms), Ms > 0 -> min(Ms, ?COMMAND_TIMEOUT_CAP_MS);
         _ -> ?COMMAND_TIMEOUT_MS
@@ -67,7 +72,7 @@ run_command(Command, Args, Stdin, TimeoutMs) ->
             {126, Body};
         Exe ->
             Port = open_port({spawn_executable, Exe},
-                             [{args, Args}, exit_status, binary, hide, {env, command_env()}]),
+                             [{args, Args}, exit_status, binary, hide, {env, Env}]),
             case Stdin of
                 {some, Data} -> Port ! {self(), {command, Data}};
                 none -> ok
