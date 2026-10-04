@@ -6020,7 +6020,11 @@ components:
         command:
           type: string
           maxLength: 4096
-      required: [id, pid, command]
+        started_at:
+          $ref: '#/components/schemas/Counter'
+          description: Wall-clock milliseconds since the epoch when the owner recorded the
+            job. Zero when unknown, which clients treat as settled work.
+      required: [id, pid, command, started_at]
       additionalProperties: false
     Kernel:
       type: object

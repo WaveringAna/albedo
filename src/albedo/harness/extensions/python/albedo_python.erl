@@ -562,7 +562,9 @@ host_call(Host, Message) ->
 %% shutdown drains: a started job's group is recorded; a job proven gone
 %% releases its group.
 start_job(Message, Id, S = #{groups := Groups}) ->
-    owns(S, Groups#{Id => group_of(Message)}).
+    %% `started` is wall-clock milliseconds at the frame that reported the group.
+    Group = maps:put(started, erlang:system_time(millisecond), group_of(Message)),
+    owns(S, Groups#{Id => Group}).
 
 gone(Id, S = #{groups := Groups}) ->
     owns(S, maps:remove(Id, Groups)).
@@ -582,7 +584,7 @@ nil_null(_, V) -> V.
 owned(Owned) ->
     M = try json:decode(Owned) catch _:_ -> #{} end,
     Spec = fun(Fields) -> maps:map(fun(_, null) -> nil; (_, V) -> V end,
-                                   maps:with([<<"pid">>, <<"pgid">>, <<"leader">>, <<"command">>, <<"service">>], Fields)) end,
+                                   maps:with([<<"pid">>, <<"pgid">>, <<"leader">>, <<"command">>, <<"service">>, <<"started">>], Fields)) end,
     Target = case maps:get(<<"pid">>, M, null) of
         Pid when is_integer(Pid), Pid > 1 -> target_of(Spec(M));
         _ -> none
@@ -928,5 +930,6 @@ job_summaries(Jobs) ->
           _ -> none
       end,
       'albedo@text_scalars':take(maps:get(command, Group, <<>>), 4096),
-      maps:get(service, Group, false)}
+      maps:get(service, Group, false),
+      maps:get(started, Group, 0)}
      || {Id, Group} <- lists:sublist(lists:sort(maps:to_list(Jobs)), 100)].

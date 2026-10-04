@@ -92,8 +92,11 @@ func TestSessionReadValidatesRequiredAndNullableMembers(t *testing.T) {
 			session["kernel"].(map[string]any)["running_jobs"] = []any{map[string]any{"id": "j", "command": "sleep 10"}}
 		}, false},
 		{"nullable job pid", func(session map[string]any) {
-			session["kernel"].(map[string]any)["running_jobs"] = []any{map[string]any{"id": "j", "pid": nil, "command": "sleep 10"}}
+			session["kernel"].(map[string]any)["running_jobs"] = []any{map[string]any{"id": "j", "pid": nil, "command": "sleep 10", "started_at": 0}}
 		}, true},
+		{"job started_at omitted", func(session map[string]any) {
+			session["kernel"].(map[string]any)["running_jobs"] = []any{map[string]any{"id": "j", "pid": nil, "command": "sleep 10"}}
+		}, false},
 		{"null scalar", func(session map[string]any) {
 			session["status"].(map[string]any)["interrupt_requested"] = nil
 		}, false},

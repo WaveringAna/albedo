@@ -170,7 +170,7 @@ func TestStatusAndGlancesUseOneCapturedSessionSnapshot(t *testing.T) {
 			t.Errorf("state polling repeated history reads: %s", r.URL)
 		}
 		session := protocolSession("original", generationA, 0)
-		session["kernel"] = map[string]any{"state": "attached", "build": "observed-build", "stale": true, "staleness_reasons": []any{map[string]any{"code": "build_changed", "detail": "A newer kernel is available."}}, "live_job_count": 3, "running_jobs": []any{map[string]any{"id": "job1", "pid": 123, "command": "sleep 10"}}, "stage": nil, "instance_id": "observed-kernel"}
+		session["kernel"] = map[string]any{"state": "attached", "build": "observed-build", "stale": true, "staleness_reasons": []any{map[string]any{"code": "build_changed", "detail": "A newer kernel is available."}}, "live_job_count": 3, "running_jobs": []any{map[string]any{"id": "job1", "pid": 123, "command": "sleep 10", "started_at": 0}}, "stage": nil, "instance_id": "observed-kernel"}
 		session["glances"] = []any{map[string]any{"extension": "first", "title": "First", "rows": []any{}, "url": "/extensions/first/items"}, map[string]any{"extension": "second", "title": "Second", "rows": []any{}, "url": "/extensions/second/items"}}
 		_ = json.NewEncoder(w).Encode(session)
 	})

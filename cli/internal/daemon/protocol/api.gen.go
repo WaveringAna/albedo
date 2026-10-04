@@ -1119,6 +1119,9 @@ type KernelJob struct {
 	// ID Opaque identity. Never infer a resource type or route from its contents.
 	ID  ID       `json:"id"`
 	Pid *Counter `json:"pid" nullable:"true"`
+
+	// StartedAt Wall-clock milliseconds since the epoch when the owner recorded the job. Zero when unknown, which clients treat as settled work.
+	StartedAt Counter `json:"started_at"`
 }
 
 // KernelUpgradeResult defines model for KernelUpgradeResult.

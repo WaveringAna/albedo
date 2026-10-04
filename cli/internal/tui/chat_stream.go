@@ -43,8 +43,21 @@ func (m ChatModel) liveActionLabel(progress *daemon.ToolProgress) string {
 }
 
 // runningJobCommand is the first live job's command, folded onto one row.
+// It names any job, even inside its grace, because the action row shows the
+// work a running cell is doing, not background work.
 func (m ChatModel) runningJobCommand() string {
 	for _, job := range m.Status.RunningJobs {
+		if command := oneLine(job.Command); command != "" {
+			return command
+		}
+	}
+	return ""
+}
+
+// agedJobCommand is the idle status line's example: the first job past its
+// grace, matching the count it sits beside.
+func (m ChatModel) agedJobCommand() string {
+	for _, job := range m.agedJobs() {
 		if command := oneLine(job.Command); command != "" {
 			return command
 		}

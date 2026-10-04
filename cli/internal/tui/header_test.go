@@ -7,6 +7,7 @@ package tui
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"albedo/cli/internal/daemon"
 	"albedo/cli/internal/daemon/protocol"
@@ -179,5 +180,38 @@ func TestBackgroundJobsRefreshWithoutStartingATurn(t *testing.T) {
 		Revision: m.statusRevision, Status: &status})
 	if m.animating() || m.statusLine() != "" || len(m.activeGlances()) != 0 {
 		t.Fatal("finished jobs left idle job chrome behind")
+	}
+}
+
+func TestYoungJobsStayOutOfTheBackgroundChrome(t *testing.T) {
+	// The threshold is render logic over a started_at the daemon reports; an
+	// e2e would have to wait out the grace to see either side of it.
+	m := newTestChatModel(t, &daemon.Session{ID: "s"})
+	m.SetSize(140, 30)
+	m.Status = daemon.AgentStatus{
+		Idle:       true,
+		KernelJobs: new(int64(1)),
+		RunningJobs: []protocol.KernelJob{
+			{ID: "job1", Command: "rg pattern", StartedAt: time.Now().UnixMilli()},
+		},
+	}
+
+	if m.animating() || m.statusLine() != "" || len(m.activeGlances()) != 0 {
+		t.Fatal("a job inside its grace is not background work yet")
+	}
+	if got := m.runningJobCommand(); got != "rg pattern" {
+		t.Fatalf("the action row still names the job a running cell is on: %q", got)
+	}
+
+	// one aged job shows, one live remote job the list cannot name still counts
+	m.Status.KernelJobs = new(int64(3))
+	m.Status.RunningJobs = append(m.Status.RunningJobs,
+		protocol.KernelJob{ID: "job2", Command: "cargo build", StartedAt: time.Now().Add(-10 * time.Second).UnixMilli()})
+	if got := m.statusLine(); got != "2 background jobs running · cargo build" {
+		t.Fatalf("aged jobs count and lead the idle status line, got %q", got)
+	}
+	view := ansi.Strip(m.View())
+	if strings.Contains(view, "rg pattern") || !strings.Contains(view, "cargo build") {
+		t.Fatalf("the sidebar hides the young job and shows the aged one:\n%s", view)
 	}
 }

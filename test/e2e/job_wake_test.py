@@ -163,6 +163,12 @@ class JobWakeTests(JobWakeCase):
         self.assertEqual(len(running), 1)
         self.assertIsInstance(running[0]["pid"], int)
         self.assertIn(str(self.job_gate), running[0]["command"])
+        # The row says when the owner recorded the job, in wall-clock
+        # milliseconds, so a client can tell fresh work from settled work.
+        started = running[0]["started_at"]
+        self.assertIsInstance(started, int)
+        self.assertGreater(started, 0)
+        self.assertLess(abs(started - time.time() * 1000), 60_000)
 
         resource = self.jobs_resource(session)
         self.assertEqual(resource["items"], running)

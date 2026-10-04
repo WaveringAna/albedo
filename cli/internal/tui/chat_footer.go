@@ -2,6 +2,7 @@ package tui
 
 import (
 	"albedo/cli/internal/daemon"
+	"albedo/cli/internal/daemon/protocol"
 	"fmt"
 	"math"
 	"strconv"
@@ -12,15 +13,39 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-func (m ChatModel) backgroundJobCount() int64 {
-	if m.Status.KernelJobs == nil {
-		return 0
+// jobGrace is how long a job runs before the interface calls it background
+// work. Most model jobs finish inside it, so a job a cell starts and awaits
+// never lights the background-job chrome at all; one that survives is real
+// work and shows up as such.
+const jobGrace = 3 * time.Second
+
+// agedJobs are the live jobs past their grace: the work the sidebar and the
+// idle status line call background. A job with no start time is settled.
+func (m ChatModel) agedJobs() []protocol.KernelJob {
+	jobs := make([]protocol.KernelJob, 0, len(m.Status.RunningJobs))
+	for _, job := range m.Status.RunningJobs {
+		if job.StartedAt <= 0 || time.Since(time.UnixMilli(job.StartedAt)) >= jobGrace {
+			jobs = append(jobs, job)
+		}
 	}
-	return *m.Status.KernelJobs
+	return jobs
+}
+
+// backgroundJobCount is the background work the interface names: aged jobs,
+// plus live remote jobs the observation could only count.
+func (m ChatModel) backgroundJobCount() int64 {
+	count := int64(len(m.agedJobs()))
+	if m.Status.KernelJobs == nil {
+		return count
+	}
+	if extra := *m.Status.KernelJobs - int64(len(m.Status.RunningJobs)); extra > 0 {
+		count += extra
+	}
+	return count
 }
 
 // activeGlances lists the sidebar's sections in order, leaving out empty ones:
-// the extensions' glances (active work), then background jobs.
+// the extensions' glances (active work), then background jobs past their grace.
 func (m ChatModel) activeGlances() []PageGlance {
 	var glances []PageGlance
 	for _, g := range m.Glances {
@@ -28,11 +53,12 @@ func (m ChatModel) activeGlances() []PageGlance {
 			glances = append(glances, g)
 		}
 	}
-	if len(m.Status.RunningJobs) == 0 {
+	jobs := m.agedJobs()
+	if len(jobs) == 0 {
 		return glances
 	}
-	rows := make([]PageRow, 0, len(m.Status.RunningJobs))
-	for _, job := range m.Status.RunningJobs {
+	rows := make([]PageRow, 0, len(jobs))
+	for _, job := range jobs {
 		command := oneLine(job.Command)
 		if command == "" {
 			command = "job " + job.ID

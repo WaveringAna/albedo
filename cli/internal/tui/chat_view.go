@@ -169,7 +169,7 @@ func (m ChatModel) statusLine() string {
 		if count > 1 {
 			label = fmt.Sprintf("%d background jobs running", count)
 		}
-		if command := m.runningJobCommand(); command != "" {
+		if command := m.agedJobCommand(); command != "" {
 			label += " · " + command
 		}
 		return label

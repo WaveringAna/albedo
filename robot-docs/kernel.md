@@ -23,9 +23,14 @@ built once after plugins load and is not serialized with user state.
 
 `GET /sessions/{id}` exposes `kernel.live_job_count` and `kernel.running_jobs`
 without starting a kernel. Unknown observations are null. The list contains up
-to 100 live jobs ordered by ID, with `id`, nullable `pid`, and `command` (up to
-4096 scalars); the count can exceed the list when remote jobs have no summaries.
-The TUI uses these observations for its idle-job status, animation, and sidebar.
+to 100 live jobs ordered by ID, with `id`, nullable `pid`, `command` (up to
+4096 scalars), and `started_at`: wall-clock milliseconds when the port owner
+recorded the job's group, zero when unknown (a restored link older than the
+field). The count can exceed the list when remote jobs have no summaries.
+The TUI uses these observations for its idle-job status, animation, and
+sidebar, and calls a job background only once it has run three seconds
+(`jobGrace`), so work a cell starts and awaits never flashes through the
+chrome; `/jobs` lists every live job regardless of age.
 The Erlang port owner truncates commands through `text_scalars.take`, which
 scans only the retained prefix and copies it. Do not convert the entire command
 to a codepoint list to take a bounded preview; see [runtime](runtime.md#unicode-scalar-limits).
