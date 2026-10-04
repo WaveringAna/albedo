@@ -2,6 +2,7 @@
 !test/fixtures/build-digest/ebin/**/*.beam
 *.ez
 /build
+/docs/api-reference.html
 erl_crash.dump
 
 __pycache__/

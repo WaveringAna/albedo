@@ -13,5 +13,9 @@ daemon requests from application commands and TUI screens.
 contracts, SSE recovery, extension routes, and existing TUI feature coverage.
 [OpenAPI contract](openapi.yaml) defines the exact request, response, and stream
 payload shapes for that API.
+Generate a searchable HTML reference with `python3 scripts/api-reference.py`
+from the repository root, then open `docs/api-reference.html` in a browser.
+The page embeds the current contract and loads Scalar 1.72.4 from a CDN,
+so viewing it requires an internet connection. Generated HTML is ignored by Git.
 [API architecture](http-api-architecture.md) explains state ownership and crash
 recovery.
