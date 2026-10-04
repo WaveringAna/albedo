@@ -1,0 +1,20 @@
+# Evaluates the flake for every system and builds the package, which test.sh
+# never does: it runs from the checkout, not the packaged daemon and CLI.
+when:
+  - event: ["push", "pull_request"]
+    branch: ["main"]
+  - event: ["manual"]
+
+engine: microvm
+image: nixos
+
+environment:
+  NIX_CONFIG: "experimental-features = nix-command flakes"
+
+steps:
+  - name: evaluate every system
+    command: nix flake check --all-systems --no-build
+  - name: run checks
+    command: nix flake check -L
+  - name: build albedo
+    command: nix build -L .#albedo
