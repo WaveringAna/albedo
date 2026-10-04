@@ -1,5 +1,7 @@
 //// One bounded live tail per session actor, shared by every subscriber.
 
+import albedo/text_scalars
+
 import albedo/daemon/conversation
 import albedo/daemon/mail
 import albedo/daemon/turn
@@ -93,8 +95,7 @@ pub fn output(
     _ ->
       Projection(
         ..append(projection, kind, text),
-        output_scalars: projection.output_scalars
-          + list.length(string.to_utf_codepoints(text)),
+        output_scalars: projection.output_scalars + text_scalars.length(text),
         output_utf8_bytes: projection.output_utf8_bytes + string.byte_size(text),
         streamed_answer: projection.streamed_answer || kind == "assistant",
       )
@@ -164,9 +165,7 @@ fn append_lines(
 }
 
 fn tail(text: String) -> String {
-  let scalars = string.to_utf_codepoints(text)
-  list.drop(scalars, int.max(0, list.length(scalars) - 256))
-  |> string.from_utf_codepoints
+  text_scalars.tail(text, 256)
 }
 
 /// A new parent request invalidates progress belonging to the preceding work.

@@ -1,12 +1,13 @@
 //// Bounded daemon-wide canonical collection observations. Lifecycle changes
 //// invalidate resources; session owners publish one captured activity value.
 
+import albedo/text_scalars
+
 import albedo/daemon/family
 import gleam/erlang/process
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
-import gleam/string
 
 /// Larger changes invalidate the collection scope instead of allocating an
 /// unbounded notification. Publication never waits for a subscriber.
@@ -123,9 +124,7 @@ pub fn mailed(
 }
 
 fn scalar_prefix(value: String, count: Int) -> String {
-  string.to_utf_codepoints(value)
-  |> list.take(count)
-  |> string.from_utf_codepoints
+  text_scalars.take(value, count)
 }
 
 /// One subscriber's bounded queue, removed when its stream process dies.

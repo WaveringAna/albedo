@@ -1,6 +1,9 @@
 //// Durable editable session state. Callers validate runtime policy before
 //// committing a candidate on the shared store connection.
 
+import albedo/text_scalars
+import gleam/bit_array
+
 import albedo/daemon/family
 import albedo/daemon/operations
 import albedo/daemon/store
@@ -101,34 +104,15 @@ pub fn display_name(value: Configuration) -> String {
 /// exact; names replace controls and invisibles, fold whitespace, and contain
 /// at most 4096 Unicode scalars even when one grapheme contains many marks.
 pub fn clean_name(name: String) -> Option(String) {
-  let assert Ok(space) = string.utf_codepoint(32)
+  let assert Ok(masked) =
+    bit_array.to_string(mask_name_controls(<<name:utf8>>, <<>>))
   let clean =
-    name
-    |> string.to_utf_codepoints
-    |> list.map(fn(codepoint) {
-      let value = string.utf_codepoint_to_int(codepoint)
-      case
-        value <= 31
-        || { value >= 127 && value <= 159 }
-        || value == 173
-        || value == 8203
-        || { value >= 8206 && value <= 8207 }
-        || { value >= 8232 && value <= 8238 }
-        || { value >= 8288 && value <= 8297 }
-        || value == 65_279
-      {
-        True -> space
-        False -> codepoint
-      }
-    })
-    |> string.from_utf_codepoints
+    masked
     |> string.trim
     |> string.split(" ")
     |> list.filter(fn(part) { part != "" })
     |> string.join(" ")
-    |> string.to_utf_codepoints
-    |> list.take(4096)
-    |> string.from_utf_codepoints
+    |> text_scalars.take(4096)
     |> string.trim
   case clean {
     "" -> None
@@ -472,4 +456,27 @@ pub fn visit(
       }
     })
   })
+}
+
+fn mask_name_controls(bytes: BitArray, masked: BitArray) -> BitArray {
+  case bytes {
+    <<codepoint:utf8_codepoint, rest:bytes>> -> {
+      let value = string.utf_codepoint_to_int(codepoint)
+      case
+        value <= 31
+        || { value >= 127 && value <= 159 }
+        || value == 173
+        || value == 8203
+        || { value >= 8206 && value <= 8207 }
+        || { value >= 8232 && value <= 8238 }
+        || { value >= 8288 && value <= 8297 }
+        || value == 65_279
+      {
+        True -> mask_name_controls(rest, <<masked:bits, 32>>)
+        False ->
+          mask_name_controls(rest, <<masked:bits, codepoint:utf8_codepoint>>)
+      }
+    }
+    _ -> masked
+  }
 }

@@ -1,6 +1,8 @@
 //// Native stream observations. The session owner assigns sequence numbers and
 //// serializes each envelope once; workers never construct public JSON events.
 
+import albedo/text_scalars
+
 import albedo/daemon/http_api
 import albedo/daemon/http_history
 import albedo/daemon/mail
@@ -287,13 +289,11 @@ pub fn activity(value: session_activity.Projection) -> json.Json {
             session_activity.Projection(..value, lines: case first.text {
               "" -> rest
               text -> {
-                let scalars = string.to_utf_codepoints(text)
+                let count = text_scalars.length(text)
                 [
                   session_activity.Line(
                     first.kind,
-                    scalars
-                      |> list.drop(int.max(1, list.length(scalars) / 2))
-                      |> string.from_utf_codepoints,
+                    text_scalars.drop(text, int.max(1, count / 2)),
                   ),
                   ..rest
                 ]
