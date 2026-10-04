@@ -2,6 +2,7 @@ import albedo/harness/extension
 import albedo/harness/extensions/agents/extension as agents
 import albedo/harness/extensions/alibaba/extension as alibaba
 import albedo/harness/extensions/antigravity/extension as antigravity
+import albedo/harness/extensions/bedrock/extension as bedrock
 import albedo/harness/extensions/browser/extension as browser
 import albedo/harness/extensions/claude/extension as claude
 import albedo/harness/extensions/codex/extension as codex
@@ -26,6 +27,7 @@ import albedo/harness/extensions/run/extension as run
 import albedo/harness/extensions/schedule/extension as schedule
 import albedo/harness/extensions/skills/extension as skills
 import albedo/harness/extensions/snapcompact/extension as snapcompact
+import albedo/harness/extensions/vertex/extension as vertex
 import albedo/harness/extensions/view/extension as view
 import albedo/harness/extensions/warm/extension as warm
 import albedo/harness/extensions/webhooks/extension as webhooks
@@ -55,7 +57,9 @@ pub fn defaults() -> Config {
       // shared id such as claude-sonnet-4-6 has Antigravity's limits.
       antigravity.extension(),
       alibaba.extension(),
+      bedrock.extension(),
       claude.extension(),
+      vertex.extension(),
       // Before models.dev so Codex's picker keeps its own series filter;
       // API-key OpenAI profiles keep the full catalog.
       codex.extension(),
@@ -80,8 +84,9 @@ pub fn defaults() -> Config {
     [
       "python", "run", "work", "mail", "agents", "schedule", "files", "memory",
       "links", "instructions", "commands", "skills", "paperclips", "models",
-      "openai", "codex", "antigravity", "alibaba", "claude", "rolling",
-      "snapcompact-memory", "lcm-memory", "notes", "remote", "browser",
+      "openai", "codex", "antigravity", "alibaba", "bedrock", "claude", "vertex",
+      "rolling", "snapcompact-memory", "lcm-memory", "notes", "remote",
+      "browser",
     ],
   )
 }

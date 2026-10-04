@@ -63,6 +63,22 @@ Antigravity profiles use `extension: "antigravity"` and must use `protocol: "cha
 
 Requests use the `antigravity/hub/<version>` user agent. The version comes from the Antigravity update manifest, or from `ALBEDO_ANTIGRAVITY_VERSION` when it is set. Tool schemas are flattened to the subset Cloud Code Assist accepts: references are resolved, unions keep their first non-null member, `const` and enums become string enums, and dropped validation keywords move into the description.
 
+## amazon bedrock
+
+The enabled-by-default `bedrock` extension serves Claude models through Bedrock's Anthropic-shaped Messages route (`{baseUrl}/anthropic/v1/messages`), identical on the `bedrock-runtime` and `bedrock-mantle` endpoints — `baseUrl` picks which host. There is no sign-in flow; create a profile with `extension: "bedrock"` and a Claude model id. `baseUrl` is optional: left unset, it defaults to `bedrock-runtime` in whatever region `AWS_REGION`, else `AWS_DEFAULT_REGION`, else the active `AWS_PROFILE`'s own `region` key names (`extension.effective_base_url`); set it explicitly for `bedrock-mantle` or a non-default partition.
+
+Authentication tries, in order: the profile's own `apiKey` (sent as `x-api-key`, no signing); `AWS_BEARER_TOKEN_BEDROCK`; `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`/`AWS_SESSION_TOKEN`, signed with AWS SigV4 (`harness/extensions/bedrock/sigv4.gleam`); and finally `AWS_PROFILE`'s own resolution from `~/.aws/config`/`~/.aws/credentials` (`AWS_CONFIG_FILE`/`AWS_SHARED_CREDENTIALS_FILE` override the paths) — a `credential_process` line if the profile has one, else that profile's static keys. Nothing is cached: every call re-reads the files and, for `credential_process`, re-runs the command, so an external credential refresher just works. SigV4's service name follows each endpoint's own IAM action namespace (`bedrock:*` on bedrock-runtime, `bedrock-mantle:*` on bedrock-mantle); only bedrock-runtime has been exercised against a live account.
+
+Replay keeps assistant text and tool calls only; signed extended-thinking blocks are not carried across turns, so multi-turn thinking context starts fresh each turn. The SSE reducer is `claude`'s own (`harness/extensions/claude/stream.gleam`): Bedrock's Messages route emits the identical event shape.
+
+## google vertex
+
+The enabled-by-default `vertex` extension serves Gemini models through Vertex AI's own `generateContent`/`streamGenerateContent` route — the same request and response body Google documents for the public Gemini API, not Cloud Code Assist's envelope. There is no sign-in flow: it reads Application Default Credentials from `GOOGLE_APPLICATION_CREDENTIALS` (default `~/.config/gcloud/application_default_credentials.json`) fresh on every call, and `GOOGLE_VERTEX_PROJECT`/`GOOGLE_VERTEX_LOCATION` name the project and region. A profile needs only `extension: "vertex"` and a Gemini model id.
+
+The credentials file is either a service-account key (`private_key`/`client_email`; the daemon signs its own RS256 JWT and exchanges it at `token_uri`) or a refresh-token credential (`client_id`/`client_secret`/`refresh_token`) — `gcloud auth application-default login`'s own shape or Workforce Identity Federation's `external_account_authorized_user`. The latter's STS token endpoint (its `token_url` field) takes client credentials as HTTP Basic, not body fields; the plain `authorized_user` shape takes them in the body. There is no token cache: each call re-reads the credentials file and exchanges a fresh access token, so an external refresher that rewrites the file in place just works.
+
+Replay keeps text, thinking text, and tool calls only, each replayed call marked with Google's documented placeholder signature (`skip_thought_signature_validator`) rather than the native one `antigravity` preserves for its own Gemini calls.
+
 ## Account ordering
 
 `harness/accounts.gleam` owns pure pool ordering and the 32-bit FNV-1a session spread. The native account owner captures wall time and process-local affinity before calling it. Selected usable accounts come first, followed by the sticky or hashed order; limited accounts come last in reset order. Equal reset times retain their input order. `albedo_accounts.erl` keeps credential publication, session affinity, transient limits, and local-time display.
