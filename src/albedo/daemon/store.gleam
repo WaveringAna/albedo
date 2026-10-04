@@ -1,18 +1,26 @@
 //// One connection owner. All queries and transactions run in this process.
 
+import gleam/dynamic
 import gleam/dynamic/decode
 import gleam/erlang/process.{type Subject}
+import gleam/int
+import gleam/io
 import gleam/list
 import gleam/otp/actor
 import gleam/result
+import gleam/string
 import sqlight
+
+/// A query holding the store this long is logged with its caller: every
+/// other caller waits behind it.
+const slow_ms = 2000
 
 pub opaque type Store {
   Store(Subject(Message))
 }
 
 type Message {
-  Run(fn(sqlight.Connection) -> Nil)
+  Run(caller: process.Pid, run: fn(sqlight.Connection) -> Nil)
   Close(Subject(Nil))
 }
 
@@ -30,8 +38,20 @@ pub fn start(path: String, schema: String) -> Result(Store, actor.StartError) {
   })
   |> actor.on_message(fn(db, message) {
     case message {
-      Run(run) -> {
+      Run(caller, run) -> {
+        let began = monotonic_ms()
         run(db)
+        let held = monotonic_ms() - began
+        case held >= slow_ms {
+          True ->
+            io.println_error(
+              "store: one query held the store "
+              <> int.to_string(held)
+              <> " ms for "
+              <> string.inspect(caller_label(caller)),
+            )
+          False -> Nil
+        }
         // A transcript load leaves every decoded row on this heap; the store
         // then idles and would hold that garbage indefinitely.
         collect_over(131_072)
@@ -59,11 +79,26 @@ pub fn close(store: Store) -> Nil {
   actor.call(subject, 5000, Close)
 }
 
+/// The result of `run` in the store. A queued `run` executes even after its
+/// caller stopped waiting, so a deadline would report a failure for work that
+/// still happens: the caller waits as long as the store is alive.
 pub fn query(store: Store, run: fn(sqlight.Connection) -> a) -> a {
   let Store(subject) = store
-  actor.call(subject, 10_000, fn(reply) {
-    Run(fn(db) { process.send(reply, run(db)) })
-  })
+  let assert Ok(owner) = process.subject_owner(subject)
+  let monitor = process.monitor(owner)
+  let reply = process.new_subject()
+  process.send(
+    subject,
+    Run(process.self(), fn(db) { process.send(reply, run(db)) }),
+  )
+  let answer =
+    process.new_selector()
+    |> process.select_map(reply, Ok)
+    |> process.select_specific_monitor(monitor, fn(_) { Error(Nil) })
+    |> process.selector_receive_forever
+  process.demonitor_process(monitor)
+  let assert Ok(value) = answer as "the store stopped"
+  value
 }
 
 /// Runs one statement in the store for its effect.
@@ -189,3 +224,13 @@ fn label(kind: String, id: String) -> Nil
 
 @external(erlang, "albedo_session", "collect_over")
 fn collect_over(words: Int) -> Nil
+
+@external(erlang, "erlang", "monotonic_time")
+fn monotonic_native() -> Int
+
+fn monotonic_ms() -> Int {
+  monotonic_native() / 1_000_000
+}
+
+@external(erlang, "proc_lib", "get_label")
+fn caller_label(pid: process.Pid) -> dynamic.Dynamic

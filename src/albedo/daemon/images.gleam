@@ -8,6 +8,7 @@
 import albedo/daemon/image_payloads
 import albedo/daemon/store
 import albedo/openai_api/types
+import gleam/bool
 import gleam/dynamic/decode
 import gleam/list
 import gleam/result
@@ -89,29 +90,41 @@ pub fn session_hashes(
 }
 
 /// Deletes payloads no transcript row, pinned prompt, or cell still names.
-/// A packed reference holds the hash text verbatim, so a byte search finds it.
+/// A packed reference holds the hash text verbatim beside its `stored_data`
+/// tag, so one read of the tagged rows answers for every candidate.
 pub fn release(
   db: sqlight.Connection,
   candidates: List(String),
 ) -> Result(Nil, String) {
+  use <- bool.guard(candidates == [], Ok(Nil))
   use tables <- result.try(store.rows(
     db,
     "SELECT name FROM sqlite_master WHERE type='table' AND name='cells'",
     [],
     decode.field(0, decode.string, decode.success),
   ))
-  let cell_guard = case tables {
-    [] -> ""
+  let payload = decode.field(0, decode.bit_array, decode.success)
+  use rows <- result.try(store.rows(
+    db,
+    "SELECT payload FROM transcript WHERE instr(payload,CAST('stored_data' AS BLOB))>0 UNION ALL SELECT pinned_context FROM sessions WHERE pinned_context IS NOT NULL",
+    [],
+    payload,
+  ))
+  use cells <- result.try(case tables {
+    [] -> Ok([])
     _ ->
-      " AND NOT EXISTS(SELECT 1 FROM cells WHERE payload IS NOT NULL AND instr(payload,CAST(?1 AS BLOB))>0)"
-  }
-  list.try_each(candidates, fn(hash) {
-    store.run(
-      db,
-      "DELETE FROM images WHERE hash=?1 AND NOT EXISTS(SELECT 1 FROM transcript WHERE instr(payload,CAST(?1 AS BLOB))>0) AND NOT EXISTS(SELECT 1 FROM sessions WHERE pinned_context IS NOT NULL AND instr(pinned_context,CAST(?1 AS BLOB))>0)"
-        <> cell_guard,
-      [sqlight.text(hash)],
-    )
+      store.rows(
+        db,
+        "SELECT payload FROM cells WHERE payload IS NOT NULL AND instr(payload,CAST('stored_data' AS BLOB))>0",
+        [],
+        payload,
+      )
+  })
+  let named = referenced(list.append(rows, cells), candidates)
+  candidates
+  |> list.filter(fn(hash) { !list.contains(named, hash) })
+  |> list.try_each(fn(hash) {
+    store.run(db, "DELETE FROM images WHERE hash=?", [sqlight.text(hash)])
   })
 }
 
@@ -246,6 +259,13 @@ fn split(
   input: types.Input,
   read: fn(String) -> Result(String, Nil),
 ) -> #(types.Input, List(#(String, String)))
+
+/// The candidates some payload names, found in one pass per payload.
+@external(erlang, "albedo_images", "referenced")
+fn referenced(
+  payloads: List(BitArray),
+  candidates: List(String),
+) -> List(String)
 
 @external(erlang, "albedo_images", "hashes")
 fn hashes(payload: BitArray) -> List(String)

@@ -7,7 +7,7 @@
 %% that fetches the payload (see types.ImageData). A packed row stores
 %% {stored_data, Hash, Size} (no fun), or the legacy bare Base64 binary.
 -module(albedo_images).
--export([externalize/2, attach/2, pack/1, pack_image/1, load/2, canonical/1, legacy/1, results/1, hashes/1, migrate/2, ensure_dir/1, backup_exists/1, decode_base64/1, decode_legacy_base64/1, encode_base64/1]).
+-export([referenced/2, externalize/2, attach/2, pack/1, pack_image/1, load/2, canonical/1, legacy/1, results/1, hashes/1, migrate/2, ensure_dir/1, backup_exists/1, decode_base64/1, decode_legacy_base64/1, encode_base64/1]).
 
 %% The same data-size limit the Gleam image owner guards with; a guard needs the macro.
 -define(MAX_DATA_BYTES, 6990508).
@@ -120,6 +120,18 @@ results(Attempts) ->
         true -> {ok, [Value || {ok, Value} <- Attempts]};
         false -> error
     end.
+
+%% The candidate hashes any payload holds verbatim, matching them all in one
+%% scan of each payload.
+referenced(_, []) -> [];
+referenced(Payloads, Candidates) ->
+    Pattern = binary:compile_pattern(Candidates),
+    Found = lists:foldl(fun(Payload, Seen) ->
+        lists:foldl(fun({Start, Length}, Acc) ->
+            Acc#{binary:part(Payload, Start, Length) => true}
+        end, Seen, binary:matches(Payload, Pattern))
+    end, #{}, Payloads),
+    [Hash || Hash <- Candidates, maps:is_key(Hash, Found)].
 
 %% Hashes a packed row references, without attaching or validating.
 hashes(Payload) ->
