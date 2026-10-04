@@ -5,6 +5,8 @@
 //// request re-renders nothing. Frames assume the model accepts image input;
 //// disable via settings for text-only models.
 
+import albedo/clock
+
 import albedo/daemon/store
 import albedo/harness/compaction
 import albedo/harness/extension
@@ -95,9 +97,6 @@ pub fn render_frame_test(
 
 @external(erlang, "albedo_snapcompact", "paginate")
 fn paginate_ffi(text: String, per_frame: Int) -> List(String)
-
-@external(erlang, "albedo_snapcompact", "now_ms")
-fn now_ms() -> Int
 
 @external(erlang, "albedo_snapcompact", "sha256")
 fn sha256(data: String) -> String
@@ -332,7 +331,7 @@ fn initialise(ledger: store.Store) -> Result(Nil, String) {
       store.exec(
         db,
         "DELETE FROM snapcompact_frames WHERE created_at < "
-          <> int.to_string(now_ms() - frame_retention_ms),
+          <> int.to_string(clock.system_ms() - frame_retention_ms),
       )
     Ok(Nil)
   })
@@ -789,7 +788,7 @@ fn frames(
               sqlight.int(row.width),
               sqlight.int(row.height),
               sqlight.int(row.bytes),
-              sqlight.int(now_ms()),
+              sqlight.int(clock.system_ms()),
             ],
           )
         Nil

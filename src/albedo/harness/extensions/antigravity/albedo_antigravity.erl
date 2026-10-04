@@ -3,7 +3,7 @@
 
 -include_lib("kernel/include/file.hrl").
 -export([access/1, access/2, access/3, limited/3, encode/1, session_number/1, uuid/1,
-         call_id/0, now_ms/0, user_agent/1, discovered/1, refresh/1, reload/1, expire/2,
+         call_id/0, user_agent/1, discovered/1, refresh/1, reload/1, expire/2,
          exchange/4, discover/3, account/1, client_id/0, accounts/1]).
 
 -define(KEY, <<"google-antigravity">>).
@@ -490,7 +490,6 @@ uuid(Seed) ->
 call_id() ->
     <<"call_", (binary:encode_hex(crypto:strong_rand_bytes(9), lowercase))/binary>>.
 
-now_ms() -> erlang:system_time(millisecond).
 
 %% The backend gates newer models on this client version; os and arch are
 %% pinned to the reference darwin/arm64 build regardless of the host.

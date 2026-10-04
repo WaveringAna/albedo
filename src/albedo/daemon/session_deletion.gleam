@@ -1,5 +1,7 @@
 //// Delete an observed family with bounded results and actual stop outcomes.
 
+import albedo/clock
+
 import albedo/daemon/bus
 import albedo/daemon/conversation
 import albedo/daemon/family
@@ -38,9 +40,6 @@ type Progress {
   Progress(deleted_ids: List(String), failures: Dict(String, String))
 }
 
-@external(erlang, "albedo_session", "now_ms")
-fn now_ms() -> Int
-
 @external(erlang, "albedo_context_snapshot", "page")
 fn reason_prefix(text: String, index: Int, scalars: Int) -> String
 
@@ -54,7 +53,8 @@ pub fn execute(
   let token = mail.new_id()
   let admission = case session.live(request.session) {
     Some(worker) -> session.claim_deletion(worker, request, token)
-    None -> family.claim_deletion(ledger, request, token, now_ms() + 5000)
+    None ->
+      family.claim_deletion(ledger, request, token, clock.monotonic_ms() + 5000)
   }
   use claim <- result.try(case admission {
     Ok(claim) -> Ok(claim)
@@ -66,7 +66,8 @@ pub fn execute(
       Error(error)
     }
   })
-  let deletion = Deletion(host, home, claim, now_ms() + 30_000, on_deleted)
+  let deletion =
+    Deletion(host, home, claim, clock.monotonic_ms() + 30_000, on_deleted)
   let outcome = walk(deletion, None, Progress([], dict.new()))
   let released = family.release_deletion(ledger, claim)
   use report <- result.try(outcome)
@@ -86,12 +87,12 @@ fn walk(
     deletion.claim,
     after_member,
   ))
-  case members, now_ms() >= deletion.deadline {
+  case members, clock.monotonic_ms() >= deletion.deadline {
     [], _ | _, True -> report(ledger, deletion.claim, progress)
     _, False -> {
       let progress =
         list.fold(members, progress, fn(progress, member) {
-          let remaining_ms = deletion.deadline - now_ms()
+          let remaining_ms = deletion.deadline - clock.monotonic_ms()
           let removed = case remaining_ms <= 0 {
             True -> Error("deletion deadline reached")
             False -> remove(deletion, member.id, remaining_ms)

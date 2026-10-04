@@ -3,6 +3,8 @@
 //// Nothing here names a model, so a model OpenAI releases to Codex appears as
 //// soon as the backend lists it.
 
+import albedo/clock
+
 import albedo/harness/extension
 import albedo/openai_api/types
 import gleam/dict
@@ -58,13 +60,6 @@ fn native_refresh_async(
 @external(erlang, "albedo_codex_models", "read")
 fn native_read(home: String) -> Result(BitArray, Nil)
 
-@external(erlang, "os", "system_time")
-fn system_time(unit: Millisecond) -> Int
-
-type Millisecond {
-  Millisecond
-}
-
 /// Brings one account's list up to date, waiting for the network.
 pub fn refresh(
   home: String,
@@ -76,7 +71,7 @@ pub fn refresh(
     access,
     account,
     max_age_ms,
-    system_time(Millisecond),
+    clock.os_system_ms(),
     native_get,
   )
 }
@@ -88,12 +83,12 @@ pub fn reload(
   access: String,
   account: String,
 ) -> Result(Nil, String) {
-  refresh_at(home, access, account, 0, system_time(Millisecond), native_get)
+  refresh_at(home, access, account, 0, clock.os_system_ms(), native_get)
 }
 
 /// Brings one account's list up to date without waiting.
 pub fn refresh_later(home: String, access: String, account: String) -> Nil {
-  let now = system_time(Millisecond)
+  let now = clock.os_system_ms()
   native_refresh_async(account, fn() {
     refresh_at(home, access, account, max_age_ms, now, native_get)
   })

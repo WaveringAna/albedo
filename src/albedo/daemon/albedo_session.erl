@@ -1,8 +1,7 @@
 -module(albedo_session).
--export([kill/1, now_ms/0, discard/1, collect/0, collect_over/1, decode_submission/1, new_generation/0]).
+-export([kill/1, discard/1, collect/0, collect_over/1, decode_submission/1, new_generation/0]).
 kill(Pid) -> exit(Pid,kill), nil.
 %% Monotonic: idle time must not move when the wall clock does.
-now_ms() -> erlang:monotonic_time(millisecond).
 discard(Path) -> file:delete(Path), nil.
 collect() -> erlang:garbage_collect(), nil.
 %% Collects only when the heap has grown past Words, so a steady stream of small

@@ -1,5 +1,5 @@
 -module(albedo_proxy).
--export([conversation/1, now/0, unique/0, pack/1, unpack/1, allow_anonymous/0]).
+-export([conversation/1, unique/0, pack/1, unpack/1, allow_anonymous/0]).
 
 allow_anonymous() -> os:getenv("ALBEDO_PROXY_ALLOW_ANONYMOUS") =:= "1".
 
@@ -9,7 +9,6 @@ allow_anonymous() -> os:getenv("ALBEDO_PROXY_ALLOW_ANONYMOUS") =:= "1".
 conversation(Seed) ->
     <<"proxy-", (binary:encode_hex(binary:part(crypto:hash(sha256, Seed), 0, 12), lowercase))/binary>>.
 
-now() -> erlang:system_time(second).
 
 unique() -> erlang:unique_integer([positive]).
 

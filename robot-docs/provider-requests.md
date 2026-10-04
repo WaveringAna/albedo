@@ -39,3 +39,7 @@ for fields and bounds.
 ## decode diagnostics
 
 Claude and Antigravity event and replay decoding preserve JSON error categories or expected types and field paths. Diagnostics omit raw provider values and unexpected JSON bytes or sequences.
+
+## Clock sources
+
+`albedo/clock` distinguishes wall timestamps from monotonic deadlines. Request records, quota reset times, and persisted expiry values use system time. Session, family, deletion, and transport deadlines use monotonic time rather than durable timestamps. Codex model-cache freshness retains its OS-clock source through `os_system_ms`.

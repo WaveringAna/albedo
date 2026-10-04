@@ -10,6 +10,8 @@
 //// apart as a warm append or a cache-busting rewrite without storing any
 //// request body. Requests are never stored, only hashed.
 
+import albedo/clock
+
 import albedo/daemon/store
 import albedo/harness/compaction
 import albedo/openai_api/types
@@ -497,14 +499,7 @@ fn marks_decoder(stored: String) -> decode.Decoder(List(types.CacheMark)) {
 }
 
 /// The ms clock request rows are timestamped with.
-@external(erlang, "erlang", "system_time")
-fn system_time(unit: TimeUnit) -> Int
-
-type TimeUnit {
-  Millisecond
-}
-
 pub fn now() -> Int {
-  system_time(Millisecond)
+  clock.system_ms()
 }
 /// Rows a page asks for when it does not say.

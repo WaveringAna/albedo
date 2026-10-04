@@ -13,6 +13,8 @@
 //// errors exactly as the feed reported them, never anything derived. Phase 2
 //// derives what it needs from these rows.
 
+import albedo/clock
+
 import albedo/daemon/configuration
 import albedo/daemon/store
 import albedo/harness/settings
@@ -297,7 +299,11 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
   case message {
     Tick -> retick(State(..on_tick(state), ticking: False))
     Enumerated(targets) ->
-      retick(merged(State(..state, enumerating: None), targets, now_ms()))
+      retick(merged(
+        State(..state, enumerating: None),
+        targets,
+        clock.system_ms(),
+      ))
     Polled(key, failed, busy) -> retick(finished(state, key, failed, busy))
     Down(process.ProcessDown(_, pid, _)) -> retick(fell(state, pid))
     // The poller monitors processes only; a port is never one of them.
@@ -307,7 +313,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
 
 fn on_tick(state: State) -> State {
   let config = load_settings()
-  let now = now_ms()
+  let now = clock.system_ms()
   case config.enabled {
     False -> State(..state, accounts: dict.new())
     True -> {
@@ -417,7 +423,7 @@ fn finished(state: State, key: String, failed: Bool, busy: Bool) -> State {
             ..account,
             failures: failures,
             polling: None,
-            next_due: now_ms() + wait * 1000,
+            next_due: clock.system_ms() + wait * 1000,
           ),
         ),
       )
@@ -458,7 +464,7 @@ fn tick_delay(state: State) -> Int {
   case config.enabled {
     False -> config.poll_seconds * 1000
     True -> {
-      let now = now_ms()
+      let now = clock.system_ms()
       let due =
         [
           list.map(dict.values(state.accounts), fn(account) { account.next_due }),
@@ -487,7 +493,7 @@ fn minimum(values: List(Int)) -> Option(Int) {
 /// exactly as it came, then the schedule hears whether it failed and whether
 /// the account is busy.
 fn run(fetch: Fetch, database: store.Store, target: Target) -> #(Bool, Bool) {
-  let now = now_ms()
+  let now = clock.system_ms()
   case fetch(target.provider, target.credential, now) {
     Ok(report) -> {
       record(database, target, report.plan, report.limits, report.error, now)
@@ -741,17 +747,6 @@ pub fn history(
 
 fn key_of(target: Target) -> String {
   target.provider <> "/" <> target.label
-}
-
-type TimeUnit {
-  Millisecond
-}
-
-@external(erlang, "erlang", "system_time")
-fn system_time(unit: TimeUnit) -> Int
-
-fn now_ms() -> Int {
-  system_time(Millisecond)
 }
 
 @external(erlang, "albedo_inspect", "label")

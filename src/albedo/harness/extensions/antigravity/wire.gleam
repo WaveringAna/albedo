@@ -1,5 +1,7 @@
 //// Albedo requests as Cloud Code Assist `streamGenerateContent` envelopes.
 
+import albedo/clock
+
 import albedo/harness/extensions/antigravity/catalog.{type Model}
 import albedo/harness/extensions/antigravity/schema
 import albedo/openai_api
@@ -447,7 +449,7 @@ fn request_id(context: Context, input: List(Input)) -> String {
   "agent/"
   <> uuid(context.session <> ":agent")
   <> "/"
-  <> int.to_string(now_ms())
+  <> int.to_string(clock.system_ms())
   <> "/"
   <> trajectory(context)
   <> "/"
@@ -485,6 +487,3 @@ fn session_number(seed: String) -> String
 
 @external(erlang, "albedo_antigravity", "uuid")
 fn uuid(seed: String) -> String
-
-@external(erlang, "albedo_antigravity", "now_ms")
-fn now_ms() -> Int

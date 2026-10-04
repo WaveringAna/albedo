@@ -21,6 +21,8 @@
 //// SSE framing; Gun owns streaming HTTP, flow control, and TLS verification.
 //// Requests stay as iodata.
 
+import albedo/clock
+
 import albedo/openai_api/request
 import albedo/openai_api/sse
 import albedo/openai_api/stream as reducer
@@ -147,7 +149,7 @@ pub fn exchange(
   reducer: reducer.Reducer,
   on_event: fn(Event) -> Control,
 ) -> Result(Turn, Error) {
-  let sent = monotonic_time(Millisecond)
+  let sent = clock.monotonic_ms()
   use connection <- result.try(
     transport.open(
       exchange.url,
@@ -244,7 +246,7 @@ fn pump(
   use message <- result.try(receive(connection))
   case message {
     transport.Data(bytes, final) -> {
-      let now = monotonic_time(Millisecond)
+      let now = clock.monotonic_ms()
       use #(parser, events) <- result.try(
         sse.feed(parser, bytes) |> result.map_error(sse_error),
       )
@@ -348,13 +350,6 @@ fn elapsed(thinking: Thinking, now: Int) -> Int {
     None -> thinking.total
   }
 }
-
-type TimeUnit {
-  Millisecond
-}
-
-@external(erlang, "erlang", "monotonic_time")
-fn monotonic_time(unit: TimeUnit) -> Int
 
 fn receive(
   connection: transport.Connection,

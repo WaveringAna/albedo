@@ -1,3 +1,4 @@
+import albedo/clock
 /// Image deduplication and legacy migration need database fixtures absent from E2E.
 import albedo/daemon/conversation
 import albedo/daemon/family
@@ -17,9 +18,6 @@ const png = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAAD"
 
 @external(erlang, "albedo_runtime_test_support", "temporary_database")
 fn temporary_database() -> String
-
-@external(erlang, "albedo_session", "now_ms")
-fn now_ms() -> Int
 
 @external(erlang, "albedo_runtime_test_support", "cleanup")
 fn cleanup(path: String) -> Nil
@@ -134,7 +132,7 @@ pub fn deleting_a_session_releases_only_unshared_payloads_test() -> Nil {
         False,
       ),
       "delete-a",
-      now_ms() + 5000,
+      clock.monotonic_ms() + 5000,
     )
   let assert Ok(_) = conversation.delete_claimed(ledger, "a", claim, [])
   count(ledger, "SELECT count(*) FROM images") |> should.equal(1)
@@ -153,7 +151,7 @@ pub fn deleting_a_session_releases_only_unshared_payloads_test() -> Nil {
         False,
       ),
       "delete-b",
-      now_ms() + 5000,
+      clock.monotonic_ms() + 5000,
     )
   let assert Ok(_) = conversation.delete_claimed(ledger, "b", claim, [])
   count(ledger, "SELECT count(*) FROM images") |> should.equal(0)

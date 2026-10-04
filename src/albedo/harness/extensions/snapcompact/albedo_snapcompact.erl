@@ -2,7 +2,7 @@
 %% albedo_render.erl) and normalizes archive text into the continuous cell
 %% stream the grid layout needs.
 -module(albedo_snapcompact).
--export([render_frames/4, paginate/2, now_ms/0, sha256/1, normalize/1, format_args/1]).
+-export([render_frames/4, paginate/2, sha256/1, normalize/1, format_args/1]).
 
 %% U+2588 FULL BLOCK in UTF-8: the grid layout's line marker.
 -define(BLOCK, <<226, 150, 136>>).
@@ -67,8 +67,6 @@ read_frame(Path, W, H, Rest, Frames) ->
 sha256(Text) ->
     binary:encode_hex(crypto:hash(sha256, Text), lowercase).
 
-now_ms() ->
-    erlang:system_time(millisecond).
 
 %% One pass: escape sequences stripped, tabs expanded to four spaces, and
 %% newline runs folded into single full-block cells, so the archive is one

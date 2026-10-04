@@ -1,3 +1,4 @@
+import albedo/clock
 import albedo/daemon/folders
 import albedo/harness/location
 import albedo/harness/ssh
@@ -43,24 +44,13 @@ pub fn presences(members: List(String), wait_ms: Int) -> List(Presence) {
         })
       #(member, answer, check)
     })
-  let deadline = now_ms() + wait_ms + folders.exists_ms + 1000
+  let deadline = clock.monotonic_ms() + wait_ms + folders.exists_ms + 1000
   list.map(started, fn(started) {
     let #(member, answer, check) = started
-    process.receive(answer, int.max(0, deadline - now_ms()))
+    process.receive(answer, int.max(0, deadline - clock.monotonic_ms()))
     |> result.lazy_unwrap(fn() {
       process.kill(check)
       Unknown(member, ssh.Unreachable("the check did not answer in time"))
     })
   })
 }
-
-fn now_ms() -> Int {
-  monotonic_time(Millisecond)
-}
-
-type TimeUnit {
-  Millisecond
-}
-
-@external(erlang, "erlang", "monotonic_time")
-fn monotonic_time(unit: TimeUnit) -> Int

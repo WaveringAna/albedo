@@ -1,3 +1,4 @@
+import albedo/clock
 import albedo/daemon/store
 import gleam/dynamic/decode
 import gleam/int
@@ -40,9 +41,6 @@ CREATE INDEX IF NOT EXISTS schedules_due ON schedules(next_at);
 pub fn initialise(db: store.Store) -> Result(Nil, String) {
   store.query(db, store.exec(_, schema))
 }
-
-@external(erlang, "albedo_schedule", "now")
-pub fn now() -> Int
 
 fn decoder() -> decode.Decoder(Job) {
   use id <- decode.field(0, decode.int)
@@ -123,7 +121,7 @@ pub fn save(
   {
     True -> Error("prompt must be 1–4096 bytes and delay 0–31536000 seconds")
     False -> {
-      let next = now() + delay
+      let next = clock.system_seconds() + delay
       let args = [
         sqlight.text(kind),
         sqlight.text(prompt),

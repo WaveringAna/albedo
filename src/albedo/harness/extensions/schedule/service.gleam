@@ -1,3 +1,4 @@
+import albedo/clock
 import albedo/daemon/bus
 import albedo/daemon/conversation
 import albedo/daemon/http_api as api
@@ -192,7 +193,7 @@ fn dispatch(
       ))
       let next_at = case fields.2 {
         None -> current.next_at
-        Some(delay) -> ledger.now() + delay
+        Some(delay) -> clock.system_seconds() + delay
       }
       use changed <- result.try(
         ledger.update_observed(

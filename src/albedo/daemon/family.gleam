@@ -3,6 +3,8 @@
 //// Names resolve only inside a family: anything further away is addressed by
 //// session id, so a title shared by two unrelated sessions cannot misdirect.
 
+import albedo/clock
+
 import albedo/daemon/operations
 import albedo/daemon/store
 import albedo/daemon/usage
@@ -382,9 +384,6 @@ pub fn available_in(
 
 const deletion_membership = "WITH RECURSIVE captured(id) AS (SELECT ? UNION SELECT f.session FROM session_family f JOIN captured c ON f.parent=c.id WHERE ?=1) "
 
-@external(erlang, "albedo_session", "now_ms")
-fn now_ms() -> Int
-
 pub fn claim_deletion(
   ledger: store.Store,
   request: DeletionRequest,
@@ -393,7 +392,7 @@ pub fn claim_deletion(
 ) -> Result(DeletionClaim, String) {
   store.query(ledger, fn(db) {
     store.transaction(db, fn() {
-      use _ <- result.try(case now_ms() >= deadline {
+      use _ <- result.try(case clock.monotonic_ms() >= deadline {
         True -> Error("deletion admission deadline reached")
         False -> Ok(Nil)
       })

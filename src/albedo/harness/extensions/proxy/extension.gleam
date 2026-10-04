@@ -2,6 +2,8 @@
 //// request carries its conversation, which is projected onto the profile's
 //// upstream and streamed back as Chat Completions.
 
+import albedo/clock
+
 import albedo/daemon/configuration
 import albedo/daemon/http_api
 import albedo/daemon/projection
@@ -206,7 +208,8 @@ fn complete(
       types.Request(..completion.request, model: model, input: input),
     )
   }
-  let reply = chat.Reply(chat.id(unique()), now(), completion.requested)
+  let reply =
+    chat.Reply(chat.id(unique()), clock.system_seconds(), completion.requested)
   case resolved, completion.stream {
     Error(message), _ -> respond(400, chat.error(message))
     Ok(#(profile, upstream, request)), False ->
@@ -310,9 +313,6 @@ fn respond(status: Int, value: Json) -> response.Response(mist.ResponseData) {
 
 @external(erlang, "albedo_proxy", "conversation")
 fn conversation(seed: String) -> String
-
-@external(erlang, "albedo_proxy", "now")
-fn now() -> Int
 
 @external(erlang, "albedo_proxy", "unique")
 fn unique() -> Int

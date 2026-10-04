@@ -1,5 +1,7 @@
 //// The supervised session registry owns lifecycle, admission, schedules, and maintenance.
 
+import albedo/clock
+
 import albedo/daemon/agents
 import albedo/daemon/bus
 import albedo/daemon/configuration
@@ -571,7 +573,7 @@ fn dispatch(state: State, schedules: Bool) -> State {
 }
 
 fn dispatch_schedules(db: store.Store, registry: Subject(Message)) -> Nil {
-  let time = schedule.now()
+  let time = clock.system_seconds()
   case schedule.due(db, time) {
     Error(error) -> io.println("scheduler query failed: " <> error)
     Ok(jobs) -> list.each(jobs, dispatch_schedule(db, registry, _))
@@ -641,7 +643,7 @@ fn dispatch_schedule(
       }
       case delivered {
         True -> {
-          case schedule.advance(db, job, schedule.now()) {
+          case schedule.advance(db, job, clock.system_seconds()) {
             Ok(_) -> Nil
             Error(error) ->
               io.println_error(

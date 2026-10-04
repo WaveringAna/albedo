@@ -1,5 +1,7 @@
 //// One coordinator per session. Workers own model/tool loops; clients never own workers.
 
+import albedo/clock
+
 import albedo/daemon/bus
 import albedo/daemon/context_snapshot
 import albedo/daemon/conversation
@@ -336,7 +338,7 @@ pub fn start(
           None -> loop.Unpinned
         },
         prepared_head: None,
-        last_touch: now_ms(),
+        last_touch: clock.monotonic_ms(),
         booting: None,
         blocked_until: 0,
         generation: new_generation(),
@@ -552,7 +554,7 @@ pub fn claim_deletion(
       let reply = process.new_subject()
       process.send(
         session,
-        ClaimDeletion(request, token, now_ms() + 5000, reply),
+        ClaimDeletion(request, token, clock.monotonic_ms() + 5000, reply),
       )
       let outcome =
         process.new_selector()
@@ -584,7 +586,7 @@ pub fn close_for_deletion(
   case process.subject_owner(session) {
     Error(_) -> Ok(Nil)
     Ok(owner) -> {
-      let deadline = now_ms() + timeout_ms
+      let deadline = clock.monotonic_ms() + timeout_ms
       let monitor = process.monitor(owner)
       let reply = process.new_subject()
       process.send(session, CloseForDeletion(reply))
@@ -598,7 +600,7 @@ pub fn close_for_deletion(
         Ok(Stopped) -> Ok(Nil)
         Ok(StopAcknowledged(Error(error))) -> Error(error)
         Ok(StopAcknowledged(Ok(_))) -> {
-          let remaining = deadline - now_ms()
+          let remaining = deadline - clock.monotonic_ms()
           case remaining <= 0 {
             True -> Error("session did not stop before deletion deadline")
             False ->
@@ -969,7 +971,8 @@ fn handle(
     | Compact(..)
     | ReloadData(..)
     | ChangeWorkspace(..)
-    | ApplyWorkspace(..) -> session_state.State(..state, last_touch: now_ms())
+    | ApplyWorkspace(..) ->
+      session_state.State(..state, last_touch: clock.monotonic_ms())
     _ -> state
   }
   // Runs end in finish_turn and background_finish, which follow at once; this
@@ -1632,7 +1635,7 @@ fn handle(
           turn.running(state.activity) != None,
           kernel,
           state.history != None,
-          now_ms() - state.last_touch,
+          clock.monotonic_ms() - state.last_touch,
           jobs,
         ),
       )
@@ -1916,9 +1919,6 @@ fn label(kind: String, id: String) -> Nil
 @external(erlang, "albedo_session", "collect")
 fn collect() -> Nil
 
-@external(erlang, "albedo_session", "now_ms")
-fn now_ms() -> Int
-
 @external(erlang, "albedo_wakes", "register")
 fn wakes_register(
   session: String,
@@ -2153,7 +2153,7 @@ fn failed_queued(state: State, error: String) -> State {
     )
   let _ = process.send_after(state.self, 15_000, StartQueued)
   session_state.emit(
-    session_state.State(..state, blocked_until: now_ms() + 15_000),
+    session_state.State(..state, blocked_until: clock.monotonic_ms() + 15_000),
     view.error("waiting inputs are blocked: " <> error),
   )
   |> session_submission.refresh_ids(turn.operations(state.steering))
@@ -2842,7 +2842,9 @@ fn start_queued(state: State) -> State {
   case turn.running(state.activity) {
     Some(_) -> state
     None ->
-      case state.blocked_until != 0 && now_ms() < state.blocked_until {
+      case
+        state.blocked_until != 0 && clock.monotonic_ms() < state.blocked_until
+      {
         True -> state
         False -> start_waiting(state)
       }

@@ -1,3 +1,4 @@
+import albedo/clock
 import albedo/harness/cache_fade
 import albedo/openai_api/types
 import gleam/option.{type Option, None, Some}
@@ -58,13 +59,6 @@ pub fn from_completion(
   Metadata(model, recorded_at, tokens, cache)
 }
 
-type TimeUnit {
-  Millisecond
-}
-
-@external(erlang, "erlang", "system_time")
-fn system_time(unit: TimeUnit) -> Int
-
 pub fn now() -> Int {
-  system_time(Millisecond)
+  clock.system_ms()
 }
