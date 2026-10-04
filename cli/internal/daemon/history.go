@@ -324,83 +324,68 @@ func hydrateHistory(ctx context.Context, conn *Connection, session string, entri
 	return result, nil
 }
 
-// Live summaries use the same durable content resource as history pages.
-func hydrateSessionEvent(ctx context.Context, conn *Connection, session string, raw json.RawMessage) (json.RawMessage, error) {
-	var envelope sessionEventEnvelope
-	if err := json.Unmarshal(raw, &envelope); err != nil {
-		return nil, err
+// Live summaries read the same durable content resources as history pages.
+type eventContentReader struct {
+	ctx     context.Context
+	conn    *Connection
+	session string
+}
+
+func (reader *eventContentReader) hydrateEntry(entry protocol.HistoryEntry) (protocol.HistoryEntry, error) {
+	entries, err := hydrateHistory(reader.ctx, reader.conn, reader.session, []protocol.HistoryEntry{entry})
+	if err != nil {
+		return protocol.HistoryEntry{}, err
 	}
-	switch envelope.Type {
-	case "message":
-		var data struct {
-			Entry protocol.HistoryEntry `json:"entry"`
-		}
-		if err := decodeRequired(envelope.Data, &data, "entry"); err != nil {
-			return nil, err
-		}
-		entries, err := hydrateHistory(ctx, conn, session, []protocol.HistoryEntry{data.Entry})
-		if err != nil {
-			return nil, err
-		}
-		data.Entry = entries[0]
-		envelope.Data, err = json.Marshal(data)
-		if err != nil {
-			return nil, err
-		}
-	case "tool":
-		var data map[string]json.RawMessage
-		if err := json.Unmarshal(envelope.Data, &data); err != nil {
-			return nil, err
-		}
-		var reference *protocol.ContentReference
-		if err := json.Unmarshal(data["reference"], &reference); err != nil {
-			return nil, err
-		}
-		if reference == nil {
-			return raw, nil
-		}
-		parsed, err := url.Parse(reference.URL)
-		if err != nil {
-			return nil, err
-		}
-		prefix := "/sessions/" + url.PathEscape(session) + "/history/"
-		if parsed.IsAbs() || parsed.RawQuery != "" || !strings.HasPrefix(parsed.Path, prefix) {
-			return nil, fieldError("tool content reference")
-		}
-		entry := strings.TrimPrefix(parsed.Path, prefix)
-		if entry == "" || strings.Contains(entry, "/") {
-			return nil, fieldError("tool content reference")
-		}
-		fields, err := ReadEntryContent(ctx, conn, session, entry)
-		if err != nil {
-			return nil, err
-		}
-		content, ok := fields[reference.Field]
-		if !ok || int64(len(content)) != reference.Bytes {
-			return nil, fieldError("tool content size")
-		}
-		if reference.Field != "arguments" && reference.Field != "result" && reference.Field != "trace" {
-			return nil, fieldError("tool content field")
-		}
-		if !json.Valid(content) {
-			return nil, fieldError("tool content JSON")
-		}
-		for _, field := range []string{"arguments", "result", "trace"} {
-			if full, present := fields[field]; present {
-				if !json.Valid(full) {
-					return nil, fieldError("tool content JSON")
-				}
-				data[field] = json.RawMessage(full)
+	return entries[0], nil
+}
+
+func (reader *eventContentReader) hydrateTool(data *toolEventData) error {
+	reference := data.Reference
+	if reference == nil {
+		return nil
+	}
+	parsed, err := url.Parse(reference.URL)
+	if err != nil {
+		return err
+	}
+	prefix := "/sessions/" + url.PathEscape(reader.session) + "/history/"
+	if parsed.IsAbs() || parsed.RawQuery != "" || !strings.HasPrefix(parsed.Path, prefix) {
+		return fieldError("tool content reference")
+	}
+	entry := strings.TrimPrefix(parsed.Path, prefix)
+	if entry == "" || strings.Contains(entry, "/") {
+		return fieldError("tool content reference")
+	}
+	fields, err := ReadEntryContent(reader.ctx, reader.conn, reader.session, entry)
+	if err != nil {
+		return err
+	}
+	content, ok := fields[reference.Field]
+	if !ok || int64(len(content)) != reference.Bytes {
+		return fieldError("tool content size")
+	}
+	if reference.Field != "arguments" && reference.Field != "result" && reference.Field != "trace" {
+		return fieldError("tool content field")
+	}
+	if !json.Valid(content) {
+		return fieldError("tool content JSON")
+	}
+	for _, field := range []string{"arguments", "result", "trace"} {
+		if full, present := fields[field]; present {
+			if !json.Valid(full) {
+				return fieldError("tool content JSON")
+			}
+			switch field {
+			case "arguments":
+				data.Arguments = json.RawMessage(full)
+			case "result":
+				data.Result = json.RawMessage(full)
+			case "trace":
+				data.Trace = json.RawMessage(full)
 			}
 		}
-		data["reference"] = json.RawMessage("null")
-		data["content_complete"] = json.RawMessage("true")
-		envelope.Data, err = json.Marshal(data)
-		if err != nil {
-			return nil, err
-		}
-	default:
-		return raw, nil
 	}
-	return json.Marshal(envelope)
+	data.Reference = nil
+	data.ContentComplete = true
+	return nil
 }

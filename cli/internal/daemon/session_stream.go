@@ -177,8 +177,7 @@ func (c *ChatClient) readStream(ctx context.Context, scanner *bufio.Scanner, onB
 			}
 			events = append(events, wireChatEvent{StreamEvent: StreamEvent{Type: EventUsage, Usage: usageValue(snapshot.wire.Usage), Replayed: true}})
 			for _, progress := range snapshot.wire.CurrentProgress {
-				raw, _ := json.Marshal(progress)
-				parsed, err := decodeToolProgress(raw)
+				parsed, err := typedToolProgress(progress)
 				if err != nil || parsed == nil {
 					return streamFailure(StreamProtocol, fieldError("current progress"))
 				}
@@ -190,7 +189,7 @@ func (c *ChatClient) readStream(ctx context.Context, scanner *bufio.Scanner, onB
 		}
 		for index, raw := range batch.Events {
 			var envelope sessionEventEnvelope
-			if err := json.Unmarshal(raw, &envelope); err != nil {
+			if err := decodeRequired(raw, &envelope, "type", "data"); err != nil {
 				return streamFailure(StreamProtocol, err)
 			}
 			if reset && index == 0 {
@@ -203,12 +202,11 @@ func (c *ChatClient) readStream(ctx context.Context, scanner *bufio.Scanner, onB
 				return streamFailure(StreamProtocol, errors.New("stream events are not contiguous"))
 			}
 			sequence = *envelope.Sequence
-			raw, err := hydrateSessionEvent(ctx, c.conn, c.agentID, raw)
+			event, err := decodeChatEnvelope(envelope, len(raw), &eventContentReader{ctx: ctx, conn: c.conn, session: c.agentID})
 			if err != nil {
-				return classifyStreamFailure(err)
-			}
-			event, err := decodeChatEvent(raw)
-			if err != nil {
+				if _, ok := errors.AsType[*StreamError](err); ok {
+					return err
+				}
 				return streamFailure(StreamProtocol, err)
 			}
 			if event != nil {
@@ -270,11 +268,11 @@ func (c *ChatClient) nextProgressCallIDs(snapshot []ToolProgress, events []wireC
 		case EventTool:
 			delete(active, event.ProgressCallID)
 		}
-		if len(active) > 32 {
+		if len(active) > maxActiveToolProgress {
 			return nil, errors.New("too many active progress calls")
 		}
 	}
-	if len(active) > 32 {
+	if len(active) > maxActiveToolProgress {
 		return nil, errors.New("too many active progress calls")
 	}
 	return active, nil

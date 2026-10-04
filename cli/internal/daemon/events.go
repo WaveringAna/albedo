@@ -198,6 +198,21 @@ func decodeToolProgress(raw json.RawMessage) (*ToolProgress, error) {
 	if err := decodeRequired(raw, &wire); err != nil {
 		return nil, err
 	}
+	return validateToolProgress(wire)
+}
+
+func typedToolProgress(wire protocol.ToolProgress) (*ToolProgress, error) {
+	encoded, err := json.Marshal(wire)
+	if err != nil {
+		return nil, err
+	}
+	if len(encoded) > 8192 {
+		return nil, errors.New("tool progress exceeds 8 KiB")
+	}
+	return validateToolProgress(wire)
+}
+
+func validateToolProgress(wire protocol.ToolProgress) (*ToolProgress, error) {
 	if wire.CallID == "" || wire.Name == "" || len(wire.Name) > 100 || (wire.Phase != "generating" && wire.Phase != "running") {
 		return nil, fieldError("tool progress")
 	}

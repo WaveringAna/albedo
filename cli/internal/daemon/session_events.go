@@ -23,6 +23,10 @@ func decodeChatEvent(raw json.RawMessage) (*wireChatEvent, error) {
 	if err := decodeRequired(raw, &envelope, "type", "data"); err != nil {
 		return nil, err
 	}
+	return decodeChatEnvelope(envelope, len(raw), nil)
+}
+
+func decodeChatEnvelope(envelope sessionEventEnvelope, wireBytes int, content *eventContentReader) (*wireChatEvent, error) {
 	if envelope.Type == "" || envelope.Data == nil || string(envelope.Data) == "null" {
 		return nil, fieldError("event")
 	}
@@ -96,6 +100,13 @@ func decodeChatEvent(raw json.RawMessage) (*wireChatEvent, error) {
 		if err := decodeRequired(envelope.Data, &data, "entry"); err != nil {
 			return nil, err
 		}
+		if content != nil {
+			entry, err := content.hydrateEntry(data.Entry)
+			if err != nil {
+				return nil, classifyStreamFailure(err)
+			}
+			data.Entry = entry
+		}
 		entries, err := historyEntryEvents(data.Entry)
 		if err != nil {
 			return nil, err
@@ -117,7 +128,7 @@ func decodeChatEvent(raw json.RawMessage) (*wireChatEvent, error) {
 		}
 		event.Text, event.Source = data.Text, data.Origin
 	case "tool_progress":
-		if len(raw) > 8192 {
+		if wireBytes > 8192 {
 			return nil, errors.New("tool_progress exceeds 8 KiB")
 		}
 		var data struct {
@@ -132,21 +143,17 @@ func decodeChatEvent(raw json.RawMessage) (*wireChatEvent, error) {
 		}
 		event.Progress = progress
 	case "tool":
-		var data struct {
-			ToolCallID      string                     `json:"tool_call_id"`
-			ProgressCallID  string                     `json:"progress_call_id"`
-			Name            string                     `json:"name"`
-			Arguments       json.RawMessage            `json:"arguments"`
-			Result          json.RawMessage            `json:"result"`
-			Trace           json.RawMessage            `json:"trace"`
-			ContentComplete bool                       `json:"content_complete"`
-			Reference       *protocol.ContentReference `json:"reference"`
-		}
+		var data toolEventData
 		if err := decodeRequired(envelope.Data, &data, "tool_call_id", "progress_call_id", "name", "arguments", "result", "trace", "content_complete", "reference"); err != nil {
 			return nil, err
 		}
 		if data.ToolCallID == "" || data.ProgressCallID == "" || data.Name == "" {
 			return nil, fieldError("tool identity")
+		}
+		if content != nil {
+			if err := content.hydrateTool(&data); err != nil {
+				return nil, classifyStreamFailure(err)
+			}
 		}
 		event.ToolName, event.ProgressCallID = data.Name, data.ProgressCallID
 		arguments, _ := dynamicValue(data.Arguments)
@@ -255,4 +262,15 @@ func decodeChatEvent(raw json.RawMessage) (*wireChatEvent, error) {
 		return nil, nil
 	}
 	return &wireChatEvent{StreamEvent: event}, nil
+}
+
+type toolEventData struct {
+	Reference       *protocol.ContentReference `json:"reference"`
+	ToolCallID      string                     `json:"tool_call_id"`
+	ProgressCallID  string                     `json:"progress_call_id"`
+	Name            string                     `json:"name"`
+	Arguments       json.RawMessage            `json:"arguments"`
+	Result          json.RawMessage            `json:"result"`
+	Trace           json.RawMessage            `json:"trace"`
+	ContentComplete bool                       `json:"content_complete"`
 }
