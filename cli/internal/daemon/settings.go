@@ -5,13 +5,12 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"reflect"
 
 	"albedo/cli/internal/config"
 	"albedo/cli/internal/daemon/protocol"
 )
 
-type ReloadResult struct{ Reloaded, Message, Warning string }
+type ReloadResult struct{ Message, Warning string }
 type UIPreferencesPatch struct {
 	Thinking *bool  `json:"thinking,omitempty"`
 	Tools    *bool  `json:"tools,omitempty"`
@@ -86,37 +85,43 @@ func ProviderProfiles(ctx context.Context, conn *Connection) (config.Profiles, e
 	return settings.Profiles, err
 }
 
-type settingsChange[T any] struct {
-	Group    string `json:"group"`
-	Resource struct {
-		URL   string `json:"url"`
-		ETag  string `json:"etag"`
-		Value T      `json:"value"`
-	} `json:"resource"`
-	Application protocol.SettingsApplication `json:"application"`
-}
-
-func patchSettingsGroup[T any](ctx context.Context, conn *Connection, group, etag string, body any) (settingsChange[T], error) {
-	var result settingsChange[T]
+func patchSettingsGroup(ctx context.Context, conn *Connection, group, etag string, body any, target any) error {
 	headers, err := observedHeaders(etag)
 	if err != nil {
-		return result, err
+		return err
 	}
-	err = executeMutation(ctx, conn, operation{Name: "edit " + group + " settings", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
-		return protocol.NewPatchSettingsRequestWithBody(base, &protocol.PatchSettingsParams{Group: group, IfMatch: headers.Get("If-Match")}, "application/merge-patch+json", body)
+	return executeMutation(ctx, conn, operation{Name: "edit " + group + " settings", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
+		return protocol.NewPatchSettingsRequestWithBody(base, &protocol.PatchSettingsParams{Group: group, IfMatch: etag}, "application/merge-patch+json", body)
 	}, Headers: headers, Body: body, Policy: authRecovery}, []int{200}, func(data []byte, _ int) error {
-		if err := decodeRequired(data, &result, "group", "resource", "application"); err != nil {
+		if err := decodeRequired(data, target); err != nil {
 			return err
 		}
-		if err := validateWireJSON(data, reflect.TypeFor[settingsChange[T]]()); err != nil {
+		var savedGroup, savedURL, savedETag string
+		switch change := target.(type) {
+		case *protocol.ProviderSettingsChange:
+			savedGroup, savedURL, savedETag = change.Group, change.Resource.URL, change.Resource.ETag
+		case *protocol.CapabilitySettingsChange:
+			savedGroup, savedURL, savedETag = change.Group, change.Resource.URL, change.Resource.ETag
+		case *protocol.MCPSettingsChange:
+			savedGroup, savedURL, savedETag = change.Group, change.Resource.URL, change.Resource.ETag
+		case *protocol.ExtensionSettingsChange:
+			savedGroup, savedURL, savedETag = change.Group, change.Resource.URL, change.Resource.ETag
+		case *protocol.ModelSettingsChange:
+			savedGroup, savedURL, savedETag = change.Group, change.Resource.URL, change.Resource.ETag
+		case *protocol.UISettingsChange:
+			savedGroup, savedURL, savedETag = change.Group, change.Resource.URL, change.Resource.ETag
+		default:
+			return fieldError("settings group")
+		}
+		request, err := protocol.NewGetSettingsRequest("", &protocol.GetSettingsParams{Group: &group})
+		if err != nil {
 			return err
 		}
-		if result.Group != group || result.Resource.ETag == "" || result.Resource.URL != "/settings?group="+group {
+		if savedGroup != group || savedETag == "" || savedURL != request.URL.RequestURI() {
 			return fieldError("settings resource")
 		}
 		return nil
 	})
-	return result, err
 }
 func SaveProvider(ctx context.Context, conn *Connection, name string, profile config.Settings, etag string) error {
 	return saveProvider(ctx, conn, name, profile, etag, false)
@@ -125,28 +130,22 @@ func SaveAndSelectProvider(ctx context.Context, conn *Connection, name string, p
 	return saveProvider(ctx, conn, name, profile, etag, true)
 }
 func saveProvider(ctx context.Context, conn *Connection, name string, profile config.Settings, etag string, selectDefault bool) error {
-	type profilePatch struct {
-		Extension string  `json:"extension"`
-		Endpoint  *string `json:"endpoint"`
-		Protocol  string  `json:"protocol"`
-		Model     string  `json:"model"`
-		Effort    *string `json:"effort"`
-		ImageEdge *int    `json:"image_edge"`
-		AccountID *string `json:"account_id"`
-		APIKey    string  `json:"api_key,omitempty"`
+	// Nullable patch fields must be emitted to clear saved overrides. Generated
+	// optional pointers omit nil and would preserve those overrides instead.
+	profilePatch := map[string]any{
+		"extension": profile.Extension, "endpoint": optionalText(profile.BaseURL),
+		"protocol": profile.Protocol, "model": profile.Model, "effort": profile.Effort,
+		"image_edge": profile.ImageEdge, "account_id": profile.AccountID,
 	}
-	var endpoint *string
-	if profile.BaseURL != "" {
-		endpoint = &profile.BaseURL
+	if profile.APIKey != "" {
+		profilePatch["api_key"] = profile.APIKey
 	}
-	body := struct {
-		Profiles       map[string]profilePatch `json:"profiles"`
-		DefaultProfile *string                 `json:"default_profile,omitempty"`
-	}{Profiles: map[string]profilePatch{name: {profile.Extension, endpoint, profile.Protocol, profile.Model, profile.Effort, profile.ImageEdge, profile.AccountID, profile.APIKey}}}
+	body := map[string]any{"profiles": map[string]any{name: profilePatch}}
 	if selectDefault {
-		body.DefaultProfile = &name
+		body["default_profile"] = name
 	}
-	_, err := patchSettingsGroup[protocol.ProviderSettings](ctx, conn, "providers", etag, body)
+	var change protocol.ProviderSettingsChange
+	err := patchSettingsGroup(ctx, conn, "providers", etag, body, &change)
 	return err
 }
 func DeleteProvider(ctx context.Context, conn *Connection, name string, profiles config.Profiles) error {
@@ -154,7 +153,8 @@ func DeleteProvider(ctx context.Context, conn *Connection, name string, profiles
 	if profiles.Active == name {
 		body["default_profile"] = nil
 	}
-	_, err := patchSettingsGroup[protocol.ProviderSettings](ctx, conn, "providers", profiles.ETag, body)
+	var change protocol.ProviderSettingsChange
+	err := patchSettingsGroup(ctx, conn, "providers", profiles.ETag, body, &change)
 	return err
 }
 
@@ -168,11 +168,10 @@ func SetCapability(ctx context.Context, conn *Connection, session string, reques
 }
 func setSelection(ctx context.Context, conn *Connection, session, kind, id, revision, scope, etag string, enabled *bool) (ReloadResult, error) {
 	if scope == "global" {
-		_, err := patchSettingsGroup[protocol.CapabilitySettings](ctx, conn, "capabilities", etag, struct {
-			SessionID string           `json:"catalog_session_id"`
-			Revision  string           `json:"catalog_revision"`
-			Choices   map[string]*bool `json:"choices"`
-		}{session, revision, map[string]*bool{id: enabled}})
+		var change protocol.CapabilitySettingsChange
+		err := patchSettingsGroup(ctx, conn, "capabilities", etag, protocol.CapabilitySettingsPatch{
+			CatalogSessionID: session, CatalogRevision: revision, Choices: map[string]*bool{id: enabled},
+		}, &change)
 		return ReloadResult{Message: "Saved the global default; reload open sessions to apply it."}, err
 	}
 	body := map[string]any{"selection": map[string]any{kind: map[string]*bool{id: enabled}}}
@@ -209,33 +208,30 @@ func SaveMCP(ctx context.Context, conn *Connection, session string, request MCPU
 				secrets.Env[name] = nil
 			}
 		}
-		definition = struct {
-			Enabled           bool                         `json:"enabled"`
-			Transport         string                       `json:"transport"`
-			Command           *string                      `json:"command"`
-			Arguments         []string                     `json:"arguments"`
-			CWD               *string                      `json:"cwd"`
-			URL               *string                      `json:"url"`
-			Environment       map[string]map[string]string `json:"environment"`
-			Headers           map[string]map[string]string `json:"headers"`
-			BearerTokenEnvVar *string                      `json:"bearer_token_env_var"`
-			EnabledTools      []string                     `json:"enabled_tools"`
-			DisabledTools     []string                     `json:"disabled_tools"`
-			StartupTimeout    int                          `json:"startup_timeout_ms,omitempty"`
-			CallTimeout       int                          `json:"call_timeout_ms,omitempty"`
-			Secrets           MCPSecretsPatch              `json:"secrets"`
-		}{Enabled: server.Enabled == nil || *server.Enabled, Transport: server.Type, Command: optionalString(server.Command), Arguments: nonNil(server.Args), CWD: optionalString(server.CWD), URL: optionalString(server.URL), Environment: nonNilMap(server.Env), Headers: nonNilMap(server.Headers), BearerTokenEnvVar: optionalString(server.BearerTokenEnvVar), EnabledTools: nonNil(server.EnabledTools), DisabledTools: nonNil(server.DisabledTools), StartupTimeout: server.StartupTimeoutMs, CallTimeout: server.CallTimeoutMs, Secrets: secrets}
+		// These nulls clear fields when changing transports; nil optional
+		// pointers in MCPDefinitionPatch would omit them.
+		patch := map[string]any{
+			"enabled": server.Enabled == nil || *server.Enabled, "transport": server.Type,
+			"command": optionalText(server.Command), "arguments": nonNil(server.Args),
+			"cwd": optionalText(server.CWD), "url": optionalText(server.URL),
+			"environment": nonNilMap(server.Env), "headers": nonNilMap(server.Headers),
+			"bearer_token_env_var": optionalText(server.BearerTokenEnvVar),
+			"enabled_tools":        nonNil(server.EnabledTools), "disabled_tools": nonNil(server.DisabledTools),
+			"secrets": secrets,
+		}
+		if server.StartupTimeoutMs != 0 {
+			patch["startup_timeout_ms"] = server.StartupTimeoutMs
+		}
+		if server.CallTimeoutMs != 0 {
+			patch["call_timeout_ms"] = server.CallTimeoutMs
+		}
+		definition = patch
 	}
-	change, err := patchSettingsGroup[protocol.MCPSettings](ctx, conn, "mcp", request.ETag, struct {
-		Definitions map[string]any `json:"definitions"`
-	}{map[string]any{request.Name: definition}})
+	var change protocol.MCPSettingsChange
+	err := patchSettingsGroup(ctx, conn, "mcp", request.ETag, map[string]any{
+		"definitions": map[string]any{request.Name: definition},
+	}, &change)
 	return applicationResult(change.Application), err
-}
-func optionalString(s string) *string {
-	if s == "" {
-		return nil
-	}
-	return &s
 }
 func nonNil[T any](s []T) []T {
 	if s == nil {
@@ -266,20 +262,15 @@ func PatchUI(ctx context.Context, conn *Connection, patch UIPreferencesPatch) (U
 	if patch.Pinned != nil || patch.Archived != nil {
 		return UIPreferences{}, errors.New("pin and archive are session preferences")
 	}
-	change, err := patchSettingsGroup[protocol.UISettings](ctx, conn, "ui", patch.ETag, patch)
+	var change protocol.UISettingsChange
+	err := patchSettingsGroup(ctx, conn, "ui", patch.ETag, patch, &change)
 	return UIPreferences{Thinking: change.Resource.Value.Thinking, Tools: change.Resource.Value.Tools, ETag: change.Resource.ETag}, err
 }
 func PatchSessionUI(ctx context.Context, conn *Connection, session string, patch UIPreferencesPatch) (UIPreferences, error) {
 	if patch.Thinking != nil || patch.Tools != nil {
 		return UIPreferences{}, errors.New("thinking and tools are shared preferences")
 	}
-	body := struct {
-		Preferences struct {
-			Pinned   *bool `json:"pinned,omitempty"`
-			Archived *bool `json:"archived,omitempty"`
-		} `json:"preferences"`
-	}{}
-	body.Preferences.Pinned, body.Preferences.Archived = patch.Pinned, patch.Archived
+	body := protocol.SessionPatch{Preferences: &protocol.PreferencePatch{Pinned: patch.Pinned, Archived: patch.Archived}}
 	updated, err := patchSession(ctx, conn, session, patch.ETag, body)
 	prefs := UIPreferences{SessionETags: map[string]string{session: updated.ETag}}
 	if updated.Pinned {

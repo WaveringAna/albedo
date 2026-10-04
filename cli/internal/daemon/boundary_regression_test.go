@@ -3,6 +3,7 @@
 package daemon
 
 import (
+	"albedo/cli/internal/daemon/protocol"
 	"context"
 	"encoding/json"
 	"errors"
@@ -115,5 +116,37 @@ func TestSessionReadValidatesRequiredAndNullableMembers(t *testing.T) {
 				t.Fatalf("malformed required member accepted: %v", err)
 			}
 		})
+	}
+}
+
+func TestSessionChangeRejectsMissingNestedMembers(t *testing.T) {
+	for _, valid := range []bool{true, false} {
+		session := canonicalSession("s", generationA, 0)
+		if !valid {
+			delete(session["kernel"].(map[string]any), "live_job_count")
+		}
+		payload, err := json.Marshal(map[string]any{"session": session, "resource": session["configuration_resource"], "move": nil})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var change protocol.SessionChange
+		err = decodeRequired(payload, &change)
+		if (err == nil) != valid {
+			t.Fatalf("nested session validation valid=%v: %v", valid, err)
+		}
+	}
+}
+
+func TestModelPagingRejectsRepeatedTokens(t *testing.T) {
+	calls := 0
+	conn := controlledConnection(t, func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if calls == 1 && r.URL.Query().Get("next") != "" || calls == 2 && r.URL.Query().Get("next") != "same" {
+			t.Errorf("wrong cursor at page %d: %s", calls, r.URL)
+		}
+		_, _ = fmt.Fprint(w, `{"items":[],"next":"same"}`)
+	})
+	if _, err := ListModels(t.Context(), conn, "provider", ""); err == nil || calls != 2 {
+		t.Fatalf("repeated cursor accepted: calls=%d, error=%v", calls, err)
 	}
 }

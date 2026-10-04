@@ -100,7 +100,8 @@ func ChangeModel(ctx context.Context, conn *Connection, id string, request Model
 		return selection, err
 	}
 	if request.MakeDefault {
-		change, saveErr := patchSettingsGroup[protocol.ProviderSettings](ctx, conn, "providers", request.DefaultETag, map[string]any{"default_profile": selection.Provider, "profiles": map[string]any{selection.Provider: map[string]any{"model": selection.Model, "effort": optionalString(selection.Effort)}}})
+		var change protocol.ProviderSettingsChange
+		saveErr := patchSettingsGroup(ctx, conn, "providers", request.DefaultETag, map[string]any{"default_profile": selection.Provider, "profiles": map[string]any{selection.Provider: map[string]any{"model": selection.Model, "effort": optionalText(selection.Effort)}}}, &change)
 		selection.DefaultETag = change.Resource.ETag
 		if saveErr != nil {
 			return selection, fmt.Errorf("switched session; saving the default model: %w", saveErr)
@@ -112,7 +113,8 @@ func SetModelContextCap(ctx context.Context, conn *Connection, request ModelCont
 	if request.CapKey == "" {
 		return "", fieldError("model cap key")
 	}
-	change, err := patchSettingsGroup[protocol.ModelSettings](ctx, conn, "models", request.ETag, map[string]any{"raised_caps": map[string]bool{request.CapKey: request.Enabled}})
+	var change protocol.ModelSettingsChange
+	err := patchSettingsGroup(ctx, conn, "models", request.ETag, map[string]any{"raised_caps": map[string]bool{request.CapKey: request.Enabled}}, &change)
 	return change.Resource.ETag, err
 }
 func ReadEffort(ctx context.Context, conn *Connection, session Session) (EffortResult, error) {
@@ -134,7 +136,7 @@ func ReadEffort(ctx context.Context, conn *Connection, session Session) (EffortR
 
 // SelectEffort clears the preference when effort is empty.
 func SelectEffort(ctx context.Context, conn *Connection, session Session, effort string) (EffortResult, error) {
-	result, err := patchSession(ctx, conn, session.ID, session.ETag, map[string]any{"effort": optionalString(effort)})
+	result, err := patchSession(ctx, conn, session.ID, session.ETag, map[string]any{"effort": optionalText(effort)})
 	return EffortResult{Effort: result.Effort, Message: "Effort saved.", ETag: result.ETag}, err
 }
 

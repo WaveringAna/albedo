@@ -162,9 +162,9 @@ func (m WebhooksPageModel) save(gen int, notice string, steps ...daemon.WebhookR
 			var err error
 			switch step.Action {
 			case daemon.WebhookCreate:
-				res, err = daemon.CreateWebhook(context.Background(), m.Conn, daemon.WebhookCreateRequest{SessionID: step.SessionID, Name: step.Name, Secret: step.Secret, Header: step.Header, Prefix: &step.Prefix})
+				res, err = daemon.CreateWebhook(context.Background(), m.Conn, daemon.WebhookCreateRequest{SessionID: step.SessionID, Name: step.Name, Secret: optionalWebhookText(step.Secret), SignatureHeader: optionalWebhookText(step.Header), SignaturePrefix: &step.Prefix})
 			case daemon.WebhookSignature:
-				res, err = daemon.EditWebhook(context.Background(), m.Conn, step.HookID, step.ETag, daemon.WebhookPatch{Header: &step.Header, Prefix: &step.Prefix})
+				res, err = daemon.EditWebhook(context.Background(), m.Conn, step.HookID, step.ETag, daemon.WebhookPatch{SignatureHeader: &step.Header, SignaturePrefix: &step.Prefix})
 			case daemon.WebhookRotate:
 				res, err = daemon.RotateWebhookSecret(context.Background(), m.Conn, step.HookID, step.ETag, step.Secret)
 			case daemon.WebhookEnable, daemon.WebhookDisable:
@@ -382,4 +382,11 @@ func (m WebhooksPageModel) Update(msg tea.Msg) (WebhooksPageModel, tea.Cmd) {
 		return m, cmd
 	}
 	return m, nil
+}
+
+func optionalWebhookText(text string) *string {
+	if text == "" {
+		return nil
+	}
+	return &text
 }

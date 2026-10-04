@@ -178,9 +178,7 @@ func patchSession(ctx context.Context, conn *Connection, id, etag string, body a
 	return result, err
 }
 func RenameSession(ctx context.Context, conn *Connection, id, name, etag string) (Session, error) {
-	return patchSession(ctx, conn, id, etag, struct {
-		Name string `json:"name"`
-	}{name})
+	return patchSession(ctx, conn, id, etag, protocol.SessionPatch{Name: &name})
 }
 func ForkSession(ctx context.Context, conn *Connection, id string, body ForkRequest) (Session, error) {
 	return CreateSession(ctx, conn, CreateSessionRequest{Kind: "fork", SourceSessionID: id, CheckpointID: body.Checkpoint})

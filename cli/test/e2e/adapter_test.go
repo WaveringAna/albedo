@@ -349,7 +349,7 @@ func TestAttachedWebhookScreenCreatesConfiguresDisablesAndDeletesHook(t *testing
 		}
 	})
 	for _, patch := range []daemon.WebhookPatch{
-		{Header: new("x-typed-signature"), Prefix: new("typed=")},
+		{SignatureHeader: new("x-typed-signature"), SignaturePrefix: new("typed=")},
 		{Enabled: new(false)}, {Enabled: new(true)},
 	} {
 		updated, err := daemon.EditWebhook(t.Context(), attached, hook.ID, hook.ETag, patch)

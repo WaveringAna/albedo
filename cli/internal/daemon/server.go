@@ -123,7 +123,8 @@ func noticeValues(rows []struct {
 	return result
 }
 func DismissServerNotices(ctx context.Context, conn *Connection, etag string, ids []string) error {
-	_, err := patchSettingsGroup[protocol.UISettings](ctx, conn, "ui", etag, map[string]any{"dismissed_notices": ids})
+	var change protocol.UISettingsChange
+	err := patchSettingsGroup(ctx, conn, "ui", etag, map[string]any{"dismissed_notices": ids}, &change)
 	return err
 }
 

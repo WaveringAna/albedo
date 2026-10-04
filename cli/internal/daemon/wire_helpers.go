@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -49,95 +50,99 @@ func observedHeaders(etag string) (http.Header, error) {
 	return http.Header{"If-Match": {etag}, "Content-Type": {"application/merge-patch+json"}}, nil
 }
 func decodeRequired(data []byte, target any, names ...string) error {
-	fields, err := object(data)
-	if err != nil {
-		return err
+	data = bytes.TrimSpace(data)
+	if len(data) == 0 || data[0] != '{' {
+		return fieldError("object")
 	}
-	for _, name := range names {
-		if _, ok := fields[name]; !ok {
-			return fieldError(name)
-		}
-	}
-	targetType := reflect.TypeOf(target)
-	if targetType.Kind() == reflect.Pointer {
-		targetType = targetType.Elem()
-	}
-	if targetType.PkgPath() == reflect.TypeFor[protocol.Session]().PkgPath() {
-		if err := validateWireFields(fields, targetType); err != nil {
+	kind := reflect.TypeOf(target).Elem()
+	generated := kind.PkgPath() == reflect.TypeFor[protocol.Session]().PkgPath()
+	if generated || len(names) > 0 {
+		var tree any
+		decoder := json.NewDecoder(bytes.NewReader(data))
+		decoder.UseNumber()
+		if err := decoder.Decode(&tree); err != nil {
 			return err
+		}
+		fields, ok := tree.(map[string]any)
+		if !ok {
+			return fieldError("object")
+		}
+		for _, name := range names {
+			if _, ok := fields[name]; !ok {
+				return fieldError(name)
+			}
+		}
+		if generated {
+			if err := validateWireValue(tree, kind); err != nil {
+				return err
+			}
 		}
 	}
 	return json.Unmarshal(data, target)
 }
 
-// Required wire members must be present, and JSON null cannot masquerade as a
-// scalar zero value. Generated field tags distinguish nullable from optional.
-func validateWireJSON(data []byte, kind reflect.Type) error {
+// Validate one parsed tree so nested required members and nulls never become
+// Go zero values. Raw unions are decoded by their discriminated adapters.
+func validateWireValue(value any, kind reflect.Type) error {
 	if kind == reflect.TypeFor[json.RawMessage]() {
 		return nil
 	}
 	if kind.Kind() == reflect.Pointer {
-		if string(data) == "null" {
+		if value == nil {
 			return nil
 		}
-		return validateWireJSON(data, kind.Elem())
+		return validateWireValue(value, kind.Elem())
 	}
-	if string(data) == "null" {
+	if value == nil {
 		return fieldError("null " + kind.String())
 	}
 	switch kind.Kind() {
 	case reflect.Struct:
-		fields, err := object(data)
-		if err != nil {
-			return err
+		fields, ok := value.(map[string]any)
+		if !ok {
+			return fieldError("object")
 		}
-		return validateWireFields(fields, kind)
+		for field := range kind.Fields() {
+			name, options, _ := strings.Cut(field.Tag.Get("json"), ",")
+			if name == "" || name == "-" {
+				continue
+			}
+			child, present := fields[name]
+			if !present {
+				if !strings.Contains(options, "omitempty") {
+					return fieldError(name)
+				}
+				continue
+			}
+			if child == nil && field.Type != reflect.TypeFor[json.RawMessage]() {
+				if field.Tag.Get("nullable") != "true" {
+					return fieldError(name)
+				}
+				continue
+			}
+			if err := validateWireValue(child, field.Type); err != nil {
+				return fmtField(name, err)
+			}
+		}
 	case reflect.Slice:
-		var items []json.RawMessage
-		if err := json.Unmarshal(data, &items); err != nil {
-			return err
+		items, ok := value.([]any)
+		if !ok {
+			return fieldError("array")
 		}
 		for _, item := range items {
-			if err := validateWireJSON(item, kind.Elem()); err != nil {
+			if err := validateWireValue(item, kind.Elem()); err != nil {
 				return err
 			}
 		}
 	case reflect.Map:
-		fields, err := object(data)
-		if err != nil {
-			return err
+		fields, ok := value.(map[string]any)
+		if !ok {
+			return fieldError("object")
 		}
-		for _, raw := range fields {
-			if err := validateWireJSON(raw, kind.Elem()); err != nil {
+		for _, child := range fields {
+			if err := validateWireValue(child, kind.Elem()); err != nil {
 				return err
 			}
-		}
-	}
-	return nil
-}
-
-func validateWireFields(fields map[string]json.RawMessage, kind reflect.Type) error {
-	for i := range kind.NumField() {
-		field := kind.Field(i)
-		name, options, _ := strings.Cut(field.Tag.Get("json"), ",")
-		if name == "" || name == "-" {
-			continue
-		}
-		raw, ok := fields[name]
-		if !ok {
-			if !strings.Contains(options, "omitempty") {
-				return fieldError(name)
-			}
-			continue
-		}
-		if string(raw) == "null" && field.Type != reflect.TypeFor[json.RawMessage]() {
-			if field.Tag.Get("nullable") != "true" {
-				return fieldError(name)
-			}
-			continue
-		}
-		if err := validateWireJSON(raw, field.Type); err != nil {
-			return fmtField(name, err)
 		}
 	}
 	return nil

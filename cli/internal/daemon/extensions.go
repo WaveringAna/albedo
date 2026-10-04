@@ -51,9 +51,10 @@ func ListExtensions(ctx context.Context, conn *Connection, session string) ([]Ex
 }
 func SelectExtension(ctx context.Context, conn *Connection, session string, request ExtensionSelectionRequest) ([]ExtensionSummary, error) {
 	if request.Scope == "global" {
-		_, err := patchSettingsGroup[protocol.ExtensionSettings](ctx, conn, "extensions", request.ETag, struct {
+		var change protocol.ExtensionSettingsChange
+		err := patchSettingsGroup(ctx, conn, "extensions", request.ETag, struct {
 			Defaults map[string]*bool `json:"defaults"`
-		}{map[string]*bool{request.Name: request.Enabled}})
+		}{map[string]*bool{request.Name: request.Enabled}}, &change)
 		if err != nil {
 			return nil, err
 		}

@@ -29,20 +29,8 @@ type WebhookPermission struct {
 	SessionID, ETag string
 	AgentManagement bool
 }
-type WebhookCreateRequest struct {
-	SessionID string  `json:"session_id"`
-	Name      string  `json:"name"`
-	Secret    string  `json:"secret,omitempty"`
-	Header    string  `json:"signature_header,omitempty"`
-	Prefix    *string `json:"signature_prefix,omitempty"`
-	Enabled   *bool   `json:"enabled,omitempty"`
-}
-type WebhookPatch struct {
-	Name    *string `json:"name,omitempty"`
-	Header  *string `json:"signature_header,omitempty"`
-	Prefix  *string `json:"signature_prefix,omitempty"`
-	Enabled *bool   `json:"enabled,omitempty"`
-}
+type WebhookCreateRequest = protocol.HookCreate
+type WebhookPatch = protocol.HookPatch
 type WebhookAction string
 
 const (
@@ -63,7 +51,6 @@ type WebhookRequest struct {
 }
 
 var webhookNamePattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
-var webhookHeaderPattern = regexp.MustCompile(`^[A-Za-z0-9-]{1,64}$`)
 
 func hookValue(w protocol.HookConfigurationResource, deliveryURL string) Webhook {
 	c := w.Value
@@ -139,7 +126,7 @@ func CreateWebhook(ctx context.Context, conn *Connection, request WebhookCreateR
 		return nil, errors.New("webhook creation requires a session and a valid name")
 	}
 	return hookChange(ctx, conn, operation{Name: "create webhook", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
-		return protocol.NewCreateHookRequestWithBody(base, "application/json", body)
+		return protocol.NewCreateHookRequest(base, request)
 	}, Body: request, Policy: noRecovery}, 201, true)
 }
 func EditWebhook(ctx context.Context, conn *Connection, id, etag string, patch WebhookPatch) (*WebhookResult, error) {
@@ -148,7 +135,7 @@ func EditWebhook(ctx context.Context, conn *Connection, id, etag string, patch W
 		return nil, err
 	}
 	return hookChange(ctx, conn, operation{Name: "edit webhook", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
-		return protocol.NewPatchHookRequestWithBody(base, id, &protocol.PatchHookParams{View: "configuration", IfMatch: etag}, "application/merge-patch+json", body)
+		return protocol.NewPatchHookRequestWithApplicationMergePatchPlusJSONBody(base, id, &protocol.PatchHookParams{View: "configuration", IfMatch: etag}, patch)
 	}, Headers: headers, Body: patch, Policy: noRecovery}, 200, false)
 }
 func RotateWebhookSecret(ctx context.Context, conn *Connection, id, etag, secret string) (*WebhookResult, error) {
