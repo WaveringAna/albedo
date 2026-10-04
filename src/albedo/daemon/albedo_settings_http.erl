@@ -1,5 +1,6 @@
 -module(albedo_settings_http).
 -export([composition_revision/1, mcp_definitions/1, observe/2, patch/8]).
+-import(albedo_settings, [named/1, normalize_profile/2]).
 -import(albedo_settings_store, [with_lock/2, object/2, check/1, commit_group/2]).
 
 %% These are HTTP boundary projections. Persisted names remain owned by the
@@ -88,8 +89,7 @@ groups(Docs) ->
     Extensions = maps:get(<<"extensions.json">>, Docs),
     Picker = maps:get(<<"picker.json">>, Docs),
     Profiles = maps:map(fun(Name, Profile) ->
-        {ok, NormalizedJSON} = 'albedo@daemon@configuration':validate_profile(Name, encode(Profile)),
-        Normalized = json:decode(NormalizedJSON),
+        {ok, Normalized} = normalize_profile(Name, Profile),
         #{<<"extension">> => maps:get(<<"extension">>, Normalized),
           <<"endpoint">> => nonempty(maps:get(<<"baseUrl">>, Normalized)),
           <<"protocol">> => maps:get(<<"protocol">>, Normalized),
@@ -127,10 +127,6 @@ composition_groups(Docs) ->
       <<"extensions">> => #{<<"defaults">> => object(<<"enabled">>, Extensions)},
       <<"capabilities">> => #{<<"preferences">> => flatten(object(<<"global">>, Caps))}}.
 
-named(#{<<"providers">> := _} = Config) -> Config;
-named(Config) when map_size(Config) =:= 0 -> #{<<"providers">> => #{}};
-named(Config) -> (maps:remove(<<"apiKey">>, Config))#{<<"active">> => <<"default">>, <<"providers">> => #{<<"default">> => Config}}.
-
 group(Name, Groups) -> case maps:find(Name, Groups) of {ok, Value} -> Value; error -> refusal(400, <<"invalid_request">>, <<"unknown settings group">>) end.
 validator(Name, Value, Revisions) -> #{<<"url">> => <<"/settings?group=", Name/binary>>, <<"etag">> => group_etag(Name, Value, Revisions)}.
 group_etag(Name, Value, Revisions) ->
@@ -160,8 +156,8 @@ candidate(_, <<"providers">>, Patch, Docs, _, _) ->
                 Public = translate(maps:remove(<<"api_key">>, Change), provider_fields()),
                 Complete = maps:merge(Old, Public),
                 Standard = Complete#{<<"baseUrl">> => case maps:get(<<"baseUrl">>, Complete, <<>>) of null -> <<>>; Endpoint -> Endpoint end, <<"protocol">> => maps:get(<<"protocol">>, Complete, <<"responses">>)},
-                {ok, Validated} = 'albedo@daemon@configuration':validate_profile(Name, encode(Standard)),
-                Valid = maps:merge(maps:remove(<<"apiKey">>, Standard), maps:remove(<<"apiKey">>, json:decode(Validated))),
+                {ok, Validated} = normalize_profile(Name, Standard),
+                Valid = maps:merge(maps:remove(<<"apiKey">>, Standard), maps:remove(<<"apiKey">>, Validated)),
                 nullable_text(maps:get(<<"effort">>, Valid, null), 100), nullable_text(maps:get(<<"accountId">>, Valid, null), 512),
                 case maps:get(<<"imageEdge">>, Valid, null) of null -> ok; Edge -> counter(Edge, 1, 65536) end,
                 NewKeys = case maps:find(<<"api_key">>, Change) of
@@ -170,7 +166,7 @@ candidate(_, <<"providers">>, Patch, Docs, _, _) ->
                         _ -> Keys0
                     end;
                     {ok, null} -> maps:remove(Name, Keys0);
-                    {ok, Key} -> text(Key, 1, 16384), {ok, _} = 'albedo@daemon@configuration':validate_profile(Name, encode(Standard#{<<"apiKey">> => Key})), Keys0#{Name => #{<<"apiKey">> => Key}}
+                    {ok, Key} -> text(Key, 1, 16384), {ok, _} = normalize_profile(Name, Standard#{<<"apiKey">> => Key}), Keys0#{Name => #{<<"apiKey">> => Key}}
                 end,
                 {Profiles0#{Name => Valid}, NewKeys}
         end
@@ -336,8 +332,8 @@ validate_provider_accounts(Docs, Providers, Logins) ->
     Config = named(maps:get(<<"config.json">>, Docs)), Creds = maps:get(<<"creds.json">>, Docs),
     Accounts = object(<<"accounts">>, Creds), Keys = object(<<"providers">>, Creds),
     maps:foreach(fun(Name, Profile) ->
-        {ok, Normalized} = 'albedo@daemon@configuration':validate_profile(Name, encode(Profile)),
-        Extension = maps:get(<<"extension">>, json:decode(Normalized)),
+        {ok, Normalized} = normalize_profile(Name, Profile),
+        Extension = maps:get(<<"extension">>, Normalized),
         ensure(lists:member(Extension, Providers), 400, <<"provider_unknown">>, <<"Provider extension is not installed">>),
         case maps:get(<<"accountId">>, Profile, null) of
             null -> ok;

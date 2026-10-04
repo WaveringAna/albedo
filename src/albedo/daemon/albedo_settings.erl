@@ -1,8 +1,16 @@
 -module(albedo_settings).
--export([write_default/3]).
+-export([named/1, normalize_profile/2, write_default/3]).
 -import(albedo_settings_store, [with_lock/2, read/2, object/2, commit_group/2, guarded/1]).
 
-encode_dynamic(Value) -> iolist_to_binary(json:encode(Value)).
+normalize_profile(Name, Profile) ->
+    case 'albedo@daemon@configuration':validate_profile(Name, Profile) of
+        {ok, {saved_profile, Extension, Endpoint, Model, Protocol, Key}} ->
+            Fields = #{<<"extension">> => Extension, <<"baseUrl">> => Endpoint,
+                <<"model">> => Model,
+                <<"protocol">> => 'albedo@openai_api@types':protocol_name(Protocol)},
+            {ok, case Key of none -> Fields; {some, Value} -> Fields#{<<"apiKey">> => Value} end};
+        Error -> Error
+    end.
 
 named(Config) ->
     case maps:is_key(<<"providers">>, Config) of
@@ -14,7 +22,7 @@ named(Config) ->
 validate_config(Config) ->
     Named = named(Config),
     maps:foreach(fun(Name, Profile) ->
-        case 'albedo@daemon@configuration':validate_profile(Name, encode_dynamic(Profile)) of
+        case normalize_profile(Name, Profile) of
             {ok, _} -> ok;
             _ -> throw({settings, <<"invalid config.json provider profile">>})
         end

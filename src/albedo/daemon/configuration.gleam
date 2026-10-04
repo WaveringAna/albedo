@@ -1,5 +1,6 @@
 import albedo/openai_api/types
 import gleam/dict.{type Dict}
+import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
 import gleam/json
 import gleam/list
@@ -202,11 +203,11 @@ fn read_config(home: String) -> Result(BitArray, Nil)
 /// Validate profiles at the daemon boundary without reporting secret values.
 pub fn validate_profile(
   name: String,
-  profile: String,
-) -> Result(String, String) {
+  profile: Dynamic,
+) -> Result(SavedProfile, String) {
   let invalid = "invalid provider name, model, protocol, endpoint, or API key"
   use profile <- result.try(
-    json.parse(profile, saved_profile_decoder())
+    decode.run(profile, saved_profile_decoder())
     |> result.replace_error(invalid),
   )
   let model = string.trim(profile.model)
@@ -226,22 +227,18 @@ pub fn validate_profile(
   {
     False -> Error(invalid)
     True -> {
-      let fields = [
-        #("extension", json.string(profile.extension)),
-        #("baseUrl", json.string(trim_endpoint_slashes(endpoint))),
-        #("model", json.string(model)),
-        #("protocol", json.string(types.protocol_name(profile.protocol))),
-      ]
-      let fields = case profile.api_key {
-        None -> fields
-        Some(key) -> [#("apiKey", json.string(key)), ..fields]
-      }
-      Ok(json.object(fields) |> json.to_string)
+      Ok(
+        SavedProfile(
+          ..profile,
+          endpoint: trim_endpoint_slashes(endpoint),
+          model: model,
+        ),
+      )
     }
   }
 }
 
-type SavedProfile {
+pub type SavedProfile {
   SavedProfile(
     extension: String,
     endpoint: String,
