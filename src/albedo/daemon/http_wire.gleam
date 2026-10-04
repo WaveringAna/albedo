@@ -255,6 +255,12 @@ pub fn kernel(observed: session_namespace.KernelObservation) -> json.Json {
     #("stale", json.bool(observed.stale != None)),
     #("staleness_reasons", json.preprocessed_array(reasons)),
     #("live_job_count", json.nullable(observed.live_job_count, json.int)),
+    #(
+      "running_jobs",
+      json.nullable(observed.running_jobs, fn(jobs) {
+        json.array(jobs, python.job_json)
+      }),
+    ),
   ])
 }
 

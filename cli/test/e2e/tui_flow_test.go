@@ -5,6 +5,7 @@
 package e2e
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -93,6 +94,42 @@ func TestTUIEffortSelectorCommitsThroughTheDaemon(t *testing.T) {
 	session = daemonSession(t, d.App.ActiveSession.ID)
 	if session.Model != "o3-mini" || session.Effort != "medium" {
 		t.Fatalf("session %s kept model %q effort %q, want o3-mini at medium", session.ID, session.Model, session.Effort)
+	}
+}
+
+// Text after a command that declares no arguments is a prompt that starts with
+// the command's name; the command would only reject it.
+func TestTUISendsTextAfterAnArgumentlessCommandAsAPrompt(t *testing.T) {
+	profile := providerRoute(t, echoReply)
+	session := daemonSession(t, newSession(t, t.TempDir()))
+	// A session lists its commands once its first turn has loaded them.
+	if _, err := daemon.NewChatClient(conn(t), session.ID).Send(t.Context(), "hello", nil); err != nil {
+		t.Fatal(err)
+	}
+	waitIdle(t, session.ID, profile, 1)
+	d := driveTUI(t, &session)
+	defer d.App.Chat.Close()
+	d.Dispatch(tui.CapabilityPageChangedMsg{})
+	jobs := slices.IndexFunc(d.App.Chat.CommandMenu.Catalog, func(command daemon.SessionCommand) bool { return command.Name == "/jobs" })
+	if jobs < 0 || len(d.App.Chat.CommandMenu.Catalog[jobs].Arguments) != 0 {
+		t.Fatalf("the daemon's catalog has no argumentless /jobs: %+v", d.App.Chat.CommandMenu.Catalog)
+	}
+	d.connected()
+
+	d.App.Chat.TextArea.SetValue("/jobs is broken")
+	var admitted tui.ChatTurnSentMsg
+	for _, message := range d.results(d.Update(tea.KeyPressMsg{Code: tea.KeyEnter})) {
+		if sent, ok := message.(tui.ChatTurnSentMsg); ok {
+			admitted = sent
+			d.Update(sent)
+		}
+	}
+	if admitted.Err != nil || !admitted.OK {
+		t.Fatalf("enter did not send the prompt: %+v\n%s", admitted, d.View())
+	}
+	waitIdle(t, session.ID, profile, 2)
+	if reply := strings.Join(eventText(durableHistorySnapshot(t, session.ID), "message"), "\n"); !strings.Contains(reply, "echo: /jobs is broken") {
+		t.Fatalf("the model did not receive the whole prompt; got:\n%s", reply)
 	}
 }
 

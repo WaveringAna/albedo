@@ -7,7 +7,9 @@
 //   - preview timing: a debounce, a stale tick for a row no longer
 //     highlighted, and the cache stamp that decides when a new reply
 //     invalidates a preview are race-dependent state a scripted scenario
-//     reaches only flakily.
+//     reaches only flakily;
+//   - grouping: within a group, sessions the daemon still holds lead the
+//     reaped ones.
 package tui
 
 import (
@@ -44,6 +46,22 @@ func TestSessionViewerResponsiveViewport(t *testing.T) {
 		if !strings.Contains(ansi.Strip(view), "Selected session") && size[0] >= 25 {
 			t.Errorf("%dx%d: selected row not visible", size[0], size[1])
 		}
+	}
+}
+
+func TestSessionViewerPutsLoadedSessionsAboveReapedOnes(t *testing.T) {
+	now := time.Date(2026, 9, 23, 12, 0, 0, 0, time.Local)
+	newer, older := now.Add(-time.Minute).Unix(), now.Add(-time.Hour).Unix()
+	m := viewerAt(now)
+	m.SetSize(120, 30)
+	// the daemon lists by activity; the reaped session replied last
+	m.SetSessions([]daemon.Session{
+		{ID: "reaped", Title: "Reaped session", LastAssistantAt: &newer},
+		{ID: "live", Title: "Loaded session", LastAssistantAt: &older, Cursor: &daemon.Cursor{}},
+	}, nil)
+	view := ansi.Strip(m.View())
+	if live, reaped := strings.Index(view, "Loaded session"), strings.Index(view, "Reaped session"); live < 0 || reaped < live {
+		t.Fatalf("a loaded session must lead the reaped ones in its group:\n%s", view)
 	}
 }
 

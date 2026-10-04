@@ -32,6 +32,19 @@ pub fn handle(store: work.Store, session: String, request: String) -> String {
     "unknown cells operation",
     fn(method, args) {
       case method {
+        "cells.completed" -> {
+          let decoder = {
+            use display <- decode.field("display", decode.string)
+            use text <- decode.field("text", decode.string)
+            decode.success(#(display, text))
+          }
+          use #(display, text) <- result.try(parse(args, decoder))
+          case deliver(session, "cell", display, text) {
+            Delivered -> Ok(json.string("delivered"))
+            Busy -> Error("session is busy")
+            Unavailable(reason) -> Error(reason)
+          }
+        }
         "cells.list" -> {
           let limit =
             decode.run(
@@ -55,7 +68,12 @@ pub fn handle(store: work.Store, session: String, request: String) -> String {
         _ -> Error("unknown cells operation")
       }
     },
-    fn(message) { #("cell", message) },
+    fn(message) {
+      case message {
+        "session is busy" -> #("busy", message)
+        _ -> #("cell", message)
+      }
+    },
   )
 }
 
@@ -149,7 +167,7 @@ fn cells(
       ))
       case outcome.id == id {
         True ->
-          journal.finish(store, id, Ok(outcome))
+          journal.settle(store, id, Ok(outcome))
           |> result.replace(json.null())
         False -> Error("cell result id differs")
       }
@@ -182,3 +200,17 @@ fn to_json(cell: journal.Cell) -> json.Json {
     #("duration", json.nullable(duration(cell), json.float)),
   ])
 }
+
+type Wake {
+  Delivered
+  Busy
+  Unavailable(String)
+}
+
+@external(erlang, "albedo_wakes", "deliver")
+fn deliver(
+  session: String,
+  origin: String,
+  display: String,
+  text: String,
+) -> Wake

@@ -48,10 +48,10 @@ not be told and the reply stays saved on the vent. the detail pane shows the
 suggestion, the answer, a model's resolution note with the session that
 closed it, and the filing session and workspace; a session shows
 by the name someone gave it — a child by its family name, a root by its
-title — else by a short id, the same precedence the agents view uses. open vents
-also appear in the page's glance beside the conversation, globally: every
-session's glance counts the open vents in the review window, which keeps
-open vents ahead of newer finished ones.
+title — else by a short id, the same precedence the agents view uses. the
+page's glance lists the open vents in the review window, which keeps open vents
+ahead of newer finished ones. vents stay out of the chat sidebar, which shows
+only the work ledger's active items and the session's background jobs.
 
 ## storage
 

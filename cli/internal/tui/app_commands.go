@@ -274,17 +274,19 @@ func (m *AppModel) executeCommandCmd(name, args string, gen int) tea.Cmd {
 			compacted, err = daemon.CompactSession(context.Background(), conn, sessionID, strings.TrimSpace(args))
 			res.Message = compacted.Message()
 		default:
-			command, found := daemon.SessionCommand{}, false
-			for _, item := range catalog {
-				if item.Name == name {
-					command, found = item, true
-					break
-				}
+			// A name can carry a read and a change; typed text picks the one
+			// that takes arguments.
+			index := slices.IndexFunc(catalog, func(item daemon.SessionCommand) bool {
+				return item.Name == name && args != "" && len(item.Arguments) > 0
+			})
+			if index < 0 {
+				index = slices.IndexFunc(catalog, func(item daemon.SessionCommand) bool { return item.Name == name })
 			}
-			if !found {
+			if index < 0 {
 				err = fmt.Errorf("command %s is not in the loaded catalog", name)
 				break
 			}
+			command := catalog[index]
 			arguments, parseErr := daemon.ParseCommandArguments(command, args)
 			if parseErr != nil {
 				err = parseErr

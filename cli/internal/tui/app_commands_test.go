@@ -170,7 +170,7 @@ func TestStatusAndGlancesUseOneCapturedSessionSnapshot(t *testing.T) {
 			t.Errorf("state polling repeated history reads: %s", r.URL)
 		}
 		session := protocolSession("original", generationA, 0)
-		session["kernel"] = map[string]any{"state": "attached", "build": "observed-build", "stale": true, "staleness_reasons": []any{map[string]any{"code": "build_changed", "detail": "A newer kernel is available."}}, "live_job_count": 3, "stage": nil, "instance_id": "observed-kernel"}
+		session["kernel"] = map[string]any{"state": "attached", "build": "observed-build", "stale": true, "staleness_reasons": []any{map[string]any{"code": "build_changed", "detail": "A newer kernel is available."}}, "live_job_count": 3, "running_jobs": []any{map[string]any{"id": "job1", "pid": 123, "command": "sleep 10"}}, "stage": nil, "instance_id": "observed-kernel"}
 		session["glances"] = []any{map[string]any{"extension": "first", "title": "First", "rows": []any{}, "url": "/extensions/first/items"}, map[string]any{"extension": "second", "title": "Second", "rows": []any{}, "url": "/extensions/second/items"}}
 		_ = json.NewEncoder(w).Encode(session)
 	})
@@ -202,7 +202,7 @@ func TestStatusAndGlancesUseOneCapturedSessionSnapshot(t *testing.T) {
 	phase := daemon.PhaseModel
 	app.Chat.handleStreamEvent(daemon.StreamEvent{Type: "status", Status: &daemon.AgentStatus{Phase: &phase, Running: true}})
 	status := app.Chat.Status
-	if status.Phase == nil || *status.Phase != phase || !status.Running || status.KernelLink != "attached" || !status.KernelStale || status.KernelJobs == nil || *status.KernelJobs != 3 || status.KernelBuild == nil || *status.KernelBuild != "observed-build" || status.KernelInstanceID == nil || *status.KernelInstanceID != "observed-kernel" {
+	if status.Phase == nil || *status.Phase != phase || !status.Running || status.KernelLink != "attached" || !status.KernelStale || status.KernelJobs == nil || *status.KernelJobs != 3 || len(status.RunningJobs) != 1 || status.RunningJobs[0].Command != "sleep 10" || status.KernelBuild == nil || *status.KernelBuild != "observed-build" || status.KernelInstanceID == nil || *status.KernelInstanceID != "observed-kernel" {
 		t.Fatalf("lightweight live status lost the last captured kernel observation: %+v", status)
 	}
 }

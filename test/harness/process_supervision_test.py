@@ -1,4 +1,4 @@
-"""OS process-group identity, shutdown races and heavy-slot admission need controlled child processes rather than flaky daemon timing."""
+"""OS process-group identity and shutdown races need controlled child processes rather than flaky daemon timing."""
 
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ albedo_proc.reap_stopped_safely(LOOP)
 EVENTS: list[dict[str, object]] = []
 
 
-def install(job_slot=None) -> None:
+def install() -> None:
     plugin.setup(
         albedo_api.PythonApi(
             version=1,
@@ -38,7 +38,6 @@ def install(job_slot=None) -> None:
             send=EVENTS.append,
             on_shutdown=lambda close: None,
             background_handle=lambda _: None,
-            job_slot=job_slot,
         )
     )
 
@@ -183,8 +182,8 @@ class SupervisionTest(unittest.TestCase):
         run(job)
         self.assertIn(job.id, plugin.retained)
 
-    def test_surviving_group_keeps_its_slot_and_is_surfaced(self):
-        """A group that outlives KILL keeps its slot and is reported, not forgotten."""
+    def test_surviving_group_stays_owned_and_is_surfaced(self):
+        """A group that outlives KILL stays owned and is reported, not forgotten."""
         real = (
             albedo_proc.alive,
             albedo_proc.current,
@@ -203,7 +202,7 @@ class SupervisionTest(unittest.TestCase):
             job = start("true")
             wait(job)
             self.assertFalse(job.termination.gone)
-            self.assertIn(job.id, plugin.active)  # work keeps its slot
+            self.assertIn(job.id, plugin.active)  # surviving work stays owned
             self.assertNotIn(job.id, plugin.retained)
             self.assertIn("cleanup failed", job.tail())
             run(plugin.close())
@@ -241,56 +240,6 @@ class SupervisionTest(unittest.TestCase):
         finally:
             run(albedo_proc.terminate([albedo_proc.Group(leader.pid)]))
             run(leader.wait())
-
-    def test_long_jobs_pause_for_a_heavy_slot_and_quick_ones_never_ask(self):
-        import subprocess
-
-        async def check():
-            asked: list[str] = []
-            grant = LOOP.create_future()
-
-            async def admission(id, on_queued):
-                asked.append(id)
-                on_queued()  # no slot free: the job is paused
-                await grant
-
-            install(admission)
-            grace = plugin.GRACE
-            plugin.GRACE = 0.2
-            try:
-                quick = start("true")
-                await quick
-                self.assertEqual(asked, [], "a quick command must never ask for a slot")
-                slow = start("sleep 5", timeout=1.0)
-                await asyncio.sleep(0.5)
-                self.assertEqual(asked, [slow.id])
-                self.assertTrue(slow.queued)
-                state = subprocess.run(
-                    ["ps", "-o", "stat=", "-p", str(slow.process.pid)],
-                    capture_output=True,
-                    text=True,
-                ).stdout.strip()
-                self.assertTrue(
-                    state.startswith("T"),
-                    f"paused job should be stopped, ps says {state!r}",
-                )
-                # Time spent paused does not count against the timeout.
-                await asyncio.sleep(1.2)
-                self.assertFalse(slow.task.done())
-                grant.set_result(None)
-                await asyncio.sleep(0.1)
-                self.assertFalse(slow.queued)
-                await slow
-                self.assertTrue(slow.timed_out)
-                self.assertTrue(slow.termination.gone)
-                # The pause is reported apart from the time the job ran.
-                self.assertGreaterEqual(slow.waited, 1.2)
-                self.assertAlmostEqual(slow.duration, 1.0, delta=0.4)
-            finally:
-                plugin.GRACE = grace
-                await plugin.close()
-
-        run(check())
 
     def test_stop_before_spawn_and_immediate_cancellation_keep_ownership(self):
         async def check():

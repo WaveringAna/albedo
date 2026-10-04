@@ -267,15 +267,19 @@ func (m *ChatModel) isRecognizedCommand(input string) bool {
 	if !strings.HasPrefix(trimmed, "/") {
 		return false
 	}
-	token := strings.Fields(trimmed)[0]
+	fields := strings.Fields(trimmed)
+	token, typed := fields[0], len(fields) > 1
 	switch token {
 	case "/a", "/agents", "/sessions", "/q", "/quit", "/exit", "/new", "/model", "/extensions",
 		"/plugins", "/tree", "/context", "/t", "/thinking", "/v", "/verbose",
-		"/status", "/login", "/mouse", "/skills", "/instructions", "/mcp", "/cd", "/effort", "/compact", "/kernel", "/reload":
+		"/status", "/login", "/mouse", "/skills", "/instructions", "/mcp", "/cd", "/effort", "/compact", "/kernel", "/reload",
+		"/work", "/paperclips":
 		return true
 	}
+	// Text after a command that declares no arguments is a prompt that
+	// happens to start with the command's name.
 	return slices.ContainsFunc(m.CommandMenu.Catalog, func(cmd daemon.SessionCommand) bool {
-		return cmd.Name == token
+		return cmd.Name == token && (!typed || len(cmd.Arguments) > 0)
 	})
 }
 

@@ -77,22 +77,8 @@ the orchestrator feed batches every 100 ms and skips activity serialization when
 nobody is watching.
 
 run jobs start at once, at low priority (`nice`, and utility QoS on macOS), so a
-busy swarm yields to the person at the machine. a job still running after the grace
-window (5 s) is heavy and needs one of a few daemon-wide slots; without one it is
-paused (`SIGSTOP`, `job.queued` is true) and resumed when one frees, so waiting
-costs no cpu and loses no work. quick commands never wait. the timeout counts only
-time the command ran. `await job.stop()` resumes a paused job so it can exit.
-
-slots default to the machine's cores and shrink while the one-minute load average
-runs past 1.25× the cores, which catches heavy jobs that fan out workers of their
-own. a freed slot goes to the kernel holding the fewest, oldest request first, so
-one busy agent cannot starve the rest. a slot is released only after process-group
-cleanup is confirmed; failed cleanup keeps it held.
-
-settings, read when the daemon starts: `ALBEDO_MAX_LOCAL_JOBS` fixes the slot count
-(1–256), `ALBEDO_JOB_GRACE_SECONDS` sets the grace window, `ALBEDO_JOB_LOAD=0`
-turns off the load adjustment. this bounds sustained shell work, not agent/model
-concurrency, remote kernels, or python computed directly in a cell.
+busy swarm yields to the person at the machine. jobs never pause for admission,
+and their deadlines count wall time after the program starts.
 
 ## deletion failures
 

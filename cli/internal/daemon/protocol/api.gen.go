@@ -1068,17 +1068,42 @@ type JSONContent struct {
 	Value DynamicJSON `json:"value"`
 }
 
+// JobCollection Examples: {"items":[],"live_job_count":0,"page":{"actions":[],"empty_state":"no background jobs running","glance":null,"rows":[],"summary":"0 background jobs running","title":"jobs"}}
+type JobCollection struct {
+	Items        []KernelJob    `json:"items"`
+	LiveJobCount Counter        `json:"live_job_count"`
+	Page         PageDescriptor `json:"page"`
+}
+
+// JobStop Examples: {"stopped":"job-1"}
+type JobStop struct {
+	// Stopped Opaque identity. Never infer a resource type or route from its contents.
+	Stopped ID `json:"stopped"`
+}
+
 // Kernel defines model for Kernel.
 type Kernel struct {
 	Build      *string `json:"build" nullable:"true"`
 	InstanceID *ID     `json:"instance_id" nullable:"true"`
 
 	// LiveJobCount Observed owned jobs. Null while booting or when the kernel owner is lost.
-	LiveJobCount     *Counter     `json:"live_job_count" nullable:"true"`
+	LiveJobCount *Counter `json:"live_job_count" nullable:"true"`
+
+	// RunningJobs Up to 100 observed live jobs, ordered by ID. Null when the kernel owner is unavailable. The count may exceed this list.
+	RunningJobs      []KernelJob  `json:"running_jobs" nullable:"true"`
 	Stage            *string      `json:"stage" nullable:"true"`
 	Stale            bool         `json:"stale"`
 	StalenessReasons []SafeReason `json:"staleness_reasons"`
 	State            string       `json:"state"`
+}
+
+// KernelJob defines model for KernelJob.
+type KernelJob struct {
+	Command string `json:"command"`
+
+	// ID Opaque identity. Never infer a resource type or route from its contents.
+	ID  ID       `json:"id"`
+	Pid *Counter `json:"pid" nullable:"true"`
 }
 
 // KernelUpgradeResult defines model for KernelUpgradeResult.
@@ -1926,7 +1951,7 @@ type RequestRecordPage struct {
 
 // ResetBatch Leading reset and complete snapshot. Later events, if any, follow the snapshot cursor. Envelope cursor advances through every delivered event.
 //
-// Examples: {"cursor":0,"events":[{"data":{"reason":"initial"},"type":"reset"}],"generation":"J6kYj6IGcXyP3eMIp-WL3A","snapshot":{"activity":{"latest_answer":null,"latest_input":null,"lines":[],"observed_at":"2026-10-02T14:00:00Z","output_scalars":0,"output_utf8_bytes":0},"activity_at":"2026-10-02T14:00:00Z","address":null,"automatic_name":"New session","closed":false,"composition":{"availability":{},"dependencies":{},"desired_revision":"composition-1","loaded_revision":null,"needs_reload":true,"quarantine":[]},"configuration_resource":{"etag":"\"session-config-1\"","url":"/sessions/01a0fcea-2b00-7000-8000-000000000001?view=configuration","value":{"effort":null,"family_revision":"family-1","id":"01a0fcea-2b00-7000-8000-000000000001","model":"example-model","name":"New session","preferences":{"archived":false,"pin_order":null,"pinned":false},"provider_profile":"personal","revision":"config-1","selection":{"extensions":{},"instructions":{},"mcp":{},"skills":{}},"workspace":"/workspace/project"}},"created_at":"2026-10-02T14:00:00Z","creation":{"resolved":{"effort":null,"model":"example-model","provider_profile":"personal","workspace":"/workspace/project"},"submitted":{"effort":null,"kind":"new","model":null,"name":null,"provider_profile":null,"workspace":"/workspace/project"}},"current_progress":[],"cursor":{"generation":"J6kYj6IGcXyP3eMIp-WL3A","sequence":0},"depth":0,"effort":null,"family_revision":"family-1","glances":[],"history":{"high_water":0,"items":[],"newer":null,"older":null},"id":"01a0fcea-2b00-7000-8000-000000000001","input_order":0,"kernel":{"build":null,"instance_id":null,"live_job_count":0,"stage":null,"stale":false,"staleness_reasons":[],"state":"none"},"location":{"host":null,"label":null,"path":"/workspace/project","user":null},"model":"example-model","name":"New session","parent_id":null,"pending_inputs":[],"preferences":{"archived":false,"opens":0,"pin_order":null,"pinned":false},"preview":{"text":"","transcript_count":0,"truncated":false},"provider_profile":"personal","revision":"config-1","root_id":"01a0fcea-2b00-7000-8000-000000000001","selection":{"effective":{"extensions":{},"instructions":{},"mcp":{},"skills":{}},"overrides":{"extensions":{},"instructions":{},"mcp":{},"skills":{}}},"status":{"blocking_reason":null,"interrupt_requested":false,"phase":"idle","run_id":null},"usage":{"cache_fade":[],"cache_ttl_seconds":null,"cache_write_tokens":null,"cached_prompt_tokens":null,"completion_tokens":null,"context_window_tokens":null,"elapsed_ms":null,"model":null,"observed_at":null,"prompt_tokens":null,"tokens_per_second":null,"total_tokens":null},"workspace":"/workspace/project","workspace_change":null}}
+// Examples: {"cursor":0,"events":[{"data":{"reason":"initial"},"type":"reset"}],"generation":"J6kYj6IGcXyP3eMIp-WL3A","snapshot":{"activity":{"latest_answer":null,"latest_input":null,"lines":[],"observed_at":"2026-10-02T14:00:00Z","output_scalars":0,"output_utf8_bytes":0},"activity_at":"2026-10-02T14:00:00Z","address":null,"automatic_name":"New session","closed":false,"composition":{"availability":{},"dependencies":{},"desired_revision":"composition-1","loaded_revision":null,"needs_reload":true,"quarantine":[]},"configuration_resource":{"etag":"\"session-config-1\"","url":"/sessions/01a0fcea-2b00-7000-8000-000000000001?view=configuration","value":{"effort":null,"family_revision":"family-1","id":"01a0fcea-2b00-7000-8000-000000000001","model":"example-model","name":"New session","preferences":{"archived":false,"pin_order":null,"pinned":false},"provider_profile":"personal","revision":"config-1","selection":{"extensions":{},"instructions":{},"mcp":{},"skills":{}},"workspace":"/workspace/project"}},"created_at":"2026-10-02T14:00:00Z","creation":{"resolved":{"effort":null,"model":"example-model","provider_profile":"personal","workspace":"/workspace/project"},"submitted":{"effort":null,"kind":"new","model":null,"name":null,"provider_profile":null,"workspace":"/workspace/project"}},"current_progress":[],"cursor":{"generation":"J6kYj6IGcXyP3eMIp-WL3A","sequence":0},"depth":0,"effort":null,"family_revision":"family-1","glances":[],"history":{"high_water":0,"items":[],"newer":null,"older":null},"id":"01a0fcea-2b00-7000-8000-000000000001","input_order":0,"kernel":{"build":null,"instance_id":null,"live_job_count":0,"running_jobs":[],"stage":null,"stale":false,"staleness_reasons":[],"state":"none"},"location":{"host":null,"label":null,"path":"/workspace/project","user":null},"model":"example-model","name":"New session","parent_id":null,"pending_inputs":[],"preferences":{"archived":false,"opens":0,"pin_order":null,"pinned":false},"preview":{"text":"","transcript_count":0,"truncated":false},"provider_profile":"personal","revision":"config-1","root_id":"01a0fcea-2b00-7000-8000-000000000001","selection":{"effective":{"extensions":{},"instructions":{},"mcp":{},"skills":{}},"overrides":{"extensions":{},"instructions":{},"mcp":{},"skills":{}}},"status":{"blocking_reason":null,"interrupt_requested":false,"phase":"idle","run_id":null},"usage":{"cache_fade":[],"cache_ttl_seconds":null,"cache_write_tokens":null,"cached_prompt_tokens":null,"completion_tokens":null,"context_window_tokens":null,"elapsed_ms":null,"model":null,"observed_at":null,"prompt_tokens":null,"tokens_per_second":null,"total_tokens":null},"workspace":"/workspace/project","workspace_change":null}}
 type ResetBatch struct {
 	Cursor Counter        `json:"cursor"`
 	Events []SessionEvent `json:"events"`
@@ -1934,7 +1959,7 @@ type ResetBatch struct {
 	// Generation 128 random bits encoded as unpadded base64url; new for each session actor lifetime.
 	Generation Generation `json:"generation"`
 
-	// Snapshot Examples: {"activity":{"latest_answer":null,"latest_input":null,"lines":[],"observed_at":"2026-10-02T14:00:00Z","output_scalars":0,"output_utf8_bytes":0},"activity_at":"2026-10-02T14:00:00Z","address":null,"automatic_name":"New session","closed":false,"composition":{"availability":{},"dependencies":{},"desired_revision":"composition-1","loaded_revision":null,"needs_reload":true,"quarantine":[]},"configuration_resource":{"etag":"\"session-config-1\"","url":"/sessions/01a0fcea-2b00-7000-8000-000000000001?view=configuration","value":{"effort":null,"family_revision":"family-1","id":"01a0fcea-2b00-7000-8000-000000000001","model":"example-model","name":"New session","preferences":{"archived":false,"pin_order":null,"pinned":false},"provider_profile":"personal","revision":"config-1","selection":{"extensions":{},"instructions":{},"mcp":{},"skills":{}},"workspace":"/workspace/project"}},"created_at":"2026-10-02T14:00:00Z","creation":{"resolved":{"effort":null,"model":"example-model","provider_profile":"personal","workspace":"/workspace/project"},"submitted":{"effort":null,"kind":"new","model":null,"name":null,"provider_profile":null,"workspace":"/workspace/project"}},"current_progress":[],"cursor":{"generation":"J6kYj6IGcXyP3eMIp-WL3A","sequence":0},"depth":0,"effort":null,"family_revision":"family-1","glances":[],"history":{"high_water":0,"items":[],"newer":null,"older":null},"id":"01a0fcea-2b00-7000-8000-000000000001","input_order":0,"kernel":{"build":null,"instance_id":null,"live_job_count":0,"stage":null,"stale":false,"staleness_reasons":[],"state":"none"},"location":{"host":null,"label":null,"path":"/workspace/project","user":null},"model":"example-model","name":"New session","parent_id":null,"pending_inputs":[],"preferences":{"archived":false,"opens":0,"pin_order":null,"pinned":false},"preview":{"text":"","transcript_count":0,"truncated":false},"provider_profile":"personal","revision":"config-1","root_id":"01a0fcea-2b00-7000-8000-000000000001","selection":{"effective":{"extensions":{},"instructions":{},"mcp":{},"skills":{}},"overrides":{"extensions":{},"instructions":{},"mcp":{},"skills":{}}},"status":{"blocking_reason":null,"interrupt_requested":false,"phase":"idle","run_id":null},"usage":{"cache_fade":[],"cache_ttl_seconds":null,"cache_write_tokens":null,"cached_prompt_tokens":null,"completion_tokens":null,"context_window_tokens":null,"elapsed_ms":null,"model":null,"observed_at":null,"prompt_tokens":null,"tokens_per_second":null,"total_tokens":null},"workspace":"/workspace/project","workspace_change":null}
+	// Snapshot Examples: {"activity":{"latest_answer":null,"latest_input":null,"lines":[],"observed_at":"2026-10-02T14:00:00Z","output_scalars":0,"output_utf8_bytes":0},"activity_at":"2026-10-02T14:00:00Z","address":null,"automatic_name":"New session","closed":false,"composition":{"availability":{},"dependencies":{},"desired_revision":"composition-1","loaded_revision":null,"needs_reload":true,"quarantine":[]},"configuration_resource":{"etag":"\"session-config-1\"","url":"/sessions/01a0fcea-2b00-7000-8000-000000000001?view=configuration","value":{"effort":null,"family_revision":"family-1","id":"01a0fcea-2b00-7000-8000-000000000001","model":"example-model","name":"New session","preferences":{"archived":false,"pin_order":null,"pinned":false},"provider_profile":"personal","revision":"config-1","selection":{"extensions":{},"instructions":{},"mcp":{},"skills":{}},"workspace":"/workspace/project"}},"created_at":"2026-10-02T14:00:00Z","creation":{"resolved":{"effort":null,"model":"example-model","provider_profile":"personal","workspace":"/workspace/project"},"submitted":{"effort":null,"kind":"new","model":null,"name":null,"provider_profile":null,"workspace":"/workspace/project"}},"current_progress":[],"cursor":{"generation":"J6kYj6IGcXyP3eMIp-WL3A","sequence":0},"depth":0,"effort":null,"family_revision":"family-1","glances":[],"history":{"high_water":0,"items":[],"newer":null,"older":null},"id":"01a0fcea-2b00-7000-8000-000000000001","input_order":0,"kernel":{"build":null,"instance_id":null,"live_job_count":0,"running_jobs":[],"stage":null,"stale":false,"staleness_reasons":[],"state":"none"},"location":{"host":null,"label":null,"path":"/workspace/project","user":null},"model":"example-model","name":"New session","parent_id":null,"pending_inputs":[],"preferences":{"archived":false,"opens":0,"pin_order":null,"pinned":false},"preview":{"text":"","transcript_count":0,"truncated":false},"provider_profile":"personal","revision":"config-1","root_id":"01a0fcea-2b00-7000-8000-000000000001","selection":{"effective":{"extensions":{},"instructions":{},"mcp":{},"skills":{}},"overrides":{"extensions":{},"instructions":{},"mcp":{},"skills":{}}},"status":{"blocking_reason":null,"interrupt_requested":false,"phase":"idle","run_id":null},"usage":{"cache_fade":[],"cache_ttl_seconds":null,"cache_write_tokens":null,"cached_prompt_tokens":null,"completion_tokens":null,"context_window_tokens":null,"elapsed_ms":null,"model":null,"observed_at":null,"prompt_tokens":null,"tokens_per_second":null,"total_tokens":null},"workspace":"/workspace/project","workspace_change":null}
 	Snapshot Session `json:"snapshot"`
 }
 
@@ -2150,7 +2175,7 @@ type SessionChange struct {
 	} `json:"move" nullable:"true"`
 	Resource SessionConfigurationResource `json:"resource"`
 
-	// Session Examples: {"activity":{"latest_answer":null,"latest_input":null,"lines":[],"observed_at":"2026-10-02T14:00:00Z","output_scalars":0,"output_utf8_bytes":0},"activity_at":"2026-10-02T14:00:00Z","address":null,"automatic_name":"New session","closed":false,"composition":{"availability":{},"dependencies":{},"desired_revision":"composition-1","loaded_revision":null,"needs_reload":true,"quarantine":[]},"configuration_resource":{"etag":"\"session-config-1\"","url":"/sessions/01a0fcea-2b00-7000-8000-000000000001?view=configuration","value":{"effort":null,"family_revision":"family-1","id":"01a0fcea-2b00-7000-8000-000000000001","model":"example-model","name":"New session","preferences":{"archived":false,"pin_order":null,"pinned":false},"provider_profile":"personal","revision":"config-1","selection":{"extensions":{},"instructions":{},"mcp":{},"skills":{}},"workspace":"/workspace/project"}},"created_at":"2026-10-02T14:00:00Z","creation":{"resolved":{"effort":null,"model":"example-model","provider_profile":"personal","workspace":"/workspace/project"},"submitted":{"effort":null,"kind":"new","model":null,"name":null,"provider_profile":null,"workspace":"/workspace/project"}},"current_progress":[],"cursor":{"generation":"J6kYj6IGcXyP3eMIp-WL3A","sequence":0},"depth":0,"effort":null,"family_revision":"family-1","glances":[],"history":{"high_water":0,"items":[],"newer":null,"older":null},"id":"01a0fcea-2b00-7000-8000-000000000001","input_order":0,"kernel":{"build":null,"instance_id":null,"live_job_count":0,"stage":null,"stale":false,"staleness_reasons":[],"state":"none"},"location":{"host":null,"label":null,"path":"/workspace/project","user":null},"model":"example-model","name":"New session","parent_id":null,"pending_inputs":[],"preferences":{"archived":false,"opens":0,"pin_order":null,"pinned":false},"preview":{"text":"","transcript_count":0,"truncated":false},"provider_profile":"personal","revision":"config-1","root_id":"01a0fcea-2b00-7000-8000-000000000001","selection":{"effective":{"extensions":{},"instructions":{},"mcp":{},"skills":{}},"overrides":{"extensions":{},"instructions":{},"mcp":{},"skills":{}}},"status":{"blocking_reason":null,"interrupt_requested":false,"phase":"idle","run_id":null},"usage":{"cache_fade":[],"cache_ttl_seconds":null,"cache_write_tokens":null,"cached_prompt_tokens":null,"completion_tokens":null,"context_window_tokens":null,"elapsed_ms":null,"model":null,"observed_at":null,"prompt_tokens":null,"tokens_per_second":null,"total_tokens":null},"workspace":"/workspace/project","workspace_change":null}
+	// Session Examples: {"activity":{"latest_answer":null,"latest_input":null,"lines":[],"observed_at":"2026-10-02T14:00:00Z","output_scalars":0,"output_utf8_bytes":0},"activity_at":"2026-10-02T14:00:00Z","address":null,"automatic_name":"New session","closed":false,"composition":{"availability":{},"dependencies":{},"desired_revision":"composition-1","loaded_revision":null,"needs_reload":true,"quarantine":[]},"configuration_resource":{"etag":"\"session-config-1\"","url":"/sessions/01a0fcea-2b00-7000-8000-000000000001?view=configuration","value":{"effort":null,"family_revision":"family-1","id":"01a0fcea-2b00-7000-8000-000000000001","model":"example-model","name":"New session","preferences":{"archived":false,"pin_order":null,"pinned":false},"provider_profile":"personal","revision":"config-1","selection":{"extensions":{},"instructions":{},"mcp":{},"skills":{}},"workspace":"/workspace/project"}},"created_at":"2026-10-02T14:00:00Z","creation":{"resolved":{"effort":null,"model":"example-model","provider_profile":"personal","workspace":"/workspace/project"},"submitted":{"effort":null,"kind":"new","model":null,"name":null,"provider_profile":null,"workspace":"/workspace/project"}},"current_progress":[],"cursor":{"generation":"J6kYj6IGcXyP3eMIp-WL3A","sequence":0},"depth":0,"effort":null,"family_revision":"family-1","glances":[],"history":{"high_water":0,"items":[],"newer":null,"older":null},"id":"01a0fcea-2b00-7000-8000-000000000001","input_order":0,"kernel":{"build":null,"instance_id":null,"live_job_count":0,"running_jobs":[],"stage":null,"stale":false,"staleness_reasons":[],"state":"none"},"location":{"host":null,"label":null,"path":"/workspace/project","user":null},"model":"example-model","name":"New session","parent_id":null,"pending_inputs":[],"preferences":{"archived":false,"opens":0,"pin_order":null,"pinned":false},"preview":{"text":"","transcript_count":0,"truncated":false},"provider_profile":"personal","revision":"config-1","root_id":"01a0fcea-2b00-7000-8000-000000000001","selection":{"effective":{"extensions":{},"instructions":{},"mcp":{},"skills":{}},"overrides":{"extensions":{},"instructions":{},"mcp":{},"skills":{}}},"status":{"blocking_reason":null,"interrupt_requested":false,"phase":"idle","run_id":null},"usage":{"cache_fade":[],"cache_ttl_seconds":null,"cache_write_tokens":null,"cached_prompt_tokens":null,"completion_tokens":null,"context_window_tokens":null,"elapsed_ms":null,"model":null,"observed_at":null,"prompt_tokens":null,"tokens_per_second":null,"total_tokens":null},"workspace":"/workspace/project","workspace_change":null}
 	Session Session `json:"session"`
 }
 
@@ -2363,7 +2388,7 @@ type SessionRetryEvent struct {
 
 // SessionSSE One parsed SSE event. Decode data as JSON and validate SessionBatch separately; contentSchema is not asserted by ordinary JSON Schema validation. No event, id or retry fields are emitted.
 //
-// Examples: {"data":"{\"generation\":\"J6kYj6IGcXyP3eMIp-WL3A\",\"cursor\":0,\"events\":[{\"type\":\"reset\",\"data\":{\"reason\":\"initial\"}}],\"snapshot\":{\"id\":\"01a0fcea-2b00-7000-8000-000000000001\",\"name\":\"New session\",\"automatic_name\":\"New session\",\"workspace\":\"/workspace/project\",\"location\":{\"host\":null,\"user\":null,\"path\":\"/workspace/project\",\"label\":null},\"parent_id\":null,\"root_id\":\"01a0fcea-2b00-7000-8000-000000000001\",\"address\":null,\"depth\":0,\"closed\":false,\"created_at\":\"2026-10-02T14:00:00Z\",\"activity_at\":\"2026-10-02T14:00:00Z\",\"provider_profile\":\"personal\",\"model\":\"example-model\",\"effort\":null,\"status\":{\"phase\":\"idle\",\"run_id\":null,\"interrupt_requested\":false,\"blocking_reason\":null},\"preview\":{\"text\":\"\",\"transcript_count\":0,\"truncated\":false},\"preferences\":{\"pinned\":false,\"pin_order\":null,\"archived\":false,\"opens\":0},\"current_progress\":[],\"activity\":{\"lines\":[],\"output_scalars\":0,\"output_utf8_bytes\":0,\"observed_at\":\"2026-10-02T14:00:00Z\",\"latest_input\":null,\"latest_answer\":null},\"cursor\":{\"generation\":\"J6kYj6IGcXyP3eMIp-WL3A\",\"sequence\":0},\"creation\":{\"submitted\":{\"kind\":\"new\",\"workspace\":\"/workspace/project\",\"name\":null,\"provider_profile\":null,\"model\":null,\"effort\":null},\"resolved\":{\"workspace\":\"/workspace/project\",\"provider_profile\":\"personal\",\"model\":\"example-model\",\"effort\":null}},\"revision\":\"config-1\",\"family_revision\":\"family-1\",\"configuration_resource\":{\"url\":\"/sessions/01a0fcea-2b00-7000-8000-000000000001?view=configuration\",\"etag\":\"\\\"session-config-1\\\"\",\"value\":{\"id\":\"01a0fcea-2b00-7000-8000-000000000001\",\"name\":\"New session\",\"workspace\":\"/workspace/project\",\"provider_profile\":\"personal\",\"model\":\"example-model\",\"effort\":null,\"preferences\":{\"pinned\":false,\"pin_order\":null,\"archived\":false},\"selection\":{\"extensions\":{},\"skills\":{},\"instructions\":{},\"mcp\":{}},\"revision\":\"config-1\",\"family_revision\":\"family-1\"}},\"workspace_change\":null,\"selection\":{\"overrides\":{\"extensions\":{},\"skills\":{},\"instructions\":{},\"mcp\":{}},\"effective\":{\"extensions\":{},\"skills\":{},\"instructions\":{},\"mcp\":{}}},\"composition\":{\"desired_revision\":\"composition-1\",\"loaded_revision\":null,\"needs_reload\":true,\"dependencies\":{},\"quarantine\":[],\"availability\":{}},\"kernel\":{\"instance_id\":null,\"state\":\"none\",\"stage\":null,\"build\":null,\"stale\":false,\"staleness_reasons\":[],\"live_job_count\":0},\"pending_inputs\":[],\"input_order\":0,\"usage\":{\"model\":null,\"observed_at\":null,\"prompt_tokens\":null,\"cached_prompt_tokens\":null,\"cache_write_tokens\":null,\"completion_tokens\":null,\"total_tokens\":null,\"elapsed_ms\":null,\"tokens_per_second\":null,\"context_window_tokens\":null,\"cache_ttl_seconds\":null,\"cache_fade\":[]},\"history\":{\"items\":[],\"older\":null,\"newer\":null,\"high_water\":0},\"glances\":[]}}"}, {"data":"{\"generation\":\"J6kYj6IGcXyP3eMIp-WL3A\",\"cursor\":1,\"events\":[{\"type\":\"input\",\"sequence\":1,\"data\":{\"input\":{\"id\":\"01a0fcea-2b00-7000-8000-000000000002\",\"session_id\":\"01a0fcea-2b00-7000-8000-000000000001\",\"kind\":\"message\",\"admission\":\"accepted\",\"http_status\":202,\"problem\":null,\"accepted_at\":\"2026-10-02T14:00:00Z\",\"acceptance_order\":1,\"delivery\":\"pending\",\"blocking_reason\":null,\"transcript_position\":null,\"turn\":null,\"client_id\":\"draft-1\"}}}]}"}
+// Examples: {"data":"{\"generation\":\"J6kYj6IGcXyP3eMIp-WL3A\",\"cursor\":0,\"events\":[{\"type\":\"reset\",\"data\":{\"reason\":\"initial\"}}],\"snapshot\":{\"id\":\"01a0fcea-2b00-7000-8000-000000000001\",\"name\":\"New session\",\"automatic_name\":\"New session\",\"workspace\":\"/workspace/project\",\"location\":{\"host\":null,\"user\":null,\"path\":\"/workspace/project\",\"label\":null},\"parent_id\":null,\"root_id\":\"01a0fcea-2b00-7000-8000-000000000001\",\"address\":null,\"depth\":0,\"closed\":false,\"created_at\":\"2026-10-02T14:00:00Z\",\"activity_at\":\"2026-10-02T14:00:00Z\",\"provider_profile\":\"personal\",\"model\":\"example-model\",\"effort\":null,\"status\":{\"phase\":\"idle\",\"run_id\":null,\"interrupt_requested\":false,\"blocking_reason\":null},\"preview\":{\"text\":\"\",\"transcript_count\":0,\"truncated\":false},\"preferences\":{\"pinned\":false,\"pin_order\":null,\"archived\":false,\"opens\":0},\"current_progress\":[],\"activity\":{\"lines\":[],\"output_scalars\":0,\"output_utf8_bytes\":0,\"observed_at\":\"2026-10-02T14:00:00Z\",\"latest_input\":null,\"latest_answer\":null},\"cursor\":{\"generation\":\"J6kYj6IGcXyP3eMIp-WL3A\",\"sequence\":0},\"creation\":{\"submitted\":{\"kind\":\"new\",\"workspace\":\"/workspace/project\",\"name\":null,\"provider_profile\":null,\"model\":null,\"effort\":null},\"resolved\":{\"workspace\":\"/workspace/project\",\"provider_profile\":\"personal\",\"model\":\"example-model\",\"effort\":null}},\"revision\":\"config-1\",\"family_revision\":\"family-1\",\"configuration_resource\":{\"url\":\"/sessions/01a0fcea-2b00-7000-8000-000000000001?view=configuration\",\"etag\":\"\\\"session-config-1\\\"\",\"value\":{\"id\":\"01a0fcea-2b00-7000-8000-000000000001\",\"name\":\"New session\",\"workspace\":\"/workspace/project\",\"provider_profile\":\"personal\",\"model\":\"example-model\",\"effort\":null,\"preferences\":{\"pinned\":false,\"pin_order\":null,\"archived\":false},\"selection\":{\"extensions\":{},\"skills\":{},\"instructions\":{},\"mcp\":{}},\"revision\":\"config-1\",\"family_revision\":\"family-1\"}},\"workspace_change\":null,\"selection\":{\"overrides\":{\"extensions\":{},\"skills\":{},\"instructions\":{},\"mcp\":{}},\"effective\":{\"extensions\":{},\"skills\":{},\"instructions\":{},\"mcp\":{}}},\"composition\":{\"desired_revision\":\"composition-1\",\"loaded_revision\":null,\"needs_reload\":true,\"dependencies\":{},\"quarantine\":[],\"availability\":{}},\"kernel\":{\"instance_id\":null,\"state\":\"none\",\"stage\":null,\"build\":null,\"stale\":false,\"staleness_reasons\":[],\"live_job_count\":0,\"running_jobs\":[]},\"pending_inputs\":[],\"input_order\":0,\"usage\":{\"model\":null,\"observed_at\":null,\"prompt_tokens\":null,\"cached_prompt_tokens\":null,\"cache_write_tokens\":null,\"completion_tokens\":null,\"total_tokens\":null,\"elapsed_ms\":null,\"tokens_per_second\":null,\"context_window_tokens\":null,\"cache_ttl_seconds\":null,\"cache_fade\":[]},\"history\":{\"items\":[],\"older\":null,\"newer\":null,\"high_water\":0},\"glances\":[]}}"}, {"data":"{\"generation\":\"J6kYj6IGcXyP3eMIp-WL3A\",\"cursor\":1,\"events\":[{\"type\":\"input\",\"sequence\":1,\"data\":{\"input\":{\"id\":\"01a0fcea-2b00-7000-8000-000000000002\",\"session_id\":\"01a0fcea-2b00-7000-8000-000000000001\",\"kind\":\"message\",\"admission\":\"accepted\",\"http_status\":202,\"problem\":null,\"accepted_at\":\"2026-10-02T14:00:00Z\",\"acceptance_order\":1,\"delivery\":\"pending\",\"blocking_reason\":null,\"transcript_position\":null,\"turn\":null,\"client_id\":\"draft-1\"}}}]}"}
 type SessionSSE struct {
 	Data string `json:"data"`
 }
@@ -3049,6 +3074,9 @@ type PatchPaperclipsParams struct {
 	IfMatch IfMatch `json:"If-Match"`
 }
 
+// StopJobJSONBody defines parameters for StopJob.
+type StopJobJSONBody = map[string]interface{}
+
 // ListScheduleParams defines parameters for ListSchedule.
 type ListScheduleParams struct {
 	SessionID ID     `form:"session_id" json:"session_id"`
@@ -3311,6 +3339,9 @@ type PatchPaperclipsApplicationMergePatchPlusJSONRequestBody = PaperclipPatch
 
 // CreateProxyCompletionJSONRequestBody defines body for CreateProxyCompletion for application/json ContentType.
 type CreateProxyCompletionJSONRequestBody = ProxyCompletionRequest
+
+// StopJobJSONRequestBody defines body for StopJob for application/json ContentType.
+type StopJobJSONRequestBody = StopJobJSONBody
 
 // CreateScheduleJSONRequestBody defines body for CreateSchedule for application/json ContentType.
 type CreateScheduleJSONRequestBody = ScheduleCreate
@@ -3621,6 +3652,29 @@ type ClientInterface interface {
 	//
 	// Corresponds with GET /extensions/proxy/v1/models (the `ListProxyModels` operationId).
 	ListProxyModels(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ListJobs Read bounded live job observations and the jobs page
+	//
+	// Corresponds with GET /extensions/run/sessions/{session_id}/jobs (the `ListJobs` operationId).
+	ListJobs(ctx context.Context, sessionID ID, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// StopJobWithBody Explicitly stop one observed process group
+	//
+	// No automatic retry after response loss. Read the job collection before confirming another attempt. A successful response confirms the supervisor verdict, not just signal delivery.
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with POST /extensions/run/sessions/{session_id}/jobs/{job_id}/stop (the `StopJob` operationId).
+	StopJobWithBody(ctx context.Context, sessionID ID, jobID ID, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// StopJob Explicitly stop one observed process group
+	//
+	// No automatic retry after response loss. Read the job collection before confirming another attempt. A successful response confirms the supervisor verdict, not just signal delivery.
+	//
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with POST /extensions/run/sessions/{session_id}/jobs/{job_id}/stop (the `StopJob` operationId).
+	StopJob(ctx context.Context, sessionID ID, jobID ID, body StopJobJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// ListSchedule List schedule resources
 	//
@@ -4550,6 +4604,59 @@ func (c *Client) CreateProxyCompletion(ctx context.Context, body CreateProxyComp
 // Corresponds with GET /extensions/proxy/v1/models (the `ListProxyModels` operationId).
 func (c *Client) ListProxyModels(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewListProxyModelsRequest(c.Server)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// ListJobs Read bounded live job observations and the jobs page
+//
+// Corresponds with GET /extensions/run/sessions/{session_id}/jobs (the `ListJobs` operationId).
+func (c *Client) ListJobs(ctx context.Context, sessionID ID, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewListJobsRequest(c.Server, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// StopJobWithBody Explicitly stop one observed process group
+//
+// No automatic retry after response loss. Read the job collection before confirming another attempt. A successful response confirms the supervisor verdict, not just signal delivery.
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with POST /extensions/run/sessions/{session_id}/jobs/{job_id}/stop (the `StopJob` operationId).
+func (c *Client) StopJobWithBody(ctx context.Context, sessionID ID, jobID ID, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewStopJobRequestWithBody(c.Server, sessionID, jobID, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// StopJob Explicitly stop one observed process group
+//
+// No automatic retry after response loss. Read the job collection before confirming another attempt. A successful response confirms the supervisor verdict, not just signal delivery.
+//
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with POST /extensions/run/sessions/{session_id}/jobs/{job_id}/stop (the `StopJob` operationId).
+func (c *Client) StopJob(ctx context.Context, sessionID ID, jobID ID, body StopJobJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewStopJobRequest(c.Server, sessionID, jobID, body)
 	if err != nil {
 		return nil, err
 	}
@@ -6566,6 +6673,94 @@ func NewListProxyModelsRequest(server string) (*http.Request, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	return req, nil
+}
+
+// NewListJobsRequest constructs an http.Request for the ListJobs method
+func NewListJobsRequest(server string, sessionID ID) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "session_id", sessionID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/extensions/run/sessions/%s/jobs", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewStopJobRequest calls the generic StopJob builder with application/json body
+func NewStopJobRequest(server string, sessionID ID, jobID ID, body StopJobJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewStopJobRequestWithBody(server, sessionID, jobID, "application/json", bodyReader)
+}
+
+// NewStopJobRequestWithBody constructs an http.Request for the StopJob method, with any body, and a specified content type
+func NewStopJobRequestWithBody(server string, sessionID ID, jobID ID, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "session_id", sessionID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	var pathParam1 string
+
+	pathParam1, err = runtime.StyleParamWithOptions("simple", false, "job_id", jobID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/extensions/run/sessions/%s/jobs/%s/stop", pathParam0, pathParam1)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
 
 	return req, nil
 }

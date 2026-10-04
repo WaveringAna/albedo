@@ -24,7 +24,7 @@ import time
 from collections.abc import Callable
 from typing import Any, BinaryIO
 
-PROTOCOL = 1  # hello, snapshot and shutdown frames never change shape
+PROTOCOL = 1  # framing version; hello fields describe the current bundle
 MAX_FRAME = 8 * 1024 * 1024
 SOCKET = "kernel.sock"
 ATTACH_TIMEOUT = 10.0  # seconds a fresh connection has to present its token
@@ -32,7 +32,7 @@ OUTBOX_FRAMES = 4096
 OUTBOX_BYTES = 64 * 1024 * 1024
 # Frames whose newest copy supersedes every older unacknowledged one, by the
 # field naming what they describe. Everything else must be delivered.
-COALESCE = {"mirror": "handle", "trace": "id", "jobs": None}
+COALESCE = {"mirror": "handle", "trace": "id", "jobs": None, "cells": None}
 
 
 def encode(value: object) -> bytes:
@@ -160,19 +160,13 @@ class JobBook:
     """Job groups this kernel still owns, read from the frames it sends.
 
     The same bookkeeping the daemon keeps: a started job's group is owned
-    until a job frame proves it gone, and so is the heavy-job slot it was
-    granted. A reattaching daemon learns both from the hello, and the kernel
-    stays alive past its grace while any job is live.
+    until a job frame proves it gone. A reattaching daemon learns the groups
+    from the hello. The kernel stays alive past its grace while a job is live.
     """
 
     def __init__(self) -> None:
         self.started: dict[str, dict[str, object]] = {}
-        self.held: set[str] = set()
         self.external = 0
-
-    def hold(self, id: str) -> None:
-        """The daemon granted this job a slot."""
-        self.held.add(id)
 
     def observe(self, frame: dict[str, object]) -> None:
         kind, id = frame.get("type"), frame.get("id")
@@ -184,7 +178,6 @@ class JobBook:
             cleanup = frame.get("cleanup")
             if isinstance(cleanup, dict) and cleanup.get("gone") is True:
                 self.started.pop(id, None)
-                self.held.discard(id)
         elif kind == "jobs":
             live = frame.get("live")
             if isinstance(live, int) and not isinstance(live, bool) and live >= 0:
@@ -331,7 +324,6 @@ class SocketLink:
                 "epoch": self.epoch,
                 "ack": self.inbound.last,
                 "jobs": list(self.jobs.started.values()),
-                "held": sorted(self.jobs.held),
                 "external": self.jobs.external,
                 "dropped": self.outbox.dropped,
             }

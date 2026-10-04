@@ -139,8 +139,8 @@ pub fn finish(
 }
 
 /// Record how an execution ended, unless it has not: a cell that outlived
-/// its deadline while the kernel was out of reach stays started, and the
-/// kernel's own result finishes it when it arrives.
+/// its deadline while out of reach, or returns early as backgrounded, stays
+/// started until the kernel records its final result.
 pub fn settle(
   storage: store.Store,
   id: String,
@@ -148,6 +148,7 @@ pub fn settle(
 ) -> Result(Nil, String) {
   case outcome {
     Error(python.Detached) -> Ok(Nil)
+    Ok(python.Outcome(status: python.Backgrounded, ..)) -> Ok(Nil)
     _ -> finish(storage, id, outcome)
   }
 }

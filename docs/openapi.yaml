@@ -559,6 +559,7 @@ paths:
                       stale: false
                       staleness_reasons: []
                       live_job_count: 0
+                      running_jobs: []
                     pending_inputs: []
                     input_order: 0
                     usage:
@@ -760,6 +761,7 @@ paths:
                       stale: false
                       staleness_reasons: []
                       live_job_count: 0
+                      running_jobs: []
                     pending_inputs: []
                     input_order: 0
                     usage:
@@ -3617,6 +3619,81 @@ paths:
                     content: Hello
                   stream: true
         description: UTF-8 JSON; duplicate keys and unknown fields are rejected.
+  /extensions/run/sessions/{session_id}/jobs:
+    get:
+      operationId: listJobs
+      summary: Read bounded live job observations and the jobs page
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ID'
+      responses:
+        '200':
+          description: Known live jobs, with up to 100 summaries ordered by ID.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobCollection'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '404':
+          $ref: '#/components/responses/Problem404'
+        '405':
+          $ref: '#/components/responses/Problem405'
+        '406':
+          $ref: '#/components/responses/Problem406'
+        '503':
+          $ref: '#/components/responses/Problem503'
+  /extensions/run/sessions/{session_id}/jobs/{job_id}/stop:
+    post:
+      operationId: stopJob
+      summary: Explicitly stop one observed process group
+      description: No automatic retry after response loss. Read the job collection before confirming another attempt. A successful response confirms the supervisor verdict, not just signal delivery.
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ID'
+      - name: job_id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ID'
+      responses:
+        '200':
+          description: The observed job's process group was stopped.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobStop'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '404':
+          $ref: '#/components/responses/Problem404'
+        '405':
+          $ref: '#/components/responses/Problem405'
+        '406':
+          $ref: '#/components/responses/Problem406'
+        '413':
+          $ref: '#/components/responses/Problem413'
+        '415':
+          $ref: '#/components/responses/Problem415'
+        '503':
+          $ref: '#/components/responses/Problem503'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
 components:
   securitySchemes:
     DaemonBearer:
@@ -5830,6 +5907,53 @@ components:
             type: boolean
       required: [desired_revision, loaded_revision, needs_reload, dependencies, quarantine, availability]
       additionalProperties: false
+    JobCollection:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/KernelJob'
+          maxItems: 100
+        live_job_count:
+          $ref: '#/components/schemas/Counter'
+        page:
+          $ref: '#/components/schemas/PageDescriptor'
+      required: [items, live_job_count, page]
+      additionalProperties: false
+      examples:
+      - items: []
+        live_job_count: 0
+        page:
+          title: jobs
+          empty_state: no background jobs running
+          rows: []
+          glance: null
+          actions: []
+          summary: 0 background jobs running
+    JobStop:
+      type: object
+      properties:
+        stopped:
+          $ref: '#/components/schemas/ID'
+      required: [stopped]
+      additionalProperties: false
+      examples:
+      - stopped: job-1
+    KernelJob:
+      type: object
+      properties:
+        id:
+          $ref: '#/components/schemas/ID'
+        pid:
+          anyOf:
+          - $ref: '#/components/schemas/Counter'
+          - type: 'null'
+        command:
+          type: string
+          maxLength: 4096
+      required: [id, pid, command]
+      additionalProperties: false
     Kernel:
       type: object
       properties:
@@ -5853,6 +5977,14 @@ components:
           items:
             $ref: '#/components/schemas/SafeReason'
           maxItems: 100
+        running_jobs:
+          description: Up to 100 observed live jobs, ordered by ID. Null when the kernel owner is unavailable. The count may exceed this list.
+          anyOf:
+          - type: array
+            items:
+              $ref: '#/components/schemas/KernelJob'
+            maxItems: 100
+          - type: 'null'
         live_job_count:
           description: Observed owned jobs. Null while booting or when the kernel owner is lost.
           anyOf:
@@ -5862,7 +5994,7 @@ components:
           anyOf:
           - $ref: '#/components/schemas/ID'
           - type: 'null'
-      required: [state, stage, build, stale, staleness_reasons, live_job_count, instance_id]
+      required: [state, stage, build, stale, staleness_reasons, live_job_count, running_jobs, instance_id]
       additionalProperties: false
     Usage:
       type: object
@@ -6126,6 +6258,7 @@ components:
           stale: false
           staleness_reasons: []
           live_job_count: 0
+          running_jobs: []
         pending_inputs: []
         input_order: 0
         usage:
@@ -8959,6 +9092,7 @@ components:
             stale: false
             staleness_reasons: []
             live_job_count: 0
+            running_jobs: []
           pending_inputs: []
           input_order: 0
           usage:
@@ -9182,7 +9316,7 @@ components:
       examples:
       - data: '{"generation":"J6kYj6IGcXyP3eMIp-WL3A","cursor":0,"events":[{"type":"reset","data":{"reason":"initial"}}],"snapshot":{"id":"01a0fcea-2b00-7000-8000-000000000001","name":"New
           session","automatic_name":"New session","workspace":"/workspace/project","location":{"host":null,"user":null,"path":"/workspace/project","label":null},"parent_id":null,"root_id":"01a0fcea-2b00-7000-8000-000000000001","address":null,"depth":0,"closed":false,"created_at":"2026-10-02T14:00:00Z","activity_at":"2026-10-02T14:00:00Z","provider_profile":"personal","model":"example-model","effort":null,"status":{"phase":"idle","run_id":null,"interrupt_requested":false,"blocking_reason":null},"preview":{"text":"","transcript_count":0,"truncated":false},"preferences":{"pinned":false,"pin_order":null,"archived":false,"opens":0},"current_progress":[],"activity":{"lines":[],"output_scalars":0,"output_utf8_bytes":0,"observed_at":"2026-10-02T14:00:00Z","latest_input":null,"latest_answer":null},"cursor":{"generation":"J6kYj6IGcXyP3eMIp-WL3A","sequence":0},"creation":{"submitted":{"kind":"new","workspace":"/workspace/project","name":null,"provider_profile":null,"model":null,"effort":null},"resolved":{"workspace":"/workspace/project","provider_profile":"personal","model":"example-model","effort":null}},"revision":"config-1","family_revision":"family-1","configuration_resource":{"url":"/sessions/01a0fcea-2b00-7000-8000-000000000001?view=configuration","etag":"\"session-config-1\"","value":{"id":"01a0fcea-2b00-7000-8000-000000000001","name":"New
-          session","workspace":"/workspace/project","provider_profile":"personal","model":"example-model","effort":null,"preferences":{"pinned":false,"pin_order":null,"archived":false},"selection":{"extensions":{},"skills":{},"instructions":{},"mcp":{}},"revision":"config-1","family_revision":"family-1"}},"workspace_change":null,"selection":{"overrides":{"extensions":{},"skills":{},"instructions":{},"mcp":{}},"effective":{"extensions":{},"skills":{},"instructions":{},"mcp":{}}},"composition":{"desired_revision":"composition-1","loaded_revision":null,"needs_reload":true,"dependencies":{},"quarantine":[],"availability":{}},"kernel":{"instance_id":null,"state":"none","stage":null,"build":null,"stale":false,"staleness_reasons":[],"live_job_count":0},"pending_inputs":[],"input_order":0,"usage":{"model":null,"observed_at":null,"prompt_tokens":null,"cached_prompt_tokens":null,"cache_write_tokens":null,"completion_tokens":null,"total_tokens":null,"elapsed_ms":null,"tokens_per_second":null,"context_window_tokens":null,"cache_ttl_seconds":null,"cache_fade":[]},"history":{"items":[],"older":null,"newer":null,"high_water":0},"glances":[]}}'
+          session","workspace":"/workspace/project","provider_profile":"personal","model":"example-model","effort":null,"preferences":{"pinned":false,"pin_order":null,"archived":false},"selection":{"extensions":{},"skills":{},"instructions":{},"mcp":{}},"revision":"config-1","family_revision":"family-1"}},"workspace_change":null,"selection":{"overrides":{"extensions":{},"skills":{},"instructions":{},"mcp":{}},"effective":{"extensions":{},"skills":{},"instructions":{},"mcp":{}}},"composition":{"desired_revision":"composition-1","loaded_revision":null,"needs_reload":true,"dependencies":{},"quarantine":[],"availability":{}},"kernel":{"instance_id":null,"state":"none","stage":null,"build":null,"stale":false,"staleness_reasons":[],"live_job_count":0,"running_jobs":[]},"pending_inputs":[],"input_order":0,"usage":{"model":null,"observed_at":null,"prompt_tokens":null,"cached_prompt_tokens":null,"cache_write_tokens":null,"completion_tokens":null,"total_tokens":null,"elapsed_ms":null,"tokens_per_second":null,"context_window_tokens":null,"cache_ttl_seconds":null,"cache_fade":[]},"history":{"items":[],"older":null,"newer":null,"high_water":0},"glances":[]}}'
       - data: '{"generation":"J6kYj6IGcXyP3eMIp-WL3A","cursor":1,"events":[{"type":"input","sequence":1,"data":{"input":{"id":"01a0fcea-2b00-7000-8000-000000000002","session_id":"01a0fcea-2b00-7000-8000-000000000001","kind":"message","admission":"accepted","http_status":202,"problem":null,"accepted_at":"2026-10-02T14:00:00Z","acceptance_order":1,"delivery":"pending","blocking_reason":null,"transcript_position":null,"turn":null,"client_id":"draft-1"}}}]}'
     CollectionSSE:
       type: object

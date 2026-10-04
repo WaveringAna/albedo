@@ -9,6 +9,7 @@ class Execute(TypedDict):
     code: str
     durable: NotRequired[bool]
     max_edge: NotRequired[int]
+    timeout_ms: NotRequired[int]
 
 
 class HostSuccess(TypedDict):
@@ -39,14 +40,6 @@ class Interrupt(TypedDict):
 
 class Shutdown(TypedDict):
     type: Literal["shutdown"]
-
-
-class JobSlot(TypedDict):
-    type: Literal["job_slot"]
-    id: str
-    ok: bool
-    queued: NotRequired[bool]
-    message: NotRequired[str]
 
 
 Invoke = TypedDict(
@@ -82,15 +75,7 @@ class State(TypedDict):
 
 
 Incoming = (
-    Execute
-    | Reply
-    | Interrupt
-    | Shutdown
-    | Invoke
-    | Introspect
-    | Release
-    | State
-    | JobSlot
+    Execute | Reply | Interrupt | Shutdown | Invoke | Introspect | Release | State
 )
 
 
@@ -134,7 +119,6 @@ class MirrorState(TypedDict, total=False):
     exit_code: int | None
     timed_out: bool
     duration: float | None
-    waited: float
 
 
 class Invoked(TypedDict):
@@ -228,7 +212,6 @@ def parse_incoming(value: object) -> Incoming:
         "reply",
         "interrupt",
         "shutdown",
-        "job_slot",
         "invoke",
         "introspect",
         "release",
@@ -242,6 +225,7 @@ def parse_incoming(value: object) -> Incoming:
         _field(message, "code", str, kind)
         _field(message, "durable", bool, kind, optional=True)
         _field(message, "max_edge", int, kind, optional=True)
+        _field(message, "timeout_ms", int, kind, optional=True)
     elif kind == "reply":
         reply = _object(message.get("value"), "reply.value")
         _field(reply, "ok", bool, "reply.value")
@@ -254,10 +238,6 @@ def parse_incoming(value: object) -> Incoming:
         _field(message, "reason", str, kind, optional=True)
         if "reason" in message and message["reason"] not in ("deadline", "cancelled"):
             raise ValueError("interrupt.reason: expected deadline or cancelled")
-    elif kind == "job_slot":
-        _field(message, "ok", bool, kind)
-        _field(message, "queued", bool, kind, optional=True)
-        _field(message, "message", str, kind, optional=True)
     elif kind == "invoke":
         for field, expected in (
             ("name", str),
@@ -291,7 +271,6 @@ def _mirror(value: object, context: str) -> None:
         ("exit_code", (int, type(None))),
         ("timed_out", bool),
         ("duration", (int, float, type(None))),
-        ("waited", (int, float)),
     ):
         _field(state, field, expected, context, optional=True)
 

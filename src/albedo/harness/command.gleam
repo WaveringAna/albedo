@@ -66,6 +66,10 @@ pub type StateOp {
   KernelReport
   /// Swap a stale kernel now, ending its live jobs as a restart would.
   KernelUpgrade
+  /// Active background jobs supervised by the session's kernel.
+  KernelJobs
+  /// Terminate one background job by id.
+  KernelStopJob(id: String)
 }
 
 /// The dispatch context: `state` is the session's registered command bridge.

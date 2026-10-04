@@ -41,6 +41,28 @@ class PythonToolsTests(unittest.TestCase):
     def execute(self, code):
         return self.run_cell(code, self.app.session())["output"]
 
+    def test_deleting_shadowed_tools_recovers_the_original_bindings(self):
+        (self.app.workspace / "note.txt").write_text("recovered\n")
+        session = self.app.session()
+        output = self.run_cell(
+            "original_tools = (files, run, jobs, cells, output, show_image)\n"
+            "files, run, jobs, cells, output, show_image = range(6)\n"
+            "assert (files, run, jobs, cells, output, show_image) == tuple(range(6))\n"
+            "del files, run, jobs, cells, output, show_image\n"
+            "assert (files, run, jobs, cells, output, show_image) == original_tools\n"
+            "def recovered_read():\n    return files.read('note.txt')\n"
+            "print(recovered_read())",
+            session,
+        )["output"]
+        self.assertIn("recovered", output)
+        output = self.run_cell(
+            "assert (files, run, jobs, cells, output, show_image) == original_tools\n"
+            "print(recovered_read())\n"
+            "import builtins\nassert not hasattr(builtins, 'files')",
+            session,
+        )["output"]
+        self.assertIn("recovered", output)
+
     def test_ambiguous_edit_requires_a_hint_and_preserves_other_matches(self):
         note = self.app.workspace / "note.txt"
         note.write_text("same\nother\nsame\n")

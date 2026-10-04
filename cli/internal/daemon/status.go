@@ -21,12 +21,13 @@ const (
 
 type AgentStatus struct {
 	Phase                         *AgentPhase
-	Running, Idle, KernelStale    bool
-	KernelLink, KernelStep        string
 	RunID                         *string
-	InputOrder                    int64
 	KernelJobs                    *int64
 	KernelBuild, KernelInstanceID *string
+	KernelLink, KernelStep        string
+	RunningJobs                   []protocol.KernelJob
+	InputOrder                    int64
+	Running, Idle, KernelStale    bool
 }
 
 func validateSessionStatus(status protocol.SessionStatus) error {
@@ -50,7 +51,12 @@ func statusValue(status protocol.SessionStatus, kernel protocol.Kernel) AgentSta
 	case "compacting":
 		phase = PhaseCompacting
 	}
-	return AgentStatus{Phase: &phase, Running: status.Phase != "idle", Idle: status.Phase == "idle", KernelStale: kernel.Stale, KernelLink: kernel.State, KernelStep: value(kernel.Stage), RunID: status.RunID, KernelJobs: kernel.LiveJobCount, KernelBuild: kernel.Build, KernelInstanceID: kernel.InstanceID}
+	return AgentStatus{
+		Phase: &phase, Running: status.Phase != "idle", Idle: status.Phase == "idle",
+		KernelStale: kernel.Stale, KernelLink: kernel.State, KernelStep: value(kernel.Stage),
+		RunID: status.RunID, KernelJobs: kernel.LiveJobCount, RunningJobs: kernel.RunningJobs,
+		KernelBuild: kernel.Build, KernelInstanceID: kernel.InstanceID,
+	}
 }
 func (c *ChatClient) GetStatus(ctx context.Context) (*AgentStatus, error) {
 	session, err := c.GetSession(ctx)

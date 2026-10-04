@@ -593,21 +593,17 @@ pub fn sidebar(
   workspace: String,
 ) -> Result(page.Glance, String) {
   use items <- result.try(
-    work.pending(storage, workspace)
+    work.active(storage, workspace)
     |> result.map_error(fn(error) { failure(error).detail }),
   )
   Ok(page.Glance(
-    "pending work",
+    "active work",
     list.map(items, fn(item) {
       page.detail_row(
         int.to_string(item.id),
         api.content_preview(item.title, 64),
         work.status_name(item.status),
-        case item.status {
-          work.Active -> page.Active
-          work.Blocked -> page.Warning
-          _ -> page.Plain
-        },
+        page.Active,
         "",
       )
     }),

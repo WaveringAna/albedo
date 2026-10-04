@@ -6,6 +6,69 @@ restart, keeping its namespace and its background jobs. the daemon reaches it
 through a bridge, and every message between the two travels through a small
 session layer that neither loses nor repeats a message across a reconnect.
 
+## tool bindings
+
+The kernel keeps injected helpers in cell globals and in a session-private copy
+of Python's builtins. An assignment such as `files = [...]` shadows the helper;
+`del files` reveals the original binding again, including inside functions and
+later cells. The process-wide `builtins` module is unchanged. Plugin instances
+are owned by this kernel's API, not module-level singletons. This fallback is
+built once after plugins load and is not serialized with user state.
+
+## background job observations
+
+`GET /sessions/{id}` exposes `kernel.live_job_count` and `kernel.running_jobs`
+without starting a kernel. Unknown observations are null. The list contains up
+to 100 live jobs ordered by ID, with `id`, nullable `pid`, and `command` (up to
+4096 scalars); the count can exceed the list when remote jobs have no summaries.
+The TUI uses these observations for its idle-job status, animation, and sidebar.
+
+`/jobs` reads `GET /extensions/run/sessions/{id}/jobs`, whose page declares the
+stop action. `POST /extensions/run/sessions/{id}/jobs/{job_id}/stop` supervises
+that job's recorded process group and reports failure if its stop is unconfirmed.
+A missing job returns 404. After response loss, read the collection before
+confirming another attempt; stopping is never automatically retried. Job rows
+carry no resource; the stop action binds the row id.
+
+A job that finishes with its result unread wakes the session. The model reads
+the full notice with the job's handle; the transcript keeps the wake's one-line
+display (`job finished (exit_code=0, ran 1.2s): …`) as a note from `job`.
+
+## background cells
+
+The kernel returns a python tool result with `status=backgrounded` after 60
+seconds (`ALBEDO_CELL_BACKGROUND_SECONDS` overrides the threshold, in seconds).
+The result includes output so far, the cell id, and instructions to do useful
+work or report status and end the turn, without polling or sleeping. This is not
+a final outcome: the journal stays `started` until `cells.finish` records it.
+`cells.info/read/trace` remain available; traces appear when execution finishes.
+The original `timeout_ms` is carried to the kernel and still interrupts the cell
+at its deadline, even after the daemon's original execute wait has ended.
+
+New cells can run while a detached cell awaits. They share the namespace, so
+avoid modifying variables the detached cell uses. Python output, images, and
+activity traces use the task's context; native fd output goes to `native` when
+multiple cells run, since it cannot be attributed safely. A synchronous cell
+can return its tool result early, but other cells must wait until it yields or
+finishes. Background and deadline timers run outside the asyncio loop so a
+synchronous cell cannot prevent its deadline from firing.
+
+At most 16 cells run concurrently. Running captures are protected from eviction; completed output rolls out
+under the existing 16-capture limit. `await cells.cancel(id)` requests cancellation and
+suppresses that cell's wake. Explicit kernel reset/replacement ends its cells;
+a daemon restart merely reattaches. Internal `cells` count frames, replayed in
+the hello, keep idle reaping and automatic stale-kernel replacement from ending
+a running cell without pretending the cells are process jobs in the public API.
+
+Completion is committed before `cells.completed` sends a wake. The transcript
+gets a one-line `cell finished (status=ok, ran 90.0s): <first code line>` from
+`cell`, while the model gets the full notice with the cell id separately. Unread completions share a wake and retry
+every two seconds while the session is busy; there is no model polling. The final expression is appended to retained output under `[result]`, so
+`output.read(id)` can read it after a background completion. Reading finished
+output, source, status, or trace retires a pending wake.
+Reading partial output while the cell still runs does not retire its eventual
+completion. A read racing with the completion journal also retires the wake.
+
 ## processes
 
 - **kernel**: started in its own session and process group, stdio not tied to
@@ -38,15 +101,12 @@ the daemon writes `{"attach": {"kernel", "token", "ack", "grace"}}` first. the
 kernel checks the token (kept in the daemon's sqlite), bumps its epoch, cuts
 off any older connection (newest attach wins), and answers
 `{"hello": {protocol, bundle, epoch, ack, pid, pgid, leader, ready, jobs,
-held, external, slots, dropped}}`, or `{"refused": reason}`. `protocol` (1) and the
-hello/snapshot/shutdown frames never change shape. `bundle` is
+external, dropped}}`, or `{"refused": reason}`. `protocol` (1) and the
+hello reports the running `cells` count. `bundle` is
 `albedo_bundle.digest()`, the same content hash the remote plugin stages
 under; a hello whose bundle or protocol differs from the bridge's makes the
-kernel stale (see version skew). `jobs` (live `job_start` frames), `external`,
-`held` (jobs granted a heavy slot whose end isn't proven yet) and `slots` (job
-slots still waited for) let a fresh port owner take over job ownership and
-admission: held slots count in its pool at once (`albedo_job_slots:claim`,
-even past the limit), waited-for ones are asked for again.
+kernel stale (see version skew). `jobs` (live `job_start` frames) and `external`
+let a fresh port owner take over job ownership and live-job observations.
 
 ## session layer
 
@@ -84,8 +144,7 @@ dedupe:
   one for a cell the kernel no longer holds is dropped.
 - what the kernel resends after a restart: job wakes are host calls
   (`jobs.completed`), so the call ledger covers them; `job_start`, `job`,
-  `job_cancel` and `jobs` only update ownership and slot bookkeeping, which
-  converges; `job_acquire` asks the new pool, which never saw it; a `done`
+  and `jobs` only update ownership and observations, which converge; a `done`
   nobody waits for rewrites the same outcome; traces save by cell id.
 
 ## drops
@@ -256,12 +315,6 @@ with backoff and `resume_kernels` treat an ssh drop as a bridge that exited.
   only the bridge (a local ssh client) is ever signalled here. the run
   directory goes with `rm -rf` over ssh. `os_pid` answers nothing for a
   remote kernel, so the reaper's `ps` never reads an unrelated local pid.
-- **heavy slots**: a remote kernel's jobs queue in that host's own pool
-  (`albedo_job_slots:ensure(Host, Cpus)`, started and watched by the local
-  pool), sized to the cores the probe found (`ALBEDO_MAX_REMOTE_JOBS`
-  overrides; two while a host attached without a probe is still unknown,
-  corrected by the next probe) with no load adjustment; admission is the
-  same protocol.
 - **turns**: a session that holds a kernel (attached, or reattaching
   through its outbox) never probes on a turn. one that must boot probes
   for up to 3 s: still warming is left to the boot, which waits for the

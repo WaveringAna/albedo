@@ -316,8 +316,8 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 			return m, nil
 		}
 		if msg.Err == nil && msg.Status != nil && msg.Revision == m.statusRevision {
-			m.Status = *msg.Status
 			previousChrome := m.chromeRows()
+			m.Status = *msg.Status
 			m.Glances = msg.Glances
 			if m.chromeRows() != previousChrome {
 				m.syncViewportHeight()

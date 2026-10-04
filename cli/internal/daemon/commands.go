@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"maps"
+	"strings"
+	"unicode"
 )
 
 type CommandResult struct {
@@ -57,23 +59,49 @@ func InvokeDeclaredCommand(ctx context.Context, conn *Connection, snapshot Sessi
 	return extensionResult(data), nil
 }
 
+// ParseCommandArguments reads the text typed after a command name. Words fill
+// the declared arguments in order and the last argument takes the rest of the
+// line; a JSON object names them instead.
 func ParseCommandArguments(command SessionCommand, text string) (map[string]json.RawMessage, error) {
+	text = strings.TrimSpace(text)
+	if len(command.Arguments) > 1 && strings.HasPrefix(text, "{") {
+		return namedCommandArguments(command, text)
+	}
 	result := map[string]json.RawMessage{}
-	if len(command.Arguments) == 1 {
-		argument := command.Arguments[0]
-		if text != "" || argument.Required {
-			value, err := actionFieldValue(argument.field, text)
-			if err != nil {
-				return nil, err
-			}
-			result[argument.Name] = value
+	for index, argument := range command.Arguments {
+		word := text
+		if index < len(command.Arguments)-1 {
+			word, text = cutWord(text)
+		} else {
+			text = ""
 		}
-		return result, nil
+		if word == "" && !argument.Required {
+			continue
+		}
+		value, err := actionFieldValue(argument.field, word)
+		if err != nil {
+			return nil, err
+		}
+		result[argument.Name] = value
 	}
 	if text != "" {
-		if err := json.Unmarshal([]byte(text), &result); err != nil {
-			return nil, errors.New("this command accepts a JSON object with its declared argument names")
-		}
+		return nil, errors.New(command.Name + " takes no arguments")
+	}
+	return result, nil
+}
+
+func cutWord(text string) (string, string) {
+	end := strings.IndexFunc(text, unicode.IsSpace)
+	if end < 0 {
+		return text, ""
+	}
+	return text[:end], strings.TrimSpace(text[end:])
+}
+
+func namedCommandArguments(command SessionCommand, text string) (map[string]json.RawMessage, error) {
+	result := map[string]json.RawMessage{}
+	if err := json.Unmarshal([]byte(text), &result); err != nil {
+		return nil, errors.New("this command accepts words in argument order or a JSON object with its declared argument names")
 	}
 	for _, field := range command.Arguments {
 		raw, ok := result[field.Name]

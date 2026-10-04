@@ -308,12 +308,6 @@ class RemoteRef:
         return state.get("duration") if state else None
 
     @property
-    def waited(self) -> float:
-        """The seconds the remote job sat paused for a heavy slot."""
-        state = self._mirror()
-        return state.get("waited", 0.0) if state else 0.0
-
-    @property
     def id(self) -> str | None:
         """The remote job's id, for output.read on the remote side."""
         state = self._mirror()

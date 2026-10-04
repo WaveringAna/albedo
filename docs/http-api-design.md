@@ -512,8 +512,12 @@ bounded activity once, before subscriber fan-out. Full content stays in history.
 - `selection`, containing session overrides and effective selections.
 - `composition`, containing desired and loaded revisions, `needs_reload`,
   dependencies, quarantine diagnostics, and capability availability.
-- `kernel`, containing state, build identity, staleness reasons, and live-job
-  count. No Python variables or process handles leave the daemon.
+- `kernel`, containing state, build identity, staleness reasons, live-job
+  count, and up to 100 running-job summaries ordered by ID. Each summary names
+  the job, its observed PID (nullable), and its command (at most 4096 scalars).
+  Unknown counts and lists are null; known empty lists are `[]`. The count can
+  exceed the bounded list. Reads observe the kernel without preparing it.
+  No Python variables or executable process handles leave the daemon.
 - `pending_inputs`, at most 32 bounded input summaries with acceptance order,
   and `input_order`, the greatest order ever accepted into this session.
 - `usage`, including token and cache counters, elapsed time, model limits,

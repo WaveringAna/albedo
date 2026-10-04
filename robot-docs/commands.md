@@ -38,7 +38,7 @@ a run executes **outside** the session actor — on the kernel's host-call proce
 
 the `commands` extension exposes the async `commands` object. at kernel boot the catalog mints one typed method per model-callable command: `commands.model("gpt-5")`, `commands.demo("the args")`. each method's docstring and signature come from the declaration, so `help(commands.<method>)` is the command's help text. `commands.catalog()` returns the current catalog, so a session `/reload` reaches it without a kernel restart; `commands.invoke(name, arguments)` runs any model-callable command by slash name with raw text or a dict. a command whose method name is reserved (`catalog`, `invoke`, `help`), invalid, taken, or added after the kernel booted stays callable through `invoke()`.
 
-argument parsing is shared: leading arguments take one whitespace token each, the last declared argument takes the rest with outer whitespace trimmed and inner spacing exact, so `/fix-lint one  two` arrives as `"one  two"`.
+argument parsing is shared: leading arguments take one whitespace token each, the last declared argument takes the rest with outer whitespace trimmed and inner spacing exact, so `/fix-lint one  two` arrives as `"one  two"`. the TUI also accepts a JSON object naming the arguments. text after a command that declares no arguments is not a command at all: the TUI sends `/jobs is broken` to the model as a prompt.
 
 ## v1 commands
 

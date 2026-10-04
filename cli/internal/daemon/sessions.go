@@ -260,7 +260,12 @@ func GetSessionPreview(ctx context.Context, conn *Connection, id string, limit i
 	}
 	session := sessionValue(wire)
 	result := SessionPreview{Total: int(wire.Preview.TranscriptCount), Items: []PreviewItem{}, Session: &session}
-	events, err := historyEvents(wire.History.Items)
+	// Long tool results arrive as references, read in full like the chat's.
+	items, err := hydrateHistory(ctx, conn, id, wire.History.Items)
+	if err != nil {
+		return SessionPreview{}, err
+	}
+	events, err := historyEvents(items)
 	if err != nil {
 		return SessionPreview{}, err
 	}

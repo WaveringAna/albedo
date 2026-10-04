@@ -1,9 +1,11 @@
 """Unread background job results wake idle sessions once, even across idle reaping."""
 
 import errno
+import json
 import os
 import time
 import unittest
+import urllib.error
 
 from harness import Albedo, Provider, exclusive, python, text
 
@@ -31,6 +33,20 @@ def wait_for(predicate, timeout=40):
             return result
         time.sleep(0.1)
     raise AssertionError("background job did not wake session")
+
+
+def release_fifo(gate):
+    try:
+        descriptor = os.open(gate, os.O_WRONLY | os.O_NONBLOCK)
+    except OSError as error:
+        if error.errno == errno.ENXIO:
+            return False
+        raise
+    try:
+        os.write(descriptor, b"x")
+    finally:
+        os.close(descriptor)
+    return True
 
 
 class JobWakeCase(unittest.TestCase):
@@ -80,20 +96,7 @@ class JobWakeTests(JobWakeCase):
         self.assertEqual(len(self.users()), 2)
         before = self.app.stream_page(session)
 
-        def release_job():
-            try:
-                descriptor = os.open(gate, os.O_WRONLY | os.O_NONBLOCK)
-            except OSError as error:
-                if error.errno == errno.ENXIO:
-                    return False
-                raise
-            try:
-                os.write(descriptor, b"x")
-            finally:
-                os.close(descriptor)
-            return True
-
-        wait_for(release_job)
+        wait_for(lambda: release_fifo(gate))
         wait_for(lambda: len(self.users()) >= 3)
         self.app.idle(session)
         self.assertEqual(len(self.users()), 3)
@@ -117,12 +120,14 @@ class JobWakeTests(JobWakeCase):
             1,
             {"live": live, "history": self.app.history(session)},
         )
-        self.assertIn(
-            "exit_code=0",
-            "".join(
-                part["text"] for part in notices[0]["content"] if part["kind"] == "text"
-            ),
+        # The transcript shows the one-line display; the model's notice with the
+        # handle and advice stays in the request above.
+        shown = "".join(
+            part["text"] for part in notices[0]["content"] if part["kind"] == "text"
         )
+        self.assertTrue(shown.startswith("job finished (exit_code=0"), shown)
+        self.assertNotIn("\n", shown)
+        self.assertNotIn("jobs[", shown)
         durable = [
             entry
             for entry in self.app.history(session)["items"]
@@ -136,7 +141,7 @@ class JobWakeTests(JobWakeCase):
         self.assertEqual(durable[0]["id"], notices[0]["id"])
         self.assertEqual(durable[0]["turn_id"], notices[0]["turn_id"])
         self.assertIsNotNone(durable[0]["turn_id"])
-        self.assertIsNone(durable[0]["input_id"])
+        self.assertEqual(durable[0]["input_id"], notices[0]["input_id"])
         for entry in [notices[0], durable[0]]:
             self.assertEqual(
                 [
@@ -144,10 +149,95 @@ class JobWakeTests(JobWakeCase):
                     for part in entry["content"]
                     if part["kind"] == "json" and part["field"] == "origin"
                 ],
-                ["note"],
+                ["job"],
             )
         time.sleep(2.5)
         self.assertEqual(len(self.users()), 3)
+
+    def start_blocked_job(self):
+        session = self.app.session()
+        self.job_gate = self.app.workspace / "job-release"
+        os.mkfifo(self.job_gate)
+        self.app.prompt(session, "start a slow job").close()
+        self.app.idle(session)
+        self.assertEqual(len(self.users()), 2)
+        return session
+
+    def jobs_resource(self, session):
+        return json.loads(
+            self.app.api(f"/extensions/run/sessions/{session}/jobs").read()
+        )
+
+    def test_running_job_observation_and_page_clear_after_completion(self):
+        session = self.start_blocked_job()
+        kernel = json.loads(self.app.api(f"/sessions/{session}?tail=0").read())[
+            "kernel"
+        ]
+        self.assertEqual(kernel["live_job_count"], 1)
+        running = kernel["running_jobs"]
+        self.assertEqual(len(running), 1)
+        self.assertIsInstance(running[0]["pid"], int)
+        self.assertIn(str(self.job_gate), running[0]["command"])
+
+        resource = self.jobs_resource(session)
+        self.assertEqual(resource["items"], running)
+        self.assertEqual(resource["live_job_count"], 1)
+        page = resource["page"]
+        self.assertEqual(page["title"], "jobs")
+        self.assertEqual(page["summary"], "1 background job running")
+        self.assertEqual(len(page["rows"]), 1)
+        self.assertIn(str(self.job_gate), page["rows"][0]["text"])
+        # A row resource is a validated representation or nothing; clients
+        # reject one without an etag.
+        row_resource = page["rows"][0]["resource"]
+        self.assertTrue(
+            row_resource is None or isinstance(row_resource.get("etag"), str),
+            row_resource,
+        )
+        stop = page["actions"][0]["operation"]
+        self.assertEqual(stop["method"], "POST")
+        self.assertEqual(
+            stop["path_template"],
+            "/extensions/run/sessions/{session_id}/jobs/{job_id}/stop",
+        )
+        self.assertEqual(
+            stop["path"],
+            {
+                "session_id": {"source": "literal", "value": session},
+                "job_id": {"source": "row", "pointer": "/id"},
+            },
+        )
+
+        gate = self.job_gate
+        assert gate is not None
+
+        wait_for(lambda: release_fifo(gate))
+        wait_for(lambda: len(self.users()) >= 3)
+        self.app.idle(session)
+        after = json.loads(self.app.api(f"/sessions/{session}?tail=0").read())["kernel"]
+        self.assertEqual(after["live_job_count"], 0)
+        self.assertEqual(after["running_jobs"], [])
+        self.assertEqual(self.jobs_resource(session)["items"], [])
+
+    def test_stopping_one_job_and_rejecting_unknown_job(self):
+        session = self.start_blocked_job()
+        resource = self.jobs_resource(session)
+        job_id = resource["items"][0]["id"]
+        stopped = json.loads(
+            self.app.api(
+                f"/extensions/run/sessions/{session}/jobs/{job_id}/stop",
+                method="POST",
+            ).read()
+        )
+        self.assertEqual(stopped, {"stopped": job_id})
+        wait_for(lambda: self.jobs_resource(session)["live_job_count"] == 0)
+        self.assertEqual(self.jobs_resource(session)["items"], [])
+        with self.assertRaises(urllib.error.HTTPError) as missing:
+            self.app.api(
+                f"/extensions/run/sessions/{session}/jobs/missing/stop",
+                method="POST",
+            )
+        self.assertEqual(missing.exception.code, 404)
 
 
 # exclusive: changes daemon idle sweep timing

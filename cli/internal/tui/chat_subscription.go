@@ -9,7 +9,7 @@ import (
 )
 
 func (m ChatModel) animating() bool {
-	return m.isSending || m.pendingSendCount() > 0 || m.Stopping || m.latestProgress() != nil || m.Status.Running && !m.Status.Idle || m.reaching() != ""
+	return m.isSending || m.pendingSendCount() > 0 || m.Stopping || m.latestProgress() != nil || m.Status.Running && !m.Status.Idle || m.reaching() != "" || m.backgroundJobCount() > 0
 }
 
 func (m *ChatModel) startAnimation() tea.Cmd {

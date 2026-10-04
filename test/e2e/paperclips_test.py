@@ -102,15 +102,10 @@ def vent_row(page, vent_id):
     )
 
 
-def glance_ids(app, session):
+def sidebar_extensions(app, session):
     with app.api(f"/sessions/{session}?tail=0") as response:
         glances = json.load(response)["glances"]
-    return {
-        row["id"]
-        for glance in glances
-        if glance["extension"] == "paperclips"
-        for row in glance["rows"]
-    }
+    return {glance["extension"] for glance in glances}
 
 
 def paperclips_page(app):
@@ -180,9 +175,8 @@ class PaperclipsTests(unittest.TestCase):
                 page = paperclips_page(app)
                 rows = {item["value"]["id"] for item in page["items"]}
                 self.assertTrue({str(vent_id) for vent_id in ids} <= rows)
-                self.assertTrue(
-                    {str(vent_id) for vent_id in ids} <= glance_ids(app, sessions[0])
-                )
+                # open vents stay out of the chat sidebar
+                self.assertNotIn("paperclips", sidebar_extensions(app, sessions[0]))
             finally:
                 if ids:
                     self.remove_vents(app, sessions[0], ids)
@@ -211,7 +205,6 @@ class PaperclipsTests(unittest.TestCase):
                 self.assertEqual(row["message"], "a background job stopped responding")
                 self.assertEqual(row["suggestion"], "report the blocked job")
                 self.assertEqual(row["session_id"], session)
-                self.assertIn(str(vent_id), glance_ids(app, session))
 
                 replied = reply_to_vent(app, vent_id, "the blocked job is now visible")
                 self.assertEqual(replied["notification"]["state"], "queued")
@@ -227,7 +220,6 @@ class PaperclipsTests(unittest.TestCase):
                     "the blocked job is now visible",
                     vent_row(page, vent_id)["reply"],
                 )
-                self.assertNotIn(str(vent_id), glance_ids(app, session))
 
                 # the note reaches the model with its next turn; the ledger agrees
                 app.prompt(session, "check your vents").close()
@@ -369,10 +361,6 @@ class PaperclipsTests(unittest.TestCase):
                     "for nobody",
                     vent_row(page, ids["sessionless vent"])["reply"],
                 )
-                self.assertFalse(
-                    {str(vent_id) for vent_id in ids.values()}
-                    & glance_ids(app, session)
-                )
             finally:
                 self.remove_vents(app, session, list(ids.values()))
 
@@ -407,7 +395,6 @@ class PaperclipsTests(unittest.TestCase):
                 self.assertEqual(
                     row["resolution"], "the blocked job now reports its state"
                 )
-                self.assertNotIn(str(vent_id), glance_ids(app, session))
             finally:
                 if vent_id is not None:
                     self.remove_vents(app, session, [vent_id])

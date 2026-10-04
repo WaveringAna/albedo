@@ -48,16 +48,11 @@ func (m ChatModel) padding() int {
 func (m ChatModel) chatWidth() int { return max(1, m.Width-2*m.padding()) }
 
 func (m ChatModel) sidebarWidth() int {
-	for _, glance := range m.Glances {
-		if len(glance.Rows) > 0 {
-			margin := m.chatWidth() - min(100, m.chatWidth()) - 2
-			if margin >= 16 {
-				return min(32, margin)
-			}
-			break
-		}
+	margin := m.chatWidth() - min(100, m.chatWidth()) - 2
+	if margin < 16 || len(m.activeGlances()) == 0 {
+		return 0
 	}
-	return 0
+	return min(32, margin)
 }
 
 // actionLabel is the action row for a call, live from its progress and then
@@ -69,8 +64,26 @@ func actionLabel(progress *daemon.ToolProgress, result *HistoryEntry) string {
 		return head + tail
 	case progress.Phase == "generating":
 		return "generating " + progress.Name
+	case progress.Name == "python":
+		if line := pythonSourceLine(progress.Code); line != "" {
+			return "running " + line
+		}
 	}
 	return "running " + progress.Name
+}
+
+// pythonSourceLine returns the first useful source line from a cell preview.
+func pythonSourceLine(preview *daemon.ToolCodePreview) string {
+	if preview == nil {
+		return ""
+	}
+	for _, line := range strings.Split(preview.Text, "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" && !strings.HasPrefix(line, "#") {
+			return line
+		}
+	}
+	return ""
 }
 
 // renderProgress holds the last tool action in one row; a call still being
@@ -127,7 +140,8 @@ func (m ChatModel) statusLine() string {
 		if progress.Phase == "generating" {
 			return "generating call"
 		}
-		return "running " + progress.Name
+		// the action row above already names what runs
+		return "running"
 	}
 	if m.Status.Running && !m.Status.Idle {
 		if m.transcript.activeKind == StreamKindText {
@@ -147,6 +161,16 @@ func (m ChatModel) statusLine() string {
 	}
 	if m.connecting() {
 		return "connecting…"
+	}
+	if count := m.backgroundJobCount(); count > 0 {
+		label := "1 background job running"
+		if count > 1 {
+			label = fmt.Sprintf("%d background jobs running", count)
+		}
+		if command := m.runningJobCommand(); command != "" {
+			label += " · " + command
+		}
+		return label
 	}
 	if m.Flags.Tools {
 		return "ready"
@@ -168,7 +192,7 @@ func (m ChatModel) phaseMood() mood {
 		return moodConnecting
 	case m.isSending || m.pendingSendCount() > 0 && !m.Status.Running:
 		return moodPreparing
-	case m.latestProgress() != nil:
+	case m.latestProgress() != nil || m.Status.Idle && m.backgroundJobCount() > 0:
 		return moodWorking
 	case m.transcript.activeKind == StreamKindText:
 		return moodResponding
@@ -302,12 +326,16 @@ func (m ChatModel) View() string {
 		content = HighlightSelection(content, Selection{Anchor: anchor, Head: head, Gutter: railWidth})
 	}
 	rows = append(rows, content...)
-	status := m.statusLine()
+	// one row: a job's command may span lines
+	status := oneLine(m.statusLine())
 	// the face trails the text, so its frames never move anything
 	if m.animating() && !m.TurnFailed && !m.Notices.HasError() {
 		face := m.phaseMood().frame(m.moodSeed, m.ProgressFrame)
 		if host := m.reaching(); host != "" {
 			face = connectingFace(host, m.ProgressFrame) // the picker's face for this host
+		}
+		if m.Width > 0 {
+			status = ansi.Truncate(status, max(1, m.chatWidth()-ansi.StringWidth(face)-1), "…")
 		}
 		status = m.Styles.Faint.Render(status) + " " + m.Styles.Agent.Render(face)
 	}

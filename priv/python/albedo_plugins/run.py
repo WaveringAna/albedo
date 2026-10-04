@@ -4,7 +4,7 @@ run(program, *args) starts one program without a shell. A job runs in its own
 session, so its program leads a process group and one signal reaches it plus
 every descendant that stayed in that group. The group
 is ended when the command ends, when its deadline passes, and at kernel
-shutdown. What survives is reported, and unfinished work keeps its running slot.
+shutdown. What survives is reported, and unfinished work stays owned.
 When the command ends on its own, members a process that left the group still
 parents stay with it: ssh's ControlPersist master daemonizes out of the job
 but leaves its ProxyCommand in the group, and ending that ends the master.
@@ -20,7 +20,7 @@ still owed when the retry lands share one notice, and so one turn.
 from __future__ import annotations
 
 from collections import OrderedDict
-from collections.abc import Awaitable, Callable, Generator
+from collections.abc import Callable, Generator
 from typing import cast
 from albedo_api import RAW_RETAIN, Host, PythonApi, OutputCapture, Send, excerpt
 import albedo_proc
@@ -30,7 +30,6 @@ import asyncio
 import os
 import shlex
 import shutil
-import signal
 import sys
 import uuid
 
@@ -44,18 +43,14 @@ owed: dict[str, Job] = {}  # finished with results unread, in completion order
 announcer: asyncio.Task[None] | None = None
 send: Send
 host: Host | None = None
-job_slot: Callable[[str, Callable[[], None]], Awaitable[None]] | None = None
 watch_output: Callable[[str, Callable[[], None]], None] | None = None
 forget_output: Callable[[str], None] | None = None
 
-ACTIVE_LIMIT = 64  # queued or running jobs in one kernel
+ACTIVE_LIMIT = 64  # active jobs in one kernel
 RETAINED_LIMIT = 64  # finished handles still addressable through `jobs`
 COMPLETION_GRACE = 0.1  # seconds to keep reading after the command exits
 SHUTDOWN_TERM = 0.25  # shared by every live group at shutdown
 SHUTDOWN_KILL = 1.0
-# A job still running after this long is heavy: it needs a daemon-wide slot, and
-# waits for one paused. Quick commands finish first and never wait.
-GRACE = float(os.environ.get("ALBEDO_JOB_GRACE_SECONDS", "5") or 5)
 NICENESS = 10
 # macOS runs utility-QoS work below the interface, so a busy swarm yields.
 TASKPOLICY = shutil.which("taskpolicy") if sys.platform == "darwin" else None
@@ -280,8 +275,6 @@ class Job:
         self.timed_out: bool = False
         self.started: float = loop.time()
         self.duration: float | None = None  # seconds it ran, once it ended
-        self.waited: float = 0.0  # seconds it sat paused for a heavy slot
-        self._paused_at: float | None = None
         self.termination: albedo_proc.Termination | None = None
         self.capture: OutputCapture = capture_factory(self.id)
         self.ending: asyncio.Task[albedo_proc.Termination] | None = None
@@ -291,10 +284,6 @@ class Job:
         self._starting = (
             False  # the OS spawn began; from then on it must finish, not be cancelled
         )
-        self._paused = False  # stopped, waiting for a heavy slot
-        self._resumed = asyncio.Event()
-        self._resumed.set()
-        self._pausing = asyncio.Event()
         if watch_output is not None:
             watch_output(self.id, self._mark_read)
         if traced:
@@ -306,12 +295,6 @@ class Job:
         self.task.add_done_callback(self._cancelled)
         active[self.id] = self
         jobs[self.id] = self
-
-    @property
-    def queued(self) -> bool:
-        """Paused, waiting for a heavy slot: it ran past the grace window while
-        the machine's slots were taken."""
-        return self._paused
 
     async def _launch(
         self,
@@ -360,50 +343,6 @@ class Job:
             else self.command
         )
 
-    async def _heavy(self) -> None:
-        """Past the grace window, hold a daemon-wide slot; pause until one frees."""
-        await asyncio.sleep(GRACE)
-        if (
-            job_slot is None
-            or self.process is None
-            or self.process.returncode is not None
-        ):
-            return
-        try:
-            await job_slot(self.id, self._pause)
-        finally:
-            self._resume()
-
-    def _signal(self, signum: int) -> None:
-        group = self.claim()
-        if group is not None:
-            try:
-                os.killpg(group.pgid, signum)
-            except (ProcessLookupError, PermissionError):
-                pass
-
-    def _pause(self) -> None:
-        if (
-            not self._paused
-            and self.process is not None
-            and self.process.returncode is None
-        ):
-            self._signal(signal.SIGSTOP)
-            self._paused = True
-            self._paused_at = loop.time()
-            self._resumed.clear()
-            self._pausing.set()
-
-    def _resume(self) -> None:
-        if self._paused:
-            self._signal(signal.SIGCONT)
-            self._paused = False
-            if self._paused_at is not None:
-                self.waited += loop.time() - self._paused_at
-                self._paused_at = None
-            self._pausing.clear()
-            self._resumed.set()
-
     def claim(self) -> albedo_proc.Group | None:
         """The group this job owns, derived again when a late spawn beat the assignment."""
         if self.group is None and self.process is not None:
@@ -414,8 +353,10 @@ class Job:
                 {
                     "type": "job_start",
                     "id": self.id,
+                    "pid": self.process.pid,
                     "pgid": self.group.pgid,
                     "leader": self.group.leader,
+                    "command": self.pipeline[:4096],
                 }
             )
         return self.group
@@ -434,11 +375,8 @@ class Job:
     async def _run(self, timeout: float) -> Job:
         try:
             process = self.process = await self._spawn()
-            heavy = loop.create_task(self._heavy())
-            try:
-                self.exit_code = await self._wait(process, timeout)
-            finally:
-                heavy.cancel()
+            await asyncio.wait_for(asyncio.shield(process.exited), timeout)
+            self.exit_code = await self._drain(process)
         except asyncio.TimeoutError:
             self.timed_out = True
         except asyncio.CancelledError:
@@ -454,7 +392,7 @@ class Job:
                 self.exit_code = await self._status(self.process)
             if self.process is not None and ending.gone:
                 self.process.transport.close()
-            self.duration = loop.time() - self.started - self.waited
+            self.duration = loop.time() - self.started
             if self.timed_out:
                 self.capture.write(
                     f"\n[deadline exceeded after {timeout:g}s; {ending.report()}]\n"
@@ -474,28 +412,6 @@ class Job:
             if host is not None and not self._awaited:
                 owe(self)
         return self
-
-    async def _wait(self, process: Command, timeout: float) -> int:
-        """The exit code, with `timeout` counting only time the job ran: a pause
-        for a heavy slot does not spend it."""
-        remaining = timeout
-        while True:
-            if self._paused:
-                await self._resumed.wait()
-                continue
-            began = loop.time()
-            pausing = loop.create_task(self._pausing.wait())
-            done, _ = await asyncio.wait(
-                {process.exited, pausing},
-                timeout=remaining,
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-            pausing.cancel()
-            if process.exited in done:
-                return await self._drain(process)
-            remaining -= loop.time() - began
-            if remaining <= 0:
-                raise asyncio.TimeoutError
 
     async def _drain(self, process: Command) -> int:
         """Read output while the command runs; a descendant holding the pipe does not extend it."""
@@ -566,8 +482,6 @@ class Job:
             if self.duration is not None
             else "unknown duration"
         )
-        if self.waited:
-            seconds += f", queued {self.waited:.1f}s"
         return {
             "id": self.id,
             "command": command,
@@ -576,7 +490,6 @@ class Job:
             "exit_code": self.exit_code,
             "timed_out": self.timed_out,
             "duration": self.duration,
-            "waited": self.waited,
             "host": self._remote,
         }
 
@@ -590,8 +503,6 @@ class Job:
         that left the group still parents stays with that process."""
         if self.termination is not None and self.termination.gone:
             return self.termination
-        # A stopped group cannot act on TERM; let it run to hear it.
-        self._resume()
         process = self.process
         if process is None:
             if not self._starting:
@@ -636,9 +547,9 @@ class Job:
 
     def __repr__(self) -> str:
         return (
-            f"Job(id={self.id!r}, queued={self.queued!r}, exit_code={self.exit_code!r}, "
+            f"Job(id={self.id!r}, exit_code={self.exit_code!r}, "
             f"timed_out={self.timed_out!r}, duration={self.duration!r}, "
-            f"waited={self.waited!r}, bytes={self.capture.seen})"
+            f"bytes={self.capture.seen})"
         )
 
 
@@ -647,7 +558,7 @@ async def _unstarted() -> albedo_proc.Termination:
 
 
 def release(job: Job) -> None:
-    """Free the running slot only when the group is gone; a leaked group keeps it."""
+    """Retire active work only when its group is gone."""
     if (
         job.termination is None
         or not job.termination.gone
@@ -750,9 +661,8 @@ def run(
     timeout: float = 300,
 ) -> Job:
     """Start one program, without a shell, and return its handle immediately:
-    run("go", "test", "./...", cwd="cli"). It starts at once, at low priority;
-    one still running after the grace window (5 s) needs a daemon-wide heavy
-    slot, and pauses until one frees; `job.queued` is True while it waits.
+    run("go", "test", "./...", cwd="cli"). It starts at once, at low priority.
+    The timeout counts wall time after the program starts.
 
     `env` adds to the kernel's environment. `stdin` is text or bytes to feed
     the program, a path to read, or another job, whose output streams in like
@@ -807,16 +717,14 @@ def start(
 ) -> Job:
     """A job for argv as given, for run() and for plugins' own supervised work."""
     if len(active) >= ACTIVE_LIMIT:
-        raise RuntimeError(
-            f"{ACTIVE_LIMIT} jobs are queued or running; await or stop one first"
-        )
+        raise RuntimeError(f"{ACTIVE_LIMIT} jobs are active; await or stop one first")
     return Job(argv, timeout, cwd=cwd, env=env, stdin=stdin, traced=traced)
 
 
 async def close() -> None:
     """Kernel shutdown: end every live group inside one shared deadline."""
     owned = list(active.values())
-    # Never spawn a queued command just to shut it down. In-flight OS spawns,
+    # Never spawn a pending command just to shut it down. In-flight OS spawns,
     # however, must finish transferring ownership before the shared ladder.
     for job in owned:
         if not job._starting:
@@ -840,7 +748,7 @@ async def close() -> None:
 
 def setup(api: PythonApi) -> dict[str, object]:
     global loop, capture_factory, preview_limit, jobs, active, retained, send
-    global host, job_slot, watch_output, forget_output
+    global host, watch_output, forget_output
     loop, capture_factory, preview_limit, send = (
         api.loop,
         api.capture,
@@ -848,7 +756,6 @@ def setup(api: PythonApi) -> dict[str, object]:
         api.send,
     )
     host, watch_output, forget_output = api.host, api.watch_output, api.forget_output
-    job_slot = api.job_slot
     jobs, active, retained = {}, {}, OrderedDict()
     api.background_handle(Job)
     api.on_shutdown(close)

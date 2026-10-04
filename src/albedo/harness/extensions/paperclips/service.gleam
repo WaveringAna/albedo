@@ -5,7 +5,6 @@ import albedo/harness/extension
 import albedo/harness/extensions/paperclips/ledger
 import albedo/harness/extensions/paperclips/notifications
 import albedo/harness/extensions/paperclips/presentation
-import albedo/harness/page
 import gleam/dict
 import gleam/dynamic/decode
 import gleam/http.{Delete, Get, Patch, Post}
@@ -560,33 +559,4 @@ fn glance(items: List(ledger.Vent)) -> json.Json {
     #("rows", json.array(rows, fn(row) { row })),
     #("url", json.string("/extensions/paperclips/items")),
   ])
-}
-
-/// Native composition uses this typed bounded read without executing a command.
-pub fn sidebar(
-  storage: ledger.Store,
-  _session: String,
-  _workspace: String,
-) -> Result(page.Glance, String) {
-  use items <- result.try(
-    ledger.open(storage)
-    |> result.map_error(fn(error) { failure(error).detail }),
-  )
-  Ok(page.Glance(
-    "open vents",
-    list.map(items, fn(item) {
-      page.detail_row(
-        int.to_string(item.id),
-        api.content_preview(presentation.title(item), 64),
-        ledger.status_name(item.status),
-        page.Warning,
-        "",
-      )
-    }),
-  ))
-}
-
-/// Canonical resource addressed by this extension sidebar.
-pub fn resource_url(_session: String, _workspace: String) -> String {
-  "/extensions/paperclips/items"
 }

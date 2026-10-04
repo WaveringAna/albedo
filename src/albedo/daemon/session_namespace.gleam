@@ -22,6 +22,7 @@ pub type KernelObservation {
     stage: Option(String),
     stale: Option(python.Stale),
     live_job_count: Option(Int),
+    running_jobs: Option(List(python.Job)),
   )
 }
 
@@ -49,6 +50,11 @@ pub fn observe_kernel(
             None, "none" -> Some(0)
             _, _ -> None
           },
+          case loaded.kernel, phase {
+            Some(observed), _ -> Some(observed.running_jobs)
+            None, "none" -> Some([])
+            _, _ -> None
+          },
         ),
       )
     }
@@ -67,12 +73,13 @@ pub fn observe_kernel(
             stage,
             observed.stale,
             Some(observed.live_job_count),
+            Some(observed.running_jobs),
           ))
         Error(_) ->
           case runtime.alive(kernel) {
             True -> Error("kernel observation unavailable")
             False ->
-              Ok(KernelObservation(None, None, "lost", stage, None, None))
+              Ok(KernelObservation(None, None, "lost", stage, None, None, None))
           }
       }
     }

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"albedo/cli/internal/daemon"
+	"albedo/cli/internal/daemon/protocol"
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 )
@@ -189,5 +190,30 @@ func TestProseTakesActionSlotWithoutForgettingOtherLiveCalls(t *testing.T) {
 	m.refreshViewportContent()
 	if got := ansi.Strip(m.Viewport.View()); !strings.Contains(got, "running still_running") {
 		t.Fatalf("prose forgot call A before call B's result: %q", got)
+	}
+}
+func TestPythonActionShowsCellSourceAndRunningJobCommand(t *testing.T) {
+	progress := &daemon.ToolProgress{CallID: "cell", Name: "python", Phase: "running", Code: &daemon.ToolCodePreview{Text: "# setup\n\nprint(\"hello\")"}}
+	if got := actionLabel(progress, nil); got != `running print("hello")` {
+		t.Fatalf("cell source was not summarized: %q", got)
+	}
+	if got := pythonSourceLine(&daemon.ToolCodePreview{Text: "# only comments\n  \n"}); got != "" {
+		t.Fatalf("comment-only cell should have no summary: %q", got)
+	}
+}
+
+func TestRunningPythonJobCommandAppearsInActionAndFooter(t *testing.T) {
+	m := newTestChatModel(t, &daemon.Session{ID: "s"})
+	m.SetSize(100, 30)
+	m.Status.RunningJobs = []protocol.KernelJob{{ID: "j", Command: "./test.sh"}}
+	m.handleStreamEvent(daemon.StreamEvent{Type: daemon.EventToolProgress,
+		Progress: &daemon.ToolProgress{CallID: "cell", Name: "python", Phase: "running",
+			Code: &daemon.ToolCodePreview{Text: "job = run(\"./test.sh\")\nawait job"}}})
+	m.refreshViewportContent()
+	if got := ansi.Strip(m.Viewport.View()); !strings.Contains(got, "running ./test.sh") {
+		t.Fatalf("running command missing from action: %q", got)
+	}
+	if got := m.statusLine(); got != "running" {
+		t.Fatalf("the status line repeats the action row: %q", got)
 	}
 }

@@ -16,7 +16,7 @@
 %% and it returns a structured verdict instead of kill(1) exit statuses the
 %% supervisor would have to guess at.
 -module(albedo_python).
--export([start/1, execute/3, interrupt/1, stop/1, detach/1, events/1, alive/1, os_pid/1, job_count/1, local_paths/0, paths/0, grace/0, rebind/2, clean_environment/0]).
+-export([start/1, execute/3, interrupt/1, stop/1, detach/1, events/1, alive/1, os_pid/1, job_count/1, stop_job/2, local_paths/0, paths/0, grace/0, rebind/2, clean_environment/0]).
 -export([stale/1, mark_stale/2]).
 -export([observation/1, stop_recorded/2, stop_jobs/1]).
 
@@ -45,16 +45,11 @@ start({boot, Owner, Python, Bridge, Cwd, Host, Modules, Link, RunDir, Kernel, To
     {Pid, Mon} = spawn_monitor(fun() ->
         process_flag(trap_exit, true),
         monitor(process, Owner),
-        Pool = case Remote of
-            {some, {remote, _, Machine, Cpus}} -> albedo_job_slots:ensure(Machine, Cpus);
-            none -> albedo_job_slots:ensure()
-        end,
-        monitor(process, Pool),
         %% What the record says the kernel owned, so a kernel found dead at
         %% this attach still has its groups ended.
         {Target, Groups} = owned(Owned),
         S = #{port => none, host => Host, link => Link, owner => Owner, active => none, events => [],
-              groups => Groups, external => 0, pool => Pool, slots => #{}, target => Target,
+              groups => Groups, external => 0, cells => 0, target => Target,
               python => Python, bridge => Bridge, cwd => Cwd, remote => Remote,
               modules => Modules, run_dir => RunDir, kernel => Kernel, token => Token,
               grace => Grace, in => 0, acked => 0, kack => 0, out => OutSeq,
@@ -85,8 +80,8 @@ open_bridge(S = #{python := Python, bridge := Bridge, run_dir := RunDir}, Mode) 
     {Exe, Argv, Dir, Env, First} = case maps:get(remote, S) of
         none ->
             {Python, [<<"-u">>, Bridge | Args], Cd,
-             [{"ALBEDO_JOB_ADMISSION", "1"} | lists:keydelete("ALBEDO_JOB_ADMISSION", 1, clean_environment())], []};
-        {some, {remote, {commands, _, Command, _, _, _, _}, _, _}} ->
+             clean_environment(), []};
+        {some, {remote, {commands, _, Command, _, _, _, _}, _}} ->
             Spec = case Mode of
                 start -> #{argv => Args, cwd => Cd};
                 attach -> #{argv => Args}
@@ -138,7 +133,6 @@ startup(S = #{port := Port}, Mode, Parent, Ref, Deadline) ->
                 invalid -> startup_fail(S, Parent, Ref, {unavailable, <<"invalid kernel handshake">>})
             end;
         {host_reply, Id, Reply} -> startup(host_reply(Id, Reply, S), Mode, Parent, Ref, Deadline);
-        {job_slot, Id, Result} -> startup(slot_reply(Id, Result, S), Mode, Parent, Ref, Deadline);
         flush_ack -> startup(flush_ack(S), Mode, Parent, Ref, Deadline);
         {Port, {data, _}} -> startup_fail(S, Parent, Ref, {unavailable, <<"invalid kernel handshake">>});
         {Port, {exit_status, ?GONE}} when Mode =:= attach -> startup_fail(S#{port => none}, Parent, Ref, lost);
@@ -182,12 +176,19 @@ startup_fail(S, Parent, Ref, Error) ->
 execute(Pid, Data, Timeout) -> call(Pid, {execute, Data, Timeout}).
 
 %% Background jobs whose groups are still owned: local job groups plus the
-%% remote jobs the remote plugin reported through "jobs" frames. A released
-%% kernel would kill them, so the idle sweep keeps such kernels alive.
+%% remote jobs the remote plugin reported through "jobs" frames, plus running
+%% cells. A released kernel would end them, so the idle sweep keeps it alive.
 job_count(Pid) ->
     case call(Pid, job_count) of
         {ok, Count} when is_integer(Count), Count >= 0 -> Count;
         _ -> 0
+    end.
+stop_job(Pid, Id) ->
+    case call(Pid, {stop_job, Id}) of
+        ok -> {ok, nil};
+        {error, not_found} -> {error, <<"job not found">>};
+        {error, Reason} -> {error, detail(Reason)};
+        _ -> {error, <<"could not stop job">>}
     end.
 events(Pid) -> case call(Pid, events) of {ok, Events} -> Events; _ -> [] end.
 interrupt(Pid) -> Pid ! interrupt, nil.
@@ -288,7 +289,7 @@ loop(S = #{port := Port, active := Active}) ->
             end,
             From ! {Ref, Reply}, loop(S);
         {call, From, Ref, job_count} ->
-            Count = maps:size(maps:merge(maps:get(groups, S), maps:get(slots, S))) + maps:get(external, S, 0),
+            Count = maps:size(maps:get(groups, S)) + maps:get(external, S, 0) + maps:get(cells, S, 0),
             From ! {Ref, {ok, Count}}, loop(S);
         {call, From, Ref, observation} ->
             Build = case maps:get(kernel_bundle, S) of
@@ -296,11 +297,18 @@ loop(S = #{port := Port, active := Active}) ->
                 _ -> none
             end,
             Stale = case maps:get(stale, S) of none -> none; Reason -> {some, Reason} end,
-            Jobs = maps:merge(maps:get(groups, S), maps:get(slots, S)),
+            Jobs = maps:get(groups, S),
             Count = maps:size(Jobs) + maps:get(external, S, 0),
             JobIds = lists:sublist(lists:sort(maps:keys(Jobs)), 200),
-            From ! {Ref, {observation, maps:get(kernel, S), Build, Port =/= none, Stale, Count, JobIds}},
+            From ! {Ref, {observation, maps:get(kernel, S), Build, Port =/= none, Stale, Count, JobIds, job_summaries(maps:get(groups, S))}},
             loop(S);
+        {call, From, Ref, {stop_job, Id}} ->
+            Reply = case maps:get(Id, maps:get(groups, S), none) of
+                none -> {error, not_found};
+                Group ->
+                    verdict(supervise(S, [target_spec(<<"job ", Id/binary>>, Group)], ?TERM_MS, ?KILL_MS))
+            end,
+            From ! {Ref, Reply}, loop(S);
         {call, From, Ref, {rebind, Host}} when is_function(Host, 1) ->
             From ! {Ref, {ok, nil}}, loop(S#{host => Host});
         {call, From, Ref, events} ->
@@ -366,7 +374,6 @@ loop(S = #{port := Port, active := Active}) ->
         reattach when Port =:= none -> reattach(S);
         flush_ack -> loop(flush_ack(S));
         {host_reply, Id, Reply} -> loop(host_reply(Id, Reply, S));
-        {job_slot, Id, Result} -> loop(slot_reply(Id, Result, S));
         {'DOWN', Caller, process, _, _} ->
             case Active of
                 {_, _, _, Caller, _} -> loop(interrupt_active(S, <<"cancelled">>));
@@ -405,7 +412,7 @@ reattach(S) -> attach_again(S).
 
 %% A remote kernel unreachable for longer than its grace has exited by itself
 %% and reaped its own jobs: forget it without reaching for the host again.
-expire(S = #{pool := Pool}) ->
+expire(S) ->
     case maps:get(active, S) of
         {From, Ref, Timer, Caller, _} ->
             erlang:cancel_timer(Timer), demonitor(Caller, [flush]),
@@ -413,7 +420,6 @@ expire(S = #{pool := Pool}) ->
         none -> ok
     end,
     link_forget(S),
-    albedo_job_slots:release_owner(Pool),
     nil.
 
 attach_again(S = #{retries := Tries}) ->
@@ -473,16 +479,14 @@ hello(Hello, S0) ->
                      leader => maps:get(leader, Target), epoch => maps:get(<<"epoch">>, Hello, 0)}),
     Jobs = [Job || Job <- maps:get(<<"jobs">>, Hello, []), is_map(Job)],
     S1 = lists:foldl(fun track/2, S#{target => Target}, Jobs),
-    S2 = case maps:get(<<"external">>, Hello, 0) of
-        Live when is_integer(Live), Live >= 0 -> S1#{external => Live};
-        _ -> S1
+    Cells = case maps:get(<<"cells">>, Hello, 0) of
+        N when is_integer(N), N >= 0 -> N;
+        _ -> 0
     end,
-    %% Slots its running jobs hold count again in this daemon's pool; the
-    %% ones still waited for are asked for again.
-    Untracked = fun(Field) -> [Id || Id <- maps:get(Field, Hello, []), is_binary(Id),
-                                     not maps:is_key(Id, maps:get(slots, S2))] end,
-    S3 = lists:foldl(fun claim_slot/2, S2, Untracked(<<"held">>)),
-    lists:foldl(fun acquire_slot/2, S3, Untracked(<<"slots">>)).
+    case maps:get(<<"external">>, Hello, 0) of
+        Live when is_integer(Live), Live >= 0 -> S1#{external => Live, cells => Cells};
+        _ -> S1#{cells => Cells}
+    end.
 
 %% A kernel speaking another protocol, or running another bundle than the
 %% bridge that reached it, is stale: the session swaps it at its next idle
@@ -529,10 +533,11 @@ handle_frame(#{<<"type">> := <<"call">>, <<"id">> := Id} = Message, S = #{host :
             spawn(fun() -> Parent ! {host_reply, Id, host_call(Host, Message)} end),
             S#{calls => Calls#{Id => true}}
     end;
-handle_frame(#{<<"type">> := <<"job_acquire">>, <<"id">> := Id}, S) when is_binary(Id) ->
-    acquire_slot(Id, S);
 handle_frame(#{<<"type">> := <<"job">>} = Message, S) ->
     journal(Message, track(Message, S));
+handle_frame(#{<<"type">> := <<"cells">>, <<"live">> := Live}, S)
+        when is_integer(Live), Live >= 0 ->
+    S#{cells => Live};
 handle_frame(#{<<"type">> := <<"jobs">>, <<"live">> := Live}, S)
         when is_integer(Live), Live >= 0 ->
     S#{external => Live};
@@ -547,32 +552,6 @@ host_reply(Id, Reply, S = #{calls := Calls, out := Out}) ->
     write_envelope(S, Seq, Frame),
     S#{calls => maps:remove(Id, Calls), out => Seq, acked => maps:get(in, S)}.
 
-acquire_slot(Id, S = #{pool := Pool, slots := Slots}) ->
-    albedo_job_slots:acquire(Pool, Id),
-    S#{slots => Slots#{Id => true}}.
-
-claim_slot(Id, S = #{pool := Pool, slots := Slots}) ->
-    albedo_job_slots:claim(Pool, Id),
-    S#{slots => Slots#{Id => true}}.
-
-slot_reply(Id, Result, S = #{slots := Slots}) ->
-    case maps:is_key(Id, Slots) of
-        false -> S;  %% cancelled before the grant reached us
-        true ->
-            Reply = case Result of
-                        ok -> #{ok => true};
-                        %% No slot yet: the kernel pauses the job until one frees.
-                        queued -> #{ok => false, queued => true};
-                        {error, Why} -> #{ok => false, message => Why}
-                    end,
-            S1 = send(Reply#{type => <<"job_slot">>, id => Id}, S),
-            case Result of {error, _} -> release_slot(Id, S1); _ -> S1 end
-    end.
-
-release_slot(Id, S = #{pool := Pool, slots := Slots}) ->
-    albedo_job_slots:release(Pool, Id),
-    S#{slots => maps:remove(Id, Slots)}.
-
 %% One host call's decoded reply, with the fixed fallback when the host itself
 %% fails to answer.
 host_call(Host, Message) ->
@@ -581,12 +560,12 @@ host_call(Host, Message) ->
 
 %% Job ownership bookkeeping shared by the main loop and the startup and
 %% shutdown drains: a started job's group is recorded; a job proven gone
-%% releases its slot and its group.
+%% releases its group.
 start_job(Message, Id, S = #{groups := Groups}) ->
     owns(S, Groups#{Id => group_of(Message)}).
 
 gone(Id, S = #{groups := Groups}) ->
-    owns(release_slot(Id, S), maps:remove(Id, Groups)).
+    owns(S, maps:remove(Id, Groups)).
 
 %% The groups are recorded as they change, so a daemon that finds the kernel
 %% dead after a restart can still end them.
@@ -603,7 +582,7 @@ nil_null(_, V) -> V.
 owned(Owned) ->
     M = try json:decode(Owned) catch _:_ -> #{} end,
     Spec = fun(Fields) -> maps:map(fun(_, null) -> nil; (_, V) -> V end,
-                                   maps:with([<<"pid">>, <<"pgid">>, <<"leader">>], Fields)) end,
+                                   maps:with([<<"pid">>, <<"pgid">>, <<"leader">>, <<"command">>], Fields)) end,
     Target = case maps:get(<<"pid">>, M, null) of
         Pid when is_integer(Pid), Pid > 1 -> target_of(Spec(M));
         _ -> none
@@ -680,7 +659,7 @@ shutdown_state(S = #{target := Target}, TermMs, KillMs) ->
         #{port := none} -> S;
         _ -> send(#{type => <<"shutdown">>}, S)
     end,
-    Jobs = maps:merge(maps:get(groups, S1), maps:get(slots, S1)),
+    Jobs = maps:get(groups, S1),
     {Settled, ShutdownJobs} = case maps:get(exited, S1, false) orelse maps:get(port, S1) =:= none of
         true -> {S1, Jobs};
         false -> await_exit(S1, erlang:monotonic_time(millisecond) + ?SHUTDOWN_GRACE, Jobs)
@@ -697,7 +676,7 @@ abandon(S) -> report(owner_lost, shutdown(S, ?TERM_MS, ?KILL_MS)).
 %% Keep accepting ownership transfers while shutdown is in flight. A job may
 %% finish spawning after the shutdown request was sent.
 await_exit(S = #{port := Port}, Deadline, Jobs) ->
-    Known = maps:merge(Jobs, maps:merge(maps:get(groups, S), maps:get(slots, S))),
+    Known = maps:merge(Jobs, maps:get(groups, S)),
     Now = erlang:monotonic_time(millisecond),
     case Now >= Deadline of
         true -> {S, Known};
@@ -725,7 +704,6 @@ track(#{<<"type">> := <<"job">>, <<"id">> := Id} = Message, S) ->
         none -> S;   %% unverified: keep owning the group
         Cleanup -> log({job_cleanup_failed, Id, Cleanup}), S
     end;
-track(#{<<"type">> := <<"job_cancel">>, <<"id">> := Id}, S) -> release_slot(Id, S);
 track(#{<<"type">> := <<"cleanup">>, <<"failures">> := Failures}, S) ->
     log({kernel_cleanup_failed, Failures}), S;
 track(_, S) -> S.
@@ -739,7 +717,7 @@ supervise(_, [], _, _) -> {ok, []};
 supervise(S, Targets, TermMs, KillMs) ->
     Request = iolist_to_binary(json:encode(#{targets => Targets, term_ms => TermMs, kill_ms => KillMs})),
     case S of
-        #{remote := {some, {remote, {commands, _, _, Signal, _, _, _}, Host, _}}} ->
+        #{remote := {some, {remote, {commands, _, _, Signal, _, _, _}, Host}}} ->
             {Ssh, Argv, _, Env} = ssh_command(S, Signal),
             case run_helper(Ssh, Argv, Env, ?REMOTE_HELPER_WAIT, [Request, $\n]) of
                 {error, Reason} -> {error, iolist_to_binary([<<"ending the kernel on ">>, Host, <<" over ssh failed, so its own grace exit is left to end it: ">>, Reason])};
@@ -768,7 +746,7 @@ run_helper(Exe, Args, Env, Wait, Input) ->
 %% ssh to a remote kernel's host, running one of the commands albedo_ssh.py
 %% built for it: the executable, its arguments, the local directory and the
 %% environment. Nothing is quoted here.
-ssh_command(#{remote := {some, {remote, {commands, [Ssh | Options], _, _, _, _, AuthSock}, _, _}}}, Command) ->
+ssh_command(#{remote := {some, {remote, {commands, [Ssh | Options], _, _, _, _, AuthSock}, _}}}, Command) ->
     Exe = case os:find_executable(binary_to_list(Ssh)) of
         false -> Ssh;
         Found -> unicode:characters_to_binary(Found)
@@ -781,7 +759,7 @@ ssh_command(#{remote := {some, {remote, {commands, [Ssh | Options], _, _, _, _, 
 
 %% A remote kernel's run directory goes with a short ssh command; the kernel
 %% exits within a second of it disappearing, as a local one does.
-remove_run_dir(S = #{remote := {some, {remote, {commands, _, _, _, Remove, _, _}, _, _}}, run_dir := RunDir}) ->
+remove_run_dir(S = #{remote := {some, {remote, {commands, _, _, _, Remove, _, _}, _}}, run_dir := RunDir}) ->
     {Ssh, Argv, _, Env} = ssh_command(S, Remove),
     _ = run_helper(Ssh, Argv, Env, ?REMOTE_HELPER_WAIT, [RunDir, $\n]),
     ok;
@@ -839,9 +817,17 @@ detail_text(Detail) -> io_lib:format(" (~ts)", [Detail]).
 %% Identity the kernel declared for itself; a port's os_pid is trustworthy only
 %% while that port is alive.
 target_of(M) -> proc_spec(maps:get(<<"pid">>, M, nil), M).
-group_of(M)  -> proc_spec(maps:get(<<"pgid">>, M, nil), M).
+group_of(M)  ->
+    Pid = case maps:get(<<"pid">>, M, nil) of
+        nil -> maps:get(<<"pgid">>, M, nil);
+        P -> P
+    end,
+    proc_spec(Pid, M).
 proc_spec(Pid, M) ->
-    #{pid => Pid, pgid => maps:get(<<"pgid">>, M, nil), leader => maps:get(<<"leader">>, M, nil)}.
+    #{pid => Pid,
+      pgid => maps:get(<<"pgid">>, M, nil),
+      leader => maps:get(<<"leader">>, M, nil),
+      command => maps:get(<<"command">>, M, <<>>)}.
 
 target_spec(Label, #{pid := Pid, pgid := Pgid, leader := Leader}) ->
     Base = #{label => iolist_to_binary(Label), pid => Pid, pgid => Pgid},
@@ -870,14 +856,13 @@ reap_start(S = #{port := Port}) ->
     report(startup_reaped, reap_finish(S, Result)).
 
 %% The kernel is gone for good: its durable link and run directory go too.
-reap_finish(S = #{pool := Pool, port := Port}, Result) ->
+reap_finish(S = #{port := Port}, Result) ->
     close_port(Port),
     case Result of
         ok ->
             case link_forget(S) of
                 {ok, nil} ->
                     remove_run_dir(S),
-                    albedo_job_slots:release_owner(Pool),
                     ok;
                 {error, Reason} -> {error, <<"kernel ownership cleanup failed: ", Reason/binary>>};
                 _ -> {error, <<"kernel ownership cleanup was not confirmed">>}
@@ -925,7 +910,7 @@ grace() ->
 clean_environment() ->
     %% Strip daemon internal tokens (e.g. ALBEDO_TOKEN, ALBEDO_API_KEY) and
     %% provider keys, keeping the user's shell/tool environment intact.
-    SafeAlbedo = ["ALBEDO_HOME", "ALBEDO_SSH", "ALBEDO_JOB_GRACE_SECONDS", "ALBEDO_JOB_ADMISSION"],
+    SafeAlbedo = ["ALBEDO_HOME", "ALBEDO_SSH", "ALBEDO_CELL_BACKGROUND_SECONDS"],
     SecretSuffixes = ["_API_KEY", "_TOKEN"],
     IsBlocked = fun(Name) ->
         case lists:prefix("ALBEDO_", Name) of
@@ -934,3 +919,12 @@ clean_environment() ->
         end
     end,
     [{Name, false} || Entry <- os:getenv(), Name <- [hd(string:split(Entry, "="))], IsBlocked(Name)].
+
+job_summaries(Jobs) ->
+    [{job, Id,
+      case maps:get(pid, Group, nil) of
+          P when is_integer(P), P > 0 -> {some, P};
+          _ -> none
+      end,
+      unicode:characters_to_binary(lists:sublist(unicode:characters_to_list(maps:get(command, Group, <<>>)), 4096))}
+     || {Id, Group} <- lists:sublist(lists:sort(maps:to_list(Jobs)), 100)].

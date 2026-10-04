@@ -18,7 +18,6 @@ from albedo_protocol import (
     Reply as Reply,
     Interrupt as Interrupt,
     Shutdown as Shutdown,
-    JobSlot as JobSlot,
     Invoke as Invoke,
     Introspect as Introspect,
     Release as Release,
@@ -133,9 +132,6 @@ class PythonApi:
     # model sees the image; returns a short description, raises ValueError
     # past the per-cell limits. Absent when the host pre-dates images.
     attach_image: Callable[[bytes], str] | None = None
-    # Local shell admission, shared across the daemon's kernels. Completion
-    # releases it through the existing verified `job` cleanup frame.
-    job_slot: Callable[[str, Callable[[], None]], Awaitable[None]] | None = None
     # A host call that blocks until its answer, for synchronous APIs over
     # routes that answer at once. Absent when the host pre-dates it.
     host_now: Callable[[str, dict[str, object]], object] | None = None

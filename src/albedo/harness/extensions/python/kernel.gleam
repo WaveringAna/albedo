@@ -28,6 +28,7 @@ pub type Observation {
     stale: Option(Stale),
     live_job_count: Int,
     job_ids: List(String),
+    running_jobs: List(Job),
   )
 }
 
@@ -48,14 +49,16 @@ pub type Status {
   Succeeded
   Failed
   Interrupted
+  Backgrounded
 }
 
-/// The wire name of a cell's end state.
+/// The wire name of a cell result's status.
 pub fn status_name(status: Status) -> String {
   case status {
     Succeeded -> "ok"
     Failed -> "error"
     Interrupted -> "interrupted"
+    Backgrounded -> "backgrounded"
   }
 }
 
@@ -98,10 +101,9 @@ type Boot {
 }
 
 /// How the port owner reaches a kernel on another host: the commands it
-/// runs there over ssh, and the host's cores for its own heavy-job pool (0
-/// while unknown).
+/// runs there over ssh.
 type Remote {
-  Remote(commands: ssh.Commands, host: String, cpus: Int)
+  Remote(commands: ssh.Commands, host: String)
 }
 
 /// A remote workspace's host as a boot finds it: probed now, or out of reach
@@ -157,6 +159,7 @@ fn run(
           #("code", json.string(code)),
           #("durable", json.bool(durable)),
           #("max_edge", json.int(max_edge)),
+          #("timeout_ms", json.int(timeout_ms)),
         ])
         |> json.to_string
       use response <- result.try(execute_native(kernel, command, timeout_ms))
@@ -263,10 +266,26 @@ fn saved_decoder() -> decode.Decoder(Result(Saved, Error)) {
 @external(erlang, "albedo_python", "os_pid")
 pub fn os_pid(kernel: Kernel) -> Result(Int, Nil)
 
+pub type Job {
+  Job(id: String, pid: Option(Int), command: String)
+}
+
+pub fn job_json(job: Job) -> json.Json {
+  json.object([
+    #("id", json.string(job.id)),
+    #("pid", json.nullable(job.pid, json.int)),
+    #("command", json.string(job.command)),
+  ])
+}
+
 /// Live background jobs the kernel still supervises, local groups plus remote
 /// jobs its remote plugin reported. Zero when the kernel cannot answer.
 @external(erlang, "albedo_python", "job_count")
 pub fn job_count(kernel: Kernel) -> Int
+
+/// Stop one background job's process group.
+@external(erlang, "albedo_python", "stop_job")
+pub fn stop_job(kernel: Kernel, id: String) -> Result(Nil, String)
 
 @external(erlang, "albedo_python", "interrupt")
 pub fn interrupt(kernel: Kernel) -> Nil
@@ -314,7 +333,7 @@ pub fn stop_recorded_instance(
         |> result.replace_error("invalid recorded remote run directory"),
       )
       ssh.offline(target, home)
-      |> result.map(fn(commands) { Some(Remote(commands, target, 0)) })
+      |> result.map(fn(commands) { Some(Remote(commands, target)) })
     }
     Ok(location.Local(_)) -> Ok(None)
     Error(_) -> Error("invalid recorded kernel location")
@@ -371,6 +390,7 @@ pub fn outcome_decoder() -> decode.Decoder(Outcome) {
     "ok" -> decode.success(outcome(Succeeded))
     "error" -> decode.success(outcome(Failed))
     "interrupted" -> decode.success(outcome(Interrupted))
+    "backgrounded" -> decode.success(outcome(Backgrounded))
     _ -> decode.failure(outcome(Failed), "cell status")
   }
 }
@@ -617,7 +637,7 @@ fn place(
       )
       case ssh.ready(target, ssh.boot_wait_ms) {
         Ok(host) -> {
-          let remote = Remote(host.commands, target, host.cpus)
+          let remote = Remote(host.commands, target)
           Ok(#(path, Ok(host.home <> remote_runs), Some(Probed(remote))))
         }
         Error(ssh.Unsupported(_) as failure) ->
@@ -651,7 +671,7 @@ fn reached(
         |> result.replace_error(Unavailable("can't reach " <> target)),
       )
       ssh.offline(target, home)
-      |> result.map(fn(commands) { Some(Remote(commands, target, 0)) })
+      |> result.map(fn(commands) { Some(Remote(commands, target)) })
       |> result.map_error(Unavailable)
     }
   }

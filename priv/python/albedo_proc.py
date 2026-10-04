@@ -30,7 +30,7 @@ def reap_stopped_safely(loop: asyncio.AbstractEventLoop) -> None:
 
     Python 3.14's threaded child watcher waits with waitid(WEXITED | WNOWAIT),
     which macOS also answers for a stopped child, and then reaps with a blocking
-    waitpid on the event loop: a job paused for a heavy slot froze the kernel.
+    waitpid on the event loop, which can freeze the kernel on a stopped child.
     The replacement reaps in its thread with a waitpid that ignores stops, as
     3.13 did. Linux uses pidfds, which only wake on exit, and needs nothing.
     """

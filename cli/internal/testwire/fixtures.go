@@ -20,7 +20,7 @@ func Session(id, generation string, sequence int64) map[string]any {
 		"activity": map[string]any{"lines": []any{}, "output_scalars": 0, "output_utf8_bytes": 0, "observed_at": "2026-10-03T00:00:00Z", "latest_input": nil, "latest_answer": nil},
 		"cursor":   map[string]any{"generation": generation, "sequence": sequence}, "creation": nil, "revision": "revision-a", "family_revision": "family-a", "configuration_resource": map[string]any{"url": "/sessions/" + id + "?view=configuration", "etag": "\"revision-a\"", "value": config}, "workspace_change": nil,
 		"selection": map[string]any{"overrides": selection, "effective": selection}, "composition": map[string]any{"desired_revision": "composition-a", "loaded_revision": nil, "needs_reload": false, "dependencies": map[string]any{}, "quarantine": []any{}, "availability": map[string]bool{}},
-		"kernel": map[string]any{"state": "none", "stage": nil, "build": nil, "stale": false, "staleness_reasons": []any{}, "live_job_count": 0, "instance_id": nil}, "pending_inputs": []any{}, "input_order": 0,
+		"kernel": map[string]any{"state": "none", "stage": nil, "build": nil, "stale": false, "staleness_reasons": []any{}, "live_job_count": 0, "running_jobs": []any{}, "instance_id": nil}, "pending_inputs": []any{}, "input_order": 0,
 		"usage":   map[string]any{"model": nil, "observed_at": nil, "prompt_tokens": nil, "cached_prompt_tokens": nil, "cache_write_tokens": nil, "completion_tokens": nil, "total_tokens": nil, "elapsed_ms": nil, "tokens_per_second": nil, "context_window_tokens": nil, "cache_ttl_seconds": nil, "cache_fade": []any{}},
 		"history": map[string]any{"items": []any{}, "older": nil, "newer": nil, "high_water": 0}, "glances": []any{},
 	}

@@ -483,16 +483,3 @@ pub fn delete_observed(
     }
   })
 }
-
-/// A sidebar remains small even when finished records fill the global ledger.
-pub fn open(store: Store) -> Result(List(Vent), Error) {
-  storage.query(store, fn(db) {
-    rows(
-      db,
-      "SELECT "
-        <> columns
-        <> " FROM paperclips WHERE status='open' ORDER BY id DESC LIMIT 12",
-      [],
-    )
-  })
-}

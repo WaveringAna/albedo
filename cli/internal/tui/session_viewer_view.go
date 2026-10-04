@@ -393,7 +393,6 @@ func (m SessionViewer) row(item PickerItem, s daemon.Session, sec int, selected 
 			st(DefaultStyles.Faint).Render(svCell("  "+hint, max(0, width-4-titleWidth), false)))
 	}
 
-	recent := s.LastAssistantAt != nil && now.Sub(time.Unix(*s.LastAssistantAt, 0)) < time.Hour
 	glyph, iconStyle := "· ", DefaultStyles.Faint
 	switch {
 	case editing:
@@ -402,7 +401,7 @@ func (m SessionViewer) row(item PickerItem, s daemon.Session, sec int, selected 
 		glyph, iconStyle = "◆ ", DefaultStyles.Agent
 	case sec == secPinned:
 		glyph, iconStyle = "★ ", DefaultStyles.Agent
-	case recent:
+	case loaded(s):
 		glyph, iconStyle = "● ", DefaultStyles.Success
 	}
 	gap := st(lipgloss.NewStyle()).Render("  ")
@@ -427,7 +426,7 @@ func (m SessionViewer) row(item PickerItem, s daemon.Session, sec int, selected 
 	}
 	if cols.age > 0 {
 		as := DefaultStyles.Faint
-		if recent {
+		if loaded(s) {
 			as = DefaultStyles.Success
 		}
 		line += gap + st(as).Render(svCell(svCompactAge(s.LastAssistantAt, now), cols.age, true))

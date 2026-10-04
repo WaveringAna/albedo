@@ -12,17 +12,46 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-// glanceCounts counts each glance with rows that the sidebar leaves out: all
-// of them without a sidebar, the ones after its first with one.
-func (m ChatModel) glanceCounts() []string {
-	var counts []string
+func (m ChatModel) backgroundJobCount() int64 {
+	if m.Status.KernelJobs == nil {
+		return 0
+	}
+	return *m.Status.KernelJobs
+}
+
+// activeGlances lists the sidebar's sections in order, leaving out empty ones:
+// the extensions' glances (active work), then background jobs.
+func (m ChatModel) activeGlances() []PageGlance {
+	var glances []PageGlance
 	for _, g := range m.Glances {
 		if len(g.Rows) > 0 {
-			counts = append(counts, fmt.Sprintf("%s %d", g.Title, len(g.Rows)))
+			glances = append(glances, g)
 		}
 	}
-	if len(counts) > 0 && m.sidebarWidth() > 0 {
-		counts = counts[1:]
+	if len(m.Status.RunningJobs) == 0 {
+		return glances
+	}
+	rows := make([]PageRow, 0, len(m.Status.RunningJobs))
+	for _, job := range m.Status.RunningJobs {
+		command := oneLine(job.Command)
+		if command == "" {
+			command = "job " + job.ID
+		}
+		rows = append(rows, PageRow{Text: command, Tone: ToneActive})
+	}
+	return append(glances, PageGlance{Title: "background jobs", Rows: rows})
+}
+
+// glanceCounts counts each glance the sidebar leaves out: all of them without
+// a sidebar, the ones that did not fit its height with one.
+func (m ChatModel) glanceCounts() []string {
+	omitted := m.activeGlances()
+	if m.sidebarWidth() > 0 {
+		_, omitted = m.sidebarRows()
+	}
+	var counts []string
+	for _, g := range omitted {
+		counts = append(counts, fmt.Sprintf("%s %d", g.Title, len(g.Rows)))
 	}
 	if m.Status.KernelStale {
 		counts = append([]string{"kernel older"}, counts...)
@@ -31,38 +60,60 @@ func (m ChatModel) glanceCounts() []string {
 }
 
 func (m ChatModel) renderGlances() string {
-	for _, g := range m.Glances {
-		if len(g.Rows) == 0 {
+	rows, _ := m.sidebarRows()
+	return lipgloss.NewStyle().Width(m.sidebarWidth()).Render(strings.Join(rows, "\n"))
+}
+
+// sidebarRows stacks the glances, a blank row apart and at most 12 rows each,
+// within the viewport's height. A glance with no room for its title and one
+// row is returned as omitted.
+func (m ChatModel) sidebarRows() ([]string, []PageGlance) {
+	var rows []string
+	var omitted []PageGlance
+	room := m.Viewport.Height()
+	for _, g := range m.activeGlances() {
+		gap := min(1, len(rows))
+		limit := min(room-gap, 12)
+		if limit < 2 {
+			omitted = append(omitted, g)
 			continue
 		}
-		room := max(0, min(m.Viewport.Height(), 12)-1)
-		shown := min(room, len(g.Rows))
-		if len(g.Rows) > room {
-			shown = max(0, room-1)
-		}
-		rows := []string{m.Styles.Faint.Render(fmt.Sprintf("%s · %d", g.Title, len(g.Rows)))}
-		for _, item := range g.Rows[:shown] {
-			mark, style := "○", m.Styles.Faint
-			switch item.Tone {
-			case ToneActive:
-				mark, style = "●", m.Styles.Success
-			case ToneWarning:
-				mark, style = "!", m.Styles.Warning
-			case ToneMuted:
-				mark = "✓"
-			}
-			label := item.Text
-			if item.ID != "" {
-				label = "#" + item.ID + " " + item.Text
-			}
-			rows = append(rows, style.Render(mark)+" "+label)
-		}
-		if shown < len(g.Rows) {
-			rows = append(rows, m.Styles.Faint.Render(fmt.Sprintf("+%d more", len(g.Rows)-shown)))
-		}
-		return lipgloss.NewStyle().Width(m.sidebarWidth()).Render(strings.Join(rows, "\n"))
+		section := m.glanceRows(g, limit)
+		rows = append(rows, make([]string, gap)...)
+		rows = append(rows, section...)
+		room -= gap + len(section)
 	}
-	return ""
+	return rows, omitted
+}
+
+// glanceRows renders a glance's title and rows in at most limit rows, one
+// line per row.
+func (m ChatModel) glanceRows(g PageGlance, limit int) []string {
+	shown := min(limit-1, len(g.Rows))
+	if len(g.Rows) > shown {
+		shown = limit - 2
+	}
+	rows := []string{m.Styles.Faint.Render(fmt.Sprintf("%s · %d", g.Title, len(g.Rows)))}
+	for _, item := range g.Rows[:shown] {
+		mark, style := "○", m.Styles.Faint
+		switch item.Tone {
+		case ToneActive:
+			mark, style = "●", m.Styles.Success
+		case ToneWarning:
+			mark, style = "!", m.Styles.Warning
+		case ToneMuted:
+			mark = "✓"
+		}
+		label := item.Text
+		if item.ID != "" {
+			label = "#" + item.ID + " " + item.Text
+		}
+		rows = append(rows, style.Render(mark)+" "+ansi.Truncate(label, max(1, m.sidebarWidth()-2), "…"))
+	}
+	if shown < len(g.Rows) {
+		rows = append(rows, m.Styles.Faint.Render(fmt.Sprintf("+%d more", len(g.Rows)-shown)))
+	}
+	return rows
 }
 
 func (m ChatModel) renderFooter() string {

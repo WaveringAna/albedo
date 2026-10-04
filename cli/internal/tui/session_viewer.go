@@ -223,7 +223,9 @@ func (m *SessionViewer) rebuild() {
 	slices.SortStableFunc(frequent, func(a, b daemon.Session) int {
 		return cmp.Compare(m.prefs.Opens[b.ID], m.prefs.Opens[a.ID])
 	})
-	for _, s := range frequent[:min(len(frequent), frequentLimit)] {
+	frequent = frequent[:min(len(frequent), frequentLimit)]
+	slices.SortStableFunc(frequent, byLoaded)
+	for _, s := range frequent {
 		m.section[s.ID] = secFrequent
 		ordered = append(ordered, s)
 	}
@@ -255,8 +257,11 @@ func (m *SessionViewer) rebuild() {
 		}
 		rest = append(rest, s)
 	}
-	// Navigation follows the grouping; the daemon's order holds within a day group.
-	slices.SortStableFunc(rest, func(a, b daemon.Session) int { return cmp.Compare(m.section[a.ID], m.section[b.ID]) })
+	// Navigation follows the grouping. Within a group loaded sessions lead the
+	// reaped ones, and the daemon's order holds otherwise.
+	slices.SortStableFunc(rest, func(a, b daemon.Session) int {
+		return cmp.Or(cmp.Compare(m.section[a.ID], m.section[b.ID]), byLoaded(a, b))
+	})
 	m.Sessions = slices.Concat(ordered, active, rest)
 
 	var items []PickerItem
@@ -294,6 +299,21 @@ func (m *SessionViewer) rebuildGroups() {
 		}
 		m.groups[len(m.groups)-1].count++
 	}
+}
+
+// loaded reports whether the daemon holds the session live, not yet reaped
+// for idleness; only a live session has a stream cursor.
+func loaded(s daemon.Session) bool { return s.Cursor != nil }
+
+// byLoaded orders loaded sessions before reaped ones.
+func byLoaded(a, b daemon.Session) int {
+	switch {
+	case loaded(a) == loaded(b):
+		return 0
+	case loaded(a):
+		return -1
+	}
+	return 1
 }
 
 const untitled = "Untitled session"

@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"albedo/cli/internal/daemon"
+	"albedo/cli/internal/daemon/protocol"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -98,5 +99,85 @@ func TestRemoteHeaderFoldsUnderTheHostsHomeAndSaysWhileConnecting(t *testing.T) 
 	m.Status.KernelLink = "lost"
 	if got := m.statusLine(); got != "kernel on chernobog lost · the next turn starts a fresh one" {
 		t.Fatalf("a lost kernel reads %q", got)
+	}
+}
+
+func TestBackgroundJobsRenderInHeaderStatusAndSidebar(t *testing.T) {
+	m := newTestChatModel(t, &daemon.Session{ID: "s"})
+	m.AgentName, m.Workspace, m.Model = "albedo", "/src/proj/albedo", "claude-opus-4-6"
+	m.Status = daemon.AgentStatus{
+		Idle:       true,
+		KernelJobs: new(int64(1)),
+		RunningJobs: []protocol.KernelJob{
+			{ID: "job1", Command: "go test ./..."},
+		},
+	}
+
+	if got := m.statusLine(); got != "1 background job running · go test ./..." {
+		t.Fatalf("expected statusLine to show 1 running job, got %q", got)
+	}
+	if !m.animating() {
+		t.Fatalf("expected model to animate when background jobs are running")
+	}
+
+	header := ansi.Strip(m.header(120))
+	if !strings.Contains(header, "background jobs 1") {
+		t.Fatalf("expected header to count running jobs glance, got %q", header)
+	}
+
+	m.Glances = []PageGlance{{Title: "open vents", Rows: []PageRow{{ID: "v1", Text: "a vent"}}}}
+	m.SetSize(140, 30)
+	view := ansi.Strip(m.View())
+	if !strings.Contains(view, "background jobs") || !strings.Contains(view, "go test ./...") {
+		t.Fatalf("expected sidebar to show running background job, got:\n%s", view)
+	}
+
+	if len(m.Glances) != 1 || m.Glances[0].Title != "open vents" {
+		t.Fatal("rendering jobs changed extension glances")
+	}
+	for width := 1; width <= 140; width++ {
+		m.SetSize(width, 30)
+		if got := ansi.StringWidth(m.header(width)); got > width {
+			t.Fatalf("job header at width %d exceeds its bounds: %d", width, got)
+		}
+	}
+	m.Glances = nil
+	m.Status.KernelJobs = nil
+	m.Status.RunningJobs = nil
+	if m.animating() || m.statusLine() != "" || len(m.activeGlances()) != 0 {
+		t.Fatal("unknown jobs must not claim that background work is running")
+	}
+
+	m.Status.KernelJobs = new(int64(2))
+	m.Status.RunningJobs = []protocol.KernelJob{
+		{ID: "job1", Command: "sleep 10"},
+		{ID: "job2", Command: "cargo build"},
+	}
+	if got := m.statusLine(); got != "2 background jobs running · sleep 10" {
+		t.Fatalf("expected statusLine to show 2 running jobs, got %q", got)
+	}
+
+	m.Status.KernelJobs = new(int64(0))
+	m.Status.RunningJobs = nil
+	if got := m.statusLine(); got != "" {
+		t.Fatalf("expected empty statusLine when idle with no jobs, got %q", got)
+	}
+}
+
+func TestBackgroundJobsRefreshWithoutStartingATurn(t *testing.T) {
+	m := newTestChatModel(t, &daemon.Session{ID: "s"})
+	m.SetSize(80, 30)
+	status := daemon.AgentStatus{Idle: true, KernelJobs: new(int64(1)),
+		RunningJobs: []protocol.KernelJob{{ID: "j", Command: "sleep 10"}}}
+	m, cmd := m.Update(ChatStatusMsg{SessionID: m.SessionID, Generation: m.Generation,
+		Revision: m.statusRevision, Status: &status})
+	if !m.animating() || cmd == nil || !strings.Contains(m.statusLine(), "sleep 10") {
+		t.Fatal("idle background job did not start its status animation")
+	}
+	status.KernelJobs, status.RunningJobs = new(int64(0)), nil
+	m, _ = m.Update(ChatStatusMsg{SessionID: m.SessionID, Generation: m.Generation,
+		Revision: m.statusRevision, Status: &status})
+	if m.animating() || m.statusLine() != "" || len(m.activeGlances()) != 0 {
+		t.Fatal("finished jobs left idle job chrome behind")
 	}
 }

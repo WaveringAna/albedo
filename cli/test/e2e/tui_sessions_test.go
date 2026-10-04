@@ -65,6 +65,45 @@ func TestTUISessionPickerPinsRenamesArchivesAndDeletes(t *testing.T) {
 	}
 }
 
+// The session list carries no validators, so archiving a row whose preview
+// never loaded still has to reach the daemon.
+func TestTUIArchivesASessionStraightFromTheList(t *testing.T) {
+	t.Parallel()
+	providerRoute(t, echoReply)
+	d := newTUIDriver(t)
+	target := newSession(t, t.TempDir())
+	d.Dispatch(tui.ChatBackToSessionsMsg{})
+	i := slices.IndexFunc(d.App.SessionPicker.Filtered, func(it tui.PickerItem) bool { return it.ID == target })
+	if i < 0 {
+		t.Fatalf("the picker does not list %s:\n%s", target, d.View())
+	}
+	d.App.SessionPicker.Cursor = i
+	d.Dispatch(tea.KeyPressMsg{Code: 'a', Mod: tea.ModCtrl})
+	if saved := daemonSession(t, target); !saved.Archived {
+		t.Fatalf("ctrl+a did not archive the listed session:\n%s", d.View())
+	}
+}
+
+// A long message reaches a preview as a content reference; the session list
+// and agents view read it in full instead of failing the preview.
+func TestSessionPreviewReadsLongMessagesInFull(t *testing.T) {
+	t.Parallel()
+	profile := providerRoute(t, echoReply)
+	id := newSession(t, t.TempDir())
+	long := strings.Repeat("long preview line ", 12000)
+	if _, err := daemon.NewChatClient(conn(t), id).Send(t.Context(), long, nil); err != nil {
+		t.Fatal(err)
+	}
+	waitIdle(t, id, profile, 1)
+	preview, err := daemon.GetSessionPreview(t.Context(), conn(t), id, 16)
+	if err != nil {
+		t.Fatalf("the preview failed: %v", err)
+	}
+	if !slices.ContainsFunc(preview.Items, func(item daemon.PreviewItem) bool { return item.Preview == "echo: "+long }) {
+		t.Fatalf("the long reply is missing from the preview: %d items", len(preview.Items))
+	}
+}
+
 func TestTUINavigationRetainsPendingTurnsAndContinuation(t *testing.T) {
 	entered, release := make(chan struct{}), make(chan struct{})
 	released := false

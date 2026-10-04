@@ -915,6 +915,11 @@ pub fn job_count(session: Session) -> Int {
   python.job_count(session.kernel)
 }
 
+/// Stop one background job by id.
+pub fn stop_job(session: Session, id: String) -> Result(Nil, String) {
+  python.stop_job(session.kernel, id)
+}
+
 pub fn save_state(
   session: Session,
   path: String,

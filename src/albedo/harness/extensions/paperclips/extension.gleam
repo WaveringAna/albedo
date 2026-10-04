@@ -55,7 +55,6 @@ pub fn extension() -> harness_extension.Extension {
           ),
         ),
       ]),
-      harness_extension.GlancePlugin(service.sidebar, service.resource_url),
       harness_extension.ServicePlugin(harness_extension.Service(
         fn(_, _) {
           harness_extension.Admission(harness_extension.DaemonToken, 65_536)

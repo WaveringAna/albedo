@@ -137,7 +137,6 @@ class KernelInvokeTest(unittest.TestCase):
             {"type": "reply", "id": "x", "value": {"ok": 1, "value": None}},
             {"type": "reply", "id": "x", "value": {"ok": True}},
             {"type": "reply", "id": "x", "value": {"ok": False, "code": "bad"}},
-            {"type": "job_slot", "id": "x", "ok": "yes"},
             {"type": "interrupt", "id": "x", "reason": "other"},
             {"type": "restore", "id": "x", "path": None},
             {"type": "release", "handle": []},

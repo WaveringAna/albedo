@@ -6,7 +6,7 @@
 %% `run.Wake` type: delivered, busy (the kernel retries), or
 %% {unavailable, Reason}.
 -module(albedo_wakes).
--export([register/2, forget/1, deliver/3]).
+-export([register/2, forget/1, deliver/3, deliver/4]).
 
 -define(TABLE, albedo_wakes).
 
@@ -15,7 +15,9 @@ register(Id, Fun) -> albedo_registry:register(?TABLE, Id, Fun).
 forget(Id) -> albedo_registry:forget(?TABLE, Id).
 
 %% The session's answer to one wake; a missing or crashed session is unavailable.
-deliver(Id, Display, Text) ->
-    albedo_registry:call(?TABLE, Id, 2, [Display, Text],
+deliver(Id, Display, Text) -> deliver(Id, <<"job">>, Display, Text).
+
+deliver(Id, Origin, Display, Text) ->
+    albedo_registry:call(?TABLE, Id, 3, [Origin, Display, Text],
                          {unavailable, <<"session unavailable">>},
                          {unavailable, <<"session unavailable">>}).

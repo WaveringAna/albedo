@@ -110,16 +110,24 @@ pub fn project(
       list.filter(entries, fn(entry) { entry.checkpoint != None })
     _ -> entries
   }
-  let shown = list.drop(projected, cursor.entry_offset) |> list.take(limit)
-  let first_position =
-    list.first(source.entries)
-    |> result.map(fn(entry) { entry.source.seq })
-    |> result.unwrap(cursor.position)
+  let #(skipped, shown) = case cursor.direction, cursor.entry_offset {
+    "before", 0 -> newest(projected, limit)
+    _, offset -> #(offset, list.drop(projected, offset) |> list.take(limit))
+  }
+  let first_position = case cursor.direction, shown {
+    "before", [first, ..] -> first.position
+    _, _ ->
+      list.first(source.entries)
+      |> result.map(fn(entry) { entry.source.seq })
+      |> result.unwrap(cursor.position)
+  }
   let last_position =
     list.last(source.entries)
     |> result.map(fn(entry) { entry.source.seq })
     |> result.unwrap(cursor.position)
-  let older = case source.has_older {
+  let older = case
+    source.has_older || skipped > 0 && cursor.direction == "before"
+  {
     True ->
       token(
         secret,
@@ -139,16 +147,14 @@ pub fn project(
       )
     False -> json.null()
   }
-  let newer = case
-    cursor.entry_offset + list.length(shown) < list.length(projected)
-  {
+  let newer = case skipped + list.length(shown) < list.length(projected) {
     True ->
       token(
         secret,
         id,
         view,
         limit,
-        Cursor(..cursor, entry_offset: cursor.entry_offset + list.length(shown)),
+        Cursor(..cursor, entry_offset: skipped + list.length(shown)),
       )
     False ->
       case source.more_continuations {
@@ -218,6 +224,36 @@ pub fn project(
       #("high_water", json.int(cursor.upper)),
     ]),
   )
+}
+
+/// The newest `limit` entries of a backwards page and how many come before
+/// them. A position cut in two is dropped whole, so the older page, which
+/// starts before the first shown position, repeats nothing and skips nothing.
+fn newest(
+  projected: List(http_history.Entry),
+  limit: Int,
+) -> #(Int, List(http_history.Entry)) {
+  let skipped = int.max(0, list.length(projected) - limit)
+  let tail = list.drop(projected, skipped)
+  case skipped, tail {
+    0, _ | _, [] -> #(skipped, tail)
+    _, [first, ..] -> {
+      let cut =
+        list.drop(projected, skipped - 1)
+        |> list.first
+        |> result.map(fn(before) { before.position == first.position })
+        |> result.unwrap(False)
+      let whole = case cut {
+        True ->
+          list.drop_while(tail, fn(entry) { entry.position == first.position })
+        False -> tail
+      }
+      case whole {
+        [] -> #(skipped, tail)
+        _ -> #(list.length(projected) - list.length(whole), whole)
+      }
+    }
+  }
 }
 
 pub fn history(

@@ -82,6 +82,18 @@ func TestSessionReadValidatesRequiredAndNullableMembers(t *testing.T) {
 		{"nested nullable retained", func(session map[string]any) {
 			session["kernel"].(map[string]any)["live_job_count"] = nil
 		}, true},
+		{"job list omitted", func(session map[string]any) {
+			delete(session["kernel"].(map[string]any), "running_jobs")
+		}, false},
+		{"unknown job list", func(session map[string]any) {
+			session["kernel"].(map[string]any)["running_jobs"] = nil
+		}, true},
+		{"job pid omitted", func(session map[string]any) {
+			session["kernel"].(map[string]any)["running_jobs"] = []any{map[string]any{"id": "j", "command": "sleep 10"}}
+		}, false},
+		{"nullable job pid", func(session map[string]any) {
+			session["kernel"].(map[string]any)["running_jobs"] = []any{map[string]any{"id": "j", "pid": nil, "command": "sleep 10"}}
+		}, true},
 		{"null scalar", func(session map[string]any) {
 			session["status"].(map[string]any)["interrupt_requested"] = nil
 		}, false},

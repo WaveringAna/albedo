@@ -198,6 +198,7 @@ pub type Message {
   )
   ReadEffort(Subject(Result(json.Json, String)))
   ChangeEffort(String, Subject(Result(json.Json, String)))
+  StopJob(String, Subject(Result(Nil, String)))
   /// Report on the kernel's staleness, or (True) force its swap now.
   UpgradeKernel(Subject(Result(runtime.KernelUpgrade, String)))
   UpgradeCompletion(
@@ -351,13 +352,22 @@ pub fn start(
         ),
         announced_status: None,
       )
-    // Background jobs wake this session through the kernel's jobs route; the
+    // Background jobs and cells wake through their kernel host routes; the
     // registered closure lands a completion notice as an ordinary submit, so
-    // the wake reuses the whole turn pipeline and busy answers itself.
-    wakes_register(info.id, fn(display, text) {
+    // the wake reuses the whole turn pipeline and busy answers itself. Its own
+    // input id keeps the one-line display beside the model's longer notice.
+    wakes_register(info.id, fn(origin, display, text) {
       wake(
         self,
-        Submission(display, text, "job", turn.JobWake, None, None, None),
+        Submission(
+          display,
+          text,
+          origin,
+          turn.JobWake,
+          None,
+          Some(mail.new_id()),
+          None,
+        ),
       )
     })
     commands_register(info.id, fn(op) { command_op(self, host, info.id, op) })
@@ -1229,6 +1239,12 @@ fn handle(
             Ok(state) -> compact(state, strategy, reply)
           }
       }
+    StopJob(id, reply) ->
+      case state.kernel {
+        Some(kernel) -> answer(state, reply, runtime.stop_job(kernel, id))
+        None ->
+          answer(state, reply, Error("no kernel attached to this session"))
+      }
     Watch(owner, notify) -> {
       let watchers = case
         list.any(state.watchers, fn(watcher) { watcher.owner == owner })
@@ -1826,6 +1842,26 @@ fn command_op(
           #("failure", json.nullable(report.failure, json.string)),
         ])
       })
+    command.KernelJobs ->
+      capture(session)
+      |> result.try(fn(captured) {
+        case captured.kernel.running_jobs {
+          Some(jobs) ->
+            Ok(
+              json.object([
+                #("items", json.array(jobs, python.job_json)),
+                #(
+                  "live_job_count",
+                  json.nullable(captured.kernel.live_job_count, json.int),
+                ),
+              ]),
+            )
+          None -> Error("kernel job observation unavailable")
+        }
+      })
+    command.KernelStopJob(id) ->
+      actor.call(session, 5000, StopJob(id, _))
+      |> result.map(fn(_) { json.object([#("stopped", json.bool(True))]) })
   }
 }
 
@@ -1922,7 +1958,7 @@ fn collect() -> Nil
 @external(erlang, "albedo_wakes", "register")
 fn wakes_register(
   session: String,
-  submit: fn(String, String) -> run.Wake,
+  submit: fn(String, String, String) -> run.Wake,
 ) -> Nil
 
 @external(erlang, "albedo_wakes", "forget")

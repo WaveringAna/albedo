@@ -266,9 +266,19 @@ func PatchUI(ctx context.Context, conn *Connection, patch UIPreferencesPatch) (U
 	err := patchSettingsGroup(ctx, conn, "ui", patch.ETag, patch, &change)
 	return UIPreferences{Thinking: change.Resource.Value.Thinking, Tools: change.Resource.Value.Tools, ETag: change.Resource.ETag}, err
 }
+
+// PatchSessionUI pins or archives one session. Session lists carry no ETag,
+// so a caller without one has the session's current ETag read first.
 func PatchSessionUI(ctx context.Context, conn *Connection, session string, patch UIPreferencesPatch) (UIPreferences, error) {
 	if patch.Thinking != nil || patch.Tools != nil {
 		return UIPreferences{}, errors.New("thinking and tools are shared preferences")
+	}
+	if patch.ETag == "" {
+		current, err := GetSessionConfiguration(ctx, conn, session)
+		if err != nil {
+			return UIPreferences{}, err
+		}
+		patch.ETag = current.ETag
 	}
 	body := protocol.SessionPatch{Preferences: &protocol.PreferencePatch{Pinned: patch.Pinned, Archived: patch.Archived}}
 	updated, err := patchSession(ctx, conn, session, patch.ETag, body)

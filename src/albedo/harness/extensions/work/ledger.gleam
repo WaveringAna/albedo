@@ -391,8 +391,8 @@ pub fn initialise(store: Store) -> Result(Nil, String) {
   storage.query(store, storage.exec(_, schema))
 }
 
-/// The pending sidebar reads only the twelve records it can display.
-pub fn pending(store: Store, cwd: String) -> Result(List(Item), Error) {
+/// The sidebar reads only the twelve active records it can display.
+pub fn active(store: Store, cwd: String) -> Result(List(Item), Error) {
   use _ <- result.try(valid_cwd(cwd))
   storage.query(store, fn(db) {
     use #(within, group) <- result.try(scope(db, cwd))
@@ -402,7 +402,7 @@ pub fn pending(store: Store, cwd: String) -> Result(List(Item), Error) {
         <> columns
         <> " FROM work WHERE "
         <> within
-        <> " AND status IN ('active','blocked','open') ORDER BY CASE status WHEN 'active' THEN 0 WHEN 'blocked' THEN 1 ELSE 2 END,id LIMIT 12",
+        <> " AND status='active' ORDER BY id LIMIT 12",
       group,
     )
   })

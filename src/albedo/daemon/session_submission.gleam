@@ -93,12 +93,12 @@ pub fn commits(
       }
       #(next, case submission.operation_id {
         None ->
-          case submission.source {
-            turn.Mail(id, _) -> [
+          case submission.source, submission.submission_id {
+            turn.Mail(id, _), _ | turn.JobWake, Some(id) -> [
               operations.Commit(id, position, display(submission)),
               ..acc.1
             ]
-            _ -> acc.1
+            _, _ -> acc.1
           }
         Some(id) -> [
           operations.Commit(id, position, display(submission)),

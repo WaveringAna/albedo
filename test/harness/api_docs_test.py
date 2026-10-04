@@ -109,7 +109,7 @@ class ApiDocsTest(unittest.TestCase):
             for name in vars(run.Job)
             if not name.startswith("_") and f"run.Job.{name}" not in INTERNAL
         ]
-        fields = ["id", "command", "exit_code", "duration", "waited", "timed_out"]
+        fields = ["id", "command", "exit_code", "duration", "timed_out"]
         missing = [
             name for name in public + fields if not re.search(rf"\bjob\.{name}\b", text)
         ]

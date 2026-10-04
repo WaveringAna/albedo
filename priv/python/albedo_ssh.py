@@ -181,10 +181,7 @@ def commands(target: str, home: str) -> dict[str, object]:
         "control": control,
         "bundle": bundle,
         "bridge": in_login_shell(
-            "ALBEDO_JOB_ADMISSION=1 "
-            + python
-            + shlex.quote(f"{bundle}/albedo_bridge.py")
-            + " --frame"
+            python + shlex.quote(f"{bundle}/albedo_bridge.py") + " --frame"
         ),
         "signal": in_login_shell(
             python + shlex.quote(f"{bundle}/albedo_signal.py") + " -"

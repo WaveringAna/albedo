@@ -132,7 +132,7 @@ fn project_row(
           let #(kind, text, origin) = case ownership.display {
             Some(display) ->
               case display.source {
-                "chat" | "mail" | "job" | "webhook" | "continue" -> #(
+                "chat" | "mail" | "webhook" | "continue" -> #(
                   "user",
                   case ownership.letter {
                     Some(letter) if letter.kind != mail.Webhook -> letter.body

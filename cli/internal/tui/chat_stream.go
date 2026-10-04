@@ -28,9 +28,28 @@ func (m ChatModel) toolLabel() string {
 		return ""
 	}
 	if progress := m.latestProgress(); progress != nil {
-		return actionLabel(progress, nil)
+		return m.liveActionLabel(progress)
 	}
 	return m.settledToolLabel
+}
+
+func (m ChatModel) liveActionLabel(progress *daemon.ToolProgress) string {
+	if progress.Name == "python" && progress.Phase == "running" {
+		if command := m.runningJobCommand(); command != "" {
+			return "running " + command
+		}
+	}
+	return actionLabel(progress, nil)
+}
+
+// runningJobCommand is the first live job's command, folded onto one row.
+func (m ChatModel) runningJobCommand() string {
+	for _, job := range m.Status.RunningJobs {
+		if command := oneLine(job.Command); command != "" {
+			return command
+		}
+	}
+	return ""
 }
 
 func (m *ChatModel) rememberProgress(progress *daemon.ToolProgress) {

@@ -15,6 +15,7 @@ from typing import cast
 from types import CodeType, FrameType
 import albedo_trace
 import asyncio
+import builtins
 import codecs
 import collections
 import contextvars
@@ -55,7 +56,6 @@ PENDING: dict[str, asyncio.Future[albedo_api.HostReply]] = {}
 # over directly, since the loop it would go through is the one waiting.
 WAITING: dict[str, tuple[threading.Event, list[albedo_api.HostReply]]] = {}
 HOST_NOW_TIMEOUT = 30.0
-JOB_SLOTS: dict[str, tuple[asyncio.Future[None], Callable[[], None]]] = {}
 HOST_SLOTS = asyncio.Semaphore(32)
 OWNER_CALLS = asyncio.Semaphore(32)  # concurrent tool calls from the connection owner
 OWNER_TASKS: dict[str, asyncio.Task[object]] = {}  # interruptable by invoke id
@@ -68,8 +68,14 @@ PENDING_OBJECTS: collections.OrderedDict[str, asyncio.Future[tuple[bool, object]
 )
 MIRROR_INTERVAL = 0.15  # seconds between output-tail mirror frames while data flows
 MIRROR_TAIL = 16 * 1024  # bytes of tail a mirror frame carries
-active: asyncio.Task[object] | None = None
-active_capture: Capture | None = None
+BACKGROUND_SECONDS = max(
+    0.01, float(os.environ.get("ALBEDO_CELL_BACKGROUND_SECONDS", "60"))
+)
+CELL_TASKS: dict[str, asyncio.Task[dict[str, object]]] = {}
+CELL_CAPTURES: dict[str, Capture] = {}
+BACKGROUND_RESULTS: dict[str, dict[str, object]] = {}
+READ_CELLS: set[str] = set()
+CELL_ANNOUNCER: asyncio.Task[None] | None = None
 interrupt_capture: Capture | None = None
 ARCHIVES: collections.OrderedDict[str, Capture] = collections.OrderedDict()
 # Finished executions by cell id: a replayed execute answers with its result
@@ -168,11 +174,12 @@ def receive(frame: object) -> None:
     if message["type"] == "shutdown":
         die()
     elif message["type"] == "interrupt":
-        capture = active_capture
-        if capture is not None and capture.id == message["id"]:
+        capture = CELL_CAPTURES.get(message["id"])
+        if capture is not None:
             interrupt_capture = capture
             capture.interruption = message.get("reason", "cancelled")
             os.kill(os.getpid(), signal.SIGINT)
+            _ = LOOP.call_soon_threadsafe(interrupt_queued, message)
         else:
             # The loop takes it after the execute it may name, not started yet.
             _ = LOOP.call_soon_threadsafe(deliver, message)
@@ -201,7 +208,7 @@ def watch() -> None:
         time.sleep(WATCH_INTERVAL)
         if not os.path.isdir(RUN_DIR):
             die()
-        busy = active is not None or not QUEUE.empty() or LINK.jobs.live() > 0
+        busy = bool(CELL_TASKS) or not QUEUE.empty() or LINK.jobs.live() > 0
         if not busy and LINK.idle_for() > LINK.grace:
             die()
 
@@ -214,25 +221,12 @@ def hello() -> dict[str, object]:
         "pgid": pgid if pgid == os.getpid() else None,
         "leader": albedo_proc.leader_token(os.getpid()),
         "ready": READY.is_set(),
-        "slots": [id for id, (slot, _) in JOB_SLOTS.items() if not slot.done()],
+        "cells": len(CELL_TASKS),
     }
 
 
 def deliver(message: albedo_api.Incoming) -> None:
-    if message["type"] == "job_slot":
-        entry = JOB_SLOTS.get(message["id"])
-        if entry is not None and not entry[0].done():
-            slot, on_queued = entry
-            if message.get("ok") is True:
-                LINK.jobs.hold(message["id"])
-                slot.set_result(None)
-            elif message.get("queued") is True:
-                on_queued()
-            else:
-                slot.set_exception(
-                    RuntimeError(str(message.get("message", "job admission failed")))
-                )
-    elif message["type"] == "interrupt":
+    if message["type"] == "interrupt":
         interrupt_queued(message)
     elif message["type"] == "reply":
         future = PENDING.pop(message["id"], None)
@@ -257,7 +251,7 @@ def deliver(message: albedo_api.Incoming) -> None:
         )
     elif message["type"] == "release":
         LIVE.pop(message["handle"], None)
-    elif message["type"] == "snapshot" and (active is not None or not QUEUE.empty()):
+    elif message["type"] == "snapshot" and (bool(CELL_TASKS) or not QUEUE.empty()):
         # A namespace mid-cell is no state to carry: the owner tries again later.
         send(state_reply(message, {"error": "a cell is still running"}))
     elif message["type"] == "execute" and message["id"] in FINISHED:
@@ -276,12 +270,12 @@ def interrupt_queued(message: albedo_api.Interrupt) -> None:
     at an await, where cancelling reaches it."""
     reason = message.get("reason", "cancelled")
     task = OWNER_TASKS.get(message["id"])
-    capture = active_capture
+    capture = CELL_CAPTURES.get(message["id"])
     if task is not None:
         _ = task.cancel()
-    elif active is not None and capture is not None and capture.id == message["id"]:
+    elif capture is not None:
         capture.interruption = reason
-        _ = active.cancel()
+        _ = CELL_TASKS[message["id"]].cancel()
     elif message["id"] in EXECUTING:
         INTERRUPTS[message["id"]] = reason
 
@@ -290,21 +284,6 @@ class WorkError(Exception):
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
         self.code: str = code
-
-
-async def job_slot(id: str, on_queued: Callable[[], None]) -> None:
-    """Wait for a heavy-job slot; `on_queued` runs at once if none is free, so
-    the caller can pause the job. Independent of host RPC slots."""
-    future: asyncio.Future[None] = LOOP.create_future()
-    JOB_SLOTS[id] = (future, on_queued)
-    send({"type": "job_acquire", "id": id})
-    try:
-        await future
-    except BaseException:
-        send({"type": "job_cancel", "id": id})
-        raise
-    finally:
-        JOB_SLOTS.pop(id, None)
 
 
 async def host(method: str, args: dict[str, object]) -> object:
@@ -351,9 +330,8 @@ def host_now(method: str, args: dict[str, object]) -> object:
 def attach_image(data: bytes) -> str:
     """Attach image bytes to the running cell; plugins reach this as api.attach_image."""
     capture = CELL.get()
-    # A task spawned by a finished cell still carries that cell's context; only
-    # the capture currently receiving output belongs to a result not yet sent.
-    if capture is None or capture.kind != "cell" or capture is not sink:
+    # Spawned tasks inherit context even after their creating cell finishes.
+    if capture is None or capture.kind != "cell" or capture.id not in ACTIVE_CAPTURES:
         raise RuntimeError(
             "images attach to a running cell; background work has no result to carry them"
         )
@@ -383,7 +361,8 @@ NATIVE = Capture("native", "native")
 NATIVE_LOCK = threading.RLock()
 NATIVE_FD = -1
 DECODER = codecs.getincrementaldecoder("utf-8")("replace")
-sink: Capture | None = None  # the cell whose code is running; native bytes join it
+NATIVE_SINKS: dict[asyncio.Task[object], Capture] = {}
+ACTIVE_CAPTURES: set[str] = set()
 
 
 def retained(id: str) -> Capture:
@@ -478,7 +457,8 @@ def drain() -> bool:
                 return False
             text = DECODER.decode(data)
             if text:
-                (sink or NATIVE).write(text)
+                sinks = list(NATIVE_SINKS.values())
+                (sinks[0] if len(sinks) == 1 else NATIVE).write(text)
 
 
 def native_output(fd: int) -> None:
@@ -491,7 +471,7 @@ def native_output(fd: int) -> None:
 
 
 def interrupt(_signal: int, _frame: FrameType | None) -> None:
-    if active_capture is not None and active_capture is interrupt_capture:
+    if CELL.get() is not None and CELL.get() is interrupt_capture:
         raise KeyboardInterrupt()
 
 
@@ -626,6 +606,7 @@ def capture_definitions(
 
 async def evaluate(source: str, cell_id: str, durable: bool = False) -> object:
     started = False
+    ACTIVE_CAPTURES.add(cell_id)
     try:
         prefix, suffix, tree = compile_cell(source, "<albedo:" + cell_id + ">")
         if durable:
@@ -657,6 +638,8 @@ async def evaluate(source: str, cell_id: str, durable: bool = False) -> object:
             setattr(error, "_albedo_cell_id", cell_id)
             setattr(error, "_albedo_started", started)
         raise
+    finally:
+        ACTIVE_CAPTURES.discard(cell_id)
 
 
 class Cells:
@@ -684,6 +667,7 @@ class Cells:
             raise ValueError("expected positive inclusive line numbers")
         if not isinstance(limit, int) or limit < 1:
             raise ValueError("limit must be a positive byte count")
+        cell_read(id)
         cell = cast(albedo_api.SavedCell, await host("cells.read", {"id": id}))
         lines = cell["source"].splitlines(keepends=True)
         data = "".join(lines[start_line - 1 : end_line]).encode(
@@ -700,10 +684,21 @@ class Cells:
         """Status (ok, error, interrupted, started, saved, lost, unavailable),
         parentage, whether the cell started, and how long a finished cell
         ran, without its source."""
+        cell_read(id)
         cell = cast(albedo_api.SavedCell, await host("cells.read", {"id": id}))
         return albedo_api.Record(
             (key, value) for key, value in cell.items() if key != "source"
         )
+
+    async def cancel(self, id: str) -> bool:
+        """Request cancellation of a running cell and suppress its completion wake."""
+        task = CELL_TASKS.get(id)
+        if task is None or task.done():
+            cell_read(id)
+            return False
+        READ_CELLS.add(id)
+        CELL_CAPTURES[id].interruption = "cancelled"
+        return task.cancel()
 
     async def list(self, limit: int = 20) -> albedo_api.ReadyList:
         """This session's cells, newest first: id, status, parent, and first line.
@@ -718,6 +713,7 @@ class Cells:
 
         Diffs can be large; inspect the fields rather than printing the whole trace.
         """
+        cell_read(id)
         return cast(dict[str, object], await host("cells.trace", {"id": id}))
 
     async def run(
@@ -818,9 +814,12 @@ INJECTED: set[str] = {"__name__", "__builtins__", "_"}
 
 
 def swap_sink(capture: Capture | None) -> Capture | None:
-    global sink
-    previous, sink = sink, capture
-    return previous
+    task = cast(asyncio.Task[object], asyncio.current_task())
+    with NATIVE_LOCK:
+        previous = NATIVE_SINKS.pop(task, None)
+        if capture is not None:
+            NATIVE_SINKS[task] = capture
+        return previous
 
 
 def background_capture(id: str) -> Capture:
@@ -836,7 +835,7 @@ def remember(capture: Capture) -> None:
     ARCHIVES.move_to_end(capture.id)
     counts = collections.Counter(held.kind for held in ARCHIVES.values())
     for key, held in list(ARCHIVES.items()):
-        if counts[held.kind] > LIMITS[held.kind]:
+        if counts[held.kind] > LIMITS[held.kind] and key not in EXECUTING:
             forget_output(key)
             counts[held.kind] -= 1
 
@@ -895,7 +894,6 @@ def _mirror_state(obj: object) -> dict[str, object]:
         "exit_code": getattr(obj, "exit_code", None),
         "timed_out": getattr(obj, "timed_out", False),
         "duration": getattr(obj, "duration", None),
-        "waited": getattr(obj, "waited", 0.0),
     }
 
 
@@ -1144,71 +1142,245 @@ def deliver_trace(capture: Capture) -> None:
     capture.trace.release()
 
 
+def cell_read(id: str) -> None:
+    task = CELL_TASKS.get(id)
+    if id in BACKGROUND_RESULTS or (task is not None and task.done()):
+        READ_CELLS.add(id)
+    BACKGROUND_RESULTS.pop(id, None)
+
+
+def first_line(code: str) -> str:
+    """The cell's first line that is not blank or a comment, for one-line displays."""
+    for line in code.splitlines():
+        line = line.strip()
+        if line and not line.startswith("#"):
+            return line[:200]
+    return "python cell"
+
+
+async def announce_cells() -> None:
+    while BACKGROUND_RESULTS:
+        batch = dict(BACKGROUND_RESULTS)
+        display = "\n".join(
+            f"cell finished (status={result['status']}, ran {result['duration']}s): {result['summary']}"
+            for result in batch.values()
+        )
+        listed = "; ".join(
+            f"{id}: status={result['status']}, ran {result['duration']}s"
+            for id, result in batch.items()
+        )
+        text = (
+            "<system-note>background python cells finished with results unread: "
+            + listed
+            + ". output.read(id) reads retained output; await cells.info(id) reads "
+            "the final status. no user sent this message; use the results if needed, "
+            "otherwise acknowledge briefly and stay idle.</system-note>"
+        )
+        try:
+            await host("cells.completed", {"display": display, "text": text})
+        except Exception as error:
+            if getattr(error, "code", "") == "busy":
+                await asyncio.sleep(2)
+                continue
+            for id in batch:
+                capture = ARCHIVES.get(id)
+                if capture is not None:
+                    capture.write(f"\n[completion notice not delivered: {error}]\n")
+        for id in batch:
+            BACKGROUND_RESULTS.pop(id, None)
+
+
+async def execute_cell(
+    message: albedo_api.Execute, capture: Capture
+) -> dict[str, object]:
+    token = CELL.set(capture)
+    status, value = "ok", ""
+    began = LOOP.time()
+    _ = swap_sink(capture)
+    try:
+        if capture.interruption:
+            raise asyncio.CancelledError()
+        result = await evaluate(
+            message["code"], capture.id, message.get("durable", False)
+        )
+        if result is not None:
+            value = show(result)
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        status = "interrupted"
+        if capture.interruption == "deadline":
+            capture.write("\n[cell deadline exceeded; execution interrupted]\n")
+    except BaseException as error:
+        status = "error"
+        failed_id = cast(str, getattr(error, "_albedo_cell_id", capture.id))
+        capture.write(traceback.format_exc())
+        if message.get("durable", False):
+            capture.write(
+                f"\n[cell {failed_id} retained; inspect with await cells.read({failed_id!r}); repair with await cells.run({failed_id!r}, replacements=[(old, new)])]\n"
+            )
+    finally:
+        _ = drain()
+        _ = swap_sink(None)
+        CELL.reset(token)
+    deliver_trace(capture)
+    return {
+        "type": "done",
+        "id": capture.id,
+        "status": status,
+        "duration": round(LOOP.time() - began, 3),
+        "output": capture.preview(status),
+        "value": value,
+        "truncated": capture.seen > PREVIEW,
+        "images": capture.encoded_images(),
+    }
+
+
+async def finish_background(
+    message: albedo_api.Execute, task: asyncio.Task[dict[str, object]]
+) -> None:
+    global CELL_ANNOUNCER
+    done = await task
+    capture = ARCHIVES[message["id"]]
+    if done["value"]:
+        capture.write("\n[result]\n" + str(done["value"]) + "\n")
+        done["output"] = capture.preview(str(done["status"]))
+        done["truncated"] = capture.seen > PREVIEW
+    # Commit before the wake, so cells.info/read see the terminal outcome.
+    if message.get("durable", False):
+        try:
+            await host("cells.finish", {"id": message["id"], "outcome": done})
+        except Exception as error:
+            ARCHIVES[message["id"]].write(
+                f"\n[cell result could not be journaled: {error}]\n"
+            )
+    else:
+        send(done)
+    retain_cell_result(message["id"], done)
+    if message["id"] in READ_CELLS:
+        READ_CELLS.discard(message["id"])
+        return
+    BACKGROUND_RESULTS[message["id"]] = {**done, "summary": first_line(message["code"])}
+    if CELL_ANNOUNCER is None or CELL_ANNOUNCER.done():
+        CELL_ANNOUNCER = LOOP.create_task(announce_cells())
+
+
+def retain_cell_result(id: str, done: dict[str, object]) -> None:
+    FINISHED[id] = done
+    while len(FINISHED) > FINISHED_LIMIT:
+        old, _ = FINISHED.popitem(last=False)
+        BACKGROUND_RESULTS.pop(old, None)
+        READ_CELLS.discard(old)
+    EXECUTING.discard(id)
+    CELL_TASKS.pop(id, None)
+    CELL_CAPTURES.pop(id, None)
+    capture = ARCHIVES.get(id)
+    if capture is not None:
+        capture.images.clear()
+        remember(capture)
+    send({"type": "cells", "live": len(CELL_TASKS)})
+
+
+def cell_timers(
+    capture: Capture, task: asyncio.Task[dict[str, object]], timeout_ms: int
+) -> tuple[
+    threading.Event,
+    threading.Event,
+    threading.Lock,
+    asyncio.Future[None],
+    threading.Timer,
+]:
+    detached = threading.Event()
+    settled = threading.Event()
+    response_lock = threading.Lock()
+    released: asyncio.Future[None] = LOOP.create_future()
+
+    def background() -> None:
+        with response_lock:
+            if settled.is_set() or task.done():
+                return
+            detached.set()
+            send(background_reply(capture))
+        LOOP.call_soon_threadsafe(released.set_result, None)
+
+    # Threads also fire while synchronous cell code occupies the asyncio loop.
+    background_timer = threading.Timer(BACKGROUND_SECONDS, background)
+    deadline_timer = threading.Timer(
+        timeout_ms / 1000,
+        receive,
+        args=({"type": "interrupt", "id": capture.id, "reason": "deadline"},),
+    )
+    background_timer.daemon = deadline_timer.daemon = True
+    background_timer.start()
+    deadline_timer.start()
+    task.add_done_callback(lambda _: deadline_timer.cancel())
+    return detached, settled, response_lock, released, background_timer
+
+
 async def serve():
-    global active, active_capture
     while True:
         message = await QUEUE.get()
         if message["type"] != "execute":
             send(state_reply(message))
             continue
         capture = Capture(message["id"], max_edge=message.get("max_edge"))
+        capture.interruption = ""
         remember(capture)
-        token = CELL.set(capture)
-        _ = swap_sink(capture)
-        status, value = "ok", ""
-        began = LOOP.time()
-        task = active = LOOP.create_task(
-            evaluate(message["code"], capture.id, message.get("durable", False))
-        )
+        if len(CELL_TASKS) >= LIMITS["cell"]:
+            done: dict[str, object] = {
+                "type": "done",
+                "id": capture.id,
+                "status": "error",
+                "duration": 0,
+                "output": "16 cells are still running; cancel an unused cell with await cells.cancel(id), or end your turn and wait for completion.",
+                "value": "",
+                "truncated": False,
+                "images": [],
+            }
+            retain_cell_result(capture.id, done)
+            send(done)
+            continue
+        task = LOOP.create_task(execute_cell(message, capture))
+        CELL_TASKS[capture.id] = task
+        CELL_CAPTURES[capture.id] = capture
+        send({"type": "cells", "live": len(CELL_TASKS)})
         interrupted = INTERRUPTS.pop(capture.id, None)
         if interrupted is not None:
             capture.interruption = interrupted
-            _ = task.cancel()
-        try:
-            active_capture = capture
-            result = await task
-            if result is not None:
-                value = show(result)
-        except (KeyboardInterrupt, asyncio.CancelledError):
-            status = "interrupted"
-            if capture.interruption == "deadline":
-                capture.write("\n[cell deadline exceeded; execution interrupted]\n")
-            if not task.done():
-                _ = task.cancel()
-        except BaseException as error:
-            status = "error"
-            failed_id = cast(str, getattr(error, "_albedo_cell_id", capture.id))
-            capture.write(traceback.format_exc())
-            if message.get("durable", False):
-                capture.write(
-                    f"\n[cell {failed_id} retained; inspect with await cells.read({failed_id!r}); repair with await cells.run({failed_id!r}, replacements=[(old, new)])]\n"
-                )
-        finally:
-            _ = (
-                drain()
-            )  # a subprocess that already wrote belongs to this cell, not the next
-            _ = swap_sink(None)
-            active = None
-            active_capture = None
-            CELL.reset(token)
-        duration = round(LOOP.time() - began, 3)
-        deliver_trace(capture)
-        done: dict[str, object] = {
-            "type": "done",
-            "id": capture.id,
-            "status": status,
-            "duration": duration,
-            "output": capture.preview(status),
-            "value": value,
-            "truncated": capture.seen > PREVIEW,
-            "images": capture.encoded_images(),
-        }
-        FINISHED[capture.id] = done
-        while len(FINISHED) > FINISHED_LIMIT:
-            FINISHED.popitem(last=False)
-        EXECUTING.discard(capture.id)
-        send(done)
-        capture.images.clear()
+        detached, settled, response_lock, released, background_timer = cell_timers(
+            capture, task, message.get("timeout_ms", 300_000)
+        )
+        _ = await asyncio.wait({task, released}, return_when=asyncio.FIRST_COMPLETED)
+        with response_lock:
+            settled.set()
+            background_timer.cancel()
+            is_background = detached.is_set()
+        if is_background:
+            watch_output(capture.id, lambda id=capture.id: cell_read(id))
+            _ = LOOP.create_task(finish_background(message, task))
+        else:
+            done = task.result()
+            retain_cell_result(capture.id, done)
+            READ_CELLS.discard(capture.id)
+            send(done)
+
+
+def background_reply(capture: Capture) -> dict[str, object]:
+    return {
+        "type": "done",
+        "id": capture.id,
+        "status": "backgrounded",
+        "duration": BACKGROUND_SECONDS,
+        "output": capture.preview("ok")
+        + (
+            f"\n[cell {capture.id} is still running in the background. "
+            "the session will wake automatically when it finishes; do NOT poll "
+            "or sleep. meanwhile do other useful work, or give the user a short "
+            "status report and end your turn. the original timeout_ms deadline "
+            "still applies. avoid changing variables this cell is using.]\n"
+        ),
+        "value": "",
+        "truncated": capture.seen > PREVIEW,
+        "images": capture.encoded_images(),
+    }
 
 
 def flush(timeout: float) -> None:
@@ -1278,10 +1450,6 @@ def main():
         modules=modules,
         watch_output=watch_output,
         attach_image=attach_image,
-        job_slot=job_slot
-        if os.environ.get("ALBEDO_JOB_ADMISSION") == "1"
-        and not os.environ.get("ALBEDO_REMOTE_TARGET")
-        else None,
     )
     NAMESPACE.update(cells=Cells(), output=Output(), show_image=show_image)
     try:
@@ -1295,6 +1463,10 @@ def main():
     sys.path[0] = ""
     # Plugin bindings and session objects are rebuilt on every start, never saved.
     INJECTED.update(NAMESPACE)
+    # Cell globals may shadow tools; deletion reveals the original session binding.
+    NAMESPACE["__builtins__"] = vars(builtins) | {
+        name: value for name, value in NAMESPACE.items() if not name.startswith("_")
+    }
     # Declare our own process group; a group we do not lead is never the supervisor's target.
     pgid = os.getpgid(0)
     send(
@@ -1311,8 +1483,10 @@ def main():
         try:
             LOOP.run_until_complete(task)
         except KeyboardInterrupt:
-            if active is not None:
-                _ = active.cancel()
+            if interrupt_capture is not None:
+                running = CELL_TASKS.get(interrupt_capture.id)
+                if running is not None:
+                    _ = running.cancel()
     die()
 
 
