@@ -1,4 +1,5 @@
-//// Clock-dependent schedule advancement must not emit duplicate due turns.
+//// Late recurring advancement must skip missed intervals without duplicate turns.
+//// Explicit timestamps exercise exact due boundaries without a wall-clock race.
 
 import albedo/daemon/store
 import albedo/harness/extensions/schedule/ledger

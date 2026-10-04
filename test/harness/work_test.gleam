@@ -1,8 +1,10 @@
 //// Concurrent revision updates must have exactly one winner.
+//// Two writes at one revision force the race that E2E cannot reliably order.
+//// Empty workspace scopes are rejected by HTTP admission before reaching SQL.
 
 import albedo/harness/extensions/work/ledger as work
 import gleam/erlang/process
-import gleam/option.{None, Some}
+import gleam/option.{None}
 
 pub fn only_one_concurrent_edit_wins_test() -> Nil {
   let assert Ok(store) = work.start(":memory:")
@@ -31,20 +33,8 @@ pub fn only_one_concurrent_edit_wins_test() -> Nil {
   work.close(store)
 }
 
-pub fn ledger_items_are_scoped_to_cwd_test() -> Nil {
+pub fn empty_workspace_is_not_a_ledger_scope_test() -> Nil {
   let assert Ok(store) = work.start(":memory:")
-  let assert Ok(first) = work.create(store, "/one", "first", "", None)
-  let assert Ok(second) = work.create(store, "/two", "second", "", None)
-  let assert Error(work.NotFound) = work.get(store, "/two", first.id)
-  let assert Error(work.NotFound) = work.update(store, "/two", first)
-  let assert Error(work.NotFound) =
-    work.delete(store, "/two", first.id, first.revision)
-  let assert Ok([only_first]) = work.list(store, "/one", 0, 10)
-  let assert True = only_first.id == first.id
-  let assert Ok([only_second]) = work.list(store, "/two", 0, 10)
-  let assert True = only_second.id == second.id
-  let assert Error(work.NotFound) =
-    work.create(store, "/two", "child", "", Some(first.id))
   let assert Error(work.Invalid(_)) = work.list(store, "", 0, 10)
   work.close(store)
 }

@@ -1,4 +1,7 @@
-"""Tests for the browser extension: WebSocket transport, CDP session, and page interactions."""
+"""WebSocket masking needs a controlled peer that daemon E2E cannot expose.
+
+Optional Chrome scenarios exercise the same CDP client against a real browser.
+"""
 
 from __future__ import annotations
 

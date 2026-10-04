@@ -1,4 +1,5 @@
-//// Method-name collisions and reserved Python attributes must map to distinct callable names.
+//// Every catalog must disambiguate method collisions and reserved Python names.
+//// This invariant covers arbitrary catalogs beyond the installed E2E commands.
 
 import albedo/harness/command.{
   Argument, Command, Data, ModelCall, Turn, UserCall,

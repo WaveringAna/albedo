@@ -7,7 +7,8 @@
 -export([main/0]).
 
 main() ->
-    Modules = [module(Path) || Path <- filelib:wildcard("**/*.{erl,gleam}", "test")],
+    Modules = [module(Path) || Path <- filelib:wildcard("**/*.{erl,gleam}", "test"),
+                              not lists:prefix("manual/", Path)],
     Options = [
         verbose,
         no_tty,

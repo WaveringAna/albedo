@@ -1,4 +1,5 @@
-//// A fork inside a condensed LCM node must reuse only complete children.
+//// Forks inside condensed nodes must retain only complete child summaries.
+//// Fixed graph ranges force fork boundaries that provider compaction cannot pin.
 
 import albedo/daemon/conversation
 import albedo/daemon/family

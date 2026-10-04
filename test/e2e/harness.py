@@ -451,7 +451,7 @@ class Daemon:
         self.base = f"http://127.0.0.1:{self.connection['port']}"
         if self.connection["pid"] != self._pid:
             # A new PID is valid only after the old daemon has exited.
-            if self._pid is not None and _alive(self._pid):
+            if self._pid is not None and alive(self._pid):
                 raise AssertionError(f"a second daemon started in {self.home}")
             self._pid = self.connection["pid"]
             with _daemons_lock:
@@ -494,7 +494,7 @@ class Daemon:
 
     def _gone(self, timeout):
         deadline = time.monotonic() + timeout
-        while _alive(self._pid):
+        while alive(self._pid):
             if time.monotonic() > deadline:
                 return False
             time.sleep(0.05)
@@ -510,7 +510,7 @@ class Daemon:
                 self.base = f"http://127.0.0.1:{self.connection['port']}"
                 self._pid = self.connection["pid"]
             if self._pid is not None:
-                if _alive(self._pid) and not self._stop(timeout=10):
+                if alive(self._pid) and not self._stop(timeout=10):
                     try:
                         os.kill(self._pid, signal.SIGKILL)
                     except ProcessLookupError:
@@ -649,7 +649,22 @@ resource.setrlimit(resource.RLIMIT_NOFILE, (int(sys.argv[1]), int(sys.argv[2])))
 os.execv(sys.argv[3], sys.argv[3:])"""
 
 
-def _alive(pid):
+def latest_user(request):
+    return [item["content"] for item in request["input"] if item.get("role") == "user"][
+        -1
+    ]
+
+
+def wait_until(condition, seconds, message):
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if condition():
+            return
+        time.sleep(0.1)
+    raise AssertionError(message)
+
+
+def alive(pid):
     try:
         os.kill(pid, 0)
     except ProcessLookupError:

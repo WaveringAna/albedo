@@ -14,6 +14,7 @@ import subprocess
 import time
 import unittest
 
+from harness import alive
 from harness import Albedo, Provider, exclusive, python, text
 
 
@@ -27,14 +28,6 @@ def bridges(home):
         for line in listing.splitlines()
         if "albedo_bridge.py" in line and str(home) in line
     ]
-
-
-def alive(pid):
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    return True
 
 
 # exclusive: changes daemon-wide heavy-job timing and restarts the daemon

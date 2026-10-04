@@ -93,7 +93,7 @@ func TestPooledMutationAcknowledgementLossIsNotReplayed(t *testing.T) {
 			defer server.Close()
 			conn := NewConnection(ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, nil)
 			defer conn.HTTPClient().CloseIdleConnections()
-			operation := operation{Name: "submit", Method: test.method, Path: "/mutation", Body: test.body, Policy: authRecovery}
+			operation := operation{Name: "submit", Method: test.method, Path: "/sessions/s/inputs/i", Body: test.body, Policy: authRecovery}
 			if _, err := requestBytes(context.Background(), conn, operation, responseLimits{bodyBytes: 50 * 1024 * 1024, errorBytes: 64 * 1024}); err != nil {
 				t.Fatal(err)
 			}
@@ -197,7 +197,7 @@ func TestMutationAuthRecoveryBudget(t *testing.T) {
 			}
 			conn := NewConnection(ConnectionSnapshot{Port: port, Token: "old", Version: ProtocolVersion}, rediscover)
 			defer conn.HTTPClient().CloseIdleConnections()
-			_, err := requestBytes(context.Background(), conn, operation{Name: "mutate", Method: http.MethodPost, Path: "/mutation", Policy: authRecovery}, responseLimits{bodyBytes: 50 * 1024 * 1024, errorBytes: 64 * 1024})
+			_, err := requestBytes(context.Background(), conn, operation{Name: "mutate", Method: http.MethodPost, Path: "/sessions/s/inputs/i", Policy: authRecovery}, responseLimits{bodyBytes: 50 * 1024 * 1024, errorBytes: 64 * 1024})
 			if calls.Load() != test.expected {
 				t.Fatalf("got %d dispatches, expected %d", calls.Load(), test.expected)
 			}
@@ -308,7 +308,7 @@ func TestOperationClosesResponsesAndBoundsReads(t *testing.T) {
 			body := &trackedResponseBody{Reader: strings.NewReader(test.content)}
 			conn := NewConnection(ConnectionSnapshot{Port: 12345}, nil)
 			conn.HTTPClient().Transport = responseTransport{response: &http.Response{StatusCode: test.status, Body: body, Header: make(http.Header)}}
-			_, err := requestBytes(context.Background(), conn, operation{Name: "mutate", Method: http.MethodPost, Path: "/mutation", Policy: authRecovery}, responseLimits{bodyBytes: 4, errorBytes: 4})
+			_, err := requestBytes(context.Background(), conn, operation{Name: "mutate", Method: http.MethodPost, Path: "/sessions/s/inputs/i", Policy: authRecovery}, responseLimits{bodyBytes: 4, errorBytes: 4})
 			if !body.closed {
 				t.Fatal("operation leaked response body")
 			}
@@ -337,7 +337,7 @@ func TestMutationRedirectIsNotFollowed(t *testing.T) {
 	defer source.Close()
 	conn := NewConnection(ConnectionSnapshot{Port: source.Listener.Addr().(*net.TCPAddr).Port}, nil)
 	defer conn.HTTPClient().CloseIdleConnections()
-	_, err := requestBytes(context.Background(), conn, operation{Name: "mutate", Method: http.MethodPost, Path: "/mutation", Body: map[string]string{"text": "hello"}, Policy: authRecovery}, responseLimits{bodyBytes: 50 * 1024 * 1024, errorBytes: 64 * 1024})
+	_, err := requestBytes(context.Background(), conn, operation{Name: "mutate", Method: http.MethodPost, Path: "/sessions/s/inputs/i", Body: map[string]string{"text": "hello"}, Policy: authRecovery}, responseLimits{bodyBytes: 50 * 1024 * 1024, errorBytes: 64 * 1024})
 	failure, ok := errors.AsType[*APIError](err)
 	if !ok || failure.StatusCode != 307 || admissions.Load() != 0 {
 		t.Fatalf("redirect policy changed: %v admissions=%d", err, admissions.Load())

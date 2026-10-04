@@ -4,6 +4,7 @@ import subprocess
 import time
 import unittest
 
+from harness import latest_user
 from harness import Albedo, Provider, exclusive, python, text
 from stream_pressure_test import StreamProbe
 
@@ -18,12 +19,6 @@ def notes_for(app, session, cursor):
 
 # Short enough that the test waits seconds, long enough to outlast a turn.
 IDLE_SECONDS = 2
-
-
-def latest_user(request):
-    return [item["content"] for item in request["input"] if item.get("role") == "user"][
-        -1
-    ]
 
 
 def kernels(daemon_pid):

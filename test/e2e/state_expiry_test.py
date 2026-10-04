@@ -9,6 +9,7 @@ import os
 import time
 import unittest
 
+from harness import latest_user, wait_until
 from harness import Albedo, Provider, exclusive, python, text
 
 IDLE_SECONDS = 1
@@ -16,21 +17,6 @@ EXPIRY_SECONDS = 3
 LOST = (
     "<system-note>The python kernel got reset and all variables are lost</system-note>"
 )
-
-
-def latest_user(request):
-    return [item["content"] for item in request["input"] if item.get("role") == "user"][
-        -1
-    ]
-
-
-def wait_until(condition, seconds, message):
-    deadline = time.monotonic() + seconds
-    while time.monotonic() < deadline:
-        if condition():
-            return
-        time.sleep(0.1)
-    raise AssertionError(message)
 
 
 # exclusive: changes daemon idle/expiry sweep timing and tests startup cleanup

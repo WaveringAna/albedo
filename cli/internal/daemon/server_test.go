@@ -279,7 +279,7 @@ func TestOperationSurfacesRefreshFailureWithoutReplaying(t *testing.T) {
 				}
 				return ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port, Token: "new"}, nil
 			})
-			_, err := requestBytes(t.Context(), conn, operation{Name: "change", Method: http.MethodPost, Path: "/mutation", Policy: authRecovery}, responseLimits{bodyBytes: 50 * 1024 * 1024, errorBytes: 64 * 1024})
+			_, err := requestBytes(t.Context(), conn, operation{Name: "change", Method: http.MethodPost, Path: "/sessions/s/inputs/i", Policy: authRecovery}, responseLimits{bodyBytes: 50 * 1024 * 1024, errorBytes: 64 * 1024})
 			if malformed {
 				if _, ok := errors.AsType[*ProtocolError](err); !ok {
 					t.Fatalf("server failure hidden: %v", err)

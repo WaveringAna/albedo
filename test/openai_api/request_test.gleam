@@ -1,4 +1,6 @@
-// Provider request replay preserves foreign fields while rejecting cross-protocol input and malformed image metadata.
+//// Replay must retain foreign fields and reject protocol or image mismatches.
+//// Direct inputs cover invalid metadata that daemon admission rejects first.
+
 import albedo/openai_api as openai
 import albedo/openai_api/request
 import albedo/openai_api/types

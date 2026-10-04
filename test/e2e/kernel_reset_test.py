@@ -5,17 +5,12 @@ import json
 import urllib.error
 import unittest
 
+from harness import latest_user
 from harness import Albedo, Provider, exclusive, python, text
 
 NOTICE = (
     "<system-note>The python kernel got reset and all variables are lost</system-note>"
 )
-
-
-def latest_user(request):
-    return [item["content"] for item in request["input"] if item.get("role") == "user"][
-        -1
-    ]
 
 
 # exclusive: crashes and restarts the daemon

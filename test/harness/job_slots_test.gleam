@@ -1,4 +1,5 @@
-//// Shared admission enforces concurrent local job limits across sessions.
+//// Shared admission must cap grants, bound its queue, and retain owned slots.
+//// Barriers force grant and owner-death interleavings that E2E cannot order.
 
 import gleeunit/should
 

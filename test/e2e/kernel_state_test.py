@@ -7,9 +7,9 @@ restore path lives in the kernel and the notice in the daemon.
 
 import os
 import pickle
-import time
 import unittest
 
+from harness import latest_user, wait_until
 from harness import Albedo, Provider, exclusive, python, text
 
 IDLE_SECONDS = 1
@@ -32,21 +32,6 @@ RECALL = (
     "      'big' in globals(), 'blob' in globals())"
 )
 LEGACY = "print('LEGACY', legacy)"
-
-
-def latest_user(request):
-    return [item["content"] for item in request["input"] if item.get("role") == "user"][
-        -1
-    ]
-
-
-def wait_until(condition, seconds, message):
-    deadline = time.monotonic() + seconds
-    while time.monotonic() < deadline:
-        if condition():
-            return
-        time.sleep(0.1)
-    raise AssertionError(message)
 
 
 # exclusive: requires the daemon-wide idle-kernel timing knob

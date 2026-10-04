@@ -10,7 +10,6 @@ its snapshot fails, and its process group ends either way.
 """
 
 import json
-import os
 from pathlib import Path
 import shutil
 import sqlite3
@@ -19,6 +18,7 @@ import time
 import unittest
 
 import harness
+from harness import alive
 from harness import Albedo, Provider, exclusive, python, text
 
 MARKER = '\nMARKER = "new bundle"\n'
@@ -53,14 +53,6 @@ def editable_daemon(root):
     )
     launcher.chmod(0o755)
     return launcher, albedo / "priv" / "python"
-
-
-def alive(pid):
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    return True
 
 
 class Swaps(unittest.TestCase):

@@ -1,4 +1,5 @@
-//// Partially executed cells must not replay side effects without explicit permission.
+//// Partial repairs require permission, and reused call IDs need distinct rows.
+//// Direct calls pin compile state and stored call identities independently of turns.
 
 import albedo/harness/extensions/python/cells
 import albedo/harness/extensions/python/kernel as python
