@@ -14,7 +14,7 @@ func TestEmptyProviderRecordsDoNotDuplicateStreamedReply(t *testing.T) {
 		model.SetSize(120, 30)
 		model.handleStreamEvent(daemon.StreamEvent{Type: daemon.EventUser, Text: "launch a child", Source: "chat"})
 		reply := "Launched a subagent to write the Python love song."
-		model.handleStreamEvent(daemon.StreamEvent{Type: daemon.EventText, Text: reply})
+		model.handleStreamEvent(daemon.StreamEvent{Type: daemon.EventText, Text: reply, MessageID: "live-reply"})
 		if settled {
 			model.handleStreamEvent(daemon.StreamEvent{Type: daemon.EventUsage})
 		}
@@ -23,6 +23,7 @@ func TestEmptyProviderRecordsDoNotDuplicateStreamedReply(t *testing.T) {
 		}
 		final := daemon.StreamEvent{Type: daemon.EventMessage, EntryID: "4", Position: 4, Text: reply}
 		model.handleStreamEvent(final)
+		model.handleStreamEvent(daemon.StreamEvent{Type: daemon.EventCommitted, Seq: 4, ReplacesLiveIDs: []string{"live-reply"}})
 		model.handleStreamEvent(final)
 		model.handleStreamEvent(daemon.StreamEvent{Type: daemon.EventTurnCompleted})
 		count, footers := 0, 0

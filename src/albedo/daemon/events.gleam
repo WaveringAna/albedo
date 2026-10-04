@@ -43,7 +43,11 @@ pub type Event {
   Note(entry_id: String, origin: String, text: String, mail: Option(json.Json))
   Retry(run_id: String, attempt: Int, reason: String, delay_ms: Int)
   Usage(usage.Metadata)
-  Committed(high_water: Int)
+  Committed(
+    high_water: Int,
+    replaces_live_ids: List(String),
+    replaces_all_live: Bool,
+  )
   TurnCompleted(run_id: String, state: String, input_ids: List(String))
   Compacted(
     observation: Option(compaction.Observation),
@@ -139,9 +143,13 @@ pub fn encode(session: String, sequence: Int, event: Event) -> json.Json {
       ]),
     )
     Usage(metadata) -> #("usage", usage(Some(metadata)))
-    Committed(high_water) -> #(
+    Committed(high_water, replaces_live_ids, replaces_all_live) -> #(
       "committed",
-      json.object([#("high_water", json.int(high_water))]),
+      json.object([
+        #("high_water", json.int(high_water)),
+        #("replaces_live_ids", json.array(replaces_live_ids, json.string)),
+        #("replaces_all_live", json.bool(replaces_all_live)),
+      ]),
     )
     TurnCompleted(run_id, state, ids) -> #(
       "turn_completed",

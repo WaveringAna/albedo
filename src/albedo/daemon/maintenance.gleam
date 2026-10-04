@@ -1,6 +1,7 @@
 //// One bounded maintenance worker per registry. Session owners decide releases.
 
 import albedo/actor_call
+import albedo/daemon/active_output
 import albedo/daemon/conversation
 import albedo/daemon/pastes
 import albedo/daemon/reaper
@@ -29,6 +30,7 @@ pub type Sweep {
 }
 
 pub fn run(sweep: Sweep) -> Nil {
+  active_output.maintenance(sweep.home)
   let reports =
     list.filter_map(sweep.workers, fn(entry) {
       actor_call.try_call(entry.1, waiting: 5000, sending: session.Idle)

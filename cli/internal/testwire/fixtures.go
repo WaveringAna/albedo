@@ -16,13 +16,13 @@ func Session(id, generation string, sequence int64) map[string]any {
 	return map[string]any{
 		"id": id, "name": "Session", "automatic_name": "Session", "location": map[string]any{"host": nil, "user": nil, "path": "/work", "label": nil}, "workspace": "/work", "parent_id": nil, "root_id": id, "address": nil, "depth": 0, "closed": false, "created_at": nil, "activity_at": nil, "provider_profile": nil, "model": nil, "effort": nil,
 		"status":  map[string]any{"phase": "idle", "run_id": nil, "interrupt_requested": false, "blocking_reason": nil},
-		"preview": map[string]any{"text": "", "transcript_count": 0, "truncated": false}, "preferences": map[string]any{"pinned": false, "pin_order": nil, "archived": false, "opens": 0}, "current_progress": []any{},
+		"preview": map[string]any{"text": "", "transcript_count": 0, "truncated": false}, "preferences": map[string]any{"pinned": false, "pin_order": nil, "archived": false, "opens": 0}, "current_progress": []any{}, "active_output": []any{},
 		"activity": map[string]any{"lines": []any{}, "output_scalars": 0, "output_utf8_bytes": 0, "observed_at": "2026-10-03T00:00:00Z", "latest_input": nil, "latest_answer": nil},
 		"cursor":   map[string]any{"generation": generation, "sequence": sequence}, "creation": nil, "revision": "revision-a", "family_revision": "family-a", "configuration_resource": map[string]any{"url": "/sessions/" + id + "?view=configuration", "etag": "\"revision-a\"", "value": config}, "workspace_change": nil,
 		"selection": map[string]any{"overrides": selection, "effective": selection}, "composition": map[string]any{"desired_revision": "composition-a", "loaded_revision": nil, "needs_reload": false, "dependencies": map[string]any{}, "quarantine": []any{}, "availability": map[string]bool{}},
 		"kernel": map[string]any{"state": "none", "stage": nil, "build": nil, "stale": false, "staleness_reasons": []any{}, "live_job_count": 0, "running_jobs": []any{}, "instance_id": nil}, "pending_inputs": []any{}, "input_order": 0,
 		"usage":   map[string]any{"model": nil, "observed_at": nil, "prompt_tokens": nil, "cached_prompt_tokens": nil, "cache_write_tokens": nil, "completion_tokens": nil, "total_tokens": nil, "elapsed_ms": nil, "tokens_per_second": nil, "context_window_tokens": nil, "cache_ttl_seconds": nil, "cache_fade": []any{}},
-		"history": map[string]any{"items": []any{}, "older": nil, "newer": nil, "high_water": 0}, "glances": []any{},
+		"history": map[string]any{"items": []any{}, "older": nil, "newer": nil, "high_water": 0, "replaces_live_ids": []any{}}, "glances": []any{},
 	}
 }
 func Input(session, id, kind, delivery string) map[string]any {
@@ -65,4 +65,4 @@ func Model(id string) map[string]any {
 	return map[string]any{"id": id, "label": id, "efforts": []any{map[string]string{"id": "low", "label": "Low"}, map[string]string{"id": "high", "label": "High"}}, "default_context_tokens": nil, "effective_context_tokens": nil, "max_context_tokens": nil, "max_output_tokens": nil, "input_modalities": []any{"text", "pdf"}, "image_edge": nil, "raised": false, "cap_key": "provider/" + id, "cache_policy": map[string]any{"ttl_seconds": nil, "source": nil}, "source": "catalog", "observed_at": nil}
 }
 
-const Server = `{"instance_id":"instance-a","protocol":3,"state":"ready","capabilities":{"durable_inputs":1,"session_replay":1,"collection_invalidation":1,"tool_progress":1,"context":1,"catalog":1,"workspace_browsing":1,"host_probes":1,"provider_auth":1,"storage_report":1},"build":null,"digest":null,"extensions":[],"quota":null,"notices":[]}`
+const Server = `{"instance_id":"instance-a","protocol":3,"state":"ready","capabilities":{"durable_inputs":1,"session_replay":2,"collection_invalidation":1,"tool_progress":1,"context":1,"catalog":1,"workspace_browsing":1,"host_probes":1,"provider_auth":1,"storage_report":1},"build":null,"digest":null,"extensions":[],"quota":null,"notices":[]}`

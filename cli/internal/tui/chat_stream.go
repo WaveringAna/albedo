@@ -81,8 +81,9 @@ func (m *ChatModel) handleStreamEvent(evt daemon.StreamEvent) {
 				entry.Speaker, entry.Source = inputSpeaker(evt), evt.Source
 				entry.MailKind, entry.SenderSessionID = evt.MailKind, evt.SenderSessionID
 				entry.Text = evt.Text
-			case daemon.EventMessage:
+			case daemon.EventMessage, daemon.EventThinking:
 				entry.Text = evt.Text
+				entry.ElapsedMs = evt.ElapsedMs
 			case daemon.EventNote:
 				entry.Text = evt.Text
 			case daemon.EventTool:
@@ -105,8 +106,16 @@ func (m *ChatModel) handleStreamEvent(evt daemon.StreamEvent) {
 			return
 		}
 	}
-	matchedStream := evt.Type == daemon.EventMessage && evt.Text != "" &&
-		m.transcript.streamedLen == int64(len(evt.Text)) && m.transcript.streamedHash == fnv1a(fnvOffset64, evt.Text)
+	retireAll := evt.Type == daemon.EventRetry || evt.Type == daemon.EventError || evt.Type == daemon.EventInterrupted || evt.Type == daemon.EventTurnCompleted && evt.Source != ""
+	if len(evt.ReplacesLiveIDs) > 0 || retireAll || evt.ReplacesAllLive {
+		if m.History.retireLive(evt.ReplacesLiveIDs, retireAll || evt.ReplacesAllLive) {
+			m.burstEpoch++
+			m.rebuildSettledLines()
+		}
+		if retireAll {
+			m.transcript.resetStream()
+		}
+	}
 	if evt.Replayed {
 		// Replayed events do not describe current activity; preserve live status.
 		defer func(live daemon.AgentStatus) { m.Status = live }(m.Status)
@@ -115,16 +124,6 @@ func (m *ChatModel) handleStreamEvent(evt daemon.StreamEvent) {
 	entries := m.transcript.apply(evt, m.AgentName)
 	for _, entry := range entries {
 		m.appendSettledEntry(entry)
-	}
-	// Usage or thinking may have settled the stream before its saved message.
-	if matchedStream && evt.EntryID != "" && m.History.Find(evt.EntryID) < 0 {
-		history := m.History.Entries()
-		for i, h := range slices.Backward(history) {
-			if h.Kind == EntryAssistant && h.ID == "" {
-				m.History.Identify(i, evt.EntryID, evt.Position)
-				break
-			}
-		}
 	}
 
 	switch evt.Type {

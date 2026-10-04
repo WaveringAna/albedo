@@ -15,7 +15,7 @@ import (
 	"time"
 )
 
-const readyServer = `{"instance_id":"instance-a","protocol":3,"state":"ready","capabilities":{"durable_inputs":1,"session_replay":1,"collection_invalidation":1,"tool_progress":1},"build":"verified-build","digest":"verified-digest","extensions":[],"quota":[],"notices":[]}`
+const readyServer = `{"instance_id":"instance-a","protocol":3,"state":"ready","capabilities":{"durable_inputs":1,"session_replay":2,"collection_invalidation":1,"tool_progress":1},"build":"verified-build","digest":"verified-digest","extensions":[],"quota":[],"notices":[]}`
 
 func TestAttachValidatesServerIdentityAndRequiredCapabilities(t *testing.T) {
 	for _, change := range []struct {

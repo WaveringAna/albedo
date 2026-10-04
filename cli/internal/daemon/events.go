@@ -139,6 +139,9 @@ type CacheStep struct {
 }
 
 type StreamEvent struct {
+	MessageID       string
+	ReplacesAllLive bool
+	ReplacesLiveIDs []string
 	EntryID         string
 	Position        int64
 	TurnType        string

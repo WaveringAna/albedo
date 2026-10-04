@@ -88,7 +88,7 @@ func decodeChatEnvelope(envelope sessionEventEnvelope, wireBytes int, content *e
 		if data.RunID == "" || data.MessageID == "" {
 			return nil, fieldError("message identity")
 		}
-		event.Text, event.TurnID = data.Text, data.RunID
+		event.Text, event.TurnID, event.MessageID = data.Text, data.RunID, data.MessageID
 		if data.ElapsedMs != nil {
 			event.ElapsedMs = *data.ElapsedMs
 			event.ElapsedObserved = true
@@ -171,15 +171,26 @@ func decodeChatEnvelope(envelope sessionEventEnvelope, wireBytes int, content *e
 		event.Usage = usageValue(data)
 	case "committed":
 		var data struct {
-			HighWater int64 `json:"high_water"`
+			HighWater       int64    `json:"high_water"`
+			ReplacesLiveIDs []string `json:"replaces_live_ids"`
+			ReplacesAllLive bool     `json:"replaces_all_live"`
 		}
-		if err := decodeRequired(envelope.Data, &data, "high_water"); err != nil {
+		if err := decodeRequired(envelope.Data, &data, "high_water", "replaces_live_ids", "replaces_all_live"); err != nil {
 			return nil, err
 		}
 		if data.HighWater < 0 {
 			return nil, fieldError("history high water")
 		}
-		event.Seq = data.HighWater
+		if data.ReplacesLiveIDs == nil || len(data.ReplacesLiveIDs) > 256 {
+			return nil, fieldError("live replacement identities")
+		}
+		for _, id := range data.ReplacesLiveIDs {
+			if id == "" {
+				return nil, fieldError("live replacement identity")
+			}
+		}
+		event.Seq, event.ReplacesLiveIDs = data.HighWater, data.ReplacesLiveIDs
+		event.ReplacesAllLive = data.ReplacesAllLive
 	case "turn_completed":
 		var data struct {
 			RunID      string   `json:"run_id"`
@@ -227,6 +238,9 @@ func decodeChatEnvelope(envelope sessionEventEnvelope, wireBytes int, content *e
 		}
 		if err := decodeRequired(envelope.Data, &data, "run_id", "code", "message"); err != nil {
 			return nil, err
+		}
+		if data.Code == "history_publication_failed" {
+			return nil, &APIError{StatusCode: 503, Code: data.Code, Message: data.Message}
 		}
 		event.Text, event.TurnID = data.Message, value(data.RunID)
 	case "invalidate":

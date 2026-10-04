@@ -28,7 +28,7 @@ func TestStopDaemonDoesNotRecoverAuthenticationRefusal(t *testing.T) {
 			_, _ = writer.Write([]byte(`{"code":"authentication_required","detail":"invalid bearer"}`))
 		case "/server":
 			healthProbes.Add(1)
-			_, _ = writer.Write([]byte(`{"instance_id":"replacement","protocol":3,"state":"ready","capabilities":{"durable_inputs":1,"session_replay":1,"collection_invalidation":1,"tool_progress":1},"build":null,"digest":null,"extensions":[],"quota":[],"notices":[]}`))
+			_, _ = writer.Write([]byte(`{"instance_id":"replacement","protocol":3,"state":"ready","capabilities":{"durable_inputs":1,"session_replay":2,"collection_invalidation":1,"tool_progress":1},"build":null,"digest":null,"extensions":[],"quota":[],"notices":[]}`))
 		default:
 			t.Errorf("unexpected request %s", request.URL.Path)
 			writer.WriteHeader(http.StatusNotFound)

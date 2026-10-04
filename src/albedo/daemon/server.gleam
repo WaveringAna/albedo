@@ -1,4 +1,6 @@
+import albedo/daemon/active_output
 import albedo/daemon/configuration
+import albedo/daemon/http_active_output
 import albedo/daemon/http_api
 import albedo/daemon/http_auth
 import albedo/daemon/http_resources
@@ -49,6 +51,7 @@ pub fn start(config: Config, port: Int) -> Result(Int, String) {
     |> result.replace_error("could not start runtime"),
   )
   use _ <- result.try(registry.prepare_storage(config, host))
+  active_output.maintenance(config.home)
   let name = process.new_name("albedo_registry")
   use _ <- result.try(
     supervisor.new(supervisor.OneForOne)
@@ -534,6 +537,14 @@ fn daemon_route(
         entry_id,
         req,
       )
+    Get, ["sessions", id, "active-output", content_id] ->
+      http_active_output.content(
+        config,
+        registry.host(registry) |> result.map(runtime.ledger),
+        id,
+        content_id,
+        req,
+      )
     Get, ["sessions", id, "context"] ->
       http_sessions.context(config, registry, id, req)
     Get, ["sessions", id, "catalog"] ->
@@ -648,6 +659,7 @@ fn protocol_method(path: List(String)) -> response.Response(mist.ResponseData) {
     ["sessions", _, "visits", _] -> Some("PUT")
     ["sessions", _, "history"]
     | ["sessions", _, "history", _]
+    | ["sessions", _, "active-output", _]
     | ["sessions", _, "context"]
     | ["sessions", _, "catalog"] -> Some("GET")
     ["server", "shutdown"]
@@ -745,7 +757,15 @@ fn protocol_server(
               "tool_progress", "storage_report", "context", "catalog",
               "settings", "workspace_browsing", "host_probes", "provider_auth",
             ],
-            fn(name) { #(name, json.int(1)) },
+            fn(name) {
+              #(
+                name,
+                json.int(case name {
+                  "session_replay" -> 2
+                  _ -> 1
+                }),
+              )
+            },
           ),
         ),
       ),

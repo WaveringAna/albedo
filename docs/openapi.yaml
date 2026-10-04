@@ -349,6 +349,7 @@ paths:
                         archived: false
                         opens: 0
                       current_progress: []
+                      active_output: []
                       activity:
                         lines: []
                         output_scalars: 0
@@ -486,6 +487,7 @@ paths:
                       archived: false
                       opens: 0
                     current_progress: []
+                    active_output: []
                     activity:
                       lines: []
                       output_scalars: 0
@@ -688,6 +690,7 @@ paths:
                       archived: false
                       opens: 0
                     current_progress: []
+                    active_output: []
                     activity:
                       lines: []
                       output_scalars: 0
@@ -1270,6 +1273,48 @@ paths:
             schema:
               $ref: '#/components/schemas/InterruptRequest'
         description: UTF-8 JSON; duplicate keys and unknown fields are rejected.
+  /sessions/{session_id}/active-output/{content_id}:
+    get:
+      operationId: getActiveOutputContent
+      summary: Read unfinished output at a captured snapshot cutoff
+      tags:
+      - sessions
+      description: Pages contain at most 262144 UTF-8 bytes and remain within the captured cutoff. Preserve the required snapshot query when following next.
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ID'
+      - name: content_id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ID'
+      - name: snapshot
+        in: query
+        required: true
+        schema:
+          $ref: '#/components/schemas/PageToken'
+      - name: next
+        in: query
+        schema:
+          $ref: '#/components/schemas/PageToken'
+      responses:
+        '200':
+          description: Bounded UTF-8 content page at the signed snapshot cutoff
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EntryContentPage'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '410':
+          $ref: '#/components/responses/Problem410'
+        '503':
+          $ref: '#/components/responses/Problem503'
   /sessions/{session_id}/history:
     get:
       operationId: getHistory
@@ -5411,6 +5456,7 @@ components:
             archived: false
             opens: 0
           current_progress: []
+          active_output: []
           activity:
             lines: []
             output_scalars: 0
@@ -6139,6 +6185,11 @@ components:
             $ref: '#/components/schemas/Counter'
           usage:
             $ref: '#/components/schemas/Usage'
+          active_output:
+            type: array
+            items:
+              $ref: '#/components/schemas/ActiveOutput'
+            maxItems: 256
           history:
             $ref: '#/components/schemas/HistoryPage'
           glances:
@@ -6147,7 +6198,7 @@ components:
               $ref: '#/components/schemas/Glance'
             maxItems: 16
         required: [creation, revision, family_revision, configuration_resource, workspace_change, selection,
-          composition, kernel, pending_inputs, input_order, usage, history, glances]
+          composition, kernel, pending_inputs, input_order, usage, history, glances, active_output]
       unevaluatedProperties: false
       x-max-encoded-bytes: 1048576
       examples:
@@ -6185,6 +6236,7 @@ components:
           archived: false
           opens: 0
         current_progress: []
+        active_output: []
         activity:
           lines: []
           output_scalars: 0
@@ -6693,6 +6745,30 @@ components:
           type: boolean
       required: [activities, changes, truncated]
       additionalProperties: false
+    ActiveOutput:
+      type: object
+      properties:
+        message_id:
+          $ref: '#/components/schemas/ID'
+        run_id:
+          $ref: '#/components/schemas/ID'
+        kind:
+          type: string
+          enum: [text, thinking]
+        bytes:
+          $ref: '#/components/schemas/Counter'
+        elapsed_ms:
+          type: [integer, 'null']
+          minimum: 0
+        text:
+          type: [string, 'null']
+        reference:
+          anyOf:
+          - $ref: '#/components/schemas/ContentReference'
+          - type: 'null'
+      required: [message_id, run_id, kind, bytes, elapsed_ms, text, reference]
+      additionalProperties: false
+      description: Ordered unfinished output captured with the session cursor. Exactly one of text or reference is non-null. References retain a fixed byte cutoff through their short snapshot lease. A run retains at most 64 MiB of unfinished output across at most 256 descriptors. Inline output is limited to 64 KiB encoded; larger content uses references.
     ContentReference:
       type: object
       properties:
@@ -8805,7 +8881,15 @@ components:
           properties:
             high_water:
               $ref: '#/components/schemas/Counter'
-          required: [high_water]
+            replaces_all_live:
+              type: boolean
+              description: Retire all provisional output for a model commit.
+            replaces_live_ids:
+              type: array
+              items:
+                $ref: '#/components/schemas/ID'
+              maxItems: 256
+          required: [high_water, replaces_live_ids, replaces_all_live]
           additionalProperties: false
       required: [type, sequence, data]
       additionalProperties: false
@@ -9032,6 +9116,7 @@ components:
             archived: false
             opens: 0
           current_progress: []
+          active_output: []
           activity:
             lines: []
             output_scalars: 0
@@ -9307,6 +9392,7 @@ components:
               interrupt_requested: false
               blocking_reason: null
             current_progress: []
+            active_output: []
             activity:
               lines: []
               output_scalars: 0

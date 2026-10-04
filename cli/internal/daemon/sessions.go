@@ -93,8 +93,11 @@ func decodeSession(data []byte) (Session, error) {
 	return sessionValue(wire), nil
 }
 func validateSession(wire protocol.Session) error {
-	if wire.ID == "" || wire.RootID == "" || wire.Cursor == nil || !validGeneration(wire.Cursor.Generation) || wire.Cursor.Sequence < 0 || wire.ConfigurationResource.ETag == "" || wire.History.Items == nil {
+	if wire.ID == "" || wire.RootID == "" || wire.Cursor == nil || !validGeneration(wire.Cursor.Generation) || wire.Cursor.Sequence < 0 || wire.ConfigurationResource.ETag == "" || wire.History.Items == nil || wire.ActiveOutput == nil {
 		return fieldError("session")
+	}
+	if err := validateActiveOutput(wire.ID, wire.ActiveOutput); err != nil {
+		return err
 	}
 	return validateSessionStatus(wire.Status)
 }

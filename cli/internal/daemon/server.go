@@ -56,7 +56,11 @@ func ProbeServer(ctx context.Context, conn *Connection) (ServerInfo, error) {
 func CheckCompatible(server ServerInfo) error {
 	failure := &CompatibilityError{Version: server.Protocol}
 	for _, name := range []string{"durable_inputs", "session_replay", "collection_invalidation", "tool_progress"} {
-		if server.Capabilities[name] < 1 {
+		minimum := int64(1)
+		if name == "session_replay" {
+			minimum = 2
+		}
+		if server.Capabilities[name] < minimum {
 			failure.MissingCapabilities = append(failure.MissingCapabilities, name)
 		}
 	}

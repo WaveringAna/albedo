@@ -786,6 +786,8 @@ pub fn scalar_prefix(text: String, limit: Int) -> String
 
 pub fn failure(code: String) -> Failure {
   case code {
+    "active_output_unavailable" ->
+      Failure(503, code, "unfinished output is unavailable")
     "operation_conflict" ->
       Failure(409, "id_conflict", "resource identity belongs to another intent")
     "input_conflict" ->

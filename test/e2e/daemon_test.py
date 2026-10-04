@@ -557,9 +557,13 @@ class DaemonTest(unittest.TestCase):
             self.assertEqual(
                 "".join(thought["text"] for thought in thoughts), "weighing it"
             )
-            self.assertGreaterEqual(
-                max(thought.get("elapsed_ms", 0) for thought in thoughts), 500
-            )
+            [published] = [
+                event["data"]["entry"]
+                for event in replay["events"]
+                if event["type"] == "message"
+                and event["data"]["entry"]["kind"] == "thinking"
+            ]
+            self.assertGreaterEqual(published["thinking_duration_ms"], 500)
             [durable] = [
                 entry
                 for entry in app.history(session)["items"]
@@ -574,6 +578,7 @@ class DaemonTest(unittest.TestCase):
                 "weighing it",
             )
             self.assertGreaterEqual(durable["thinking_duration_ms"], 500)
+            self.assertEqual(published["id"], durable["id"])
 
     def test_chunked_input_admission_counts_decoded_body_and_keeps_connection(self):
         provider = Provider(lambda _: text("chunked answer"))

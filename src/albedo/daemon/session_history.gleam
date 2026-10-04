@@ -1,5 +1,6 @@
 //// Transcript projection, provider attribution, and interrupted tool recovery.
 
+import albedo/daemon/active_output
 import albedo/daemon/conversation
 import albedo/daemon/events as view
 import albedo/daemon/http_history
@@ -174,6 +175,12 @@ pub fn remember_response(
         list.length(entries),
         list.any(inputs, fn(input) {
           case input {
+            types.Assistant(_) | types.Replay(_) -> True
+            _ -> False
+          }
+        }),
+        list.any(inputs, fn(input) {
+          case input {
             types.ToolOutput(_, _, _) -> False
             _ -> True
           }
@@ -187,16 +194,38 @@ pub fn remember_response(
 fn publish_committed(
   state: session_state.State(message),
   count: Int,
+  replace_live: Bool,
   publish_rows: Bool,
 ) -> session_state.State(message) {
+  let ids = case replace_live {
+    True -> active_output.ids(state.active_output)
+    False -> []
+  }
+  // This runs only after a durable commit; a failed projection read cannot
+  // leave its provisional prefix beside the already committed history.
+  let state = case replace_live {
+    True ->
+      session_state.State(
+        ..state,
+        active_output: active_output.retire(state.active_output),
+      )
+    False -> state
+  }
   case conversation.snapshot(runtime.ledger(state.host), state.info.id) {
-    Error(_) -> state
+    Error(reason) ->
+      session_state.emit(
+        state,
+        view.Failure(None, "history_publication_failed", reason),
+      )
     Ok(snapshot) -> {
       let state = case publish_rows {
         True -> publish_range(state, snapshot, snapshot.upper - count, 0, True)
         False -> state
       }
-      session_state.emit(state, view.Committed(snapshot.upper))
+      session_state.emit(
+        state,
+        view.Committed(snapshot.upper, ids, replace_live),
+      )
     }
   }
 }
@@ -271,15 +300,6 @@ fn publish_entry(
   entry: http_history.Entry,
 ) -> session_state.State(message) {
   case entry.kind {
-    "thinking" ->
-      case entry.turn_id, entry.thinking_ms {
-        Some(run_id), Some(elapsed) ->
-          session_state.emit(
-            state,
-            view.Thinking(run_id, entry.id, "", Some(elapsed)),
-          )
-        _, _ -> state
-      }
     "tool_call" | "tool_result" -> state
     _ -> session_state.emit(state, view.Message(entry))
   }

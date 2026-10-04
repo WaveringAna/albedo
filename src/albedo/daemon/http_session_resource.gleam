@@ -1,6 +1,7 @@
 //// A complete session resource, captured once by the session owner.
 
 import albedo/daemon/conversation
+import albedo/daemon/http_active_output
 import albedo/daemon/http_api
 import albedo/daemon/http_configuration
 import albedo/daemon/http_transcript
@@ -203,6 +204,17 @@ pub fn encode(
   Ok(
     json.object(
       list.append(http_wire.summary_fields(capture), [
+        #(
+          "active_output",
+          json.array(capture.active_output, fn(output) {
+            http_active_output.snapshot(
+              secret,
+              capture.info.id,
+              capture.cursor.generation,
+              output,
+            )
+          }),
+        ),
         #("creation", creation),
         #(
           "revision",

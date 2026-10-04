@@ -1,5 +1,6 @@
 //// Actor-owned session data and its bounded event stream.
 
+import albedo/daemon/active_output
 import albedo/daemon/bus
 import albedo/daemon/context_snapshot
 import albedo/daemon/conversation
@@ -28,6 +29,7 @@ pub type Watcher {
 
 pub type State(message) {
   State(
+    active_output: active_output.Projection,
     info: conversation.Info,
     host: runtime.Runtime,
     kernel: Option(runtime.Session),

@@ -22,6 +22,7 @@ const (
 )
 
 type HistoryEntry struct {
+	MessageID       string
 	ID              string
 	Source          string
 	MailKind        string
@@ -66,7 +67,7 @@ const (
 )
 
 func (e *HistoryEntry) ComputeSize() int64 {
-	size := int64(len(e.ID) + len(e.Source) + len(e.MailKind) + len(e.SenderSessionID) + len(e.Speaker) + len(e.Text) + len(e.ToolName) + len(e.ToolResult) + 64)
+	size := int64(len(e.ID) + len(e.MessageID) + len(e.Source) + len(e.MailKind) + len(e.SenderSessionID) + len(e.Speaker) + len(e.Text) + len(e.ToolName) + len(e.ToolResult) + 64)
 	for k, v := range e.ToolArgs {
 		size += int64(len(k) + 16)
 		switch val := v.(type) {
@@ -136,7 +137,9 @@ func (h *BoundedHistory) EvictedThrough() int64 {
 // Stamp marks the trailing entries no row covered yet as covered by seq.
 func (h *BoundedHistory) Stamp(seq int64) {
 	for i := len(h.entries) - 1; i >= 0 && h.entries[i].Seq == 0; i-- {
-		h.entries[i].Seq = seq
+		if h.entries[i].MessageID == "" {
+			h.entries[i].Seq = seq
+		}
 	}
 }
 
@@ -145,15 +148,6 @@ func (h *BoundedHistory) Find(id string) int {
 		return -1
 	}
 	return slices.IndexFunc(h.entries, func(entry HistoryEntry) bool { return entry.ID == id })
-}
-
-func (h *BoundedHistory) Identify(index int, id string, seq int64) {
-	entry := h.entries[index]
-	entry.ID, entry.Seq = id, seq
-	entry.ComputeSize()
-	h.totalBytes += entry.SizeBytes - h.entries[index].SizeBytes
-	h.entries[index] = entry
-	h.enforceBounds()
 }
 
 func (h *BoundedHistory) Replace(entry HistoryEntry) bool {
@@ -226,4 +220,18 @@ func (h *BoundedHistory) Append(entry HistoryEntry) {
 func (h *BoundedHistory) Clear() {
 	clear(h.entries)
 	*h = BoundedHistory{MaxEntries: h.MaxEntries, MaxBytes: h.MaxBytes, entries: h.entries[:0]}
+}
+
+// Retire provisional chunks without counting them as hidden durable history.
+func (h *BoundedHistory) retireLive(ids []string, all bool) bool {
+	removed := false
+	h.entries = slices.DeleteFunc(h.entries, func(entry HistoryEntry) bool {
+		retire := entry.MessageID != "" && (all || slices.Contains(ids, entry.MessageID))
+		if retire {
+			h.totalBytes -= entry.SizeBytes
+			removed = true
+		}
+		return retire
+	})
+	return removed
 }

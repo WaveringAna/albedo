@@ -19,25 +19,24 @@ type transcriptState struct {
 	activeKind ActiveStreamKind
 	// Only the current update path appends to activeBuffer. Retained model
 	// copies read activeText, whose bytes stay unchanged after each append.
-	activeBuffer   *strings.Builder
-	activeText     string
-	thoughtMs      int64
-	activeID       string
-	activePosition int64
-
-	streamedHash uint64
-	streamedLen  int64
+	activeBuffer     *strings.Builder
+	activeText       string
+	thoughtMs        int64
+	activeMessageID  string
+	liveIDs          map[string]bool
+	pendingCanonical *BoundedHistory
 }
 
 func newTranscriptState() transcriptState {
-	return transcriptState{streamedHash: fnvOffset64}
+	return transcriptState{}
 }
 
 func (t *transcriptState) resetStream() {
 	t.activeKind, t.activeText = StreamKindNone, ""
 	t.activeBuffer = nil
-	t.activeID, t.activePosition = "", 0
-	t.streamedHash, t.streamedLen = fnvOffset64, 0
+	t.activeMessageID = ""
+	t.liveIDs = nil
+	t.pendingCanonical = nil
 }
 
 func (t transcriptState) activeEntryKind() EntryKind {
@@ -51,8 +50,7 @@ func (t *transcriptState) settle(agentName string) []HistoryEntry {
 	var entries []HistoryEntry
 	if t.activeKind != StreamKindNone && t.activeText != "" {
 		entry := HistoryEntry{
-			ID:        t.activeID,
-			Seq:       t.activePosition,
+			MessageID: t.activeMessageID,
 			Kind:      t.activeEntryKind(),
 			Speaker:   agentName,
 			Text:      strings.Clone(t.activeText),
@@ -68,36 +66,40 @@ func (t *transcriptState) settle(agentName string) []HistoryEntry {
 	}
 	t.activeKind, t.activeText = StreamKindNone, ""
 	t.activeBuffer = nil
-	t.activeID, t.activePosition = "", 0
+	t.activeMessageID = ""
 	t.thinkingSince, t.thoughtMs = time.Time{}, 0
 	return entries
 }
 
-func (t *transcriptState) streamDelta(kind ActiveStreamKind, text, agentName string) []HistoryEntry {
+func (t *transcriptState) streamDelta(kind ActiveStreamKind, text, agentName, messageID string) []HistoryEntry {
 	if text == "" {
 		return nil
 	}
 	t.turnIsLive()
 	t.turn.answered = true
 	var entries []HistoryEntry
-	if t.activeKind != kind {
+	if t.activeKind != kind || t.activeMessageID != messageID {
 		entries = t.settle(agentName)
 		t.activeKind = kind
+		t.activeMessageID = messageID
 	}
 	if t.activeBuffer == nil {
 		t.activeBuffer = new(strings.Builder)
 	}
+	if messageID != "" {
+		if t.liveIDs == nil {
+			t.liveIDs = map[string]bool{}
+		}
+		t.liveIDs[messageID] = true
+	}
 	t.activeBuffer.WriteString(text)
 	t.activeText = t.activeBuffer.String()
-	if kind == StreamKindText {
-		t.streamedHash = fnv1a(t.streamedHash, text)
-		t.streamedLen += int64(len(text))
-	}
 	if len(t.activeText) > MaxLiveStreamBytes {
 		// One long thought splits into entries, each timed from its own start.
 		watched := !t.thinkingSince.IsZero()
 		entries = append(entries, t.settle(agentName)...)
 		t.activeKind = kind
+		t.activeMessageID = messageID
 		if watched {
 			t.thinkingSince = time.Now()
 		}
@@ -109,6 +111,23 @@ func (t *transcriptState) streamDelta(kind ActiveStreamKind, text, agentName str
 func (t *transcriptState) apply(evt daemon.StreamEvent, agentName string) []HistoryEntry {
 	// Empty provider records and agent progress are observations, not replies.
 	if evt.Type == daemon.EventMessage && evt.Text == "" || evt.Type == daemon.EventNote && evt.Source == "agent" {
+		return nil
+	}
+	if evt.EntryID != "" && !evt.Replayed && len(t.liveIDs) > 0 && (evt.Type == daemon.EventMessage || evt.Type == daemon.EventThinking) {
+		if t.pendingCanonical == nil {
+			t.pendingCanonical = NewBoundedHistory(500, 2*1024*1024)
+		}
+		kind := EntryAssistant
+		if evt.Type == daemon.EventThinking {
+			kind = EntryThinking
+		}
+		entry := HistoryEntry{ID: evt.EntryID, Seq: evt.Position, Kind: kind, Speaker: agentName, Text: evt.Text, ElapsedMs: evt.ElapsedMs}
+		if evt.Timestamp != nil {
+			entry.Timestamp = *evt.Timestamp
+		}
+		if !t.pendingCanonical.Replace(entry) {
+			t.pendingCanonical.Append(entry)
+		}
 		return nil
 	}
 	thoughtStart := cmp.Or(t.lastEvent, time.Now())
@@ -123,6 +142,24 @@ func (t *transcriptState) apply(evt daemon.StreamEvent, agentName string) []Hist
 		t.turn = nil
 	case daemon.EventRetry:
 		t.resetStream()
+	case daemon.EventCommitted:
+		if evt.ReplacesAllLive || slices.Contains(evt.ReplacesLiveIDs, t.activeMessageID) {
+			t.activeKind = StreamKindNone
+			t.activeText = ""
+			t.activeBuffer = nil
+			t.activeMessageID = ""
+			t.thinkingSince = time.Time{}
+		}
+		if evt.ReplacesAllLive {
+			t.liveIDs = nil
+		}
+		for _, id := range evt.ReplacesLiveIDs {
+			delete(t.liveIDs, id)
+		}
+		if t.pendingCanonical != nil {
+			entries = append(entries, t.pendingCanonical.Entries()...)
+			t.pendingCanonical = nil
+		}
 	case daemon.EventUser:
 		entries = t.settle(agentName)
 		speaker := inputSpeaker(evt)
@@ -144,11 +181,17 @@ func (t *transcriptState) apply(evt daemon.StreamEvent, agentName string) []Hist
 			t.turn = newOpenTurn(ts)
 		}
 	case daemon.EventText:
-		entries = t.streamDelta(StreamKindText, evt.Text, agentName)
+		entries = t.streamDelta(StreamKindText, evt.Text, agentName, evt.MessageID)
 	case daemon.EventThinking:
-		if t.activeKind != StreamKindThinking {
+		if evt.EntryID != "" {
+			entries = t.settle(agentName)
+			entries = append(entries, HistoryEntry{ID: evt.EntryID, Seq: evt.Position, Kind: EntryThinking, Speaker: agentName, Text: evt.Text, ElapsedMs: evt.ElapsedMs})
+			break
+		}
+		if t.activeKind != StreamKindThinking || t.activeMessageID != evt.MessageID {
 			entries = t.settle(agentName)
 			t.activeKind = StreamKindThinking
+			t.activeMessageID = evt.MessageID
 			if !evt.Replayed {
 				t.thinkingSince = thoughtStart
 			}
@@ -159,10 +202,7 @@ func (t *transcriptState) apply(evt daemon.StreamEvent, agentName string) []Hist
 		} else {
 			t.thoughtMs += evt.ElapsedMs
 		}
-		if evt.EntryID != "" {
-			t.activeID, t.activePosition = evt.EntryID, evt.Position
-		}
-		entries = append(entries, t.streamDelta(StreamKindThinking, evt.Text, agentName)...)
+		entries = append(entries, t.streamDelta(StreamKindThinking, evt.Text, agentName, evt.MessageID)...)
 	case daemon.EventToolProgress:
 		if !evt.Replayed {
 			t.turnIsLive()
@@ -183,21 +223,7 @@ func (t *transcriptState) apply(evt daemon.StreamEvent, agentName string) []Hist
 		t.turn.tools++
 		t.turn.touch(evt.Timestamp)
 	case daemon.EventMessage:
-		// Provider-only history entries carry checkpoints but no visible reply.
-		// They cannot consume the match for the streamed answer that follows them.
-		targetHash := fnv1a(fnvOffset64, evt.Text)
-		duplicate := t.streamedLen == int64(len(evt.Text)) && t.streamedHash == targetHash
-		t.streamedHash, t.streamedLen = fnvOffset64, 0
 		entries = t.settle(agentName)
-		if duplicate {
-			for index, entry := range slices.Backward(entries) {
-				if entry.Kind == EntryAssistant {
-					entries[index].ID, entries[index].Seq = evt.EntryID, evt.Position
-					break
-				}
-			}
-			return entries
-		}
 		var ts int64
 		if evt.Timestamp != nil && *evt.Timestamp > 0 {
 			ts = *evt.Timestamp
@@ -255,7 +281,9 @@ func replayTranscript(events []daemon.StreamEvent, agentName string) []HistoryEn
 			entries = nil
 		case daemon.EventCommitted:
 			for i := len(entries) - 1; i >= 0 && entries[i].Seq == 0; i-- {
-				entries[i].Seq = evt.Seq
+				if entries[i].MessageID == "" {
+					entries[i].Seq = evt.Seq
+				}
 			}
 		}
 	}

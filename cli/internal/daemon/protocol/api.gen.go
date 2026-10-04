@@ -48,6 +48,21 @@ type ActionOperation struct {
 	SuccessStatus *int64 `json:"success_status,omitempty"`
 }
 
+// ActiveOutput Ordered unfinished output captured with the session cursor. Exactly one of text or reference is non-null. References retain a fixed byte cutoff through their short snapshot lease. A run retains at most 64 MiB of unfinished output across at most 256 descriptors. Inline output is limited to 64 KiB encoded; larger content uses references.
+type ActiveOutput struct {
+	Bytes     Counter `json:"bytes"`
+	ElapsedMs *int64  `json:"elapsed_ms" nullable:"true"`
+	Kind      string  `json:"kind"`
+
+	// MessageID Opaque identity. Never infer a resource type or route from its contents.
+	MessageID ID                `json:"message_id"`
+	Reference *ContentReference `json:"reference" nullable:"true"`
+
+	// RunID Opaque identity. Never infer a resource type or route from its contents.
+	RunID ID      `json:"run_id"`
+	Text  *string `json:"text" nullable:"true"`
+}
+
 // Activity defines model for Activity.
 type Activity struct {
 	CurrentRequest *AgentRequest `json:"current_request,omitempty" nullable:"true"`
@@ -311,7 +326,7 @@ type ChildSessionRequest struct {
 	Task     string `json:"task"`
 }
 
-// CollectionBatch Examples: {"events":[{"data":{"activity":{"latest_answer":null,"latest_input":null,"lines":[],"observed_at":"2026-10-02T14:00:00Z","output_scalars":0,"output_utf8_bytes":0},"current_progress":[],"cursor":{"generation":"J6kYj6IGcXyP3eMIp-WL3A","sequence":0},"session_id":"01a0fcea-2b00-7000-8000-000000000001","status":{"blocking_reason":null,"interrupt_requested":false,"phase":"idle","run_id":null}},"type":"activity"}]}
+// CollectionBatch Examples: {"events":[{"data":{"active_output":[],"activity":{"latest_answer":null,"latest_input":null,"lines":[],"observed_at":"2026-10-02T14:00:00Z","output_scalars":0,"output_utf8_bytes":0},"current_progress":[],"cursor":{"generation":"J6kYj6IGcXyP3eMIp-WL3A","sequence":0},"session_id":"01a0fcea-2b00-7000-8000-000000000001","status":{"blocking_reason":null,"interrupt_requested":false,"phase":"idle","run_id":null}},"type":"activity"}]}
 type CollectionBatch = json.RawMessage
 
 // CollectionInvalidateEvent defines model for CollectionInvalidateEvent.
@@ -1954,7 +1969,7 @@ type RequestRecordPage struct {
 
 // ResetBatch Leading reset and complete snapshot. Later events, if any, follow the snapshot cursor. Envelope cursor advances through every delivered event.
 //
-// Examples: {"cursor":0,"events":[{"data":{"reason":"initial"},"type":"reset"}],"generation":"J6kYj6IGcXyP3eMIp-WL3A","snapshot":{"activity":{"latest_answer":null,"latest_input":null,"lines":[],"observed_at":"2026-10-02T14:00:00Z","output_scalars":0,"output_utf8_bytes":0},"activity_at":"2026-10-02T14:00:00Z","address":null,"automatic_name":"New session","closed":false,"composition":{"availability":{},"dependencies":{},"desired_revision":"composition-1","loaded_revision":null,"needs_reload":true,"quarantine":[]},"configuration_resource":{"etag":"\"session-config-1\"","url":"/sessions/01a0fcea-2b00-7000-8000-000000000001?view=configuration","value":{"effort":null,"family_revision":"family-1","id":"01a0fcea-2b00-7000-8000-000000000001","model":"example-model","name":"New session","preferences":{"archived":false,"pin_order":null,"pinned":false},"provider_profile":"personal","revision":"config-1","selection":{"extensions":{},"instructions":{},"mcp":{},"skills":{}},"workspace":"/workspace/project"}},"created_at":"2026-10-02T14:00:00Z","creation":{"resolved":{"effort":null,"model":"example-model","provider_profile":"personal","workspace":"/workspace/project"},"submitted":{"effort":null,"kind":"new","model":null,"name":null,"provider_profile":null,"workspace":"/workspace/project"}},"current_progress":[],"cursor":{"generation":"J6kYj6IGcXyP3eMIp-WL3A","sequence":0},"depth":0,"effort":null,"family_revision":"family-1","glances":[],"history":{"high_water":0,"items":[],"newer":null,"older":null},"id":"01a0fcea-2b00-7000-8000-000000000001","input_order":0,"kernel":{"build":null,"instance_id":null,"live_job_count":0,"running_jobs":[],"stage":null,"stale":false,"staleness_reasons":[],"state":"none"},"location":{"host":null,"label":null,"path":"/workspace/project","user":null},"model":"example-model","name":"New session","parent_id":null,"pending_inputs":[],"preferences":{"archived":false,"opens":0,"pin_order":null,"pinned":false},"preview":{"text":"","transcript_count":0,"truncated":false},"provider_profile":"personal","revision":"config-1","root_id":"01a0fcea-2b00-7000-8000-000000000001","selection":{"effective":{"extensions":{},"instructions":{},"mcp":{},"skills":{}},"overrides":{"extensions":{},"instructions":{},"mcp":{},"skills":{}}},"status":{"blocking_reason":null,"interrupt_requested":false,"phase":"idle","run_id":null},"usage":{"cache_fade":[],"cache_ttl_seconds":null,"cache_write_tokens":null,"cached_prompt_tokens":null,"completion_tokens":null,"context_window_tokens":null,"elapsed_ms":null,"model":null,"observed_at":null,"prompt_tokens":null,"tokens_per_second":null,"total_tokens":null},"workspace":"/workspace/project","workspace_change":null}}
+// Examples: {"cursor":0,"events":[{"data":{"reason":"initial"},"type":"reset"}],"generation":"J6kYj6IGcXyP3eMIp-WL3A","snapshot":{"active_output":[],"activity":{"latest_answer":null,"latest_input":null,"lines":[],"observed_at":"2026-10-02T14:00:00Z","output_scalars":0,"output_utf8_bytes":0},"activity_at":"2026-10-02T14:00:00Z","address":null,"automatic_name":"New session","closed":false,"composition":{"availability":{},"dependencies":{},"desired_revision":"composition-1","loaded_revision":null,"needs_reload":true,"quarantine":[]},"configuration_resource":{"etag":"\"session-config-1\"","url":"/sessions/01a0fcea-2b00-7000-8000-000000000001?view=configuration","value":{"effort":null,"family_revision":"family-1","id":"01a0fcea-2b00-7000-8000-000000000001","model":"example-model","name":"New session","preferences":{"archived":false,"pin_order":null,"pinned":false},"provider_profile":"personal","revision":"config-1","selection":{"extensions":{},"instructions":{},"mcp":{},"skills":{}},"workspace":"/workspace/project"}},"created_at":"2026-10-02T14:00:00Z","creation":{"resolved":{"effort":null,"model":"example-model","provider_profile":"personal","workspace":"/workspace/project"},"submitted":{"effort":null,"kind":"new","model":null,"name":null,"provider_profile":null,"workspace":"/workspace/project"}},"current_progress":[],"cursor":{"generation":"J6kYj6IGcXyP3eMIp-WL3A","sequence":0},"depth":0,"effort":null,"family_revision":"family-1","glances":[],"history":{"high_water":0,"items":[],"newer":null,"older":null},"id":"01a0fcea-2b00-7000-8000-000000000001","input_order":0,"kernel":{"build":null,"instance_id":null,"live_job_count":0,"running_jobs":[],"stage":null,"stale":false,"staleness_reasons":[],"state":"none"},"location":{"host":null,"label":null,"path":"/workspace/project","user":null},"model":"example-model","name":"New session","parent_id":null,"pending_inputs":[],"preferences":{"archived":false,"opens":0,"pin_order":null,"pinned":false},"preview":{"text":"","transcript_count":0,"truncated":false},"provider_profile":"personal","revision":"config-1","root_id":"01a0fcea-2b00-7000-8000-000000000001","selection":{"effective":{"extensions":{},"instructions":{},"mcp":{},"skills":{}},"overrides":{"extensions":{},"instructions":{},"mcp":{},"skills":{}}},"status":{"blocking_reason":null,"interrupt_requested":false,"phase":"idle","run_id":null},"usage":{"cache_fade":[],"cache_ttl_seconds":null,"cache_write_tokens":null,"cached_prompt_tokens":null,"completion_tokens":null,"context_window_tokens":null,"elapsed_ms":null,"model":null,"observed_at":null,"prompt_tokens":null,"tokens_per_second":null,"total_tokens":null},"workspace":"/workspace/project","workspace_change":null}}
 type ResetBatch struct {
 	Cursor Counter        `json:"cursor"`
 	Events []SessionEvent `json:"events"`
@@ -1962,7 +1977,7 @@ type ResetBatch struct {
 	// Generation 128 random bits encoded as unpadded base64url; new for each session actor lifetime.
 	Generation Generation `json:"generation"`
 
-	// Snapshot Examples: {"activity":{"latest_answer":null,"latest_input":null,"lines":[],"observed_at":"2026-10-02T14:00:00Z","output_scalars":0,"output_utf8_bytes":0},"activity_at":"2026-10-02T14:00:00Z","address":null,"automatic_name":"New session","closed":false,"composition":{"availability":{},"dependencies":{},"desired_revision":"composition-1","loaded_revision":null,"needs_reload":true,"quarantine":[]},"configuration_resource":{"etag":"\"session-config-1\"","url":"/sessions/01a0fcea-2b00-7000-8000-000000000001?view=configuration","value":{"effort":null,"family_revision":"family-1","id":"01a0fcea-2b00-7000-8000-000000000001","model":"example-model","name":"New session","preferences":{"archived":false,"pin_order":null,"pinned":false},"provider_profile":"personal","revision":"config-1","selection":{"extensions":{},"instructions":{},"mcp":{},"skills":{}},"workspace":"/workspace/project"}},"created_at":"2026-10-02T14:00:00Z","creation":{"resolved":{"effort":null,"model":"example-model","provider_profile":"personal","workspace":"/workspace/project"},"submitted":{"effort":null,"kind":"new","model":null,"name":null,"provider_profile":null,"workspace":"/workspace/project"}},"current_progress":[],"cursor":{"generation":"J6kYj6IGcXyP3eMIp-WL3A","sequence":0},"depth":0,"effort":null,"family_revision":"family-1","glances":[],"history":{"high_water":0,"items":[],"newer":null,"older":null},"id":"01a0fcea-2b00-7000-8000-000000000001","input_order":0,"kernel":{"build":null,"instance_id":null,"live_job_count":0,"running_jobs":[],"stage":null,"stale":false,"staleness_reasons":[],"state":"none"},"location":{"host":null,"label":null,"path":"/workspace/project","user":null},"model":"example-model","name":"New session","parent_id":null,"pending_inputs":[],"preferences":{"archived":false,"opens":0,"pin_order":null,"pinned":false},"preview":{"text":"","transcript_count":0,"truncated":false},"provider_profile":"personal","revision":"config-1","root_id":"01a0fcea-2b00-7000-8000-000000000001","selection":{"effective":{"extensions":{},"instructions":{},"mcp":{},"skills":{}},"overrides":{"extensions":{},"instructions":{},"mcp":{},"skills":{}}},"status":{"blocking_reason":null,"interrupt_requested":false,"phase":"idle","run_id":null},"usage":{"cache_fade":[],"cache_ttl_seconds":null,"cache_write_tokens":null,"cached_prompt_tokens":null,"completion_tokens":null,"context_window_tokens":null,"elapsed_ms":null,"model":null,"observed_at":null,"prompt_tokens":null,"tokens_per_second":null,"total_tokens":null},"workspace":"/workspace/project","workspace_change":null}
+	// Snapshot Examples: {"active_output":[],"activity":{"latest_answer":null,"latest_input":null,"lines":[],"observed_at":"2026-10-02T14:00:00Z","output_scalars":0,"output_utf8_bytes":0},"activity_at":"2026-10-02T14:00:00Z","address":null,"automatic_name":"New session","closed":false,"composition":{"availability":{},"dependencies":{},"desired_revision":"composition-1","loaded_revision":null,"needs_reload":true,"quarantine":[]},"configuration_resource":{"etag":"\"session-config-1\"","url":"/sessions/01a0fcea-2b00-7000-8000-000000000001?view=configuration","value":{"effort":null,"family_revision":"family-1","id":"01a0fcea-2b00-7000-8000-000000000001","model":"example-model","name":"New session","preferences":{"archived":false,"pin_order":null,"pinned":false},"provider_profile":"personal","revision":"config-1","selection":{"extensions":{},"instructions":{},"mcp":{},"skills":{}},"workspace":"/workspace/project"}},"created_at":"2026-10-02T14:00:00Z","creation":{"resolved":{"effort":null,"model":"example-model","provider_profile":"personal","workspace":"/workspace/project"},"submitted":{"effort":null,"kind":"new","model":null,"name":null,"provider_profile":null,"workspace":"/workspace/project"}},"current_progress":[],"cursor":{"generation":"J6kYj6IGcXyP3eMIp-WL3A","sequence":0},"depth":0,"effort":null,"family_revision":"family-1","glances":[],"history":{"high_water":0,"items":[],"newer":null,"older":null},"id":"01a0fcea-2b00-7000-8000-000000000001","input_order":0,"kernel":{"build":null,"instance_id":null,"live_job_count":0,"running_jobs":[],"stage":null,"stale":false,"staleness_reasons":[],"state":"none"},"location":{"host":null,"label":null,"path":"/workspace/project","user":null},"model":"example-model","name":"New session","parent_id":null,"pending_inputs":[],"preferences":{"archived":false,"opens":0,"pin_order":null,"pinned":false},"preview":{"text":"","transcript_count":0,"truncated":false},"provider_profile":"personal","revision":"config-1","root_id":"01a0fcea-2b00-7000-8000-000000000001","selection":{"effective":{"extensions":{},"instructions":{},"mcp":{},"skills":{}},"overrides":{"extensions":{},"instructions":{},"mcp":{},"skills":{}}},"status":{"blocking_reason":null,"interrupt_requested":false,"phase":"idle","run_id":null},"usage":{"cache_fade":[],"cache_ttl_seconds":null,"cache_write_tokens":null,"cached_prompt_tokens":null,"completion_tokens":null,"context_window_tokens":null,"elapsed_ms":null,"model":null,"observed_at":null,"prompt_tokens":null,"tokens_per_second":null,"total_tokens":null},"workspace":"/workspace/project","workspace_change":null}
 	Snapshot Session `json:"snapshot"`
 }
 
@@ -2111,6 +2126,7 @@ type Server struct {
 
 // Session defines model for Session.
 type Session struct {
+	ActiveOutput          []ActiveOutput               `json:"active_output"`
 	Activity              Activity                     `json:"activity"`
 	ActivityAt            *Timestamp                   `json:"activity_at" nullable:"true"`
 	Address               *string                      `json:"address" nullable:"true"`
@@ -2178,7 +2194,7 @@ type SessionChange struct {
 	} `json:"move" nullable:"true"`
 	Resource SessionConfigurationResource `json:"resource"`
 
-	// Session Examples: {"activity":{"latest_answer":null,"latest_input":null,"lines":[],"observed_at":"2026-10-02T14:00:00Z","output_scalars":0,"output_utf8_bytes":0},"activity_at":"2026-10-02T14:00:00Z","address":null,"automatic_name":"New session","closed":false,"composition":{"availability":{},"dependencies":{},"desired_revision":"composition-1","loaded_revision":null,"needs_reload":true,"quarantine":[]},"configuration_resource":{"etag":"\"session-config-1\"","url":"/sessions/01a0fcea-2b00-7000-8000-000000000001?view=configuration","value":{"effort":null,"family_revision":"family-1","id":"01a0fcea-2b00-7000-8000-000000000001","model":"example-model","name":"New session","preferences":{"archived":false,"pin_order":null,"pinned":false},"provider_profile":"personal","revision":"config-1","selection":{"extensions":{},"instructions":{},"mcp":{},"skills":{}},"workspace":"/workspace/project"}},"created_at":"2026-10-02T14:00:00Z","creation":{"resolved":{"effort":null,"model":"example-model","provider_profile":"personal","workspace":"/workspace/project"},"submitted":{"effort":null,"kind":"new","model":null,"name":null,"provider_profile":null,"workspace":"/workspace/project"}},"current_progress":[],"cursor":{"generation":"J6kYj6IGcXyP3eMIp-WL3A","sequence":0},"depth":0,"effort":null,"family_revision":"family-1","glances":[],"history":{"high_water":0,"items":[],"newer":null,"older":null},"id":"01a0fcea-2b00-7000-8000-000000000001","input_order":0,"kernel":{"build":null,"instance_id":null,"live_job_count":0,"running_jobs":[],"stage":null,"stale":false,"staleness_reasons":[],"state":"none"},"location":{"host":null,"label":null,"path":"/workspace/project","user":null},"model":"example-model","name":"New session","parent_id":null,"pending_inputs":[],"preferences":{"archived":false,"opens":0,"pin_order":null,"pinned":false},"preview":{"text":"","transcript_count":0,"truncated":false},"provider_profile":"personal","revision":"config-1","root_id":"01a0fcea-2b00-7000-8000-000000000001","selection":{"effective":{"extensions":{},"instructions":{},"mcp":{},"skills":{}},"overrides":{"extensions":{},"instructions":{},"mcp":{},"skills":{}}},"status":{"blocking_reason":null,"interrupt_requested":false,"phase":"idle","run_id":null},"usage":{"cache_fade":[],"cache_ttl_seconds":null,"cache_write_tokens":null,"cached_prompt_tokens":null,"completion_tokens":null,"context_window_tokens":null,"elapsed_ms":null,"model":null,"observed_at":null,"prompt_tokens":null,"tokens_per_second":null,"total_tokens":null},"workspace":"/workspace/project","workspace_change":null}
+	// Session Examples: {"active_output":[],"activity":{"latest_answer":null,"latest_input":null,"lines":[],"observed_at":"2026-10-02T14:00:00Z","output_scalars":0,"output_utf8_bytes":0},"activity_at":"2026-10-02T14:00:00Z","address":null,"automatic_name":"New session","closed":false,"composition":{"availability":{},"dependencies":{},"desired_revision":"composition-1","loaded_revision":null,"needs_reload":true,"quarantine":[]},"configuration_resource":{"etag":"\"session-config-1\"","url":"/sessions/01a0fcea-2b00-7000-8000-000000000001?view=configuration","value":{"effort":null,"family_revision":"family-1","id":"01a0fcea-2b00-7000-8000-000000000001","model":"example-model","name":"New session","preferences":{"archived":false,"pin_order":null,"pinned":false},"provider_profile":"personal","revision":"config-1","selection":{"extensions":{},"instructions":{},"mcp":{},"skills":{}},"workspace":"/workspace/project"}},"created_at":"2026-10-02T14:00:00Z","creation":{"resolved":{"effort":null,"model":"example-model","provider_profile":"personal","workspace":"/workspace/project"},"submitted":{"effort":null,"kind":"new","model":null,"name":null,"provider_profile":null,"workspace":"/workspace/project"}},"current_progress":[],"cursor":{"generation":"J6kYj6IGcXyP3eMIp-WL3A","sequence":0},"depth":0,"effort":null,"family_revision":"family-1","glances":[],"history":{"high_water":0,"items":[],"newer":null,"older":null},"id":"01a0fcea-2b00-7000-8000-000000000001","input_order":0,"kernel":{"build":null,"instance_id":null,"live_job_count":0,"running_jobs":[],"stage":null,"stale":false,"staleness_reasons":[],"state":"none"},"location":{"host":null,"label":null,"path":"/workspace/project","user":null},"model":"example-model","name":"New session","parent_id":null,"pending_inputs":[],"preferences":{"archived":false,"opens":0,"pin_order":null,"pinned":false},"preview":{"text":"","transcript_count":0,"truncated":false},"provider_profile":"personal","revision":"config-1","root_id":"01a0fcea-2b00-7000-8000-000000000001","selection":{"effective":{"extensions":{},"instructions":{},"mcp":{},"skills":{}},"overrides":{"extensions":{},"instructions":{},"mcp":{},"skills":{}}},"status":{"blocking_reason":null,"interrupt_requested":false,"phase":"idle","run_id":null},"usage":{"cache_fade":[],"cache_ttl_seconds":null,"cache_write_tokens":null,"cached_prompt_tokens":null,"completion_tokens":null,"context_window_tokens":null,"elapsed_ms":null,"model":null,"observed_at":null,"prompt_tokens":null,"tokens_per_second":null,"total_tokens":null},"workspace":"/workspace/project","workspace_change":null}
 	Session Session `json:"session"`
 }
 
@@ -2189,6 +2205,10 @@ type SessionChangeRequest = json.RawMessage
 type SessionCommittedEvent struct {
 	Data struct {
 		HighWater Counter `json:"high_water"`
+
+		// ReplacesAllLive Retire all provisional output for a model commit.
+		ReplacesAllLive bool `json:"replaces_all_live"`
+		ReplacesLiveIDs []ID `json:"replaces_live_ids"`
 	} `json:"data"`
 	Sequence Counter `json:"sequence"`
 	Type     string  `json:"type"`
@@ -2322,7 +2342,7 @@ type SessionNoteEvent struct {
 	Type     string  `json:"type"`
 }
 
-// SessionPage Examples: {"items":[{"activity":{"latest_answer":null,"latest_input":null,"lines":[],"observed_at":"2026-10-02T14:00:00Z","output_scalars":0,"output_utf8_bytes":0},"activity_at":"2026-10-02T14:00:00Z","address":null,"automatic_name":"New session","closed":false,"created_at":"2026-10-02T14:00:00Z","current_progress":[],"cursor":{"generation":"J6kYj6IGcXyP3eMIp-WL3A","sequence":0},"depth":0,"effort":null,"id":"01a0fcea-2b00-7000-8000-000000000001","location":{"host":null,"label":null,"path":"/workspace/project","user":null},"model":"example-model","name":"New session","parent_id":null,"preferences":{"archived":false,"opens":0,"pin_order":null,"pinned":false},"preview":{"text":"","transcript_count":0,"truncated":false},"provider_profile":"personal","root_id":"01a0fcea-2b00-7000-8000-000000000001","status":{"blocking_reason":null,"interrupt_requested":false,"phase":"idle","run_id":null},"workspace":"/workspace/project"}],"next":null}
+// SessionPage Examples: {"items":[{"active_output":[],"activity":{"latest_answer":null,"latest_input":null,"lines":[],"observed_at":"2026-10-02T14:00:00Z","output_scalars":0,"output_utf8_bytes":0},"activity_at":"2026-10-02T14:00:00Z","address":null,"automatic_name":"New session","closed":false,"created_at":"2026-10-02T14:00:00Z","current_progress":[],"cursor":{"generation":"J6kYj6IGcXyP3eMIp-WL3A","sequence":0},"depth":0,"effort":null,"id":"01a0fcea-2b00-7000-8000-000000000001","location":{"host":null,"label":null,"path":"/workspace/project","user":null},"model":"example-model","name":"New session","parent_id":null,"preferences":{"archived":false,"opens":0,"pin_order":null,"pinned":false},"preview":{"text":"","transcript_count":0,"truncated":false},"provider_profile":"personal","root_id":"01a0fcea-2b00-7000-8000-000000000001","status":{"blocking_reason":null,"interrupt_requested":false,"phase":"idle","run_id":null},"workspace":"/workspace/project"}],"next":null}
 type SessionPage struct {
 	Family *struct {
 		// Revision Opaque identity. Never infer a resource type or route from its contents.
@@ -3265,6 +3285,12 @@ type CreateSessionParams struct {
 	IfNoneMatch IfNoneMatch `json:"If-None-Match"`
 }
 
+// GetActiveOutputContentParams defines parameters for GetActiveOutputContent.
+type GetActiveOutputContentParams struct {
+	Snapshot PageToken  `form:"snapshot" json:"snapshot"`
+	Next     *PageToken `form:"next,omitempty" json:"next,omitempty"`
+}
+
 // GetCatalogParams defines parameters for GetCatalog.
 type GetCatalogParams struct {
 	Kind  *string `form:"kind,omitempty" json:"kind,omitempty"`
@@ -4019,6 +4045,13 @@ type ClientInterface interface {
 	//
 	// Corresponds with PUT /sessions/{session_id} (the `CreateSession` operationId).
 	CreateSession(ctx context.Context, sessionID UUIDv7, params *CreateSessionParams, body CreateSessionJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetActiveOutputContent Read unfinished output at a captured snapshot cutoff
+	//
+	// Pages contain at most 262144 UTF-8 bytes and remain within the captured cutoff. Preserve the required snapshot query when following next.
+	//
+	// Corresponds with GET /sessions/{session_id}/active-output/{content_id} (the `GetActiveOutputContent` operationId).
+	GetActiveOutputContent(ctx context.Context, sessionID ID, contentID ID, params *GetActiveOutputContentParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// GetCatalog Discover candidates, loaded commands and pages
 	//
@@ -5431,6 +5464,23 @@ func (c *Client) CreateSessionWithBody(ctx context.Context, sessionID UUIDv7, pa
 // Corresponds with PUT /sessions/{session_id} (the `CreateSession` operationId).
 func (c *Client) CreateSession(ctx context.Context, sessionID UUIDv7, params *CreateSessionParams, body CreateSessionJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewCreateSessionRequest(c.Server, sessionID, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// GetActiveOutputContent Read unfinished output at a captured snapshot cutoff
+//
+// Pages contain at most 262144 UTF-8 bytes and remain within the captured cutoff. Preserve the required snapshot query when following next.
+//
+// Corresponds with GET /sessions/{session_id}/active-output/{content_id} (the `GetActiveOutputContent` operationId).
+func (c *Client) GetActiveOutputContent(ctx context.Context, sessionID ID, contentID ID, params *GetActiveOutputContentParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetActiveOutputContentRequest(c.Server, sessionID, contentID, params)
 	if err != nil {
 		return nil, err
 	}
@@ -8922,6 +8972,82 @@ func NewCreateSessionRequestWithBody(server string, sessionID UUIDv7, params *Cr
 
 		req.Header.Set("If-None-Match", headerParam0)
 
+	}
+
+	return req, nil
+}
+
+// NewGetActiveOutputContentRequest constructs an http.Request for the GetActiveOutputContent method
+func NewGetActiveOutputContentRequest(server string, sessionID ID, contentID ID, params *GetActiveOutputContentParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "session_id", sessionID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	var pathParam1 string
+
+	pathParam1, err = runtime.StyleParamWithOptions("simple", false, "content_id", contentID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/sessions/%s/active-output/%s", pathParam0, pathParam1)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		// queryValues collects non-styled parameters (passthrough, JSON)
+		// that are safe to round-trip through url.Values.Encode().
+		queryValues := queryURL.Query()
+		// rawQueryFragments collects pre-encoded query fragments from
+		// styled parameters, preserving literal commas as delimiters
+		// per the OpenAPI spec (e.g. "color=blue,black,brown").
+		var rawQueryFragments []string
+
+		if queryFrag, err := runtime.StyleParamWithOptions("form", true, "snapshot", params.Snapshot, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
+			return nil, err
+		} else {
+			for _, qp := range strings.Split(queryFrag, "&") {
+				rawQueryFragments = append(rawQueryFragments, qp)
+			}
+		}
+
+		if params.Next != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "next", *params.Next, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if encoded := queryValues.Encode(); encoded != "" {
+			rawQueryFragments = append(rawQueryFragments, encoded)
+		}
+		queryURL.RawQuery = strings.Join(rawQueryFragments, "&")
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
 	}
 
 	return req, nil

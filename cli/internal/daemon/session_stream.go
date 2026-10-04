@@ -150,6 +150,7 @@ func (c *ChatClient) readStream(ctx context.Context, scanner *bufio.Scanner, onB
 		sequence := previous
 		var events []wireChatEvent
 		var current []ToolProgress
+		var outputs []protocol.ActiveOutput
 		if reset {
 			snapshot, err := decodeSession(batch.Snapshot)
 			if err != nil {
@@ -159,6 +160,7 @@ func (c *ChatClient) readStream(ctx context.Context, scanner *bufio.Scanner, onB
 				return streamFailure(StreamProtocol, fieldError("snapshot identity"))
 			}
 			sequence = snapshot.wire.Cursor.Sequence
+			outputs = snapshot.wire.ActiveOutput
 			before := int64(0)
 			if len(snapshot.wire.History.Items) > 0 {
 				before = snapshot.wire.History.Items[0].Position
@@ -187,6 +189,7 @@ func (c *ChatClient) readStream(ctx context.Context, scanner *bufio.Scanner, onB
 		} else if batch.Snapshot != nil || generation == "" || generation != batch.Generation {
 			return streamFailure(StreamProtocol, errors.New("initial or changed generation requires a snapshot reset"))
 		}
+		restoredEvents := len(events)
 		for index, raw := range batch.Events {
 			var envelope sessionEventEnvelope
 			if err := decodeRequired(raw, &envelope, "type", "data"); err != nil {
@@ -204,6 +207,10 @@ func (c *ChatClient) readStream(ctx context.Context, scanner *bufio.Scanner, onB
 			sequence = *envelope.Sequence
 			event, err := decodeChatEnvelope(envelope, len(raw), &eventContentReader{ctx: ctx, conn: c.conn, session: c.agentID})
 			if err != nil {
+				if api, ok := errors.AsType[*APIError](err); ok && api.Code == "history_publication_failed" {
+					c.ResetStream()
+					return streamFailure(StreamTransient, err)
+				}
 				if _, ok := errors.AsType[*StreamError](err); ok {
 					return err
 				}
@@ -220,11 +227,35 @@ func (c *ChatClient) readStream(ctx context.Context, scanner *bufio.Scanner, onB
 		if err != nil {
 			return streamFailure(StreamProtocol, err)
 		}
-		for _, event := range events {
+		stage, err := stageActiveOutput(ctx, c.conn, outputs)
+		if err != nil {
+			if api, ok := errors.AsType[*APIError](err); ok && (api.StatusCode == 404 || api.StatusCode == 410) {
+				c.ResetStream()
+				return streamFailure(StreamTransient, err)
+			}
+			return classifyStreamFailure(err)
+		}
+		prefixDelivered := !reset
+		for index, event := range events {
+			if !prefixDelivered && index == restoredEvents {
+				if err := stage.deliver(ctx, onEvent); err != nil {
+					stage.close()
+					return streamFailure(StreamTerminal, err)
+				}
+				prefixDelivered = true
+			}
 			if err := onEvent(event.StreamEvent); err != nil {
+				stage.close()
 				return streamFailure(StreamTerminal, err)
 			}
 		}
+		if !prefixDelivered {
+			if err := stage.deliver(ctx, onEvent); err != nil {
+				stage.close()
+				return streamFailure(StreamTerminal, err)
+			}
+		}
+		stage.close()
 		c.mu.Lock()
 		c.progressCallIDs = active
 		c.afterSeq = *batch.Cursor

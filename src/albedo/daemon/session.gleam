@@ -3,6 +3,7 @@
 import albedo/actor_call
 import albedo/clock
 
+import albedo/daemon/active_output
 import albedo/daemon/bus
 import albedo/daemon/context_snapshot
 import albedo/daemon/conversation
@@ -103,6 +104,7 @@ pub type Capture {
     composition: runtime.CompositionObservation,
     workspace_change: Option(session_workspace.Pending),
     preview: conversation.Preview,
+    active_output: List(active_output.Snapshot),
   )
 }
 
@@ -321,8 +323,10 @@ pub fn start(
       [] -> Nil
       _ -> process.send(self, StartQueued)
     }
+    let generation = new_generation()
     let state =
       session_state.State(
+        active_output: active_output.new(home, info.id, generation),
         info: info,
         host: host,
         kernel: None,
@@ -346,7 +350,7 @@ pub fn start(
         last_touch: clock.monotonic_ms(),
         booting: None,
         blocked_until: 0,
-        generation: new_generation(),
+        generation: generation,
         tool_progress: tool_progress_state.new(),
         progress_timer_token: 0,
         progress_timer: None,
@@ -926,6 +930,7 @@ fn capture_state(state: State) -> Result(Capture, String) {
     state.info.id,
   ))
   let summary = summary_state(state)
+  use active_output <- result.try(active_output.capture(state.active_output))
   use kernel <- result.try(session_namespace.observe_kernel(state))
   use composition <- result.try(runtime.observe_composition(
     state.host,
@@ -953,7 +958,47 @@ fn capture_state(state: State) -> Result(Capture, String) {
     composition,
     durable.workspace_change,
     durable.preview,
+    active_output,
   ))
+}
+
+fn publish_active(state: State, event: view.Event) -> State {
+  let #(projection, event) = case event {
+    view.Text(run_id, message_id, text) -> {
+      let id = active_output.namespace(state.active_output, message_id)
+      #(
+        active_output.observe(
+          state.active_output,
+          run_id,
+          id,
+          "text",
+          text,
+          None,
+        ),
+        view.Text(run_id, id, text),
+      )
+    }
+    view.Thinking(run_id, message_id, text, elapsed) -> {
+      let id = active_output.namespace(state.active_output, message_id)
+      #(
+        active_output.observe(
+          state.active_output,
+          run_id,
+          id,
+          "thinking",
+          text,
+          elapsed,
+        ),
+        view.Thinking(run_id, id, text, elapsed),
+      )
+    }
+    view.Retry(..) -> #(active_output.retry(state.active_output), event)
+    _ -> #(state.active_output, event)
+  }
+  session_state.emit(
+    session_state.State(..state, active_output: projection),
+    event,
+  )
 }
 
 fn cleanup_registrations(id: String) -> Nil {
@@ -1354,7 +1399,7 @@ fn handle(
                 True,
               )
             }
-            _ -> answer(session_state.emit(state, event), reply, True)
+            _ -> answer(publish_active(state, event), reply, True)
           }
         False -> answer(state, reply, False)
       }
@@ -1721,6 +1766,7 @@ fn handle(
       case runtime.delete_session(state.host, state.info.id) {
         Error(error) -> answer(state, reply, Error(error))
         Ok(_) -> {
+          active_output.revoke(state.home, state.info.id)
           cleanup_registrations(state.info.id)
           process.send(reply, Ok(Nil))
           actor.stop()
@@ -2669,7 +2715,12 @@ fn finish_turn(
       ),
     )
   let state = clear_tool_progress(state)
-  let state = session_state.State(..state, activity: turn.Resting)
+  let state =
+    session_state.State(
+      ..state,
+      activity: turn.Resting,
+      active_output: active_output.retire(state.active_output),
+    )
   bus.running(state.info.id, False)
   // A webhook or wake refused while this run held the session can
   // be admitted now.

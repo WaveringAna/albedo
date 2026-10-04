@@ -34,7 +34,7 @@ func TestCanonicalCompletionSettlesAndClosesLiveTurn(t *testing.T) {
 		t.Run(source, func(t *testing.T) {
 			state := newTranscriptState()
 			state.apply(daemon.StreamEvent{Type: daemon.EventUser, Text: "question", Source: "chat"}, "agent")
-			state.apply(daemon.StreamEvent{Type: daemon.EventText, Text: "answer"}, "agent")
+			state.apply(daemon.StreamEvent{Type: daemon.EventText, Text: "answer", MessageID: "live-answer"}, "agent")
 			entries := state.apply(daemon.StreamEvent{Type: daemon.EventTurnCompleted, Source: source}, "agent")
 			if state.turn != nil || state.activeText != "" || len(entries) != 2 || entries[0].Kind != EntryAssistant || entries[0].Text != "answer" || entries[1].Kind != EntryTurnEnd {
 				t.Fatalf("completion did not settle and close the turn: %#v", entries)
@@ -101,8 +101,9 @@ func TestTranscriptDiscardPreservesRetainedReaders(t *testing.T) {
 			if state.activeBuffer != nil || state.activeText != "" || state.activeKind != StreamKindNone {
 				t.Fatal("discard retained live buffer ownership")
 			}
-			state.apply(daemon.StreamEvent{Type: daemon.EventText, Text: "fresh"}, "agent")
-			entries := state.apply(daemon.StreamEvent{Type: daemon.EventMessage, Text: "fresh"}, "agent")
+			state.apply(daemon.StreamEvent{Type: daemon.EventText, Text: "fresh", MessageID: "fresh-live"}, "agent")
+			state.apply(daemon.StreamEvent{Type: daemon.EventMessage, Text: "fresh", EntryID: "fresh-stored", Position: 1}, "agent")
+			entries := state.apply(daemon.StreamEvent{Type: daemon.EventCommitted, Seq: 1, ReplacesLiveIDs: []string{"fresh-live"}}, "agent")
 			if retained.activeText != "discarded" || len(entries) != 1 || entries[0].Text != "fresh" {
 				t.Fatal("discard changed a retained reader or failed to reset message deduplication")
 			}
@@ -136,24 +137,19 @@ func TestTranscriptSplitsStrictlyAfterAppendingPastLimit(t *testing.T) {
 	}
 }
 
-func TestTranscriptMessageDeduplicationSpansSettlements(t *testing.T) {
-	state := newTranscriptState()
+func TestCommittedIdentityReplacesAllProvisionalChunks(t *testing.T) {
+	model := newTestChatModel(t, &daemon.Session{ID: "s"})
 	first := strings.Repeat("a", MaxLiveStreamBytes+1)
-	second := "second"
-	var history []HistoryEntry
-	history = append(history, state.apply(daemon.StreamEvent{Type: daemon.EventText, Text: first}, "agent")...)
-	history = append(history, state.apply(daemon.StreamEvent{Type: daemon.EventThinking, Text: "thought"}, "agent")...)
-	history = append(history, state.apply(daemon.StreamEvent{Type: daemon.EventText, Text: second}, "agent")...)
-	history = append(history, state.apply(daemon.StreamEvent{Type: daemon.EventUsage}, "agent")...)
-	if entries := state.apply(daemon.StreamEvent{Type: daemon.EventMessage, Text: first + second}, "agent"); len(entries) != 0 {
-		t.Fatal("committed message duplicated text settled across multiple boundaries")
-	}
-	if len(history) != 3 || history[0].Text != first || history[1].Text != "thought" || history[2].Text != second {
-		t.Fatal("multiple settlements lost or reordered history")
-	}
-	entries := state.apply(daemon.StreamEvent{Type: daemon.EventMessage, Text: first + second}, "agent")
-	if len(entries) != 1 || entries[0].Text != first+second {
-		t.Fatal("deduplication did not reset after the committed message")
+	model.handleStreamEvent(daemon.StreamEvent{Type: daemon.EventText, Text: first, MessageID: "live-text"})
+	model.handleStreamEvent(daemon.StreamEvent{Type: daemon.EventThinking, Text: "thought", MessageID: "live-thought"})
+	model.handleStreamEvent(daemon.StreamEvent{Type: daemon.EventText, Text: "second", MessageID: "live-text"})
+	model.handleStreamEvent(daemon.StreamEvent{Type: daemon.EventUsage})
+	model.handleStreamEvent(daemon.StreamEvent{Type: daemon.EventMessage, Text: first + "second", EntryID: "stored-text", Position: 7})
+	model.handleStreamEvent(daemon.StreamEvent{Type: daemon.EventThinking, Text: "thought", EntryID: "stored-thought", Position: 8})
+	model.handleStreamEvent(daemon.StreamEvent{Type: daemon.EventCommitted, Seq: 8, ReplacesAllLive: true, ReplacesLiveIDs: []string{}})
+	entries := model.History.Entries()
+	if len(entries) != 2 || entries[0].ID != "stored-text" || entries[0].Text != first+"second" || entries[1].ID != "stored-thought" || entries[1].MessageID != "" {
+		t.Fatalf("commit retained provisional chunks or lost canonical content: %#v", entries)
 	}
 }
 
@@ -175,10 +171,11 @@ func TestANoteTheAgentNeverAnsweredHasNoSignoff(t *testing.T) {
 
 func TestTranscriptDeduplicatedMessageKeepsCommittedIdentity(t *testing.T) {
 	state := newTranscriptState()
-	state.apply(daemon.StreamEvent{Type: daemon.EventText, Text: "answer"}, "agent")
-	entries := state.apply(daemon.StreamEvent{
+	state.apply(daemon.StreamEvent{Type: daemon.EventText, Text: "answer", MessageID: "live-answer"}, "agent")
+	state.apply(daemon.StreamEvent{
 		Type: daemon.EventMessage, Text: "answer", EntryID: "message-1", Position: 7,
 	}, "agent")
+	entries := state.apply(daemon.StreamEvent{Type: daemon.EventCommitted, Seq: 7, ReplacesLiveIDs: []string{"live-answer"}}, "agent")
 	if len(entries) != 1 || entries[0].ID != "message-1" || entries[0].Seq != 7 {
 		t.Fatalf("settled message lost committed identity: %#v", entries)
 	}
