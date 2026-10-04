@@ -62,21 +62,20 @@ func ListWebhooks(ctx context.Context, conn *Connection, sessionID string) ([]We
 	if sessionID != "" {
 		params.SessionID = &sessionID
 	}
-	seen := map[string]bool{}
-	for {
+	err := walkPages(func(next *string) (protocol.HookPage, *string, error) {
+		params.Next = next
 		var page protocol.HookPage
-		err := executeRead(ctx, conn, operation{Name: "list webhooks", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
+		pageErr := executeRead(ctx, conn, operation{Name: "list webhooks", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
 			return protocol.NewListHooksRequest(base, &params)
 		}, Policy: readRecovery}, func(data []byte) error { return decodeRequired(data, &page) })
-		if err != nil {
-			return nil, err
-		}
+		return page, page.Next, pageErr
+	}, func(page protocol.HookPage) error {
 		if page.Items == nil {
-			return nil, fieldError("hooks")
+			return fieldError("hooks")
 		}
 		for _, row := range page.Items {
 			if row.ConfigurationResource.ETag == "" {
-				return nil, fieldError("hook validator")
+				return fieldError("hook validator")
 			}
 			var deferred *string
 			if row.DeferralReason != nil {
@@ -84,16 +83,14 @@ func ListWebhooks(ctx context.Context, conn *Connection, sessionID string) ([]We
 			}
 			r = append(r, WebhookEntry{Hook: hookValue(row.ConfigurationResource, row.DeliveryURL), Queued: int(row.PendingCount), Deferred: deferred})
 		}
-		if page.Next == nil {
-			return r, nil
-		}
-		if seen[*page.Next] {
-			return nil, fieldError("hook page cursor")
-		}
-		seen[*page.Next] = true
-		params.Next = page.Next
+		return nil
+	}, "hook page cursor")
+	if err != nil {
+		return nil, err
 	}
+	return r, nil
 }
+
 func hookChange(ctx context.Context, conn *Connection, op operation, status int, secret bool) (*WebhookResult, error) {
 	var w protocol.HookChange
 	err := executeMutation(ctx, conn, op, []int{status}, func(data []byte, _ int) error {

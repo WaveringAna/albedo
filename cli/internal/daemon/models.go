@@ -48,21 +48,20 @@ func ListModels(ctx context.Context, conn *Connection, provider, endpoint string
 func listModels(ctx context.Context, conn *Connection, params protocol.ListModelsParams) ([]Model, error) {
 	result := []Model{}
 	params.Limit = new(int64(200))
-	seen := map[string]bool{}
-	for {
+	err := walkPages(func(next *string) (protocol.ModelPage, *string, error) {
+		params.Next = next
 		var page protocol.ModelPage
-		err := executeRead(ctx, conn, operation{Name: "list models", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
+		pageErr := executeRead(ctx, conn, operation{Name: "list models", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
 			return protocol.NewListModelsRequest(base, &params)
 		}, Policy: readRecovery}, func(data []byte) error { return decodeRequired(data, &page) })
-		if err != nil {
-			return nil, err
-		}
+		return page, page.Next, pageErr
+	}, func(page protocol.ModelPage) error {
 		if page.Items == nil {
-			return nil, fieldError("models")
+			return fieldError("models")
 		}
 		for _, row := range page.Items {
 			if row.ID == "" || row.CapKey == "" || row.Efforts == nil {
-				return nil, fieldError("model")
+				return fieldError("model")
 			}
 			model := Model{ID: row.ID, Label: row.Label, CapKey: row.CapKey, Input: row.InputModalities, Context: int(value(row.DefaultContextTokens)), MaxContext: int(value(row.MaxContextTokens)), Output: int(value(row.MaxOutputTokens)), Raised: row.Raised}
 			for _, effort := range row.Efforts {
@@ -70,16 +69,14 @@ func listModels(ctx context.Context, conn *Connection, params protocol.ListModel
 			}
 			result = append(result, model)
 		}
-		if page.Next == nil {
-			return result, nil
-		}
-		if seen[*page.Next] {
-			return nil, fieldError("model page cursor")
-		}
-		seen[*page.Next] = true
-		params.Next = page.Next
+		return nil
+	}, "model page cursor")
+	if err != nil {
+		return nil, err
 	}
+	return result, nil
 }
+
 func SelectModel(ctx context.Context, conn *Connection, id string, request ModelSelectionRequest) (ModelSelection, error) {
 	body := map[string]any{"model": request.Model}
 	if request.Provider != "" {

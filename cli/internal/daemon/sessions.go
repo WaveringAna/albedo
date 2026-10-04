@@ -224,36 +224,32 @@ func ListSessions(ctx context.Context, conn *Connection) ([]Session, error) {
 func listSessions(ctx context.Context, conn *Connection, query protocol.ListSessionsParams) ([]Session, error) {
 	result := []Session{}
 	query.Limit = new(int64(200))
-	seen := map[string]bool{}
-	for {
+	err := walkPages(func(next *string) (protocol.SessionPage, *string, error) {
+		query.Next = next
 		var page protocol.SessionPage
-		err := executeRead(ctx, conn, operation{Name: "list sessions", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
+		pageErr := executeRead(ctx, conn, operation{Name: "list sessions", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
 			return protocol.NewListSessionsRequest(base, &query)
 		}, Policy: readRecovery}, func(data []byte) error { return decodeRequired(data, &page) })
-		if err != nil {
-			return nil, err
-		}
+		return page, page.Next, pageErr
+	}, func(page protocol.SessionPage) error {
 		if page.Items == nil {
-			return nil, fieldError("items")
+			return fieldError("items")
 		}
 		for _, row := range page.Items {
 			if row.ID == "" || row.RootID == "" || row.Cursor != nil && (!validGeneration(row.Cursor.Generation) || row.Cursor.Sequence < 0) {
-				return nil, fieldError("session ID")
+				return fieldError("session ID")
 			}
 			// Summaries intentionally contain no configuration validator.
 			result = append(result, summaryValue(row))
 		}
-		if page.Next == nil {
-			break
-		}
-		if seen[*page.Next] {
-			return nil, fieldError("repeated session page")
-		}
-		seen[*page.Next] = true
-		query.Next = page.Next
+		return nil
+	}, "repeated session page")
+	if err != nil {
+		return nil, err
 	}
 	return result, nil
 }
+
 func GetSessionPreview(ctx context.Context, conn *Connection, id string, limit int) (SessionPreview, error) {
 	var wire protocol.Session
 	err := executeRead(ctx, conn, operation{Name: "read session preview", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {

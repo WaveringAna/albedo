@@ -196,58 +196,54 @@ func historyEntryEvents(entry protocol.HistoryEntry) ([]StreamEvent, error) {
 func ReadEntryContent(ctx context.Context, conn *Connection, session, entry string) (map[string][]byte, error) {
 	fields := map[string][]byte{}
 	complete := map[string]bool{}
-	seen := map[string]bool{}
 	params := protocol.GetHistoryContentParams{}
 	total := 0
-	for {
+	err := walkPages(func(next *string) (protocol.EntryContentPage, *string, error) {
+		params.Next = next
 		var page protocol.EntryContentPage
-		err := executeRead(ctx, conn, operation{Name: "read history content", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
+		pageErr := executeRead(ctx, conn, operation{Name: "read history content", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
 			return protocol.NewGetHistoryContentRequest(base, session, entry, &params)
 		}, Policy: readRecovery}, func(data []byte) error { return decodeRequired(data, &page) })
-		if err != nil {
-			return nil, err
-		}
+		return page, page.Next, pageErr
+	}, func(page protocol.EntryContentPage) error {
 		if page.EntryID != entry || page.Parts == nil {
-			return nil, fieldError("history content identity")
+			return fieldError("history content identity")
 		}
 		for _, part := range page.Parts {
 			if part.Field == "" || complete[part.Field] || part.OffsetBytes != int64(len(fields[part.Field])) {
-				return nil, fieldError("content byte offset")
+				return fieldError("content byte offset")
 			}
 			data := []byte(part.Text)
 			if part.Encoding == "base64" {
 				var err error
 				data, err = base64.StdEncoding.DecodeString(part.Text)
 				if err != nil {
-					return nil, err
+					return err
 				}
 			} else if part.Encoding != "utf8" {
-				return nil, fieldError("content encoding")
+				return fieldError("content encoding")
 			}
 			if part.Encoding == "utf8" && !utf8.Valid(data) {
-				return nil, fieldError("content UTF-8")
+				return fieldError("content UTF-8")
 			}
 			total += len(data)
 			if total > 50*1024*1024 {
-				return nil, errors.New("entry content exceeds the client display limit")
+				return errors.New("entry content exceeds the client display limit")
 			}
 			fields[part.Field] = append(fields[part.Field], data...)
 			complete[part.Field] = part.Complete
 		}
-		if page.Next == nil {
-			for name := range fields {
-				if !complete[name] {
-					return nil, fieldError("incomplete content field")
-				}
-			}
-			return fields, nil
-		}
-		if seen[*page.Next] {
-			return nil, fieldError("repeated content page")
-		}
-		seen[*page.Next] = true
-		params.Next = page.Next
+		return nil
+	}, "repeated content page")
+	if err != nil {
+		return nil, err
 	}
+	for name := range fields {
+		if !complete[name] {
+			return nil, fieldError("incomplete content field")
+		}
+	}
+	return fields, nil
 }
 
 func hydrateHistory(ctx context.Context, conn *Connection, session string, entries []protocol.HistoryEntry) ([]protocol.HistoryEntry, error) {

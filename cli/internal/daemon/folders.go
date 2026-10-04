@@ -94,38 +94,35 @@ func workspaceDirectory(ctx context.Context, conn *Connection, location string, 
 		params.Include = new("preview")
 	}
 	var result protocol.WorkspaceDirectory
-	seen := map[string]bool{}
-	for {
+	err := walkPages(func(next *string) (protocol.WorkspaceDirectory, *string, error) {
+		params.Next = next
 		var page protocol.WorkspaceDirectory
-		err := executeRead(ctx, conn, operation{Capability: "workspace_browsing", Name: "browse workspace", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
+		pageErr := executeRead(ctx, conn, operation{Capability: "workspace_browsing", Name: "browse workspace", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
 			return protocol.NewGetWorkspacesRequest(base, &params)
 		}, Policy: readRecovery}, func(data []byte) error {
 			return decodeRequired(data, &page)
 		})
-		if err != nil {
-			return result, err
-		}
+		return page, page.Next, pageErr
+	}, func(page protocol.WorkspaceDirectory) error {
 		if page.Items == nil {
-			return result, fieldError("workspace entries")
+			return fieldError("workspace entries")
 		}
 		if result.Directory == "" {
 			result = page
 		} else {
 			if result.Directory != page.Directory {
-				return result, fieldError("workspace page")
+				return fieldError("workspace page")
 			}
 			result.Items = append(result.Items, page.Items...)
 		}
-		if page.Next == nil {
-			return result, nil
-		}
-		if seen[*page.Next] {
-			return result, fieldError("workspace page cursor")
-		}
-		seen[*page.Next] = true
-		params.Next = page.Next
+		return nil
+	}, "workspace page cursor")
+	if err != nil {
+		return result, err
 	}
+	return result, nil
 }
+
 func ListFolders(ctx context.Context, conn *Connection, path string) (FolderList, error) {
 	w, err := workspaceDirectory(ctx, conn, path, false)
 	result := FolderList{Path: w.Directory, Home: value(w.Home), Entries: []FolderEntry{}}
@@ -209,26 +206,23 @@ func hostValue(w protocol.Host) HostStatus {
 func hosts(ctx context.Context, conn *Connection) ([]protocol.Host, error) {
 	result := []protocol.Host{}
 	params := protocol.ListHostsParams{Limit: new(int64(200))}
-	seen := map[string]bool{}
-	for {
+	err := walkPages(func(next *string) (protocol.HostPage, *string, error) {
+		params.Next = next
 		var page protocol.HostPage
-		err := executeRead(ctx, conn, operation{Capability: "host_probes", Name: "list hosts", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
+		pageErr := executeRead(ctx, conn, operation{Capability: "host_probes", Name: "list hosts", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
 			return protocol.NewListHostsRequest(base, &params)
 		}, Policy: readRecovery}, func(data []byte) error { return decodeRequired(data, &page) })
-		if err != nil {
-			return nil, err
-		}
+		return page, page.Next, pageErr
+	}, func(page protocol.HostPage) error {
 		result = append(result, page.Items...)
-		if page.Next == nil {
-			return result, nil
-		}
-		if seen[*page.Next] {
-			return nil, fieldError("host page cursor")
-		}
-		seen[*page.Next] = true
-		params.Next = page.Next
+		return nil
+	}, "host page cursor")
+	if err != nil {
+		return nil, err
 	}
+	return result, nil
 }
+
 func ListHosts(ctx context.Context, conn *Connection) ([]KnownHost, error) {
 	rows, err := hosts(ctx, conn)
 	result := []KnownHost{}

@@ -150,7 +150,7 @@ func decodeAgentEvent(raw json.RawMessage) (*AgentEvent, error) {
 		if err := decodeRequired(envelope.Data, &d, "session_id", "cursor", "status", "current_progress", "activity"); err != nil {
 			return nil, err
 		}
-		if d.SessionID == "" || !validGeneration(d.Cursor.Generation) || d.Cursor.Sequence < 0 || len(d.Progress) > 32 {
+		if d.SessionID == "" || !validGeneration(d.Cursor.Generation) || d.Cursor.Sequence < 0 || len(d.Progress) > maxActiveToolProgress {
 			return nil, fieldError("collection activity")
 		}
 		if err := validateSessionStatus(d.Status); err != nil {
@@ -213,17 +213,16 @@ func GetAgents(ctx context.Context, conn *Connection, id string) (AgentsSnapshot
 	}
 	params := protocol.ListSessionsParams{Scope: new("all"), FamilyID: &selected.RootID, Limit: new(int64(200))}
 	result := AgentsSnapshot{Root: selected.RootID, Nodes: []AgentNode{}}
-	seen := map[string]bool{}
-	for {
+	err = walkPages(func(next *string) (protocol.SessionPage, *string, error) {
+		params.Next = next
 		var page protocol.SessionPage
-		err := executeRead(ctx, conn, operation{Name: "read session family", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
+		pageErr := executeRead(ctx, conn, operation{Name: "read session family", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
 			return protocol.NewListSessionsRequest(base, &params)
 		}, Policy: readRecovery}, func(data []byte) error { return decodeRequired(data, &page, "family") })
-		if err != nil {
-			return result, err
-		}
+		return page, page.Next, pageErr
+	}, func(page protocol.SessionPage) error {
 		if result.FamilyRevision != "" && page.Family.Revision != result.FamilyRevision {
-			return result, &APIError{StatusCode: 409, Code: "family_changed", Message: "family changed while paging; refresh it"}
+			return &APIError{StatusCode: 409, Code: "family_changed", Message: "family changed while paging; refresh it"}
 		}
 		result.FamilyRevision = page.Family.Revision
 		for _, row := range page.Items {
@@ -232,23 +231,20 @@ func GetAgents(ctx context.Context, conn *Connection, id string) (AgentsSnapshot
 			node := AgentNode{Parent: row.ParentID, Address: row.Address, Session: session, Name: session.Title, Depth: session.Depth, Running: session.Status.Running, Closed: session.Closed, Cursor: row.Cursor, Activity: row.Activity, CurrentProgress: []ToolProgress{}}
 			for _, p := range row.CurrentProgress {
 				data, _ := json.Marshal(p)
-				progress, err := decodeToolProgress(data)
-				if err != nil || progress == nil {
-					return result, fieldError("family progress")
+				progress, progressErr := decodeToolProgress(data)
+				if progressErr != nil || progress == nil {
+					return fieldError("family progress")
 				}
 				node.CurrentProgress = append(node.CurrentProgress, *progress)
 			}
 			result.Nodes = append(result.Nodes, node)
 		}
-		if page.Next == nil {
-			return result, nil
-		}
-		if seen[*page.Next] {
-			return result, fieldError("family cursor")
-		}
-		seen[*page.Next] = true
-		params.Next = page.Next
+		return nil
+	}, "family cursor")
+	if err != nil {
+		return result, err
 	}
+	return result, nil
 }
 
 func validateActivity(activity Activity) error {
