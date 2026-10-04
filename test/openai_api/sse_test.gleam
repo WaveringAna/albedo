@@ -129,3 +129,19 @@ pub fn bom_is_only_stripped_at_stream_start_test() -> Nil {
     == Error(sse.InvalidUtf8)
   assert decode_chunks([<<>>, <<>>], 1024) == Ok([])
 }
+
+pub fn fields_split_only_the_first_colon_and_strip_one_ascii_space_test() -> Nil {
+  let assert Ok(#(_, events)) =
+    sse.feed(sse.new(1024), <<
+      "data:  first: second\ndata:\tthird\ndata\n\n":utf8,
+    >>)
+  assert events == [sse.Event("", " first: second\n\tthird\n")]
+}
+
+pub fn a_combining_mark_after_the_colon_is_field_data_test() -> Nil {
+  let assert Ok(#(_, events)) =
+    sse.feed(sse.new(1024), <<
+      "event:\u{0301}update\ndata:\u{0301}: value\n\n":utf8,
+    >>)
+  assert events == [sse.Event("\u{0301}update", "\u{0301}: value")]
+}

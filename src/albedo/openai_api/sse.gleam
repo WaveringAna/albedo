@@ -33,14 +33,22 @@ pub type Error {
 @external(erlang, "albedo_sse_bytes", "newline")
 fn newline(bytes: BitArray) -> Int
 
-@external(erlang, "albedo_sse_bytes", "assemble")
-fn assemble(fragments: List(BitArray)) -> BitArray
-
 @external(erlang, "albedo_sse_bytes", "compact")
 fn compact(bytes: BitArray) -> BitArray
 
-@external(erlang, "albedo_sse_bytes", "field")
-fn field(line: String) -> #(String, String)
+fn field(line: String) -> #(String, String) {
+  // Only these fields are consumed. Byte prefixes also match a colon followed
+  // by a combining mark, which grapheme-aware string splitting would skip.
+  let #(name, value) = case line {
+    "data:" <> value -> #("data", value)
+    "event:" <> value -> #("event", value)
+    _ -> #(line, "")
+  }
+  #(name, case value {
+    " " <> rest -> rest
+    _ -> value
+  })
+}
 
 pub fn new(max_event_bytes: Int) -> Parser {
   case max_event_bytes < 1 {
@@ -165,7 +173,9 @@ fn complete_line(
     },
   )
   use line <- result.try(
-    assemble(parser.fragments)
+    parser.fragments
+    |> list.reverse
+    |> bit_array.concat
     |> bit_array.to_string
     |> result.map_error(fn(_) { InvalidUtf8 }),
   )
