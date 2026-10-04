@@ -507,6 +507,4 @@ type TimeUnit {
 pub fn now() -> Int {
   system_time(Millisecond)
 }
-
 /// Rows a page asks for when it does not say.
-pub const page_rows = 100

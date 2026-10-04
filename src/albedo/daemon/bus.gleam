@@ -136,10 +136,6 @@ pub type Batch {
   Overflow
 }
 
-/// Publishers queue events before sending this payload-free notification.
-@external(erlang, "albedo_bus", "subscribe")
-pub fn subscribe(owner: process.Pid, notify: fn() -> Nil) -> Subscription
-
 /// Filter activity at producer admission, before a subscriber queue spends
 /// its byte/event budget. Invalidation and mail remain visible to the scope.
 @external(erlang, "albedo_bus", "subscribe_filtered")

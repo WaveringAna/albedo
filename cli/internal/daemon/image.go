@@ -10,7 +10,6 @@ type ImageMimeType string
 const (
 	ImagePNG  ImageMimeType = "image/png"
 	ImageJPEG ImageMimeType = "image/jpeg"
-	ImageGIF  ImageMimeType = "image/gif"
 	ImageWEBP ImageMimeType = "image/webp"
 )
 

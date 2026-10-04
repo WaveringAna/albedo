@@ -1,7 +1,7 @@
 %% Bounded subscriber queues. Publishers admit directly into ETS; subscriber
 %% mailboxes carry only a coalesced wake, never event payloads.
 -module(albedo_bus).
--export([subscribe/2, subscribe_filtered/3, set_filter/2, drain/1, rearm/2, publish/1, publish_activity/2, publish_mail/3, has_subscribers/0,
+-export([subscribe_filtered/3, set_filter/2, drain/1, rearm/2, publish/1, publish_activity/2, publish_mail/3, has_subscribers/0,
          mark_running/2, running/1, forget/1, register_progress/3, progress/2]).
 
 -define(TABLE, albedo_bus).
@@ -10,12 +10,8 @@
 -define(BYTE_LIMIT, 1048576).
 -define(CAS_ATTEMPTS, 32).
 
-subscribe(Owner, Notify) -> subscribe_with_filter(Owner, Notify, all).
-
 subscribe_filtered(Owner, Notify, Sessions) ->
-    subscribe_with_filter(Owner, Notify, maps:from_keys(Sessions, true)).
-
-subscribe_with_filter(Owner, Notify, Filter) ->
+    Filter = maps:from_keys(Sessions, true),
     Ref = make_ref(),
     Control = atomics:new(2, [{signed, false}]),
     albedo_registry:register(?QUEUES, Ref, {queue:new(), 0, 0}),
@@ -66,7 +62,7 @@ publish_activity(Session, Event) ->
         undefined -> nil;
         _ ->
             lists:foreach(fun({Ref, {_Owner, Notify, Control, Filter}}) ->
-                case Filter == all orelse maps:is_key(Session, Filter) of
+                case maps:is_key(Session, Filter) of
                     true -> admit(Ref, Event, byte_size(Event), Notify, Control, ?CAS_ATTEMPTS);
                     false -> ok
                 end
@@ -81,7 +77,7 @@ publish_mail(Sender, Recipient, Event) ->
         undefined -> nil;
         _ ->
             lists:foreach(fun({Ref, {_Owner, Notify, Control, Filter}}) ->
-                Interested = Filter == all orelse maps:is_key(Recipient, Filter)
+                Interested = maps:is_key(Recipient, Filter)
                     orelse case Sender of {some, Id} -> maps:is_key(Id, Filter); _ -> false end,
                 case Interested of
                     true -> admit(Ref, Event, byte_size(Event), Notify, Control, ?CAS_ATTEMPTS);

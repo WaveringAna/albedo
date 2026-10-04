@@ -1,6 +1,6 @@
 -module(albedo_runtime_test_support).
 -export([temporary_database/0, cleanup/1, temporary_workspace/0, cleanup_workspace/1,
-         own_rss/0, missing_rss/0, kernel_memory/1, catalog_does_not_block/3, catalog_forget_while_blocked/3,
+         kernel_memory/1, catalog_does_not_block/3, catalog_forget_while_blocked/3,
          hold_preparation/2, capture_during_preparation/3]).
 temporary_workspace() ->
     Path = filename:join(os:getenv("TMPDIR", "/tmp"),
@@ -17,10 +17,6 @@ cleanup(Path) ->
                   [<<>>, <<"-wal">>, <<"-shm">>]),
     _ = file:del_dir_r(<<Path/binary, ".backup">>),
     nil.
-
-%% Memory accounting against processes whose existence is not in question.
-own_rss() -> albedo_daemon:rss([list_to_integer(os:getpid())]).
-missing_rss() -> albedo_daemon:rss([2147483646]).
 
 %% A barrier followed by GC measures retained ownership, not transient boot garbage.
 kernel_memory({session, _, _, Kernel, _, _, _, _, _}) ->
