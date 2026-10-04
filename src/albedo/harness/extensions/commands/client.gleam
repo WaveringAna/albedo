@@ -5,7 +5,7 @@ import albedo/harness/client_api as client
 import gleam/http.{Get, Patch, Post}
 import gleam/json
 import gleam/list
-import gleam/option.{None}
+import gleam/option.{None, Some}
 
 fn object_schema(required: List(String)) -> json.Json {
   json.object([
@@ -50,6 +50,7 @@ fn configuration_read(slash_name: String) -> client.Command {
       [],
       [],
       object_schema(["id", "model", "effort", "revision"]),
+      Some(200),
     ),
   )
 }
@@ -72,6 +73,7 @@ fn configuration_edit(
       [#("If-Match", client.Session("/configuration_resource/etag"))],
       body,
       object_schema(["resource", "session", "move"]),
+      Some(200),
     ),
   )
 }
@@ -131,6 +133,7 @@ pub fn commands() -> List(client.Command) {
         [],
         [],
         object_schema(["state", "snapshot_id", "sections"]),
+        Some(200),
       ),
     ),
     client.Command(
@@ -161,6 +164,7 @@ pub fn commands() -> List(client.Command) {
         [],
         [#("/target", client.Form("/target"))],
         object_schema(["session", "models"]),
+        Some(200),
       ),
     ),
     client.Command(
@@ -190,6 +194,7 @@ pub fn commands() -> List(client.Command) {
           "observation",
           "failure",
         ]),
+        Some(200),
       ),
     ),
     client.Command(
@@ -205,6 +210,7 @@ pub fn commands() -> List(client.Command) {
         [],
         [],
         object_schema(["items", "next"]),
+        Some(200),
       ),
     ),
   ]

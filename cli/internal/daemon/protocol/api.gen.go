@@ -43,6 +43,9 @@ type ActionOperation struct {
 
 	// ResultSchema Explicit domain payload: tool arguments, tool results, provider-private state, or extension data. JSON values of any type are allowed; no core resource uses this as its envelope.
 	ResultSchema DynamicJSON `json:"result_schema"`
+
+	// SuccessStatus Expected synchronous JSON success status. Omitted operations accept 200 or 201 for mutations and 200 for reads.
+	SuccessStatus *int64 `json:"success_status,omitempty"`
 }
 
 // Activity defines model for Activity.

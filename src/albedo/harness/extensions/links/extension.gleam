@@ -24,7 +24,7 @@ import albedo/harness/ssh
 import gleam/int
 import gleam/json
 import gleam/list
-import gleam/option.{None}
+import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
 
@@ -48,6 +48,7 @@ pub fn extension() -> extension.Extension {
             [],
             [],
             json.object([]),
+            Some(200),
           ),
         ),
       ]),

@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -170,6 +171,17 @@ func executeBoundOperation(ctx context.Context, conn *Connection, declared proto
 	if method != http.MethodGet && method != http.MethodPut && method != http.MethodPost && method != http.MethodPatch && method != http.MethodDelete {
 		return nil, errors.New("unsupported declared action method")
 	}
+	statuses := []int{http.StatusOK}
+	if method != http.MethodGet {
+		statuses = append(statuses, http.StatusCreated)
+	}
+	if declared.SuccessStatus != nil {
+		status := int(*declared.SuccessStatus)
+		if status != http.StatusOK && status != http.StatusCreated || method == http.MethodGet && status != http.StatusOK {
+			return nil, errors.New("unsupported declared success status")
+		}
+		statuses = []int{status}
+	}
 	query := url.Values{}
 	for name, binding := range declared.Query {
 		resolved, err := resolve(binding)
@@ -238,12 +250,10 @@ func executeBoundOperation(ctx context.Context, conn *Connection, declared proto
 		policy = readRecovery
 	}
 	var resultSchema *jsonschema.Resolved
-	if method != http.MethodGet {
+	if method != http.MethodGet && len(declared.ResultSchema) > 0 && string(bytes.TrimSpace(declared.ResultSchema)) != "{}" {
 		var schema jsonschema.Schema
-		if len(declared.ResultSchema) > 0 {
-			if err := json.Unmarshal(declared.ResultSchema, &schema); err != nil {
-				return nil, fmt.Errorf("invalid declared result schema: %w", err)
-			}
+		if err := json.Unmarshal(declared.ResultSchema, &schema); err != nil {
+			return nil, fmt.Errorf("invalid declared result schema: %w", err)
 		}
 		var err error
 		resultSchema, err = schema.Resolve(&jsonschema.ResolveOptions{Loader: func(*url.URL) (*jsonschema.Schema, error) {
@@ -255,20 +265,18 @@ func executeBoundOperation(ctx context.Context, conn *Connection, declared proto
 	}
 	op := operation{Name: "invoke " + declared.OperationID, Method: method, Path: route, Headers: headers, Body: body, Policy: policy}
 	if method == http.MethodGet {
-		return requestBytes(ctx, conn, op, responseLimits{successStatus: http.StatusOK, bodyBytes: 1048576, errorBytes: 65536})
-	}
-	status := http.StatusOK
-	if method == http.MethodPost && (template == "/extensions/work/items" || template == "/extensions/paperclips/items" || template == "/extensions/schedule/jobs") {
-		status = http.StatusCreated
+		return requestBytes(ctx, conn, op, responseLimits{successStatuses: statuses, bodyBytes: 1048576, errorBytes: 65536})
 	}
 	var payload []byte
-	err := executeMutation(ctx, conn, op, []int{status}, func(data []byte, _ int) error {
+	err := executeMutation(ctx, conn, op, statuses, func(data []byte, _ int) error {
 		result, err := dynamicValue(data)
 		if err != nil {
 			return err
 		}
-		if err := resultSchema.Validate(result); err != nil {
-			return fmt.Errorf("declared result schema: %w", err)
+		if resultSchema != nil {
+			if err := resultSchema.Validate(result); err != nil {
+				return fmt.Errorf("declared result schema: %w", err)
+			}
 		}
 		if err := validateExtensionAcknowledgment(data, template, method); err != nil {
 			return err

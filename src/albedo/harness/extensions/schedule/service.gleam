@@ -410,6 +410,7 @@ fn actions(session: String) -> List(client_api.Action) {
           ])
         ],
         result_schema: json.object([]),
+        success_status: Some(201),
       ),
     ),
     client_api.Action(
@@ -477,6 +478,7 @@ fn actions(session: String) -> List(client_api.Action) {
           "every_seconds",
         ]),
         result_schema: json.object([]),
+        success_status: Some(200),
       ),
     ),
     client_api.Action(
@@ -509,6 +511,7 @@ fn actions(session: String) -> List(client_api.Action) {
           ..client_api.form_body(["delay_seconds"])
         ],
         result_schema: json.object([]),
+        success_status: Some(200),
       ),
     ),
     client_api.Action(
@@ -526,6 +529,7 @@ fn actions(session: String) -> List(client_api.Action) {
         headers: [#("If-Match", client_api.Row("/resource/etag"))],
         body: [],
         result_schema: json.object([]),
+        success_status: Some(200),
       ),
     ),
   ]

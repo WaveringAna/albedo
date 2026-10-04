@@ -495,6 +495,7 @@ fn actions(workspace: String) -> List(client_api.Action) {
           ..client_api.form_body(["title", "notes", "parent_id"])
         ],
         result_schema: json.object([]),
+        success_status: Some(201),
       ),
     ),
     client_api.Action(
@@ -549,6 +550,7 @@ fn actions(workspace: String) -> List(client_api.Action) {
           ..client_api.form_body(["title", "notes", "status"])
         ],
         result_schema: json.object([]),
+        success_status: Some(200),
       ),
     ),
     client_api.Action(
@@ -569,6 +571,7 @@ fn actions(workspace: String) -> List(client_api.Action) {
           #("/notify_session_id", client_api.Session("/id")),
         ],
         result_schema: json.object([]),
+        success_status: Some(200),
       ),
     ),
     client_api.Action(
@@ -586,6 +589,7 @@ fn actions(workspace: String) -> List(client_api.Action) {
         headers: [#("If-Match", client_api.Row("/resource/etag"))],
         body: [],
         result_schema: json.object([]),
+        success_status: Some(200),
       ),
     ),
   ]

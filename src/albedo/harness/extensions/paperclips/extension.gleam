@@ -10,6 +10,7 @@ import albedo/harness/extensions/paperclips/migrations/title
 import albedo/harness/extensions/paperclips/rpc
 import gleam/http
 import gleam/json
+import gleam/option.{Some}
 
 import albedo/harness/extensions/paperclips/service
 
@@ -33,6 +34,7 @@ pub fn extension() -> harness_extension.Extension {
             [],
             [],
             json.object([]),
+            Some(200),
           ),
         ),
       ]),

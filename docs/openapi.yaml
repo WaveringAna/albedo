@@ -7199,6 +7199,10 @@ components:
             type: string
             format: json-pointer
             pattern: ^/
+        success_status:
+          type: integer
+          enum: [200, 201]
+          description: Expected synchronous JSON success status. Omitted operations accept 200 or 201 for mutations and 200 for reads.
         result_schema:
           $ref: '#/components/schemas/DynamicJSON'
       description: Operation must be declared in this contract, or the installed extension contract version.

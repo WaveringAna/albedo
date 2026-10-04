@@ -473,6 +473,7 @@ fn actions() -> List(client_api.Action) {
         headers: [],
         body: client_api.form_body(["topic", "title", "message", "suggestion"]),
         result_schema: json.object([]),
+        success_status: Some(201),
       ),
     ),
     client_api.Action(
@@ -501,6 +502,7 @@ fn actions() -> List(client_api.Action) {
         headers: [#("If-Match", client_api.Row("/resource/etag"))],
         body: client_api.form_body(["reply"]),
         result_schema: json.object([]),
+        success_status: Some(200),
       ),
     ),
     client_api.Action(
@@ -518,6 +520,7 @@ fn actions() -> List(client_api.Action) {
         headers: [#("If-Match", client_api.Row("/resource/etag"))],
         body: [#("/status", client_api.Literal(json.string("acknowledged")))],
         result_schema: json.object([]),
+        success_status: Some(200),
       ),
     ),
     client_api.Action(
@@ -551,6 +554,7 @@ fn actions() -> List(client_api.Action) {
           ..client_api.form_body(["resolution"])
         ],
         result_schema: json.object([]),
+        success_status: Some(200),
       ),
     ),
     client_api.Action(
@@ -568,6 +572,7 @@ fn actions() -> List(client_api.Action) {
         headers: [#("If-Match", client_api.Row("/resource/etag"))],
         body: [#("/status", client_api.Literal(json.string("dismissed")))],
         result_schema: json.object([]),
+        success_status: Some(200),
       ),
     ),
     client_api.Action(
@@ -585,6 +590,7 @@ fn actions() -> List(client_api.Action) {
         headers: [#("If-Match", client_api.Row("/resource/etag"))],
         body: [],
         result_schema: json.object([]),
+        success_status: Some(200),
       ),
     ),
   ]

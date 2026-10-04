@@ -64,6 +64,38 @@ func TestDeclaredActionDeliversSiblingAndEscapedBodyKeys(t *testing.T) {
 	}
 }
 
+// Extension responses can choose either success status without the client
+// knowing their URL. An explicit declaration must still detect a lost result.
+func TestDeclaredActionHonorsSuccessStatusWithoutRouteGuessing(t *testing.T) {
+	for _, scenario := range []struct {
+		name      string
+		declared  *int64
+		response  int
+		wantError bool
+		wantCalls int32
+	}{
+		{"default ok", nil, 200, false, 1},
+		{"default created", nil, 201, false, 1},
+		{"explicit created", new(int64(201)), 201, false, 1},
+		{"wrong success", new(int64(201)), 200, true, 1},
+		{"unsupported success", new(int64(204)), 204, true, 0},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			var calls atomic.Int32
+			conn := controlledConnection(t, func(w http.ResponseWriter, r *http.Request) {
+				calls.Add(1)
+				w.WriteHeader(scenario.response)
+				_, _ = io.WriteString(w, `{}`)
+			})
+			operation := protocol.ActionOperation{Method: "POST", PathTemplate: "/extensions/custom/items", SuccessStatus: scenario.declared, ResultSchema: json.RawMessage(`{}`)}
+			_, err := executeBoundOperation(t.Context(), conn, operation, nil, nil, nil)
+			if (err != nil) != scenario.wantError || calls.Load() != scenario.wantCalls {
+				t.Fatalf("status handling: %v, deliveries=%d", err, calls.Load())
+			}
+		})
+	}
+}
+
 func TestDeclaredActionCapturesRowBindingsAndValidatesResult(t *testing.T) {
 	var row PageRow
 	if err := json.Unmarshal([]byte(`{"id":"row-a","text":"Task","badge":null,"tone":"plain","detail":null,"resource":{"url":"/extensions/custom/items/row-a","etag":"\"seen\"","value":{"title":"displayed title"}}}`), &row.wire); err != nil {

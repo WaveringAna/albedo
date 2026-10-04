@@ -41,6 +41,7 @@ pub type Operation {
     headers: List(#(String, Binding)),
     body: List(#(String, Binding)),
     result_schema: json.Json,
+    success_status: Option(Int),
   )
 }
 
@@ -116,6 +117,10 @@ pub fn operation(operation: Operation) -> json.Json {
     #("headers", bindings(operation.headers)),
     #("body", bindings(operation.body)),
     #("result_schema", operation.result_schema),
+    ..case operation.success_status {
+      None -> []
+      Some(status) -> [#("success_status", json.int(status))]
+    }
   ])
 }
 

@@ -7,6 +7,7 @@ import albedo/harness/extensions/work/migrations/cwd
 import albedo/harness/extensions/work/rpc
 import gleam/http
 import gleam/json
+import gleam/option.{Some}
 
 import albedo/harness/extensions/work/service
 
@@ -30,6 +31,7 @@ pub fn extension() -> harness_extension.Extension {
             [],
             [],
             json.object([]),
+            Some(200),
           ),
         ),
       ]),

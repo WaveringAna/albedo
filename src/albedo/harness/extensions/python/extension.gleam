@@ -150,6 +150,7 @@ pub fn extension() -> extension.Extension {
               #("type", json.string("object")),
               #("required", json.array(["kernel", "cursor"], json.string)),
             ]),
+            Some(200),
           ),
         ),
         client_api.Command(
@@ -174,6 +175,7 @@ pub fn extension() -> extension.Extension {
                 ),
               ),
             ]),
+            Some(200),
           ),
         ),
       ]),

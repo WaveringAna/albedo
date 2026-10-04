@@ -457,6 +457,7 @@ fn operation(
     #("headers", json.object(headers)),
     #("body", json.object(body)),
     #("result_schema", json.object([])),
+    #("success_status", json.int(200)),
   ])
 }
 

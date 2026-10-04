@@ -34,6 +34,7 @@ pub fn extension() -> extension.Extension {
             [],
             [],
             json.object([]),
+            Some(200),
           ),
         ),
       ]),
