@@ -692,6 +692,20 @@ pub fn list(store: store.Store) -> Result(List(Info), String) {
   )
 }
 
+/// When each session last committed a turn, or was created, in milliseconds.
+pub fn activity(store: store.Store) -> Result(List(#(String, Int)), String) {
+  store.read(
+    store,
+    "SELECT id,COALESCE(activity_at,created_at,0) FROM sessions",
+    [],
+    {
+      use id <- decode.field(0, decode.string)
+      use at <- decode.field(1, decode.int)
+      decode.success(#(id, at))
+    },
+  )
+}
+
 pub fn get(store: store.Store, id: String) -> Result(Info, String) {
   store.query(store, read_info(_, id))
 }

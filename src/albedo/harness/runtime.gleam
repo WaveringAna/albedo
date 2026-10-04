@@ -140,8 +140,9 @@ type Cached {
 }
 
 /// A retained discovery is valid only while its exact source inputs match.
+/// Session reads reuse it while only `saved` matches; see `retained_desired`.
 type Desired {
-  Desired(inputs: String, snapshot: session_catalog.Snapshot)
+  Desired(inputs: String, saved: String, snapshot: session_catalog.Snapshot)
 }
 
 pub type CompositionObservation {
@@ -272,7 +273,7 @@ fn composition_basis(
           ))
           use after <- result.try(session_catalog.inputs(home, inventory, id))
           case after.key == inputs.key {
-            True -> Ok(Some(Desired(inputs.key, snapshot)))
+            True -> Ok(Some(Desired(inputs.key, inputs.saved, snapshot)))
             False -> Error("composition inputs changed during preparation")
           }
         }
@@ -299,10 +300,26 @@ fn desired(
       use snapshot <- result.try(session_catalog.inspect(home, inventory, id))
       use after <- result.try(session_catalog.inputs(home, inventory, id))
       case after.key == inputs.key {
-        True -> Ok(Desired(inputs.key, snapshot))
+        True -> Ok(Desired(inputs.key, inputs.saved, snapshot))
         False -> Error("composition inputs changed during discovery")
       }
     }
+  }
+}
+
+/// The retained discovery while the saved choices and settings still match.
+/// Skill, instruction, and MCP files are walked again only on a miss; changes
+/// on disk reach a session through a reload.
+fn retained_desired(
+  inventory: session_catalog.Inventory,
+  retained: List(Desired),
+  home: String,
+  id: String,
+) -> Result(Desired, String) {
+  use saved <- result.try(session_catalog.saved_key(home, inventory, id))
+  case list.find(retained, fn(value) { value.saved == saved }) {
+    Ok(value) -> Ok(value)
+    Error(_) -> desired(inventory, retained, home, id)
   }
 }
 
@@ -1590,7 +1607,13 @@ fn boot_next(state: State) -> State {
           let cached = dict.get(state.compositions, id) |> option.from_result
           process.spawn_unlinked(fn() {
             let discovered =
-              protect.attempt(fn() { desired(inventory, retained, home, id) })
+              protect.attempt(fn() {
+                case reply {
+                  CompositionReply(_) ->
+                    retained_desired(inventory, retained, home, id)
+                  CatalogReply(_) -> desired(inventory, retained, home, id)
+                }
+              })
               |> result.flatten
             let observed = case reply {
               CompositionReply(_) ->
@@ -1630,12 +1653,15 @@ fn boot_next(state: State) -> State {
             let discovered =
               protect.attempt(fn() {
                 use value <- result.try(discovered)
-                use after <- result.try(session_catalog.inputs(
-                  home,
-                  inventory,
-                  id,
-                ))
-                case after.key == value.inputs {
+                use unchanged <- result.try(case reply {
+                  CompositionReply(_) ->
+                    session_catalog.saved_key(home, inventory, id)
+                    |> result.map(fn(saved) { saved == value.saved })
+                  CatalogReply(_) ->
+                    session_catalog.inputs(home, inventory, id)
+                    |> result.map(fn(after) { after.key == value.inputs })
+                })
+                case unchanged {
                   True -> Ok(value)
                   False ->
                     Error("composition inputs changed during observation")
@@ -2373,10 +2399,12 @@ fn reloaded(
         }
         Ok(#(fresh, replacement)) -> {
           close_cached_at(state, id)
+          // The reload's own discovery supersedes any retained observation.
           let state =
             State(
               ..state,
               compositions: dict.insert(state.compositions, id, fresh),
+              desired: dict.delete(state.desired, id),
             )
             |> finish_commands(id, Ok(fresh))
           process.send(reply, Ok(replacement))

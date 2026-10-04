@@ -401,7 +401,7 @@ func (m SessionViewer) row(item PickerItem, s daemon.Session, sec int, selected 
 		glyph, iconStyle = "◆ ", DefaultStyles.Agent
 	case sec == secPinned:
 		glyph, iconStyle = "★ ", DefaultStyles.Agent
-	case loaded(s):
+	case warm(s, now):
 		glyph, iconStyle = "● ", DefaultStyles.Success
 	}
 	gap := st(lipgloss.NewStyle()).Render("  ")
@@ -426,7 +426,7 @@ func (m SessionViewer) row(item PickerItem, s daemon.Session, sec int, selected 
 	}
 	if cols.age > 0 {
 		as := DefaultStyles.Faint
-		if loaded(s) {
+		if warm(s, now) {
 			as = DefaultStyles.Success
 		}
 		line += gap + st(as).Render(svCell(svCompactAge(s.LastAssistantAt, now), cols.age, true))
@@ -477,7 +477,7 @@ func (m SessionViewer) preview(width, height int, now time.Time) []string {
 	}
 	meta = append(meta, DefaultStyles.Faint.Render(presentation.AssistantAge(s.LastAssistantAt, now)))
 	if c := m.previews[s.ID]; c != nil && !c.loading && !c.err {
-		meta = append(meta, DefaultStyles.Faint.Render(fmt.Sprintf("%d messages", c.Total)))
+		meta = append(meta, DefaultStyles.Faint.Render(fmt.Sprintf("%d messages", s.TranscriptCount)))
 	}
 	top = append(top, strings.Join(meta, DefaultStyles.Decor.Render(" · ")), DefaultStyles.Decor.Render(strings.Repeat("─", inner)))
 	bottom := m.transcript(s, inner, max(0, height-len(top)-1))

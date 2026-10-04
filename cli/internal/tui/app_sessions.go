@@ -186,7 +186,7 @@ func (m *AppModel) deleteSessionCmd(id string, condition daemon.SessionCondition
 
 func sessionPreviewCmd(conn *daemon.Connection, id string) tea.Cmd {
 	return func() tea.Msg {
-		preview, err := daemon.GetSessionPreview(context.Background(), conn, id, 16)
+		preview, err := daemon.PreviewHistory(context.Background(), conn, id, 16)
 		return SessionPreviewMsg{ID: id, Preview: preview, Err: err}
 	}
 }

@@ -45,6 +45,8 @@ pub type Config {
     home: String,
     token: String,
     idle_ms: Int,
+    /// How long after its last turn an unwatched session stays loaded.
+    unload_ms: Int,
     budget_kb: Int,
     state_expiry_seconds: Int,
     /// How often schedules fire and letters left undelivered are retried.
@@ -55,9 +57,9 @@ pub type Config {
 /// Minimum idle time before reclaiming detached session memory.
 const detached_ms = 30_000
 
-/// Examine idleness often enough to honour the limit, never more than once a minute.
+/// Examine idleness often enough to honour the limits, never more than once a minute.
 fn sweep_interval(config: Config) -> Int {
-  int.clamp(config.idle_ms / 4, 250, 60_000)
+  int.clamp(int.min(config.idle_ms, config.unload_ms) / 4, 250, 60_000)
 }
 
 pub type Message {
@@ -228,8 +230,12 @@ fn serve(state: State, message: Message) -> actor.Next(State, a) {
       process.send(
         reply,
         Ok(case dict.get(state.sessions, id) {
-          Ok(pair) -> pair.1
-          Error(_) -> None
+          Ok(#(_, Some(worker))) ->
+            case session.alive(worker) {
+              True -> Some(worker)
+              False -> None
+            }
+          _ -> None
         }),
       )
       actor.continue(state)
@@ -328,6 +334,7 @@ fn serve(state: State, message: Message) -> actor.Next(State, a) {
                   |> option.to_result(Nil)
                 }),
               idle_ms: config.idle_ms,
+              unload_ms: config.unload_ms,
               budget_kb: config.budget_kb,
               detached_ms: detached_ms,
               state_expiry_seconds: config.state_expiry_seconds,
@@ -672,30 +679,37 @@ fn activate(
 ) -> #(State, Result(session.Session, String)) {
   case dict.get(state.sessions, id) {
     Error(_) -> #(state, Error("session not found"))
-    Ok(#(_, Some(worker))) -> #(state, Ok(worker))
-    Ok(#(info, None)) ->
-      case
-        session.live(id)
-        |> option.to_result(Nil)
-        |> result.lazy_or(fn() {
-          session.start(state.host, info, state.config.home)
-          |> result.map_error(fn(error) {
-            report_start_error(info.id, error)
-            Nil
-          })
-        })
-      {
-        Error(_) -> #(state, Error("session could not start"))
-        Ok(worker) -> {
-          watch(worker)
-          #(
-            State(
-              ..state,
-              sessions: dict.insert(state.sessions, id, #(info, Some(worker))),
-            ),
-            Ok(worker),
-          )
-        }
+    // An unloaded actor stops before its exit reaches this registry.
+    Ok(#(info, worker)) ->
+      case option.map(worker, fn(worker) { #(worker, session.alive(worker)) }) {
+        Some(#(worker, True)) -> #(state, Ok(worker))
+        _ ->
+          case
+            session.live(id)
+            |> option.to_result(Nil)
+            |> result.lazy_or(fn() {
+              session.start(state.host, info, state.config.home)
+              |> result.map_error(fn(error) {
+                report_start_error(info.id, error)
+                Nil
+              })
+            })
+          {
+            Error(_) -> #(state, Error("session could not start"))
+            Ok(worker) -> {
+              watch(worker)
+              #(
+                State(
+                  ..state,
+                  sessions: dict.insert(state.sessions, id, #(
+                    info,
+                    Some(worker),
+                  )),
+                ),
+                Ok(worker),
+              )
+            }
+          }
       }
   }
 }

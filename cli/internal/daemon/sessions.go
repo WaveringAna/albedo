@@ -27,7 +27,6 @@ type PreviewItem struct {
 }
 type SessionPreview struct {
 	Items   []PreviewItem
-	Total   int
 	Session *Session
 }
 type CreateSessionRequest struct{ Kind, Workspace, Provider, Model, Effort, Name, SourceSessionID, CheckpointID, ParentID, Address, Task string }
@@ -36,6 +35,7 @@ type Session struct {
 	ID               string    `json:"id"`
 	Title            string    `json:"name"`
 	LastAssistantAt  *int64    `json:"activity_at"` // Unix seconds, when observed.
+	TranscriptCount  int       `json:"-"`
 	Workspace        string    `json:"workspace"`
 	Location         *Location `json:"-"`
 	Cursor           *Cursor   `json:"-"`
@@ -75,7 +75,7 @@ func SplitLocation(workspace string) (host, path string) {
 
 func sessionValue(wire protocol.Session) Session {
 	location := &Location{Host: wire.Location.Host, User: wire.Location.User, Path: wire.Location.Path, Label: wire.Location.Label}
-	session := Session{ID: wire.ID, Title: wire.Name, Cursor: wire.Cursor, LastAssistantAt: timestampSeconds(value(wire.ActivityAt)), Workspace: wire.Workspace, Location: location, Model: value(wire.Model), Effort: value(wire.Effort), Provider: value(wire.ProviderProfile), ETag: wire.ConfigurationResource.ETag, FamilyRevision: wire.FamilyRevision, ParentID: wire.ParentID, RootID: wire.RootID, Depth: int(wire.Depth), Closed: wire.Closed, Pinned: wire.Preferences.Pinned, Archived: wire.Preferences.Archived, Opens: int(wire.Preferences.Opens), Status: capturedStatus(wire), wire: wire}
+	session := Session{ID: wire.ID, Title: wire.Name, Cursor: wire.Cursor, LastAssistantAt: timestampSeconds(value(wire.ActivityAt)), TranscriptCount: int(wire.Preview.TranscriptCount), Workspace: wire.Workspace, Location: location, Model: value(wire.Model), Effort: value(wire.Effort), Provider: value(wire.ProviderProfile), ETag: wire.ConfigurationResource.ETag, FamilyRevision: wire.FamilyRevision, ParentID: wire.ParentID, RootID: wire.RootID, Depth: int(wire.Depth), Closed: wire.Closed, Pinned: wire.Preferences.Pinned, Archived: wire.Preferences.Archived, Opens: int(wire.Preferences.Opens), Status: capturedStatus(wire), wire: wire}
 	for _, glance := range wire.Glances {
 		session.Glances = append(session.Glances, *glanceValue(glance))
 	}
@@ -259,16 +259,32 @@ func GetSessionPreview(ctx context.Context, conn *Connection, id string, limit i
 		return SessionPreview{}, err
 	}
 	session := sessionValue(wire)
-	result := SessionPreview{Total: int(wire.Preview.TranscriptCount), Items: []PreviewItem{}, Session: &session}
+	items, err := previewItems(ctx, conn, id, wire.History.Items)
+	return SessionPreview{Items: items, Session: &session}, err
+}
+
+// PreviewHistory reads a session's newest entries from its stored history.
+// Unlike GetSessionPreview it never loads the session in the daemon.
+func PreviewHistory(ctx context.Context, conn *Connection, id string, limit int) (SessionPreview, error) {
+	wire, err := readHistory(ctx, conn, id, protocol.GetHistoryParams{Limit: new(int64(min(200, max(1, limit))))})
+	if err != nil {
+		return SessionPreview{}, err
+	}
+	items, err := previewItems(ctx, conn, id, wire.Items)
+	return SessionPreview{Items: items}, err
+}
+
+func previewItems(ctx context.Context, conn *Connection, id string, entries []protocol.HistoryEntry) ([]PreviewItem, error) {
 	// Long tool results arrive as references, read in full like the chat's.
-	items, err := hydrateHistory(ctx, conn, id, wire.History.Items)
+	entries, err := hydrateHistory(ctx, conn, id, entries)
 	if err != nil {
-		return SessionPreview{}, err
+		return nil, err
 	}
-	events, err := historyEvents(items)
+	events, err := historyEvents(entries)
 	if err != nil {
-		return SessionPreview{}, err
+		return nil, err
 	}
+	items := []PreviewItem{}
 	for _, event := range events {
 		if event.Type == EventCommitted {
 			continue
@@ -277,9 +293,9 @@ func GetSessionPreview(ctx context.Context, conn *Connection, id string, limit i
 		if event.Type == EventTool {
 			text = event.ToolName + ": " + event.ToolResult
 		}
-		result.Items = append(result.Items, PreviewItem{Type: string(event.Type), Preview: text})
+		items = append(items, PreviewItem{Type: string(event.Type), Preview: text})
 	}
-	return result, nil
+	return items, nil
 }
 
 func summaryValue(row protocol.SessionSummary) Session {

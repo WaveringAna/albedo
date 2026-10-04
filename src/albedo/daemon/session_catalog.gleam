@@ -58,7 +58,9 @@ pub type Inventory {
 }
 
 pub type Inputs {
-  Inputs(key: String, basis: String)
+  /// `saved` keys the stored choices and settings alone; `key` adds the
+  /// contents of every discovered source file.
+  Inputs(key: String, basis: String, saved: String)
 }
 
 /// Actual saved revisions and source contents, without parsing candidate rows.
@@ -68,46 +70,65 @@ pub fn inputs(
   inventory: Inventory,
   id: String,
 ) -> Result(Inputs, String) {
-  use #(workspace, revision, choices) <- result.try(
-    store.query(inventory.ledger, fn(db) {
-      use #(workspace, revision) <- result.try(store.one(
-        db,
-        "SELECT cwd,config_revision FROM sessions WHERE id=?",
-        [sqlight.text(id)],
-        {
-          use workspace <- decode.field(0, decode.string)
-          use revision <- decode.field(1, decode.int)
-          decode.success(#(workspace, revision))
-        },
-        "session not found",
-      ))
-      use choices <- result.try(
-        store.rows(
-          db,
-          "SELECT kind,candidate,preference_key,enabled FROM session_selection WHERE session=? UNION ALL SELECT 'extensions',name,name,enabled FROM session_extensions WHERE session=? ORDER BY 1,2,3",
-          [sqlight.text(id), sqlight.text(id)],
-          {
-            use kind <- decode.field(0, decode.string)
-            use candidate <- decode.field(1, decode.string)
-            use key <- decode.field(2, decode.string)
-            use enabled <- decode.field(3, sqlight.decode_bool())
-            decode.success(#(kind, candidate, key, enabled))
-          },
-        ),
-      )
-      Ok(#(workspace, revision, choices))
-    }),
-  )
+  use choices <- result.try(saved_choices(inventory, id))
+  use saved <- result.try(native_saved(home))
   use sources <- result.try(native_inputs(
     home,
-    project_files.observed(workspace) |> option.unwrap(""),
+    project_files.observed(choices.0) |> option.unwrap(""),
     instruction_files.home(),
     skills.native_builtin(),
   ))
   Ok(Inputs(
-    fingerprint(string.inspect(#(workspace, revision, choices, sources.0))),
+    fingerprint(string.inspect(#(choices, sources.0))),
     sources.1,
+    fingerprint(string.inspect(#(choices, saved))),
   ))
+}
+
+/// The `saved` part of `inputs`, without reading any skill, instruction, or
+/// MCP source file.
+pub fn saved_key(
+  home: String,
+  inventory: Inventory,
+  id: String,
+) -> Result(String, String) {
+  use choices <- result.try(saved_choices(inventory, id))
+  use saved <- result.try(native_saved(home))
+  Ok(fingerprint(string.inspect(#(choices, saved))))
+}
+
+fn saved_choices(
+  inventory: Inventory,
+  id: String,
+) -> Result(#(String, Int, List(#(String, String, String, Bool))), String) {
+  store.query(inventory.ledger, fn(db) {
+    use #(workspace, revision) <- result.try(store.one(
+      db,
+      "SELECT cwd,config_revision FROM sessions WHERE id=?",
+      [sqlight.text(id)],
+      {
+        use workspace <- decode.field(0, decode.string)
+        use revision <- decode.field(1, decode.int)
+        decode.success(#(workspace, revision))
+      },
+      "session not found",
+    ))
+    use choices <- result.try(
+      store.rows(
+        db,
+        "SELECT kind,candidate,preference_key,enabled FROM session_selection WHERE session=? UNION ALL SELECT 'extensions',name,name,enabled FROM session_extensions WHERE session=? ORDER BY 1,2,3",
+        [sqlight.text(id), sqlight.text(id)],
+        {
+          use kind <- decode.field(0, decode.string)
+          use candidate <- decode.field(1, decode.string)
+          use key <- decode.field(2, decode.string)
+          use enabled <- decode.field(3, sqlight.decode_bool())
+          decode.success(#(kind, candidate, key, enabled))
+        },
+      ),
+    )
+    Ok(#(workspace, revision, choices))
+  })
 }
 
 @external(erlang, "albedo_session_catalog", "inputs")
@@ -117,6 +138,9 @@ fn native_inputs(
   sources_home: String,
   builtin: String,
 ) -> Result(#(String, String), String)
+
+@external(erlang, "albedo_session_catalog", "saved")
+fn native_saved(home: String) -> Result(String, String)
 
 pub fn inspect(
   home: String,

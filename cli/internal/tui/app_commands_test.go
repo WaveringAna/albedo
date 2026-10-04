@@ -256,18 +256,15 @@ func TestUIPatchCapturesValuesAndObservedValidator(t *testing.T) {
 }
 func TestPreviewCallbackKeepsConnectionAcrossAppChanges(t *testing.T) {
 	conn := commandTestConnection(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.String() != "/sessions/requested?tail=16" {
+		if r.URL.String() != "/sessions/requested/history?limit=16" {
 			t.Errorf("unexpected preview %s", r.URL)
 		}
-		session := protocolSession("requested", generationA, 0)
-		session["preview"].(map[string]any)["transcript_count"] = 1
-		session["history"].(map[string]any)["items"] = []any{protocolEntry("e", "user", "hello", 1)}
-		_ = json.NewEncoder(w).Encode(session)
+		_ = json.NewEncoder(w).Encode(map[string]any{"high_water": 1, "items": []any{protocolEntry("e", "user", "hello", 1)}, "older": nil, "newer": nil})
 	})
 	app := NewAppModel(conn, config.Profiles{}, nil, "", false, nil)
 	app.Conn = nil
 	msg := app.SessionPicker.Fetch("requested")().(SessionPreviewMsg)
-	if msg.Err != nil || msg.ID != "requested" || msg.Preview.Total != 1 {
+	if msg.Err != nil || msg.ID != "requested" || len(msg.Preview.Items) != 1 || msg.Preview.Items[0].Preview != "hello" {
 		t.Fatalf("preview followed changed app state %+v", msg)
 	}
 }

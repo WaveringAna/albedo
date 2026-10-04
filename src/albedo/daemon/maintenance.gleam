@@ -19,6 +19,7 @@ pub type Sweep {
     ledger: store.Store,
     workers: List(#(String, session.Session)),
     idle_ms: Int,
+    unload_ms: Int,
     budget_kb: Int,
     detached_ms: Int,
     state_expiry_seconds: Int,
@@ -34,6 +35,7 @@ pub fn run(sweep: Sweep) -> Nil {
       |> result.map(fn(report) { #(entry.0, entry.1, report) })
     })
   release_idle(reports, sweep)
+  unload_quiet(reports, sweep)
   case sweep.expire_states {
     True -> {
       expire(reports, sweep)
@@ -109,6 +111,39 @@ fn release_idle(
       False -> Nil
     }
   })
+}
+
+/// Stop sessions whose last turn is older than the unload limit: their
+/// provider cache has expired, so nothing is lost by loading them again. The
+/// session refuses while a client watches it or work is queued.
+fn unload_quiet(
+  reports: List(#(String, session.Session, session.Report)),
+  sweep: Sweep,
+) -> Nil {
+  case conversation.activity(sweep.ledger) {
+    Error(_) -> Nil
+    Ok(activity) ->
+      list.each(reports, fn(entry) {
+        let #(id, worker, report) = entry
+        let last = list.key_find(activity, id) |> result.unwrap(0)
+        case
+          !report.running
+          && report.jobs == 0
+          && sweep.now_seconds * 1000 - last >= sweep.unload_ms
+        {
+          True -> {
+            let _ =
+              actor_call.try_call(
+                worker,
+                waiting: 40_000,
+                sending: session.Unload,
+              )
+            Nil
+          }
+          False -> Nil
+        }
+      })
+  }
 }
 
 fn expire(

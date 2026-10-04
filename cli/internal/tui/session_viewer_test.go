@@ -49,19 +49,22 @@ func TestSessionViewerResponsiveViewport(t *testing.T) {
 	}
 }
 
-func TestSessionViewerPutsLoadedSessionsAboveReapedOnes(t *testing.T) {
+func TestSessionViewerPutsWarmSessionsFirst(t *testing.T) {
 	now := time.Date(2026, 9, 23, 12, 0, 0, 0, time.Local)
-	newer, older := now.Add(-time.Minute).Unix(), now.Add(-time.Hour).Unix()
+	newest, recent, stale := now.Add(-time.Minute).Unix(), now.Add(-10*time.Minute).Unix(), now.Add(-2*time.Hour).Unix()
 	m := viewerAt(now)
 	m.SetSize(120, 30)
-	// the daemon lists by activity; the reaped session replied last
+	// the daemon lists by activity; a loaded session whose last turn is over
+	// an hour old has a cold cache and keeps the daemon's order
 	m.SetSessions([]daemon.Session{
-		{ID: "reaped", Title: "Reaped session", LastAssistantAt: &newer},
-		{ID: "live", Title: "Loaded session", LastAssistantAt: &older, Cursor: &daemon.Cursor{}},
+		{ID: "reaped", Title: "Reaped session", LastAssistantAt: &newest},
+		{ID: "warm", Title: "Warm session", LastAssistantAt: &recent, Cursor: &daemon.Cursor{}},
+		{ID: "cold", Title: "Cold session", LastAssistantAt: &stale, Cursor: &daemon.Cursor{}},
 	}, nil)
 	view := ansi.Strip(m.View())
-	if live, reaped := strings.Index(view, "Loaded session"), strings.Index(view, "Reaped session"); live < 0 || reaped < live {
-		t.Fatalf("a loaded session must lead the reaped ones in its group:\n%s", view)
+	warmAt, reapedAt, coldAt := strings.Index(view, "Warm session"), strings.Index(view, "Reaped session"), strings.Index(view, "Cold session")
+	if warmAt < 0 || reapedAt < warmAt || coldAt < reapedAt {
+		t.Fatalf("a warm session must lead, and a cold loaded one must not:\n%s", view)
 	}
 }
 
@@ -76,7 +79,7 @@ func TestSessionViewerPreviewFetchesOnSettleAndRenders(t *testing.T) {
 	stamp := now.Add(-time.Minute).Unix()
 	sessions := []daemon.Session{
 		{ID: "one", Title: "First", Model: "sonnet", LastAssistantAt: &stamp},
-		{ID: "two", Title: "Second", Model: "opus", LastAssistantAt: &stamp},
+		{ID: "two", Title: "Second", Model: "opus", LastAssistantAt: &stamp, TranscriptCount: 9},
 	}
 	var fetched []string
 	m := viewerAt(now)
@@ -98,7 +101,7 @@ func TestSessionViewerPreviewFetchesOnSettleAndRenders(t *testing.T) {
 	if strings.Join(fetched, " ") != "two" {
 		t.Fatalf("fetched: %v", fetched)
 	}
-	m, _ = m.Update(SessionPreviewMsg{ID: "two", Preview: daemon.SessionPreview{Total: 9, Items: []daemon.PreviewItem{
+	m, _ = m.Update(SessionPreviewMsg{ID: "two", Preview: daemon.SessionPreview{Items: []daemon.PreviewItem{
 		{Type: "user", Preview: "please fix the flaky test"},
 		{Type: "tool", Preview: "read"}, {Type: "tool", Preview: "read"}, {Type: "tool", Preview: "bash"},
 		{Type: "assistant", Preview: "fixed the race in the watcher"},

@@ -33,6 +33,8 @@ The catalog is prepared once when a runtime session opens. Its immutable snapsho
 
 The management catalog reports global preferences, session overrides, and effective enablement separately. Its revision changes with bounded instruction content, resolved directory and instruction targets, and preferences; catalog updates must use the observed revision. Reading it does not reload extensions or change the session's prepared prompt. A disabled winning skill does not expose a lower-priority duplicate.
 
+The session resource (`GET /sessions/{session_id}`, which the TUI polls for status and glances) reports `selection.effective` and `composition` from the last discovery: it rereads saved choices and settings on every read, but walks skill, instruction, and MCP files only when the choices or settings change, when the catalog is read, or on a reload. A skill added on disk shows up there after `/reload session`.
+
 ## Activation and Python API
 
 The `skills` extension depends on the `python` extension. It does not advertise separate model function tools. Every cataloged skill is a session command (see [commands](commands.md)): the kernel mints one typed method per skill from the same catalog the CLI menu shows. A model invocation reads the selected full `SKILL.md` and returns `name`, `description`, `source`, exact `arguments`, and `instructions` to the current Python call, without submitting or committing another turn; a user invocation submits exactly one activation turn.

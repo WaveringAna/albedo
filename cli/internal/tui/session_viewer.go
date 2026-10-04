@@ -224,7 +224,7 @@ func (m *SessionViewer) rebuild() {
 		return cmp.Compare(m.prefs.Opens[b.ID], m.prefs.Opens[a.ID])
 	})
 	frequent = frequent[:min(len(frequent), frequentLimit)]
-	slices.SortStableFunc(frequent, byLoaded)
+	slices.SortStableFunc(frequent, byWarm(now))
 	for _, s := range frequent {
 		m.section[s.ID] = secFrequent
 		ordered = append(ordered, s)
@@ -257,10 +257,11 @@ func (m *SessionViewer) rebuild() {
 		}
 		rest = append(rest, s)
 	}
-	// Navigation follows the grouping. Within a group loaded sessions lead the
-	// reaped ones, and the daemon's order holds otherwise.
+	// Navigation follows the grouping. Within a group warm sessions lead the
+	// rest, and the daemon's order holds otherwise.
+	warmFirst := byWarm(now)
 	slices.SortStableFunc(rest, func(a, b daemon.Session) int {
-		return cmp.Or(cmp.Compare(m.section[a.ID], m.section[b.ID]), byLoaded(a, b))
+		return cmp.Or(cmp.Compare(m.section[a.ID], m.section[b.ID]), warmFirst(a, b))
 	})
 	m.Sessions = slices.Concat(ordered, active, rest)
 
@@ -301,19 +302,27 @@ func (m *SessionViewer) rebuildGroups() {
 	}
 }
 
-// loaded reports whether the daemon holds the session live, not yet reaped
-// for idleness; only a live session has a stream cursor.
-func loaded(s daemon.Session) bool { return s.Cursor != nil }
+// warmFor is how long a session stays active after its last turn: the
+// provider's prompt cache has expired by then, and the daemon unloads it.
+const warmFor = time.Hour
 
-// byLoaded orders loaded sessions before reaped ones.
-func byLoaded(a, b daemon.Session) int {
-	switch {
-	case loaded(a) == loaded(b):
-		return 0
-	case loaded(a):
-		return -1
+// warm reports whether the daemon holds the session live and its last turn
+// ran within warmFor.
+func warm(s daemon.Session, now time.Time) bool {
+	return s.Cursor != nil && s.LastAssistantAt != nil && now.Sub(time.Unix(*s.LastAssistantAt, 0)) < warmFor
+}
+
+// byWarm orders warm sessions before the rest.
+func byWarm(now time.Time) func(a, b daemon.Session) int {
+	return func(a, b daemon.Session) int {
+		switch {
+		case warm(a, now) == warm(b, now):
+			return 0
+		case warm(a, now):
+			return -1
+		}
+		return 1
 	}
-	return 1
 }
 
 const untitled = "Untitled session"

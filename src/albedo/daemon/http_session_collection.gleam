@@ -210,9 +210,15 @@ pub fn read(
             use live <- result.try(case live {
               None -> Ok(None)
               Some(worker) ->
-                session.summary(worker)
-                |> result.map(Some)
-                |> result.map_error(http_api.failure)
+                case session.summary(worker) {
+                  Ok(summary) -> Ok(Some(summary))
+                  Error(reason) ->
+                    // An unloading session can stop after the lookup.
+                    case session.alive(worker) {
+                      True -> Error(http_api.failure(reason))
+                      False -> Ok(None)
+                    }
+                }
             })
             Ok(http_wire.summary(durable, live, usage.now()))
           }),

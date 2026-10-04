@@ -54,6 +54,26 @@ begin with a reset. A second protocol failure ends automatic recovery; reopening
 the session starts a new attachment. Pending submissions and drafts remain
 available, and a stream failure does not claim that model execution finished.
 
+## Loaded sessions and unloading
+
+A session is loaded while its actor runs; only a loaded session has a stream
+cursor. Opening it, watching its stream, or submitting to it loads it. Reading
+`GET /sessions/{session_id}/history` never does, so the session list previews
+stored history instead of the session resource.
+
+The maintenance sweep releases an idle kernel after `ALBEDO_IDLE_SECONDS`
+(default 31 minutes) and unloads a session whose last turn (`activity_at`) is
+older than `ALBEDO_UNLOAD_SECONDS` (default one hour): the provider's prompt
+cache has expired by then. The session refuses while a turn runs or waits, a
+client watches its stream, or a background job is live. Unloading saves the
+kernel's variables like a release. The next request loads it again.
+
+Listing sessions reads loaded sessions' summaries but does not count as
+attention, so an open session list never keeps a kernel alive.
+
+The session list marks a session active (green) while it is loaded and its
+last turn is under an hour old.
+
 ## asynchronous persistence failures
 
 The dispatcher logs failures to advance delivered schedule occurrences or save mail delivery errors. Undelivered mail and unadvanced schedules remain durable and retry under the existing dispatch policy. A schedule whose submission succeeded but whose advance failed can be delivered again.

@@ -26,18 +26,7 @@ func (c *ChatClient) History(ctx context.Context, before int64, rows int) (*Hist
 	if before > 0 {
 		params.Before = &before
 	}
-	var wire protocol.HistoryPage
-	err := executeRead(ctx, c.conn, operation{Name: "read history", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
-		return protocol.NewGetHistoryRequest(base, c.agentID, &params)
-	}, Policy: readRecovery}, func(data []byte) error {
-		if err := decodeRequired(data, &wire); err != nil {
-			return err
-		}
-		if wire.Items == nil || len(wire.Items) > 200 || wire.HighWater < 0 {
-			return fieldError("history")
-		}
-		return nil
-	})
+	wire, err := readHistory(ctx, c.conn, c.agentID, params)
 	if err != nil {
 		return nil, err
 	}
@@ -51,6 +40,22 @@ func (c *ChatClient) History(ctx context.Context, before int64, rows int) (*Hist
 	}
 	page.Events, err = historyEvents(wire.Items)
 	return page, err
+}
+
+func readHistory(ctx context.Context, conn *Connection, session string, params protocol.GetHistoryParams) (protocol.HistoryPage, error) {
+	var wire protocol.HistoryPage
+	err := executeRead(ctx, conn, operation{Name: "read history", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
+		return protocol.NewGetHistoryRequest(base, session, &params)
+	}, Policy: readRecovery}, func(data []byte) error {
+		if err := decodeRequired(data, &wire); err != nil {
+			return err
+		}
+		if wire.Items == nil || len(wire.Items) > 200 || wire.HighWater < 0 {
+			return fieldError("history")
+		}
+		return nil
+	})
+	return wire, err
 }
 
 func historyEvents(entries []protocol.HistoryEntry) ([]StreamEvent, error) {

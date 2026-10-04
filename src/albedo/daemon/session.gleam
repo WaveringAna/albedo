@@ -255,6 +255,9 @@ pub type Message {
   /// the binaries it references stay resident until the next message.
   Collect
   Close(Subject(Nil))
+  /// Stop the actor if nothing runs, waits, watches, or holds a live job.
+  /// True when it stopped.
+  Unload(Subject(Bool))
   CloseForDeletion(Subject(Result(Nil, String)))
   ClaimDeletion(
     family.DeletionRequest,
@@ -620,6 +623,14 @@ pub fn close_for_deletion(
   }
 }
 
+/// Whether the session's actor still runs; an unloaded one stops before its
+/// registry hears of it.
+pub fn alive(session: Session) -> Bool {
+  process.subject_owner(session)
+  |> result.map(process.is_alive)
+  |> result.unwrap(False)
+}
+
 pub fn close(session: Session) -> Nil {
   actor.call(session, 30_000, Close)
 }
@@ -957,10 +968,10 @@ fn handle(
   message: Message,
 ) -> actor.Next(session_state.State(Message), Message) {
   // Anything a client sends counts as attention; a detached session goes quiet.
+  // Listing sessions reads their summaries and is not attention.
   let state = case message {
     Submit(..)
     | ReadCapture(..)
-    | ReadSummary(..)
     | ChangeConfiguration(..)
     | InterruptCaptured(..)
     | ReadCommands(..)
@@ -1721,29 +1732,55 @@ fn handle(
         Some(run) -> {
           interrupt_kernel(state)
           kill(run.pid)
+          forget(state)
         }
-        // A clean shutdown is the other moment variables are worth keeping.
-        None ->
-          case state.kernel {
-            Some(kernel) -> {
-              let _ =
-                session_namespace.save_state_within(
-                  state.home,
-                  state.info.id,
-                  kernel,
-                  session_namespace.close_state_timeout,
-                )
-              Nil
-            }
-            None -> Nil
-          }
+        None -> close_idle(state)
       }
-      runtime.forget_session(state.host, state.info.id)
-      cleanup_registrations(state.info.id)
       process.send(reply, Nil)
       actor.stop()
     }
+    Unload(reply) -> {
+      let jobs = option.map(state.kernel, runtime.job_count) |> option.unwrap(0)
+      case
+        busy(state)
+        || state.booting != None
+        || state.steering != []
+        || state.watchers != []
+        || jobs > 0
+      {
+        True -> answer(state, reply, False)
+        False -> {
+          close_idle(state)
+          process.send(reply, True)
+          actor.stop()
+        }
+      }
+    }
   }
+}
+
+/// Stop an idle session, keeping its kernel's variables first: a clean stop is
+/// the other moment they are worth saving.
+fn close_idle(state: State) -> Nil {
+  case state.kernel {
+    Some(kernel) -> {
+      let _ =
+        session_namespace.save_state_within(
+          state.home,
+          state.info.id,
+          kernel,
+          session_namespace.close_state_timeout,
+        )
+      Nil
+    }
+    None -> Nil
+  }
+  forget(state)
+}
+
+fn forget(state: State) -> Nil {
+  runtime.forget_session(state.host, state.info.id)
+  cleanup_registrations(state.info.id)
 }
 
 /// The registered command state seam: one operation in, session state out.

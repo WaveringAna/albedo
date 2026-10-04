@@ -561,6 +561,7 @@ pub fn main() -> Nil {
       home,
       token,
       setting("ALBEDO_IDLE_SECONDS", 31 * 60, 1, 604_800) * 1000,
+      setting("ALBEDO_UNLOAD_SECONDS", 60 * 60, 1, 604_800) * 1000,
       setting("ALBEDO_KERNEL_BUDGET_MB", 2048, 64, 1_048_576) * 1024,
       setting("ALBEDO_STATE_EXPIRY_SECONDS", 1_209_600, 1, 31_536_000),
       setting("ALBEDO_SCHEDULE_TICK_MS", 15_000, 50, 60_000),

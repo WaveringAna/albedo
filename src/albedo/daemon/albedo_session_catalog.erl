@@ -1,5 +1,5 @@
 -module(albedo_session_catalog).
--export([fingerprint/1, inputs/4]).
+-export([fingerprint/1, inputs/4, saved/1]).
 
 fingerprint(Value) -> binary:encode_hex(crypto:hash(sha256, Value), lowercase).
 
@@ -7,11 +7,7 @@ fingerprint(Value) -> binary:encode_hex(crypto:hash(sha256, Value), lowercase).
 %% Secret contents participate in the key but never in public wire revisions.
 inputs(Home, Workspace, SourcesHome, Builtin) ->
     try
-        Saved = albedo_settings_store:with_lock(Home, fun() ->
-            [{Name, albedo_settings_store:read(Home, Name)} || Name <-
-                [<<"extensions.json">>, <<"capabilities.json">>, <<"creds.json">>,
-                 <<"settings-revisions.json">>]]
-        end),
+        Saved = saved_documents(Home),
         Files = {albedo_skills:inputs(Workspace, SourcesHome, Builtin),
                  albedo_instruction_files:inputs(Workspace, SourcesHome)},
         Extensions = proplists:get_value(<<"extensions.json">>, Saved),
@@ -26,3 +22,18 @@ inputs(Home, Workspace, SourcesHome, Builtin) ->
     catch
         _:_ -> {error, <<"composition inputs are unavailable">>}
     end.
+
+%% The saved settings alone, without walking skill or instruction files.
+saved(Home) ->
+    try
+        {ok, fingerprint(term_to_binary(saved_documents(Home)))}
+    catch
+        _:_ -> {error, <<"composition inputs are unavailable">>}
+    end.
+
+saved_documents(Home) ->
+    albedo_settings_store:with_lock(Home, fun() ->
+        [{Name, albedo_settings_store:read(Home, Name)} || Name <-
+            [<<"extensions.json">>, <<"capabilities.json">>, <<"creds.json">>,
+             <<"settings-revisions.json">>]]
+    end).
