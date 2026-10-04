@@ -319,6 +319,19 @@ pub fn json_value(encoded: String) -> Result(json.Json, Failure) {
   Ok(dynamic_json(value))
 }
 
+/// Decode a bus event once for forwarding and its structural type decision.
+pub fn event_value(
+  encoded: String,
+) -> Result(#(json.Json, Option(String)), Failure) {
+  use value <- result.try(
+    strict_json(bit_array.from_string(encoded)) |> result.map_error(invalid),
+  )
+  let kind =
+    decode.run(value, decode.field("type", decode.string, decode.success))
+    |> option.from_result
+  Ok(#(dynamic_json(value), kind))
+}
+
 pub fn fields(encoded: String) -> Result(List(#(String, json.Json)), Failure) {
   use value <- result.try(
     strict_json(bit_array.from_string(encoded)) |> result.map_error(invalid),

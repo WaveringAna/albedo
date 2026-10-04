@@ -20,7 +20,6 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 import gleam/result
-import gleam/string
 import mist
 
 fn collection_filter(
@@ -388,18 +387,16 @@ fn collection_stream_loop(
         bus.Overflow -> collection_overflow(connection)
         bus.Batch(encoded) -> {
           let outcome = {
-            use events <- result.try(list.try_map(encoded, http_api.json_value))
+            use events <- result.try(list.try_map(encoded, http_api.event_value))
             use state <- result.try(
               case
-                list.any(encoded, fn(event) {
-                  string.starts_with(event, "{\"type\":\"invalidate\"")
-                })
+                list.any(events, fn(event) { event.1 == Some("invalidate") })
               {
                 True -> collection_refresh(state)
                 False -> Ok(state)
               },
             )
-            Ok(#(state, events))
+            Ok(#(state, list.map(events, fn(event) { event.0 })))
           }
           case outcome {
             Error(_) -> collection_overflow(connection)

@@ -3,6 +3,7 @@
 
 import albedo/daemon/http_api as api
 import gleam/json
+import gleam/option.{None, Some}
 import gleam/string
 
 pub fn bounded_items_retain_the_measured_prefix_test() -> Nil {
@@ -27,5 +28,16 @@ pub fn catalog_limits_include_separator_bytes_test() -> Nil {
   let assert Error(api.Failure(503, "catalog_item_unavailable", _)) =
     api.bounded_catalog([oversized], 100_000)
   let assert Ok([]) = api.bounded_catalog([], 0)
+  Nil
+}
+
+pub fn invalidation_type_is_independent_of_json_field_order_test() -> Nil {
+  let assert Ok(#(_, Some("invalidate"))) =
+    api.event_value("{\"data\":{},\"type\":\"invalidate\"}")
+  let assert Ok(#(_, Some("invalidate"))) =
+    api.event_value("{ \"type\" : \"invalidate\", \"data\" : {} }")
+  let assert Ok(#(_, Some("status"))) = api.event_value("{\"type\":\"status\"}")
+  let assert Ok(#(_, None)) = api.event_value("{\"other\":\"invalidate\"}")
+  let assert Error(_) = api.event_value("{\"type\":")
   Nil
 }
