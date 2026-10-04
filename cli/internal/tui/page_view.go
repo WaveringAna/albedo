@@ -36,6 +36,12 @@ type pageLoadedMsg struct {
 	Gen int
 }
 
+type pageShortcutPreparedMsg struct {
+	Prepared *daemon.PreparedPageAction
+	Err      error
+	Gen      int
+}
+
 type pageActionExecutedMsg struct {
 	Prepared *PageDocument
 	Err      error
@@ -213,6 +219,29 @@ func (m PageViewModel) Update(msg tea.Msg) (PageViewModel, tea.Cmd) {
 			m.SelectedID = row.ID
 		}
 		return m, nil
+
+	case pageShortcutPreparedMsg:
+		if !m.settle(msg.Gen, msg.Err, &m.Busy) {
+			return m, nil
+		}
+		prepared := msg.Prepared
+		m.Doc = prepared.Page
+		m.Error = ""
+		if prepared.Request.Row != nil {
+			m.SelectedID = prepared.Request.Row.ID
+		}
+		act := prepared.Request.Action
+		if act.Confirm {
+			m.CurrentAction = &act
+			m.Mode = modeConfirm
+			return m, nil
+		}
+		m.FormValues = prepared.Request.Form
+		m.Generation = nextPageGeneration()
+		m.Busy = true
+		cmd := m.executeActionCmd(act, prepared.Request.Row, m.Generation)
+		m.FormValues = nil
+		return m, cmd
 
 	case pageActionExecutedMsg:
 		if !m.settle(msg.Gen, msg.Err, &m.Busy) {
@@ -404,4 +433,12 @@ func (m PageViewModel) fieldChoices() []string {
 		labels[i] = choice.Label
 	}
 	return labels
+}
+
+func (m PageViewModel) shortcutCmd(arguments string) tea.Cmd {
+	conn, session, command, generation := m.Conn, m.SessionID, m.Command, m.Generation
+	return func() tea.Msg {
+		prepared, err := daemon.PreparePageShortcut(context.Background(), conn, session, command, arguments)
+		return pageShortcutPreparedMsg{Prepared: prepared, Err: err, Gen: generation}
+	}
 }

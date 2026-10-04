@@ -1310,6 +1310,12 @@ their workspace-scoped create, read, update, and delete operations through
 trusted internal bindings. Work pages preserve linked-workspace labels and
 pending-work glances.
 
+The CLI accepts `/work add <title>`, `/work edit <id> <title>`,
+`/work status <id> <status>`, and `/work remove <id>` alongside page forms.
+These shortcuts invoke the page's declared HTTP actions. Removal asks for
+confirmation. Targeted shortcuts fetch the item even when it is outside the
+first list page and retain its ETag through confirmation.
+
 ### Paperclips
 
 | Path | Methods |
@@ -1336,6 +1342,12 @@ resolving session comes from trusted runtime context. DELETE requires `If-Match`
 Models can file, list, and resolve still-open or acknowledged items with a
 nonempty resolution. Human terminal decisions cannot be overwritten by a model.
 All edits use `If-Match`. Listings use newest-first cursor order and global glances.
+
+The CLI accepts `/paperclips acknowledge <id>`, `/paperclips reply <id> <text>`,
+`/paperclips resolve <id> [note]`, `/paperclips dismiss <id>`, and
+`/paperclips remove <id>` through the same declared actions as page forms.
+Removal asks for confirmation; a stale ETag returns a conflict without retrying
+the mutation.
 
 ### Schedule
 

@@ -345,6 +345,17 @@ func (m *AppModel) handleCommandInvocation(msg tea.Msg) (tea.Cmd, bool) {
 				return m.changeModelCmd(msg.Args, "", "", nil, m.ModelGen, ""), true
 			}
 			return m.openModelPicker(), true
+		case "/work", "/paperclips":
+			if m.ActiveSession == nil {
+				return nil, true
+			}
+			if strings.TrimSpace(msg.Args) == "" {
+				return func() tea.Msg { return ChatOpenPageMsg{Command: msg.Name} }, true
+			}
+			m.PageView = NewPageViewModel(m.Conn, m.ActiveSession.ID, msg.Name)
+			m.PageView.SetSize(m.Width, m.Height)
+			m.State = AppStatePageView
+			return m.PageView.shortcutCmd(msg.Args), true
 		case "/link":
 			if m.ActiveSession == nil {
 				return nil, true
