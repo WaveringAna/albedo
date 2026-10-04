@@ -1,9 +1,9 @@
 //// One bounded maintenance worker per registry. Session owners decide releases.
 
+import albedo/actor_call
 import albedo/daemon/conversation
 import albedo/daemon/reaper
 import albedo/daemon/session
-import albedo/daemon/session_run
 import albedo/daemon/state_expiry
 import albedo/daemon/store
 import gleam/int
@@ -29,7 +29,7 @@ pub type Sweep {
 pub fn run(sweep: Sweep) -> Nil {
   let reports =
     list.filter_map(sweep.workers, fn(entry) {
-      session_run.try_call(entry.1, waiting: 5000, sending: session.Idle)
+      actor_call.try_call(entry.1, waiting: 5000, sending: session.Idle)
       |> result.map(fn(report) { #(entry.0, entry.1, report) })
     })
   release_idle(reports, sweep)
@@ -71,11 +71,7 @@ fn release_idle(
     case list.key_find(workers, victim.pid) {
       Ok(worker) -> {
         let _ =
-          session_run.try_call(
-            worker,
-            waiting: 40_000,
-            sending: session.Release,
-          )
+          actor_call.try_call(worker, waiting: 40_000, sending: session.Release)
         Nil
       }
       Error(_) -> Nil
@@ -90,7 +86,7 @@ fn release_idle(
     {
       True -> {
         let _ =
-          session_run.try_call(
+          actor_call.try_call(
             entry.1,
             waiting: 5000,
             sending: session.EvictHistory,

@@ -35,3 +35,15 @@ and the current run's worker. Erlang probes must call these typed accessors
 instead of indexing the state tuple or searching its fields by constructor tag.
 The memory inspector reports numbered fields and sizes; it must not mirror
 Gleam record names or create atoms for field labels.
+
+## finite actor calls
+
+`albedo/actor_call.gleam` owns monitored calls that return `TimedOut` or
+`CalleeDown` and remove their monitor on every outcome. Reuse `try_call` for
+finite waits instead of copying subject lookup, reply selection, and monitor
+cleanup. Callers own deadlines and translate failures into their domain errors;
+a timeout does not cancel accepted work.
+
+Kernel upgrade completion keeps its repeated wait until completion or owner
+death. Session closure also waits for owner termination after the acknowledgment.
+These lifetime protocols need more than a finite request/reply call.

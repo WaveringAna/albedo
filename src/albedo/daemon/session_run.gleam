@@ -1,5 +1,6 @@
 //// The worker executes model/tool work; the session actor owns its protocol.
 
+import albedo/actor_call.{CalleeDown, TimedOut}
 import albedo/daemon/context_snapshot
 import albedo/daemon/conversation
 import albedo/daemon/events
@@ -59,44 +60,6 @@ pub type Messages(message) {
   )
 }
 
-/// Why a call came back without a reply. The two cases need different
-/// treatment: a timeout leaves the callee alive and the request possibly
-/// already processed, while a dead callee means nothing will ever answer.
-pub type CallError {
-  TimedOut
-  CalleeDown
-}
-
-/// Call an actor and report a missing reply instead of panicking. `actor.call`
-/// raises when the callee is slow or exits mid-call, which killed the worker
-/// whenever the session actor stalled past the timeout. The timeout here stays
-/// a latency bound, not a death sentence: the caller decides what a missing
-/// reply means, and it can tell a stall from a corpse.
-pub fn try_call(
-  subject: Subject(message),
-  waiting timeout: Int,
-  sending make_request: fn(Subject(reply)) -> message,
-) -> Result(reply, CallError) {
-  case process.subject_owner(subject) {
-    Error(_) -> Error(CalleeDown)
-    Ok(callee) -> {
-      let reply = process.new_subject()
-      let monitor = process.monitor(callee)
-      process.send(subject, make_request(reply))
-      let answer =
-        process.new_selector()
-        |> process.select_map(reply, Ok)
-        |> process.select_specific_monitor(monitor, fn(_) { Error(CalleeDown) })
-        |> process.selector_receive(timeout)
-      process.demonitor_process(monitor)
-      case answer {
-        Ok(outcome) -> outcome
-        Error(_) -> Error(TimedOut)
-      }
-    }
-  }
-}
-
 /// General events tolerate a session stall while the run remains live. A
 /// cancellation or dead owner refuses continuation; progress acknowledgments
 /// use their stricter policy below.
@@ -109,7 +72,7 @@ pub fn publish_fn(
 ) -> fn(events.Event) -> Bool {
   fn(event) {
     case
-      try_call(owner, waiting: timeout, sending: messages.publish(
+      actor_call.try_call(owner, waiting: timeout, sending: messages.publish(
         run_id,
         event,
         _,
@@ -137,7 +100,7 @@ pub fn tool_progress_delta_fn(
       True -> False
       False ->
         case
-          try_call(
+          actor_call.try_call(
             owner,
             waiting: timeout,
             sending: messages.tool_progress_delta(
@@ -170,7 +133,7 @@ pub fn tool_progress_running_fn(
       True -> False
       False ->
         case
-          try_call(
+          actor_call.try_call(
             owner,
             waiting: timeout,
             sending: messages.tool_progress_running(
@@ -222,7 +185,7 @@ fn confirm(
   waiting timeout: Int,
   sending make_request: fn(Subject(Result(reply, String))) -> message,
 ) -> Result(reply, String) {
-  case try_call(owner, waiting: timeout, sending: make_request) {
+  case actor_call.try_call(owner, waiting: timeout, sending: make_request) {
     Ok(reply) -> reply
     Error(TimedOut) ->
       Error(what <> " unconfirmed after a session stall; it may still be saved")
@@ -298,7 +261,7 @@ pub fn drain_fn(
 /// Bookkeeping the turn can go on without: a stalled session actor must not
 /// kill the turn over it; fire and forget after the bound.
 fn report(owner: Subject(message), make: fn(Subject(Nil)) -> message) -> Nil {
-  let _ = try_call(owner, waiting: 5000, sending: make)
+  let _ = actor_call.try_call(owner, waiting: 5000, sending: make)
   Nil
 }
 

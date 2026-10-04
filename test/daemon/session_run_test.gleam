@@ -14,71 +14,12 @@ import gleam/option.{None}
 import gleam/otp/actor
 import gleeunit/should
 
-type Ping {
-  Ping(reply: Subject(String))
-  Die
-}
-
 fn server(mode: fn(message) -> actor.Next(Nil, message)) -> Subject(message) {
   let assert Ok(started) =
     actor.new(Nil)
     |> actor.on_message(fn(_, message) { mode(message) })
     |> actor.start
   started.data
-}
-
-fn answers(message: Ping) -> actor.Next(Nil, Ping) {
-  case message {
-    Ping(reply) -> {
-      process.send(reply, "pong")
-      actor.continue(Nil)
-    }
-    _ -> actor.continue(Nil)
-  }
-}
-
-fn never_replies(_message: Ping) -> actor.Next(Nil, Ping) {
-  actor.continue(Nil)
-}
-
-fn dies_on_call(message: Ping) -> actor.Next(Nil, Ping) {
-  case message {
-    Die -> actor.stop()
-    _ -> actor.continue(Nil)
-  }
-}
-
-pub fn a_reply_in_time_is_some_test() -> Nil {
-  let subject = server(answers)
-  session_run.try_call(subject, 2000, Ping)
-  |> should.equal(Ok("pong"))
-}
-
-pub fn a_stalled_callee_reports_a_timeout_test() -> Nil {
-  let subject = server(never_replies)
-  session_run.try_call(subject, 20, Ping)
-  |> should.equal(Error(session_run.TimedOut))
-}
-
-pub fn a_dead_callee_reports_the_death_test() -> Nil {
-  let subject = server(dies_on_call)
-  session_run.try_call(subject, 2000, fn(_reply) { Die })
-  |> should.equal(Error(session_run.CalleeDown))
-}
-
-pub fn a_reply_that_races_the_callee_exit_still_arrives_test() -> Nil {
-  let subject =
-    server(fn(message) {
-      case message {
-        Ping(reply) -> {
-          process.send(reply, "last words")
-          actor.stop()
-        }
-        _ -> actor.continue(Nil)
-      }
-    })
-  session_run.try_call(subject, 2000, Ping)
-  |> should.equal(Ok("last words"))
 }
 
 /// A stand-in for the session actor's protocol.

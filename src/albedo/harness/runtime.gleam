@@ -1,5 +1,6 @@
 //// An embeddable extension runtime with durable work and session-owned Python kernels.
 
+import albedo/actor_call
 import albedo/daemon/configuration
 import albedo/daemon/session_catalog
 import albedo/daemon/store
@@ -161,24 +162,19 @@ pub fn observe_composition(
   home: String,
   id: String,
 ) -> Result(CompositionObservation, String) {
-  use owner <- result.try(
+  use _owner <- result.try(
     process.subject_owner(runtime.subject)
     |> result.replace_error("runtime owner is unavailable"),
   )
-  let monitor = process.monitor(owner)
-  let reply = process.new_subject()
-  process.send(runtime.subject, ObserveComposition(home, id, reply))
-  let outcome =
-    process.new_selector()
-    |> process.select(reply)
-    |> process.select_specific_monitor(monitor, fn(_) {
-      Error("runtime owner stopped during composition observation")
-    })
-    |> process.selector_receive(15_000)
-    |> result.replace_error("runtime composition observation is unavailable")
-    |> result.flatten
-  process.demonitor_process(monitor)
-  outcome
+  actor_call.try_call(runtime.subject, 15_000, ObserveComposition(home, id, _))
+  |> result.map_error(fn(error) {
+    case error {
+      actor_call.CalleeDown ->
+        "runtime owner stopped during composition observation"
+      actor_call.TimedOut -> "runtime composition observation is unavailable"
+    }
+  })
+  |> result.flatten
 }
 
 /// Sessions with an actual prepared composition; observing this set does not
@@ -212,24 +208,19 @@ pub fn observe_catalog(
   home: String,
   id: String,
 ) -> Result(CatalogObservation, String) {
-  use owner <- result.try(
+  use _owner <- result.try(
     process.subject_owner(runtime.subject)
     |> result.replace_error("runtime owner is unavailable"),
   )
-  let monitor = process.monitor(owner)
-  let reply = process.new_subject()
-  process.send(runtime.subject, ObserveCatalog(home, id, reply))
-  let outcome =
-    process.new_selector()
-    |> process.select(reply)
-    |> process.select_specific_monitor(monitor, fn(_) {
-      Error("runtime owner stopped during catalog observation")
-    })
-    |> process.selector_receive(15_000)
-    |> result.replace_error("runtime catalog observation is unavailable")
-    |> result.flatten
-  process.demonitor_process(monitor)
-  outcome
+  actor_call.try_call(runtime.subject, 15_000, ObserveCatalog(home, id, _))
+  |> result.map_error(fn(error) {
+    case error {
+      actor_call.CalleeDown ->
+        "runtime owner stopped during catalog observation"
+      actor_call.TimedOut -> "runtime catalog observation is unavailable"
+    }
+  })
+  |> result.flatten
 }
 
 /// Observe retained loaded state even when desired discovery is unreadable.
@@ -237,24 +228,18 @@ pub fn observe_loaded(
   runtime: Runtime,
   id: String,
 ) -> Result(LoadedObservation, String) {
-  use owner <- result.try(
+  use _owner <- result.try(
     process.subject_owner(runtime.subject)
     |> result.replace_error("runtime owner is unavailable"),
   )
-  let monitor = process.monitor(owner)
-  let reply = process.new_subject()
-  process.send(runtime.subject, ObserveLoaded(id, reply))
-  let outcome =
-    process.new_selector()
-    |> process.select(reply)
-    |> process.select_specific_monitor(monitor, fn(_) {
-      Error("runtime owner stopped during observation")
-    })
-    |> process.selector_receive(5000)
-    |> result.replace_error("loaded runtime observation is unavailable")
-    |> result.flatten
-  process.demonitor_process(monitor)
-  outcome
+  actor_call.try_call(runtime.subject, 5000, ObserveLoaded(id, _))
+  |> result.map_error(fn(error) {
+    case error {
+      actor_call.CalleeDown -> "runtime owner stopped during observation"
+      actor_call.TimedOut -> "loaded runtime observation is unavailable"
+    }
+  })
+  |> result.flatten
 }
 
 fn composition_inventory(state: State) -> session_catalog.Inventory {
@@ -812,26 +797,19 @@ pub fn forget_session(runtime: Runtime, id: String) -> Nil {
 
 /// Remove runtime state only after supervising the actual recorded processes.
 pub fn delete_session(runtime: Runtime, id: String) -> Result(Nil, String) {
-  use owner <- result.try(
+  use _owner <- result.try(
     process.subject_owner(runtime.subject)
     |> result.replace_error("runtime owner is unavailable"),
   )
-  let monitor = process.monitor(owner)
-  let reply = process.new_subject()
-  process.send(runtime.subject, Delete(id, reply))
-  let outcome =
-    process.new_selector()
-    |> process.select(reply)
-    |> process.select_specific_monitor(monitor, fn(_) {
-      Error("runtime owner stopped during deletion")
-    })
-    |> process.selector_receive(30_000)
-    |> result.replace_error(
-      "runtime did not confirm deletion before its deadline",
-    )
-    |> result.flatten
-  process.demonitor_process(monitor)
-  outcome
+  actor_call.try_call(runtime.subject, 30_000, Delete(id, _))
+  |> result.map_error(fn(error) {
+    case error {
+      actor_call.CalleeDown -> "runtime owner stopped during deletion"
+      actor_call.TimedOut ->
+        "runtime did not confirm deletion before its deadline"
+    }
+  })
+  |> result.flatten
 }
 
 /// This session's materialized commands and their state context, served from

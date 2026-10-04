@@ -1,5 +1,6 @@
 //// One coordinator per session. Workers own model/tool loops; clients never own workers.
 
+import albedo/actor_call
 import albedo/clock
 
 import albedo/daemon/bus
@@ -457,14 +458,14 @@ pub fn interrupt_captured(
 }
 
 pub fn capture(session: Session) -> Result(Capture, String) {
-  session_run.try_call(session, 5000, ReadCapture)
+  actor_call.try_call(session, 5000, ReadCapture)
   |> result.replace_error("session capture unavailable")
   |> result.flatten
 }
 
 /// Reload desired composition and wait for the runtime's actual result.
 pub fn reload(session: Session) -> Result(session_extensions.Reloaded, String) {
-  session_run.try_call(session, 185_000, ReloadData)
+  actor_call.try_call(session, 185_000, ReloadData)
   |> result.replace_error(
     "reload response unavailable; inspect session composition",
   )
@@ -473,7 +474,7 @@ pub fn reload(session: Session) -> Result(session_extensions.Reloaded, String) {
 
 /// Capture collection facts without inspecting a kernel or composing plugins.
 pub fn summary(session: Session) -> Result(Summary, String) {
-  session_run.try_call(session, 5000, ReadSummary)
+  actor_call.try_call(session, 5000, ReadSummary)
   |> result.replace_error("session summary unavailable")
 }
 
@@ -557,29 +558,19 @@ pub fn claim_deletion(
   request: family.DeletionRequest,
   token: String,
 ) -> Result(family.DeletionClaim, String) {
-  case process.subject_owner(session) {
-    Error(_) -> Error("session owner stopped before deletion admission")
-    Ok(owner) -> {
-      let monitor = process.monitor(owner)
-      let reply = process.new_subject()
-      process.send(
-        session,
-        ClaimDeletion(request, token, clock.monotonic_ms() + 5000, reply),
-      )
-      let outcome =
-        process.new_selector()
-        |> process.select(reply)
-        |> process.select_specific_monitor(monitor, fn(_) {
-          Error("session owner stopped before deletion admission")
-        })
-        |> process.selector_receive(5000)
-      process.demonitor_process(monitor)
-      case outcome {
-        Ok(result) -> result
-        Error(_) -> Error("deletion admission deadline reached")
-      }
+  actor_call.try_call(session, 5000, ClaimDeletion(
+    request,
+    token,
+    clock.monotonic_ms() + 5000,
+    _,
+  ))
+  |> result.map_error(fn(error) {
+    case error {
+      actor_call.CalleeDown -> "session owner stopped before deletion admission"
+      actor_call.TimedOut -> "deletion admission deadline reached"
     }
-  }
+  })
+  |> result.flatten
 }
 
 type ClosureEvent {
@@ -854,7 +845,7 @@ fn interrupt_kernel(state: State) -> Nil {
 pub fn upgrade_kernel(
   session: Session,
 ) -> Result(runtime.KernelUpgrade, String) {
-  session_run.try_call(session, 185_000, UpgradeKernel)
+  actor_call.try_call(session, 185_000, UpgradeKernel)
   |> result.replace_error(
     "kernel upgrade response unavailable; inspect the session kernel",
   )
@@ -2373,7 +2364,7 @@ pub fn compact_session(
   session: Session,
   strategy: Option(String),
 ) -> Result(turn.CompactionReport, String) {
-  session_run.try_call(session, 185_000, Compact(strategy, _))
+  actor_call.try_call(session, 185_000, Compact(strategy, _))
   |> result.replace_error(
     "compaction response unavailable; inspect session context",
   )
@@ -2853,12 +2844,12 @@ fn background_handle(id: String, self: Session) -> extension.Session {
     id,
     fn(request, prefix) {
       case
-        session_run.try_call(self, 600_000, CallInBackground(request, prefix, _))
+        actor_call.try_call(self, 600_000, CallInBackground(request, prefix, _))
       {
         Ok(outcome) -> outcome
-        Error(session_run.TimedOut) ->
+        Error(actor_call.TimedOut) ->
           Error("the background call went unanswered for ten minutes")
-        Error(session_run.CalleeDown) -> Error("the session stopped")
+        Error(actor_call.CalleeDown) -> Error("the session stopped")
       }
     },
     fn(reason) { process.send(self, RefreshRequested(reason)) },
