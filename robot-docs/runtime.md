@@ -27,6 +27,14 @@ A new Erlang shim should supply a native capability, not duplicate an existing
 Gleam helper. Keep typed values through internal projections and encode JSON at
 the wire boundary; see [command state projections](commands.md#contributing-commands).
 
+`daemon/active_output.gleam` owns unfinished response identities, limits, and
+projection transitions. Its native helper owns buffered spill file I/O, range
+reads, leases, and filesystem cleanup. Capture flushes by absolute offset so
+capturing the same immutable projection cannot append its buffered tail twice.
+Do not move projection policy into an opaque Erlang map or reconstruct output
+from replay events. The [session attachment contract](sessions.md) defines
+cursor consistency, commit replacement, and reference lifetimes.
+
 ## session diagnostics
 
 `daemon/session_diagnostics.gleam` owns named facts from `session_state.State`

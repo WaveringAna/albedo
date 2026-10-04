@@ -90,6 +90,7 @@ own section. An omitted method is unsupported. `GET` defaults to JSON.
 | `/sessions/{session_id}/interrupt` | POST | Interrupt a captured turn and cancel captured waiting inputs |
 | `/sessions/{session_id}/history` | GET | Bounded transcript pages or checkpoint summaries |
 | `/sessions/{session_id}/history/{entry_id}` | GET | Read full content of a large transcript entry in bounded pieces |
+| `/sessions/{session_id}/active-output/{content_id}` | GET | Read an unfinished output prefix fixed by a captured snapshot |
 | `/sessions/{session_id}/context` | GET | Prepared request inspection and provider request records |
 | `/sessions/{session_id}/catalog` | GET | Fresh discovery and separately identified loaded composition |
 | `/sessions/{session_id}/reload` | POST | Reload session composition, model catalogs, or both |
@@ -283,8 +284,9 @@ information. Attachment requires protocol 3; optional operations check the
 advertised capability before invocation.
 
 Capabilities are a map from stable feature names to integer contract versions.
-The required version-1 features are `durable_inputs`, `session_replay`,
-`collection_invalidation`, and `tool_progress`. Optional features include
+The required version-1 features are `durable_inputs`,
+`collection_invalidation`, and `tool_progress`; `session_replay` requires
+version 2. Optional features include
 `context`, `catalog`, `workspace_browsing`, `host_probes`, `provider_auth`, and
 `storage_report`. Extension entries identify enabled services and their
 contract versions. Builds cannot substitute for protocol compatibility.
@@ -1072,6 +1074,14 @@ An oversized event is represented by bounded history references.
 Registration and state capture serialize with session publication. A reset
 captures state, bounded current progress, pending ownership, and replay cursor
 together, then loads history through the captured durable high-water mark.
+It also captures ordered `active_output` segments. Their inline text or signed
+content references include the complete unfinished prefix at that cursor,
+including output evicted from the replay buffer. Text and thinking share a
+64 KiB encoded inline budget. Spill references fix their byte cutoff and remain
+readable for 15 minutes even when the response commits during hydration.
+Content reads retain the original `snapshot` query while following `next`;
+continuations cannot extend the original snapshot's lifetime. Expiration
+returns `410 active_output_expired` and requires a fresh session snapshot.
 Capture publishes any pending coalesced progress or activity before choosing
 the cursor. Live-state changes advance the actor sequence; one cursor cannot
 identify conflicting status, progress, or activity replacements.
@@ -1085,6 +1095,8 @@ Client delivery follows these rules:
 1. Validate the complete batch, generation, sequence, and known event fields.
 2. Require a leading reset on first attachment or a generation change.
 3. On reset, replace visible recent history, pending state, and live progress.
+   Stage full active-output hydration before installing the replacement.
+   Restore history and the captured prefixes before delivering later deltas.
    Clear partial arguments and transient text from the previous stream.
 4. Deliver all events in order. Same-generation replay cannot regress the
    sequence without a reset.
@@ -1144,7 +1156,7 @@ succeeds and a later callback fails before the batch cursor is saved.
 | `note` | Entry identity, origin, display text, and related family mail IDs where present. |
 | `retry` | Run, provider attempt, safe reason, and retry delay in milliseconds; clears obsolete attempt progress. |
 | `usage` | Typed token, timing, model-window, and cache observations. |
-| `committed` | Durable high-water position that covers previously displayed events. |
+| `committed` | Durable high-water position, `replaces_live_ids`, and `replaces_all_live`. Model commits clear all provisional output; other commits replace only the listed identities. |
 | `turn_completed` | Run ID, terminal outcome, and input membership. |
 | `compacted` | Strategy and observation, without replacing durable history. |
 | `error` | Safe error code and message for the turn; not transport authentication. |
@@ -1152,8 +1164,13 @@ succeeds and a later callback fails before the batch cursor is saved.
 | `failure` | Stream error code; terminal, never advances the saved cursor. |
 
 Assistant text and reasoning are provisional until committed. Clients reconcile
-completed entries by stable identity. Model retry can end an attempt without
-creating another user input. Family mail events are durable notes with nullable
+completed entries by stable identity, including every bounded chunk of a long
+provisional segment. Canonical text and thinking publication precedes its
+commit marker; clients replace provisional chunks together with that
+publication. `replaces_all_live` also clears fragments omitted from bounded
+backfill after a storage failure. Generation, model step, and attempt separate
+live identities. Model retry can end an attempt without creating another user
+input. Family mail events are durable notes with nullable
 `mail: { "mail_id": ..., "sender_session_id": ..., "receiver_session_id": ...,
 "kind": ..., "bytes": ... }`. Sender is null for external senders.
 Kind is `task`, `message`, `result`, `unreviewed`, or `webhook`; bytes count

@@ -71,6 +71,7 @@ API recovery uses the supplied callback and validates the new endpoint before
 installing it. It does not know the client's home directory or executable.
 
 Attachment requires protocol 3 and the `durable_inputs`, `session_replay`,
-`collection_invalidation`, and `tool_progress` capabilities. Optional
+`collection_invalidation`, and `tool_progress` capabilities. `session_replay`
+requires version 2; the other required capabilities use version 1. Optional
 features check their own capabilities. Authentication, malformed server responses, and
 capability lookup failures propagate to callers.

@@ -24,6 +24,42 @@ A missing or different generation, or a sequence outside the replay window,
 returns a durable transcript reset. Empty keepalive batches carry the current
 pair too.
 
+Attachment requires `session_replay` capability version 2. Reset snapshots
+include `active_output`: unfinished text and thinking captured with the same
+actor cursor as the durable history watermark. The session actor owns this
+projection. Do not reconstruct it from the replay ring or bounded activity
+previews, which may have already discarded the beginning of a response.
+
+The projection retains at most 64 KiB of raw inline text and emits at most
+64 KiB of encoded inline content across its segments. Larger output spills to
+temporary files with 16 KiB buffered writes. Capture flushes pending writes
+before returning references. Each reference fixes the byte cutoff at capture;
+later deltas cannot extend that prefix. Full-content pages use
+`/sessions/{session_id}/active-output/{content_id}` and retain the original
+`snapshot` query while following `next` tokens.
+
+The CLI stages complete prefix hydration before replacing its transcript,
+then restores history and active output before processing later events.
+Provisional chunks retain message identity even after the live display buffer
+settles them. Canonical assistant and thinking publication precedes
+`committed.replaces_live_ids`, which identifies matching provisional chunks.
+Model commits set `replaces_all_live` to retire all provisional output, including
+fragments absent from the bounded projection after a storage failure.
+Retry identities never reuse a failed attempt's content. Cancellation and
+failure retire remaining provisional output without changing durable history.
+
+Issued spill references live for 15 minutes across commit and retry. Existing
+maintenance removes expired and orphaned files; session deletion revokes them.
+Spill storage is bounded to 64 MiB per run, 1 GiB across retained files, and
+4096 retained files. A projection has at most 256 segments. Spill directories
+use mode `0700`; content and metadata use `0600`. Owner identity includes the
+VM incarnation so reused PIDs cannot retain orphaned files after restart.
+Storage failure makes backfill explicitly unavailable rather than returning a
+truncated successful snapshot. It must not abort generation or discard a
+durable commit. Expired references return `410 active_output_expired` and cause
+the client to capture a new snapshot. Do not add compatibility readers for
+snapshots without active output.
+
 Session subscribers receive coalesced wake notifications. Event payloads stay
 in the session's existing replay buffer; a successful frame acknowledges its
 cursor before another wake is issued. A subscriber's death removes its watch
