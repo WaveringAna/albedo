@@ -28,7 +28,7 @@ func TestDeclaredActionRejectsOverlappingBodyBindingsBeforeDelivery(t *testing.T
 		if err := json.Unmarshal([]byte(`{"method":"POST","path_template":"/extensions/custom/items","body":`+body+`}`), &action.Operation); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := ExecutePageAction(t.Context(), conn, "s", PageActionRequest{Action: action}); err == nil {
+		if _, err := ExecutePageAction(t.Context(), conn, PageActionRequest{Action: action}); err == nil {
 			t.Errorf("overlapping body was accepted: %s", body)
 		}
 	}
@@ -56,7 +56,7 @@ func TestDeclaredActionDeliversSiblingAndEscapedBodyKeys(t *testing.T) {
 	if err := json.Unmarshal([]byte(`{"method":"POST","path_template":"/extensions/custom/items","body":{"/a~1b/~0name":{"source":"literal","value":"one"},"/a~1b/second":{"source":"literal","value":"two"},"/a":{"source":"literal","value":"separate"}}}`), &action.Operation); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ExecutePageAction(t.Context(), conn, "s", PageActionRequest{Action: action}); err != nil {
+	if _, err := ExecutePageAction(t.Context(), conn, PageActionRequest{Action: action}); err != nil {
 		t.Fatal(err)
 	}
 	if delivered.Load() != 1 {
@@ -180,7 +180,7 @@ func TestDeclaredReadActionKeepsItsCapturedFilterOnRefresh(t *testing.T) {
 	}
 	action.Label = "Custom items"
 	form := map[string]json.RawMessage{"scope": json.RawMessage(`"all"`)}
-	result, err := ExecutePageAction(t.Context(), conn, "s", PageActionRequest{Action: action, Form: form, Session: &Session{ID: "s"}})
+	result, err := ExecutePageAction(t.Context(), conn, PageActionRequest{Action: action, Form: form, Session: &Session{ID: "s"}})
 	if err != nil || result.Page == nil || !strings.Contains(result.Page.Rows[0].Detail, `"version": 1`) || !strings.Contains(result.Page.Rows[0].Detail, `9007199254740993`) {
 		t.Fatalf("read result was discarded: %#v %v", result, err)
 	}

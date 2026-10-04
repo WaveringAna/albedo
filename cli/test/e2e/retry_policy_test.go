@@ -183,7 +183,7 @@ func TestInvalidCommandAcknowledgementAddsOneWorkItem(t *testing.T) {
 			if action == nil {
 				t.Fatal("work creation action missing")
 			}
-			_, err = daemon.ExecutePageAction(t.Context(), proxy.connection, id, daemon.PageActionRequest{Command: "/work", Action: *action, Session: page.Session, Form: map[string]json.RawMessage{"title": json.RawMessage(`"one uncertain work item"`), "notes": json.RawMessage(`""`), "parent_id": json.RawMessage(`null`)}})
+			_, err = daemon.ExecutePageAction(t.Context(), proxy.connection, daemon.PageActionRequest{Action: *action, Session: page.Session, Form: map[string]json.RawMessage{"title": json.RawMessage(`"one uncertain work item"`), "notes": json.RawMessage(`""`), "parent_id": json.RawMessage(`null`)}})
 			proxy.assertSingleEffect(t, err)
 			listed, err := daemon.LoadPage(context.Background(), conn(t), id, "/work")
 			if err != nil {

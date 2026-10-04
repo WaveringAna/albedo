@@ -269,7 +269,7 @@ func (m PageViewModel) prompt() string {
 		choice.WriteString(m.Styles.Prompt.Render(act.Label + target))
 		choice.WriteByte(' ')
 		choice.WriteString(promptLead())
-		for i, opt := range act.Options {
+		for i, opt := range m.fieldChoices() {
 			label := " " + opt + " "
 			if i == m.ChoiceIndex {
 				label = selectedLine(label, 0)
@@ -278,7 +278,7 @@ func (m PageViewModel) prompt() string {
 		}
 		return choice.String()
 	case modeText:
-		return " " + m.Styles.Prompt.Render(act.Label+target+" · "+cmp.Or(act.Prompt, act.Label)) + " " + promptLead() + m.TextInput.View()
+		return " " + m.Styles.Prompt.Render(act.Label+target+" · "+cmp.Or(m.currentField().Label, act.Label)) + " " + promptLead() + m.TextInput.View()
 	}
 	return ""
 }

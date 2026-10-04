@@ -20,10 +20,8 @@ import (
 )
 
 type PageActionRequest struct {
-	Command string
 	Action  PageAction
 	Row     *PageRow
-	Value   string
 	Form    map[string]json.RawMessage
 	Session *Session
 }
@@ -101,22 +99,10 @@ func RefreshPage(ctx context.Context, conn *Connection, session, command string,
 	}
 	return doc, err
 }
-func ExecutePageAction(ctx context.Context, conn *Connection, session string, request PageActionRequest) (CommandResult, error) {
+func ExecutePageAction(ctx context.Context, conn *Connection, request PageActionRequest) (CommandResult, error) {
 	form := request.Form
 	if form == nil {
 		form = map[string]json.RawMessage{}
-	}
-	if len(request.Action.Fields) == 1 {
-		field := request.Action.Fields[0]
-		if _, ok := form[field.Name]; !ok {
-			parsed, err := actionFieldValue(field, request.Value)
-			if err != nil {
-				return CommandResult{}, err
-			}
-			if parsed != nil {
-				form[field.Name] = parsed
-			}
-		}
 	}
 	payload, err := executeBoundOperation(ctx, conn, request.Action.Operation, request.Row, form, request.Session)
 	if err != nil {

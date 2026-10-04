@@ -108,7 +108,7 @@ func (m PageViewModel) loadPageCmd(gen int) tea.Cmd {
 	}
 }
 
-func (m PageViewModel) executeActionCmd(act PageAction, row *PageRow, entered string, gen int) tea.Cmd {
+func (m PageViewModel) executeActionCmd(act PageAction, row *PageRow, gen int) tea.Cmd {
 	form := maps.Clone(m.FormValues)
 	var session *daemon.Session
 	if m.Doc != nil {
@@ -130,7 +130,7 @@ func (m PageViewModel) executeActionCmd(act PageAction, row *PageRow, entered st
 				}
 			}
 		}
-		res, err := daemon.ExecutePageAction(context.Background(), m.Conn, m.SessionID, daemon.PageActionRequest{Command: m.Command, Action: act, Row: row, Value: entered, Form: form, Session: session})
+		res, err := daemon.ExecutePageAction(context.Background(), m.Conn, daemon.PageActionRequest{Action: act, Row: row, Form: form, Session: session})
 		return pageActionExecutedMsg{Message: res.Message, Prepared: res.Page, Action: act, Err: err, Gen: gen}
 	}
 }
@@ -177,7 +177,7 @@ func (m *PageViewModel) runAction(act PageAction, entered string) tea.Cmd {
 	m.Mode, m.CurrentAction = modeBrowse, nil
 	m.Busy, m.Error, m.Notice = true, "", ""
 	m.Generation = nextPageGeneration()
-	cmd := m.executeActionCmd(act, m.currentRow(), entered, m.Generation)
+	cmd := m.executeActionCmd(act, m.currentRow(), m.Generation)
 	m.TextInput.Reset()
 	m.FormValues = nil
 	m.FieldIndex = 0
@@ -197,20 +197,6 @@ func (m *PageViewModel) beginAction(act PageAction, fresh bool) tea.Cmd {
 		m.FieldIndex = 0
 		m.FormValues = map[string]json.RawMessage{}
 		return m.promptField(act)
-	}
-	switch act.Input {
-	case "text", "secret":
-		m.Mode = modeText
-		return ask(&m.TextInput, "", act.Input == "secret")
-	case "choice":
-		m.Mode = modeChoice
-		m.ChoiceIndex = 0
-		if row := m.currentRow(); row != nil {
-			if i := slices.Index(act.Options, row.Badge); i >= 0 {
-				m.ChoiceIndex = i
-			}
-		}
-		return nil
 	}
 	return m.runAction(act, "")
 }
@@ -282,8 +268,7 @@ func (m PageViewModel) Update(msg tea.Msg) (PageViewModel, tea.Cmd) {
 				return m, m.beginAction(act, false)
 			}
 		case modeChoice:
-			if m.CurrentAction != nil && len(m.CurrentAction.Options) > 0 {
-				opts := m.CurrentAction.Options
+			if opts := m.fieldChoices(); len(opts) > 0 {
 				switch msg.String() {
 				case "left", "up":
 					m.ChoiceIndex = (m.ChoiceIndex - 1 + len(opts)) % len(opts)
@@ -384,12 +369,10 @@ func (m *PageViewModel) promptField(act PageAction) tea.Cmd {
 	act.Fields = slices.Clone(act.Fields)
 	act.Fields[m.FieldIndex] = field
 	m.CurrentAction = &act
-	daemon.ConfigureActionField(&act, field)
-	m.CurrentAction = &act
 	if field.Type == "hidden" {
 		return m.runAction(act, "")
 	}
-	if act.Input == "choice" {
+	if field.Type == "choice" || field.Type == "boolean" {
 		m.Mode = modeChoice
 		m.ChoiceIndex = daemon.FormChoiceDefault(field)
 		return nil
@@ -402,4 +385,23 @@ func (m *PageViewModel) promptField(act PageAction) tea.Cmd {
 		}
 	}
 	return ask(&m.TextInput, initial, field.Type == "secret")
+}
+
+func (m PageViewModel) currentField() daemon.FormField {
+	if m.CurrentAction != nil && m.FieldIndex < len(m.CurrentAction.Fields) {
+		return m.CurrentAction.Fields[m.FieldIndex]
+	}
+	return daemon.FormField{}
+}
+
+func (m PageViewModel) fieldChoices() []string {
+	field := m.currentField()
+	if field.Type == "boolean" {
+		return []string{"false", "true"}
+	}
+	labels := make([]string, len(field.Choices))
+	for i, choice := range field.Choices {
+		labels[i] = choice.Label
+	}
+	return labels
 }
