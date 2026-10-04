@@ -36,24 +36,29 @@ call(Table, Id, Arity, Args, Missing, Crashed) ->
 ensure_table(Table) ->
     case ets:whereis(Table) of
         undefined ->
-            _ = spawn(fun() -> table_owner(Table) end),
-            wait_table(Table, 200);
+            Parent = self(),
+            Ready = make_ref(),
+            {Owner, Monitor} = spawn_monitor(fun() -> table_owner(Table, Parent, Ready) end),
+            receive
+                {Ready, ready} -> demonitor(Monitor, [flush]), ok;
+                {'DOWN', Monitor, process, Owner, Reason} -> error({table_start_failed, Table, Reason})
+            end;
         _ -> ok
     end.
 
-%% The owner needs a moment to create the table; bounded, because a table that
-%% never appears should fail loudly in register, not hang here.
-wait_table(_Table, 0) -> ok;
-wait_table(Table, N) ->
-    case ets:whereis(Table) of
-        undefined -> receive after 1 -> ok end, wait_table(Table, N - 1);
-        _ -> ok
-    end.
-
-table_owner(Table) ->
-    try ets:new(Table, [public, named_table, {read_concurrency, true}])
-    catch _:_ -> ok   %% a concurrent creator won the name; ours is theirs
+%% The winning owner outlives registering callers. Losing creators acknowledge
+%% the existing table and exit instead of leaving an idle process behind.
+table_owner(Table, Parent, Ready) ->
+    Created = try ets:new(Table, [public, named_table, {read_concurrency, true}]) of
+        _ -> true
+    catch error:badarg ->
+        case ets:whereis(Table) of
+            undefined -> error({table_creation_failed, Table});
+            _ -> false
+        end
     end,
-    receive stop -> ok
-    after infinity -> ok
+    Parent ! {Ready, ready},
+    case Created of
+        true -> receive stop -> ok end;
+        false -> ok
     end.

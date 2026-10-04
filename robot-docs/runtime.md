@@ -54,3 +54,12 @@ These lifetime protocols need more than a finite request/reply call.
 `Result(Runtime, String)` and map failures at the HTTP boundary. Reuse this
 function rather than sending `Host` with a local copy of its timeout. Page
 contributors construct `page.Row` directly; forwarding constructors add no policy.
+
+## closure registry tables
+
+`daemon/albedo_registry.erl` creates closure-registry ETS tables lazily. A
+registering caller monitors the creator and waits for a tagged readiness
+acknowledgment or explicit startup failure before inserting. The winning owner
+outlives the callers; concurrent losing creators acknowledge the existing
+table and exit. Keep this lifetime independent of daemon boot so embedded
+runtimes work too. Never replace readiness with a sleep or bounded polling.
