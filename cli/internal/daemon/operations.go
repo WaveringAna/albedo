@@ -120,28 +120,38 @@ func NewCreation(fields CreateSessionRequest) (*OperationHandle, error) {
 	return handle, nil
 }
 
-type OperationReceipt struct {
-	OperationID     string
-	Kind            string
-	Status          string
-	Target          string
-	Result          json.RawMessage
-	Error           json.RawMessage
-	HTTPStatus      int
-	DeliveryStatus  string
-	BlockingReason  string
-	TurnID          string
-	AcceptanceOrder int64
-}
+type InputReceipt protocol.Input
 
-func (receipt OperationReceipt) Rejection() error {
-	if receipt.Status != "rejected" {
+func (receipt InputReceipt) Rejection() error {
+	if receipt.Admission != "rejected" {
 		return nil
 	}
-	return decodeAPIError(receipt.HTTPStatus, receipt.Error)
+	err := &APIError{StatusCode: int(receipt.HTTPStatus)}
+	if receipt.Problem != nil {
+		err.Code, err.Message = receipt.Problem.Code, receipt.Problem.Detail
+		if err.Message == "" {
+			err.Message = receipt.Problem.Title
+		}
+	}
+	return err
 }
 
-func GetInput(ctx context.Context, conn *Connection, session, id string) (OperationReceipt, error) {
+func (receipt InputReceipt) Pending() bool { return value(receipt.Delivery) == "pending" }
+
+func (receipt InputReceipt) Settled() bool {
+	return value(receipt.Delivery) == "committed" || value(receipt.Delivery) == "cancelled"
+}
+
+func (receipt InputReceipt) InputOrder() int64 { return value(receipt.AcceptanceOrder) }
+
+func (receipt InputReceipt) BlockingDetail() string {
+	if receipt.BlockingReason != nil {
+		return receipt.BlockingReason.Detail
+	}
+	return ""
+}
+
+func GetInput(ctx context.Context, conn *Connection, session, id string) (InputReceipt, error) {
 	var input protocol.Input
 	err := executeRead(ctx, conn, operation{Name: "read input", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
 		return protocol.NewGetInputRequest(base, session, id)
@@ -155,22 +165,9 @@ func GetInput(ctx context.Context, conn *Connection, session, id string) (Operat
 		return validInput(input)
 	})
 	if err != nil {
-		return OperationReceipt{}, err
+		return InputReceipt{}, err
 	}
-	return inputReceipt(input), nil
-}
-func inputReceipt(input protocol.Input) OperationReceipt {
-	body, _ := json.Marshal(input)
-	problem, _ := json.Marshal(input.Problem)
-	receipt := OperationReceipt{OperationID: input.ID, Kind: input.Kind, Status: input.Admission, Target: input.SessionID, Result: body, Error: problem, HTTPStatus: int(input.HTTPStatus), DeliveryStatus: value(input.Delivery)}
-	receipt.AcceptanceOrder = value(input.AcceptanceOrder)
-	if input.BlockingReason != nil {
-		receipt.BlockingReason = input.BlockingReason.Detail
-	}
-	if input.Turn != nil {
-		receipt.TurnID = input.Turn.ID
-	}
-	return receipt
+	return InputReceipt(input), nil
 }
 func validInput(input protocol.Input) error {
 	if input.ID == "" || input.SessionID == "" {
@@ -194,20 +191,27 @@ func validInput(input protocol.Input) error {
 	}
 	return fieldError("input admission")
 }
-func ResolveOperation(ctx context.Context, conn *Connection, handle *OperationHandle) (OperationReceipt, error) {
+func ResolveOperation(ctx context.Context, conn *Connection, handle *OperationHandle) (InputReceipt, error) {
 	return GetInput(ctx, conn, handle.sessionID, handle.id)
 }
 
-func executeReceipt(ctx context.Context, conn *Connection, handle *OperationHandle, statuses []int, decode func([]byte, int) error) error {
+// A found outcome is authoritative even when it rejects the input. A failed
+// lookup leaves admission uncertain and may permit replay of the frozen request.
+func executeReceipt[T any](ctx context.Context, conn *Connection, handle *OperationHandle, statuses []int, decode func([]byte, int) (T, error), resolve func(context.Context) (T, bool, error)) (T, error) {
+	var result T
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 	for attempt := range 2 {
-		err := executeMutation(ctx, conn, handle.operation, statuses, decode)
+		err := executeMutation(ctx, conn, handle.operation, statuses, func(body []byte, status int) error {
+			var decodeErr error
+			result, decodeErr = decode(body, status)
+			return decodeErr
+		})
 		if err == nil {
-			return nil
+			return result, nil
 		}
 		var uncertain *UncertainOutcomeError
 		collision := false
@@ -215,44 +219,30 @@ func executeReceipt(ctx context.Context, conn *Connection, handle *OperationHand
 			collision = handle.kind == "creation" && api.StatusCode == 412
 		}
 		if !errors.As(err, &uncertain) && !collision {
-			return err
+			return result, err
 		}
 		if ctx.Err() != nil {
-			return uncertainOperation(handle.operation, err)
+			return result, uncertainOperation(handle.operation, err)
+		}
+		resolved, found, lookupErr := resolve(ctx)
+		if found {
+			return resolved, lookupErr
+		}
+		if IsOperationExpired(lookupErr) {
+			return result, uncertainOperation(handle.operation, lookupErr)
 		}
 		if handle.kind == "creation" {
-			session, lookupErr := ResolveCreation(ctx, conn, handle)
-			if lookupErr == nil {
-				body, _ := json.Marshal(session.wire)
-				return decode(body, statuses[0])
-			}
-			if IsOperationExpired(lookupErr) {
-				return uncertainOperation(handle.operation, lookupErr)
-			}
 			if api, ok := errors.AsType[*APIError](lookupErr); ok {
 				if api.Code == "creation_conflict" {
-					return lookupErr
+					return result, lookupErr
 				}
 				if len(api.Decision) > 0 && api.StatusCode >= 400 && api.StatusCode < 500 && api.StatusCode != 404 {
-					return lookupErr
+					return result, lookupErr
 				}
-			}
-		} else {
-			receipt, lookupErr := ResolveOperation(ctx, conn, handle)
-			if lookupErr == nil {
-				if receipt.Status == "rejected" {
-					return receipt.Rejection()
-				}
-				if decodeErr := decode(receipt.Result, statuses[0]); decodeErr == nil {
-					return nil
-				}
-			}
-			if IsOperationExpired(lookupErr) {
-				return uncertainOperation(handle.operation, lookupErr)
 			}
 		}
 		if attempt == 1 {
-			return uncertainOperation(handle.operation, err)
+			return result, uncertainOperation(handle.operation, err)
 		}
 	}
 	panic("unreachable admission retry budget")

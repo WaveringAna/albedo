@@ -122,7 +122,7 @@ func TestTUINavigationRetainsPendingTurnsAndContinuation(t *testing.T) {
 	for _, message := range driver.results(driver.Update(tui.FolderOpenSessionMsg{Session: session})) {
 		if resolved, ok := message.(tui.ChatOperationResolvedMsg); ok {
 			seen[resolved.Handle.ID()] = true
-			if resolved.Err != nil || resolved.Receipt.DeliveryStatus != "pending" {
+			if resolved.Err != nil || !resolved.Receipt.Pending() {
 				t.Fatalf("reattached intent: %+v", resolved)
 			}
 		}
@@ -154,7 +154,7 @@ func TestTUINavigationRetainsPendingTurnsAndContinuation(t *testing.T) {
 		driver.Update(tui.ChatStreamEventMsg{SessionID: session.ID, Generation: driver.App.Chat.Generation, Event: event})
 	}
 	receipt, err := daemon.ResolveOperation(t.Context(), connection, continuation.Handle)
-	if err != nil || receipt.DeliveryStatus != "committed" || matched != 1 || counter.posts.Load() != 2 {
+	if err != nil || receipt.Delivery == nil || *receipt.Delivery != "committed" || matched != 1 || counter.posts.Load() != 2 {
 		t.Fatalf("navigation delivery: matched=%d receipt=%+v err=%v posts=%d", matched, receipt, err, counter.posts.Load())
 	}
 }

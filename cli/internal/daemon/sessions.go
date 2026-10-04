@@ -106,16 +106,16 @@ func CreateSession(ctx context.Context, conn *Connection, request CreateSessionR
 	return CreateSessionOperation(ctx, conn, handle)
 }
 func CreateSessionOperation(ctx context.Context, conn *Connection, handle *OperationHandle) (Session, error) {
-	var result Session
-	err := executeReceipt(ctx, conn, handle, []int{201}, func(body []byte, _ int) error {
-		var err error
-		result, err = decodeSession(body)
+	return executeReceipt(ctx, conn, handle, []int{201}, func(body []byte, _ int) (Session, error) {
+		result, err := decodeSession(body)
 		if err == nil && result.ID != handle.ID() {
-			return fieldError("session ID")
+			return result, fieldError("session ID")
 		}
-		return err
+		return result, err
+	}, func(ctx context.Context) (Session, bool, error) {
+		result, err := ResolveCreation(ctx, conn, handle)
+		return result, err == nil, err
 	})
-	return result, err
 }
 func GetSession(ctx context.Context, conn *Connection, id string) (Session, error) {
 	var result Session

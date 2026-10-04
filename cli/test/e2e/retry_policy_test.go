@@ -463,7 +463,7 @@ func TestQueuedPromptDeadlineCancelsOnlyItsOperation(t *testing.T) {
 		t.Fatalf("deadline lost operation identity: %v", err)
 	}
 	receipt, err := daemon.ResolveOperation(t.Context(), connection, uncertain.Handle)
-	if err != nil || receipt.DeliveryStatus != "cancelled" {
+	if err != nil || receipt.Delivery == nil || *receipt.Delivery != "cancelled" {
 		t.Fatalf("queued receipt after deadline: %+v %v", receipt, err)
 	}
 	if counter.posts.Load() != 1 {
@@ -473,7 +473,7 @@ func TestQueuedPromptDeadlineCancelsOnlyItsOperation(t *testing.T) {
 	released = true
 	waitIdle(t, id, profile, 1)
 	receipt, err = daemon.ResolveOperation(t.Context(), connection, uncertain.Handle)
-	if err != nil || receipt.DeliveryStatus != "cancelled" {
+	if err != nil || receipt.Delivery == nil || *receipt.Delivery != "cancelled" {
 		t.Fatalf("cancelled receipt after unrelated turn: %+v %v", receipt, err)
 	}
 	if counter.posts.Load() != 1 {

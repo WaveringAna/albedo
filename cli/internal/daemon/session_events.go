@@ -63,7 +63,7 @@ func decodeChatEvent(raw json.RawMessage) (*wireChatEvent, error) {
 		if err := validInput(data.Input); err != nil {
 			return nil, err
 		}
-		receipt := inputReceipt(data.Input)
+		receipt := InputReceipt(data.Input)
 		event.Receipt = &receipt
 		event.OperationID = data.Input.ID
 		if data.Input.Turn != nil {

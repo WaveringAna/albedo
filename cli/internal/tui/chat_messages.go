@@ -127,7 +127,7 @@ type ChatOperationResolvedMsg struct {
 	SessionID  string
 	Generation int64
 	Handle     *daemon.OperationHandle
-	Receipt    daemon.OperationReceipt
+	Receipt    daemon.InputReceipt
 	Err        error
 }
 

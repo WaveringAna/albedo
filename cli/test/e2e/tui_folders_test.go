@@ -131,7 +131,7 @@ func TestTUIMissingWorkspaceSendsTheTurnFromThePickedFolder(t *testing.T) {
 	if admitted.Err != nil || admitted.Handle == nil || !admitted.OK {
 		t.Fatalf("durable admission: %+v", admitted)
 	}
-	var receipt daemon.OperationReceipt
+	var receipt daemon.InputReceipt
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		var err error
@@ -139,7 +139,7 @@ func TestTUIMissingWorkspaceSendsTheTurnFromThePickedFolder(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if receipt.BlockingReason != "" {
+		if receipt.BlockingDetail() != "" {
 			break
 		}
 		if time.Now().After(deadline) {
@@ -147,7 +147,7 @@ func TestTUIMissingWorkspaceSendsTheTurnFromThePickedFolder(t *testing.T) {
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
-	if receipt.DeliveryStatus != "pending" {
+	if !receipt.Pending() {
 		t.Fatalf("blocked input was lost: %+v", receipt)
 	}
 	d.Update(tui.ChatOperationResolvedMsg{SessionID: session.ID, Generation: d.App.Chat.Generation, Handle: admitted.Handle, Receipt: receipt})
@@ -374,8 +374,8 @@ func TestTUIOffersSignInForATurnWaitingOnItsHost(t *testing.T) {
 	if admitted.Err != nil || admitted.Handle == nil {
 		t.Fatalf("the turn was not admitted: %+v", admitted)
 	}
-	var receipt daemon.OperationReceipt
-	for deadline := time.Now().Add(10 * time.Second); receipt.BlockingReason == ""; time.Sleep(25 * time.Millisecond) {
+	var receipt daemon.InputReceipt
+	for deadline := time.Now().Add(10 * time.Second); receipt.BlockingDetail() == ""; time.Sleep(25 * time.Millisecond) {
 		var err error
 		if receipt, err = daemon.ResolveOperation(t.Context(), conn(t), admitted.Handle); err != nil {
 			t.Fatal(err)

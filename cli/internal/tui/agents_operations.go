@@ -97,7 +97,7 @@ func (m AgentsViewModel) resolveAgentOperation(pending agentPendingOperation) te
 			result.Err = err
 			if err == nil {
 				result.Err = receipt.Rejection()
-				if receipt.DeliveryStatus == "cancelled" {
+				if receipt.Delivery != nil && *receipt.Delivery == "cancelled" {
 					result.Notice = "The pending input was cancelled."
 				}
 			}

@@ -115,19 +115,19 @@ func (m ChatModel) operationRecoverable(id string) bool {
 	return exists && !pending.Expired
 }
 
-func (m *ChatModel) applyInputReceipt(receipt daemon.OperationReceipt) {
-	m.Status.InputOrder = max(m.Status.InputOrder, receipt.AcceptanceOrder)
+func (m *ChatModel) applyInputReceipt(receipt daemon.InputReceipt) {
+	m.Status.InputOrder = max(m.Status.InputOrder, receipt.InputOrder())
 	for i := range m.pendingUsers {
-		if m.pendingUsers[i].OperationID == receipt.OperationID {
-			m.pendingUsers[i].Queued = receipt.DeliveryStatus == "pending"
-			if receipt.DeliveryStatus == "committed" || receipt.DeliveryStatus == "cancelled" {
+		if m.pendingUsers[i].OperationID == receipt.ID {
+			m.pendingUsers[i].Queued = receipt.Pending()
+			if receipt.Settled() {
 				m.pendingUsers = slices.Delete(m.pendingUsers, i, i+1)
 			}
 			return
 		}
 	}
-	if receipt.DeliveryStatus == "committed" || receipt.DeliveryStatus == "cancelled" {
-		delete(m.pendingContinuations, receipt.OperationID)
+	if receipt.Settled() {
+		delete(m.pendingContinuations, receipt.ID)
 	}
 }
 
@@ -158,7 +158,7 @@ func (m *ChatModel) handleOperationResults(msg tea.Msg) (tea.Cmd, bool) {
 			m.refreshViewportContent()
 			return nil, true
 		}
-		if msg.Err == nil && (msg.Receipt.Status == "rejected" || msg.Receipt.DeliveryStatus == "cancelled" || msg.Receipt.DeliveryStatus == "committed") {
+		if msg.Err == nil && (msg.Receipt.Admission == "rejected" || msg.Receipt.Settled()) {
 			delete(m.pendingContinuations, msg.Handle.ID())
 			m.dropSignIn()
 			if rejection := msg.Receipt.Rejection(); rejection != nil {
@@ -172,14 +172,14 @@ func (m *ChatModel) handleOperationResults(msg tea.Msg) (tea.Cmd, bool) {
 			return nil, true
 		}
 		if msg.Err == nil {
-			m.Status.InputOrder = max(m.Status.InputOrder, msg.Receipt.AcceptanceOrder)
+			m.Status.InputOrder = max(m.Status.InputOrder, msg.Receipt.InputOrder())
 		}
 		if index >= 0 && msg.Err == nil {
 			m.pendingUsers[index].Queued = true
-			m.pendingUsers[index].BlockingReason = msg.Receipt.BlockingReason
+			m.pendingUsers[index].BlockingReason = msg.Receipt.BlockingDetail()
 			m.refreshViewportContent()
 		}
-		return tea.Batch(m.resolveOperationCmd(msg.Handle), m.hostAuthCmd(msg.Receipt.BlockingReason)), true
+		return tea.Batch(m.resolveOperationCmd(msg.Handle), m.hostAuthCmd(msg.Receipt.BlockingDetail())), true
 	case ChatTurnSentMsg:
 		if msg.SessionID != m.SessionID || msg.Generation != m.Generation {
 			return nil, true

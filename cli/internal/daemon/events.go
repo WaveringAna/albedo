@@ -148,7 +148,7 @@ type StreamEvent struct {
 	Invalidation    *ResourceInvalidation
 	Status          *AgentStatus
 	Snapshot        *Session
-	Receipt         *OperationReceipt
+	Receipt         *InputReceipt
 	OperationID     string
 	Image           *ImageMetadata
 	Usage           *Usage

@@ -4,6 +4,7 @@ package daemon
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -11,8 +12,55 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 )
+
+func TestSubmissionRecoversRejectedInputWithoutReplay(t *testing.T) {
+	var admissions atomic.Int64
+	var lookups atomic.Int64
+	conn := controlledConnection(t, func(w http.ResponseWriter, r *http.Request) {
+		id := strings.TrimPrefix(r.URL.Path, "/sessions/s/inputs/")
+		if id == r.URL.Path {
+			t.Errorf("unexpected input resource %s", r.URL)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		switch r.Method {
+		case http.MethodPut:
+			admissions.Add(1)
+			connection, _, err := w.(http.Hijacker).Hijack()
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			_ = connection.Close()
+		case http.MethodGet:
+			lookups.Add(1)
+			input := canonicalInput("s", id, "message", "pending")
+			input["admission"], input["http_status"] = "rejected", http.StatusUnprocessableEntity
+			input["accepted_at"], input["acceptance_order"], input["delivery"] = nil, nil, nil
+			input["problem"] = map[string]any{"type": "about:blank", "title": "Input refused", "status": http.StatusUnprocessableEntity, "code": "invalid_input", "detail": ""}
+			_ = json.NewEncoder(w).Encode(input)
+		default:
+			t.Errorf("unexpected input method %s", r.Method)
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	})
+	text := "rejected once"
+	handle, err := NewSubmission("s", SubmissionRequest{Content: &text})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = SubmitOperation(t.Context(), conn, handle)
+	problem, ok := errors.AsType[*APIError](err)
+	if !ok || problem.StatusCode != http.StatusUnprocessableEntity || problem.Code != "invalid_input" || problem.Message != "Input refused" {
+		t.Fatalf("lost rejection was not recovered: %v", err)
+	}
+	if admissions.Load() != 1 || lookups.Load() != 1 {
+		t.Fatalf("authoritative rejection replayed: admissions=%d lookups=%d", admissions.Load(), lookups.Load())
+	}
+}
 
 func TestSubmissionFreezesContentAndOmissionAcrossLostAcknowledgement(t *testing.T) {
 	for _, continuation := range []bool{false, true} {

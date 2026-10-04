@@ -39,16 +39,20 @@ func Submit(ctx context.Context, conn *Connection, id string, payload Submission
 }
 
 func SubmitOperation(ctx context.Context, conn *Connection, handle *OperationHandle) (SendResult, error) {
-	var result SendResult
-	err := executeReceipt(ctx, conn, handle, []int{http.StatusAccepted}, func(body []byte, status int) error {
-		var err error
-		result, err = decodeSubmission(body, status)
+	return executeReceipt(ctx, conn, handle, []int{http.StatusAccepted}, func(body []byte, status int) (SendResult, error) {
+		result, err := decodeSubmission(body, status)
 		if err == nil && result.OperationID != handle.ID() {
-			return fieldError("operationId")
+			return result, fieldError("operationId")
 		}
-		return err
+		return result, err
+	}, func(ctx context.Context) (SendResult, bool, error) {
+		receipt, err := ResolveOperation(ctx, conn, handle)
+		if err != nil {
+			return SendResult{}, false, err
+		}
+		result, err := submissionResult(receipt)
+		return result, true, err
 	})
-	return result, err
 }
 
 func InterruptSession(ctx context.Context, conn *Connection, id string) (bool, error) {
@@ -91,7 +95,7 @@ func (c *ChatClient) SubmitOperation(ctx context.Context, handle *OperationHandl
 	return &result, nil
 }
 
-func (c *ChatClient) ResolveOperation(ctx context.Context, handle *OperationHandle) (OperationReceipt, error) {
+func (c *ChatClient) ResolveOperation(ctx context.Context, handle *OperationHandle) (InputReceipt, error) {
 	return ResolveOperation(ctx, c.conn, handle)
 }
 
@@ -138,10 +142,14 @@ func decodeSubmission(data []byte, _ int) (SendResult, error) {
 	if err := validInput(input); err != nil {
 		return SendResult{}, err
 	}
-	if input.Admission == "rejected" {
-		return SendResult{}, inputReceipt(input).Rejection()
+	return submissionResult(InputReceipt(input))
+}
+
+func submissionResult(input InputReceipt) (SendResult, error) {
+	if err := input.Rejection(); err != nil {
+		return SendResult{}, err
 	}
-	return SendResult{OK: true, Queued: value(input.Delivery) == "pending", OperationID: input.ID, AcceptanceOrder: value(input.AcceptanceOrder)}, nil
+	return SendResult{OK: true, Queued: input.Pending(), OperationID: input.ID, AcceptanceOrder: input.InputOrder()}, nil
 }
 
 func (c *ChatClient) PrepareCommand(commandID string, arguments map[string]json.RawMessage) (*OperationHandle, error) {
