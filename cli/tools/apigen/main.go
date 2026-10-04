@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -113,8 +114,8 @@ func project(value any) {
 				if name == "etag" {
 					property["x-go-name"] = "ETag"
 				}
-				if strings.HasSuffix(name, "_ids") {
-					property["x-go-name"] = codegen.ToCamelCaseWithInitialisms(strings.TrimSuffix(name, "_ids")) + "IDs"
+				if baseName, hasIDsSuffix := strings.CutSuffix(name, "_ids"); hasIDsSuffix {
+					property["x-go-name"] = codegen.ToCamelCaseWithInitialisms(baseName) + "IDs"
 				}
 				kind, _ := property["type"].(string)
 				if kind == "array" || property["x-go-type"] == "json.RawMessage" || (kind == "object" && property["properties"] == nil) {
@@ -171,9 +172,7 @@ func project(value any) {
 			if len(nonnull) == 1 && nullable && nonnull[0].(map[string]any)["type"] == "array" {
 				// Inline nullable arrays otherwise lose their array shape in
 				// oapi-codegen's single-branch union handling.
-				for key, child := range nonnull[0].(map[string]any) {
-					node[key] = child
-				}
+				maps.Copy(node, nonnull[0].(map[string]any))
 				node["type"] = []any{"array", "null"}
 				delete(node, keyword)
 				kind = "array"
