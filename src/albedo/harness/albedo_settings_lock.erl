@@ -5,7 +5,7 @@
 %% including credential updates. It is not a lock shared with CLI processes.
 %% Nested operations in the same process retain the outer lock until it exits.
 with_lock(Home, Run, Busy) ->
-    Directory = unicode:characters_to_binary(filename:absname(Home)),
+    Directory = unicode:characters_to_binary(directory(Home)),
     Key = {?MODULE, Directory},
     case get(Key) of
         held -> Run();
@@ -23,4 +23,14 @@ with_lock(Home, Run, Busy) ->
                 aborted -> Busy();
                 Result -> Result
             end
+    end.
+
+%% The home as given when it is already absolute, which the daemon's is.
+%% filename:absname/1 asks the OS for the working directory even then, and
+%% that call fails when the process is out of file descriptors, which would
+%% crash a settings read that otherwise reports its error.
+directory(Home) ->
+    case filename:pathtype(Home) of
+        absolute -> Home;
+        _ -> filename:absname(Home)
     end.

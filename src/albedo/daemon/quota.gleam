@@ -321,7 +321,7 @@ fn on_tick(state: State) -> State {
         state.enumerating,
         now - state.last_enumerated >= config.poll_seconds * 1000
       {
-        None, True -> enumerate_now(state)
+        None, True -> enumerate_now(state, now)
         _, _ -> state
       }
       start_due(state, now)
@@ -330,7 +330,9 @@ fn on_tick(state: State) -> State {
 }
 
 /// Account discovery runs off the poller: a refresh may wait on the network.
-fn enumerate_now(state: State) -> State {
+/// The attempt is what the cadence counts from, so a discovery that fails
+/// fast never spins.
+fn enumerate_now(state: State, now: Int) -> State {
   let self = state.self
   let home = state.home
   let pid =
@@ -338,7 +340,7 @@ fn enumerate_now(state: State) -> State {
       process.send(self, Enumerated(enumerate(home)))
     })
   let _ = process.monitor(pid)
-  State(..state, enumerating: Some(pid))
+  State(..state, enumerating: Some(pid), last_enumerated: now)
 }
 
 /// New accounts poll at once; an account that is polling now finishes first,

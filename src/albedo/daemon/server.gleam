@@ -8,6 +8,7 @@ import albedo/daemon/http_session_collection
 import albedo/daemon/http_sessions
 import albedo/daemon/http_transcript
 import albedo/daemon/http_wire
+import albedo/daemon/listener
 import albedo/daemon/quota
 import albedo/daemon/registry.{type Config, type Message, Config, List, Shutdown}
 import albedo/daemon/settings
@@ -72,8 +73,7 @@ pub fn start(config: Config, port: Int) -> Result(Int, String) {
   // A name, not a pid: handlers keep reaching the registry across restarts.
   let registry = process.named_subject(name)
   runtime.resume_kernels(host)
-  let selected_port = process.new_subject()
-  // mist restarts a failed listener on the port it was built with, so port 0
+  // A restarted listener comes back on the port it was built with, so port 0
   // would bring it back somewhere daemon.json does not say: pick it once.
   let port = case port {
     0 -> free_port()
@@ -88,15 +88,14 @@ pub fn start(config: Config, port: Int) -> Result(Int, String) {
       configured_list("ALBEDO_HTTP_HOSTS"),
     )
   use _ <- result.try(
-    mist.new(route(config, registry, boundary, _))
-    |> mist.bind("127.0.0.1")
-    |> mist.port(port)
-    |> mist.after_start(fn(actual, _, _) { process.send(selected_port, actual) })
-    |> mist.start
-    |> result.map_error(string.inspect),
+    listener.keep(port, fn() {
+      mist.new(route(config, registry, boundary, _))
+      |> mist.bind("127.0.0.1")
+      |> mist.port(port)
+      |> mist.start
+    }),
   )
-  process.receive(selected_port, 1000)
-  |> result.replace_error("listener did not report its port")
+  Ok(port)
 }
 
 /// The daemon's own top-level routes; a service never shadows them.

@@ -7,6 +7,7 @@ from collections.abc import Callable
 import json
 import resource
 import socket
+import subprocess
 import threading
 import time
 import unittest
@@ -17,6 +18,47 @@ from harness import Albedo, Provider, Reply, exclusive, operation_id, python, te
 
 # More client connections than a macOS shell's default open-file limit.
 CONNECTIONS = 300
+
+
+def kill_listener_supervisor(app):
+    """Kill the daemon's listener supervisor over Erlang distribution and
+    return its pid: the keeper labels itself `albedo_listener`, and the
+    supervisor is its one proc_lib-started link."""
+    cookie = (app.home / "inspect.cookie").read_text().strip()
+    node = f"albedo_{app.daemon._pid}@{socket.gethostname().split('.')[0]}"
+    expression = (
+        f"Node = '{node}', "
+        "[Keeper] = rpc:call(Node, lists, filter, [fun(P) -> "
+        "case catch proc_lib:get_label(P) of {albedo_listener, _} -> true; _ -> false end "
+        "end, rpc:call(Node, erlang, processes, [])]), "
+        "{links, Links} = rpc:call(Node, erlang, process_info, [Keeper, links]), "
+        "[Listener] = rpc:call(Node, lists, filter, "
+        "[fun(P) -> proc_lib:initial_call(P) =/= false end, Links]), "
+        "true = rpc:call(Node, erlang, exit, [Listener, kill]), "
+        'io:format("~w", [Listener]), halt().'
+    )
+    result = subprocess.run(
+        [
+            "erl",
+            "+S",
+            "2:2",
+            "-sname",
+            f"listener_probe_{app.daemon._pid}",
+            "-setcookie",
+            cookie,
+            "-noshell",
+            "-eval",
+            expression,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        cwd=app.root,
+        timeout=40,
+    )
+    if result.returncode != 0:
+        raise AssertionError(result.stdout + result.stderr)
+    return result.stdout.strip()
 
 
 @dataclass
@@ -519,6 +561,32 @@ class DaemonTest(unittest.TestCase):
                         time.monotonic(), deadline, "the daemon's port stayed closed"
                     )
                     time.sleep(0.1)
+
+    # exclusive: enables daemon inspection and kills the listener's supervisor
+    @exclusive
+    def test_the_daemon_outlives_its_listener_supervisor(self):
+        # A listener tree that gives up (every acceptor crashing under a flood,
+        # say) must not take the daemon with it: the keeper brings the listener
+        # back on the same port while sessions and kernels carry on.
+        with Albedo(
+            prepare=lambda app: app.daemon.env.update(ALBEDO_INSPECT="1")
+        ) as app:
+            pid, port = app.connection["pid"], app.connection["port"]
+            killed = kill_listener_supervisor(app)
+            self.assertTrue(killed.startswith("<"), killed)
+            deadline = time.monotonic() + 15
+            while True:
+                try:
+                    with app.api("/server") as response:
+                        self.assertEqual(response.status, 200)
+                    break
+                except OSError:
+                    self.assertLess(
+                        time.monotonic(), deadline, "the daemon's port stayed closed"
+                    )
+                    time.sleep(0.1)
+            record = json.loads((app.home / "daemon.json").read_text())
+            self.assertEqual((record["pid"], record["port"]), (pid, port))
 
     def test_a_thoughts_duration_is_kept_with_the_transcript(self):
         # summarized thinking streams once it is written: here the response
