@@ -9,7 +9,7 @@
 -module(albedo_images).
 -export([externalize/2, attach/2, pack/1, pack_image/1, load/2, canonical/1, legacy/1, results/1, hashes/1, migrate/2, ensure_dir/1, backup_exists/1, decode_base64/1, decode_legacy_base64/1, encode_base64/1]).
 
-%% The same data-size limit albedo_image guards with; a guard needs the macro.
+%% The same data-size limit the Gleam image owner guards with; a guard needs the macro.
 -define(MAX_DATA_BYTES, 6990508).
 
 %% Moves the inline images of one input into Blobs [{Hash, Base64}], returning
@@ -58,8 +58,9 @@ load({image, Mime, {stored_data, Hash, Size}, W, H, Bytes}, Read)
              Size =:= 4 * ((Bytes + 2) div 3) ->
     %% A stored payload was validated as canonical base64 on insert.
     {ok, {image, Mime, stored(Hash, Size, Read), W, H, Bytes}};
-load({image, Mime, Data, W, H, Bytes} = Legacy, _) when is_binary(Data) ->
-    case albedo_image:valid(Legacy) of
+load({image, Mime, Data, W, H, Bytes}, _)
+    when is_binary(Mime), is_binary(Data), is_integer(W), is_integer(H), is_integer(Bytes) ->
+    case 'albedo@daemon@image':valid_payload(Mime, Data, W, H, Bytes) of
         true -> {ok, {image, Mime, {inline_data, Data}, W, H, Bytes}};
         false -> error
     end;
@@ -144,7 +145,7 @@ migrate(Payload, Read) ->
     end.
 
 %% Canonical base64 needs no JSON escaping; anything else stays inline.
-clean(Value) -> albedo_image:charset(Value, true).
+clean(Value) -> 'albedo@daemon@image':safe_payload(Value).
 
 ensure_dir(Path) -> _ = filelib:ensure_dir(Path), nil.
 

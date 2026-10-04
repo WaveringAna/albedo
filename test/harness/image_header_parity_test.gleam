@@ -3,17 +3,18 @@
 //// authority. Two parsers in two languages drift apart silently, and E2E only
 //// ever sends one well-formed PNG, so these fixtures hold both to one answer.
 
+import albedo/daemon/image
+import albedo/openai_api/types
+
 import albedo/harness/extensions/python/kernel as python
 import albedo/harness/extensions/work/ledger as work
+import gleam/bit_array
 import gleam/int
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import gleeunit/should
-
-@external(erlang, "albedo_image", "inspect")
-fn inspect(data: String) -> Result(#(String, Int, Int, Int), Nil)
 
 /// Name, canonical base64, and the MIME type and size its header says.
 const fixtures = [
@@ -72,7 +73,7 @@ const fixtures = [
 pub fn the_kernel_reads_image_headers_the_way_the_daemon_does_test() -> Nil {
   let expected = list.map(fixtures, fn(fixture) { #(fixture.0, fixture.2) })
   list.map(fixtures, fn(fixture) {
-    #(fixture.0, case inspect(fixture.1) {
+    #(fixture.0, case image.inspect(fixture.1) {
       Ok(#(mime, width, height, _)) -> Some(#(mime, width, height))
       Error(_) -> None
     })
@@ -115,4 +116,85 @@ fn header_json(header: Option(#(String, Int, Int))) -> String {
       <> "]"
     None -> "null"
   }
+}
+
+@external(erlang, "albedo_images", "encode_base64")
+fn encode_base64(bytes: BitArray) -> String
+
+pub fn canonical_base64_and_metadata_must_agree_test() -> Nil {
+  let png = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAAD"
+  image.inspect(png <> "AA==") |> should.equal(Ok(#("image/png", 2, 3, 25)))
+  image.inspect(png <> "AB==") |> should.equal(Error(Nil))
+  image.inspect(png <> "AAA=") |> should.equal(Ok(#("image/png", 2, 3, 26)))
+  image.inspect(png <> "AAB=") |> should.equal(Error(Nil))
+  image.inspect(png <> "AA==AAAA") |> should.equal(Error(Nil))
+  image.valid_payload("image/png", png, 2, 3, 24) |> should.be_true
+  image.valid_payload("image/png", png, 2, 4, 24) |> should.be_false
+  image.valid_payload("image/jpeg", png, 2, 3, 24) |> should.be_false
+  image.valid_payload("image/png", png, 2, 3, 25) |> should.be_false
+}
+
+pub fn late_jpeg_headers_and_webp_riff_sizes_require_full_decode_test() -> Nil {
+  let padding = bit_array.from_string(string.repeat("x", 60_000))
+  let jpeg = <<
+    0xFF,
+    0xD8,
+    0xFF,
+    0xE0,
+    60_002:size(16),
+    padding:bits,
+    0xFF,
+    0xC0,
+    8:size(16),
+    8,
+    3:size(16),
+    2:size(16),
+    3,
+  >>
+  let data = encode_base64(jpeg)
+  image.valid_payload("image/jpeg", data, 2, 3, bit_array.byte_size(jpeg))
+  |> should.be_true
+  let chunks = <<
+    "JUNK":utf8,
+    60_000:little-size(32),
+    padding:bits,
+    "VP8L":utf8,
+    6:little-size(32),
+    0x2F,
+    81_924:little-size(32),
+    0,
+  >>
+  let size = 4 + bit_array.byte_size(chunks)
+  let webp = <<"RIFF":utf8, size:little-size(32), "WEBP":utf8, chunks:bits>>
+  image.valid_payload(
+    "image/webp",
+    encode_base64(webp),
+    5,
+    6,
+    bit_array.byte_size(webp),
+  )
+  |> should.be_true
+  let bad_size = <<"RIFF":utf8, 4:little-size(32), "WEBP":utf8, chunks:bits>>
+  image.inspect(encode_base64(bad_size)) |> should.equal(Error(Nil))
+}
+
+pub fn canonical_payload_size_enforces_the_decoded_limit_test() -> Nil {
+  let tail = types.max_image_bytes - 24
+  let header = <<
+    0x89,
+    "PNG":utf8,
+    13,
+    10,
+    26,
+    10,
+    13:size(32),
+    "IHDR":utf8,
+    2:size(32),
+    3:size(32),
+  >>
+  let padding = bit_array.from_string(string.repeat("x", tail))
+  let bytes = <<header:bits, padding:bits>>
+  image.inspect(encode_base64(bytes))
+  |> should.equal(Ok(#("image/png", 2, 3, types.max_image_bytes)))
+  image.inspect(encode_base64(<<bytes:bits, 0>>)) |> should.equal(Error(Nil))
 }
