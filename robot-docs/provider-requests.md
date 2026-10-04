@@ -42,6 +42,6 @@ Claude and Antigravity event and replay decoding preserve JSON error categories 
 
 ## Clock sources
 
-`albedo/clock` distinguishes wall timestamps from monotonic deadlines. Request records, quota reset times, and persisted expiry values use system time. Session, family, deletion, and transport deadlines use monotonic time rather than durable timestamps. Codex model-cache freshness retains its OS-clock source through `os_system_ms`.
+`albedo/clock` distinguishes wall timestamps from monotonic deadlines; shared-helper rules live in [runtime](runtime.md#clocks). Request records, quota reset times, and persisted expiry values use system time. Session, family, deletion, and transport deadlines use monotonic time rather than durable timestamps. Codex model-cache freshness retains its OS-clock source through `os_system_ms`.
 
 SSE framing keeps native binary search and sub-binary compaction. Gleam owns field splitting and joins reversed fragments once per completed line.

@@ -1,5 +1,6 @@
 //// One connection owner. All queries and transactions run in this process.
 
+import albedo/clock
 import gleam/dynamic
 import gleam/dynamic/decode
 import gleam/erlang/process.{type Subject}
@@ -39,9 +40,9 @@ pub fn start(path: String, schema: String) -> Result(Store, actor.StartError) {
   |> actor.on_message(fn(db, message) {
     case message {
       Run(caller, run) -> {
-        let began = monotonic_ms()
+        let began = clock.monotonic_ms()
         run(db)
-        let held = monotonic_ms() - began
+        let held = clock.monotonic_ms() - began
         case held >= slow_ms {
           True ->
             io.println_error(
@@ -224,13 +225,6 @@ fn label(kind: String, id: String) -> Nil
 
 @external(erlang, "albedo_session", "collect_over")
 fn collect_over(words: Int) -> Nil
-
-@external(erlang, "erlang", "monotonic_time")
-fn monotonic_native() -> Int
-
-fn monotonic_ms() -> Int {
-  monotonic_native() / 1_000_000
-}
 
 @external(erlang, "proc_lib", "get_label")
 fn caller_label(pid: process.Pid) -> dynamic.Dynamic
