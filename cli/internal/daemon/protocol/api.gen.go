@@ -2225,7 +2225,7 @@ type SessionCompactedEvent struct {
 	Type     string                `json:"type"`
 }
 
-// SessionConfiguration Examples: {"effort":null,"family_revision":"family-1","id":"01a0fcea-2b00-7000-8000-000000000001","model":"example-model","name":"New session","preferences":{"archived":false,"pin_order":null,"pinned":false},"provider_profile":"personal","revision":"config-1","selection":{"extensions":{},"instructions":{},"mcp":{},"skills":{}},"workspace":"/workspace/project"}
+// SessionConfiguration Examples: {"effort":null,"family_revision":"family-1","id":"01a0fcea-2b00-7000-8000-000000000001","model":"example-model","name":null,"preferences":{"archived":false,"pin_order":null,"pinned":false},"provider_profile":"personal","revision":"config-1","selection":{"extensions":{},"instructions":{},"mcp":{},"skills":{}},"workspace":"/workspace/project"}
 type SessionConfiguration struct {
 	Effort *string `json:"effort" nullable:"true"`
 
@@ -2233,9 +2233,11 @@ type SessionConfiguration struct {
 	FamilyRevision ID `json:"family_revision"`
 
 	// ID Opaque identity. Never infer a resource type or route from its contents.
-	ID          ID     `json:"id"`
-	Model       *ID    `json:"model" nullable:"true"`
-	Name        string `json:"name"`
+	ID    ID  `json:"id"`
+	Model *ID `json:"model" nullable:"true"`
+
+	// Name Explicit name. Null shows the automatic title for a root, or the family name for a child; the session representation carries the displayed name.
+	Name        *string `json:"name" nullable:"true"`
 	Preferences struct {
 		Archived bool     `json:"archived"`
 		PinOrder *Counter `json:"pin_order" nullable:"true"`
@@ -2259,7 +2261,7 @@ type SessionConfigurationResource struct {
 	// URL Daemon-relative URL, including any representation query. No foreign origin or fragment.
 	URL ResourceURL `json:"url"`
 
-	// Value Examples: {"effort":null,"family_revision":"family-1","id":"01a0fcea-2b00-7000-8000-000000000001","model":"example-model","name":"New session","preferences":{"archived":false,"pin_order":null,"pinned":false},"provider_profile":"personal","revision":"config-1","selection":{"extensions":{},"instructions":{},"mcp":{},"skills":{}},"workspace":"/workspace/project"}
+	// Value Examples: {"effort":null,"family_revision":"family-1","id":"01a0fcea-2b00-7000-8000-000000000001","model":"example-model","name":null,"preferences":{"archived":false,"pin_order":null,"pinned":false},"provider_profile":"personal","revision":"config-1","selection":{"extensions":{},"instructions":{},"mcp":{},"skills":{}},"workspace":"/workspace/project"}
 	Value SessionConfiguration `json:"value"`
 }
 

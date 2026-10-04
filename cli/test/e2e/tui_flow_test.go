@@ -97,6 +97,34 @@ func TestTUIEffortSelectorCommitsThroughTheDaemon(t *testing.T) {
 	}
 }
 
+// Every prompt retitles the session. The chat keeps the configuration it
+// observed before that, so a retitle must not make /effort a conflict.
+func TestTUIEffortAfterAPromptRetitlesTheSession(t *testing.T) {
+	profile := providerRoute(t, echoReply)
+	session := daemonSession(t, newSession(t, t.TempDir()))
+	if _, err := daemon.SelectModel(t.Context(), conn(t), session.ID, daemon.ModelSelectionRequest{Model: "o3", Effort: "low", ETag: session.ETag}); err != nil {
+		t.Fatal(err)
+	}
+	session = daemonSession(t, session.ID)
+	d := driveTUI(t, &session)
+	defer d.App.Chat.Close()
+	if _, err := daemon.NewChatClient(conn(t), session.ID).Send(t.Context(), "a prompt that names the session", nil); err != nil {
+		t.Fatal(err)
+	}
+	waitIdle(t, session.ID, profile, 1)
+	if retitled := daemonSession(t, session.ID); retitled.Title == session.Title {
+		t.Fatalf("the prompt kept the title %q", retitled.Title)
+	}
+
+	d.Dispatch(tui.ChatExecuteCommandMsg{Name: "/effort", Args: "high"})
+	if view := d.View(); !strings.Contains(view, "Effort saved.") {
+		t.Fatalf("/effort after a prompt failed:\n%s", view)
+	}
+	if session := daemonSession(t, session.ID); session.Effort != "high" {
+		t.Fatalf("session kept effort %q, want high", session.Effort)
+	}
+}
+
 // Text after a command that declares no arguments is a prompt that starts with
 // the command's name; the command would only reject it.
 func TestTUISendsTextAfterAnArgumentlessCommandAsAPrompt(t *testing.T) {

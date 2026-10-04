@@ -656,9 +656,8 @@ fn recover_sessions(db: sqlight.Connection) -> Result(Nil, String) {
     )
     store.run(
       db,
-      "UPDATE sessions SET config_revision=config_revision+CASE WHEN name IS NULL AND title<>? THEN 1 ELSE 0 END,title=?,activity_seq=CASE WHEN activity_seq IS NULL THEN ? ELSE activity_seq END WHERE id=?",
+      "UPDATE sessions SET title=?,activity_seq=CASE WHEN activity_seq IS NULL THEN ? ELSE activity_seq END WHERE id=?",
       [
-        sqlight.text(recovered_title),
         sqlight.text(recovered_title),
         sqlight.int(last_seq),
         sqlight.text(id),

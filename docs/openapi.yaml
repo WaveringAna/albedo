@@ -5587,8 +5587,11 @@ components:
         id:
           $ref: '#/components/schemas/ID'
         name:
-          type: string
-          maxLength: 4096
+          description: Explicit name. Null shows the automatic title for a root, or the family name for a child; the session representation carries the displayed name.
+          anyOf:
+          - type: string
+            maxLength: 4096
+          - type: 'null'
         workspace:
           $ref: '#/components/schemas/Workspace'
         provider_profile:
@@ -5628,7 +5631,7 @@ components:
       additionalProperties: false
       examples:
       - id: 01a0fcea-2b00-7000-8000-000000000001
-        name: New session
+        name: null
         workspace: /workspace/project
         provider_profile: personal
         model: example-model

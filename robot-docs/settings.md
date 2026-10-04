@@ -32,7 +32,7 @@ Candidate validation checks names, source conflicts, timeouts, and transport fie
 
 ## Session configuration and catalog
 
-Configuration contains explicit nullable `name`, `automatic_name`, workspace, provider profile, model, effort, preferences, selection overrides, configuration revision, and family revision. Name overrides preserve the automatic title. Preferences contain `pinned`, nullable `pin_order`, and `archived`; summaries also include shared opening counts.
+Configuration contains explicit nullable `name`, workspace, provider profile, model, effort, preferences, selection overrides, configuration revision, and family revision. Name overrides preserve the automatic title. The automatic title follows every prompt, so it lives on the session and summary representations (`name`, `automatic_name`) and stays out of the configuration and its `ETag`: a prompt never makes a client's observed configuration stale. Preferences contain `pinned`, nullable `pin_order`, and `archived`; summaries also include shared opening counts.
 
 Selection has separate `extensions`, `skills`, `instructions`, and `mcp` maps. Session overrides precede global preferences and defaults. MCP configured enablement also applies: a disabled definition remains unavailable.
 

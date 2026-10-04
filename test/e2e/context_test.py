@@ -162,7 +162,7 @@ class ContextTest(unittest.TestCase):
         resource = session["configuration_resource"]
         configuration = self.read(resource["url"])
         self.assertEqual(configuration, resource["value"])
-        self.assertEqual(configuration["name"], session["name"])
+        self.assertIsNone(configuration["name"])
         self.assertEqual(listed["name"], session["name"])
         self.assertEqual(listed["automatic_name"], session["automatic_name"])
         snapshot = self.read(self.route)

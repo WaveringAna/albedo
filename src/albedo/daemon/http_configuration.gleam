@@ -162,7 +162,9 @@ pub fn family_revision(value: session_configuration.Configuration) -> String {
 pub fn encode(value: session_configuration.Configuration) -> json.Json {
   json.object([
     #("id", json.string(value.id)),
-    #("name", json.string(session_configuration.display_name(value))),
+    // Only the explicit name: the automatic title follows every prompt, and
+    // folding it in would turn each prompt into a configuration conflict.
+    #("name", json.nullable(value.name, json.string)),
     #("workspace", json.string(value.workspace)),
     #("provider_profile", case value.provider_profile {
       "" -> json.null()
