@@ -3,6 +3,7 @@
   stdenv,
   rustPlatform,
   buildGoModule,
+  symlinkJoin,
   fetchurl,
   gleam,
   beamPackages,
@@ -18,13 +19,18 @@
   # plugins from Hex inside the Nix sandbox.
   rebar3 = beamPackages.rebar3WithPlugins {plugins = [beamPackages.pc];};
   manifest = builtins.fromTOML (builtins.readFile ./manifest.toml);
-  source = lib.fileset.toSource {
+  serverSource = lib.fileset.toSource {
     root = ./.;
     fileset = lib.fileset.unions [
       ./gleam.toml
       ./manifest.toml
       ./src
       (lib.fileset.fileFilter (file: !file.hasExt "pyc") ./priv)
+    ];
+  };
+  clientSource = lib.fileset.toSource {
+    root = ./.;
+    fileset = lib.fileset.unions [
       ./cli/go.mod
       ./cli/go.sum
       ./cli/cmd
@@ -104,10 +110,10 @@
       platforms = lib.platforms.unix;
     };
   };
-  daemon = stdenv.mkDerivation {
-    pname = "albedo-daemon";
+  server = stdenv.mkDerivation {
+    pname = "albedo-server";
     version = "1.0.0";
-    src = source;
+    src = serverSource;
     nativeBuildInputs = [gleam erlang rebar3 makeWrapper];
     buildPhase = ''
       runHook preBuild
@@ -137,26 +143,46 @@
         --prefix PATH : ${lib.makeBinPath [erlang python311 bash coreutils render]}
       runHook postInstall
     '';
+    meta = {
+      description = "coding agent daemon with its runtime and native helpers";
+      license = lib.licenses.wtfpl;
+      mainProgram = "albedo-daemon";
+      platforms = lib.platforms.unix;
+    };
   };
-in
-  buildGoModule {
-    pname = "albedo";
+  client = buildGoModule {
+    pname = "albedo-client";
     version = "1.0.0";
-    src = source;
+    src = clientSource;
     modRoot = "cli";
     subPackages = ["cmd/albedo"];
     vendorHash = "sha256-hIZyu5mLPNmxjQXC5HAopl87oF2Kfy8vY3EbRW1JTkw=";
-    nativeBuildInputs = [makeWrapper python311];
+    nativeBuildInputs = [python311];
     ALBEDO_NO_BROWSER = "1";
-    postInstall = ''
-      wrapProgram $out/bin/albedo \
-        --set-default ALBEDO_DAEMON ${daemon}/bin/albedo-daemon
-    '';
-    passthru = {inherit daemon render usageCore;};
     meta = {
-      description = "coding agent daemon with a Charm terminal client";
+      description = "Charm terminal client for the albedo coding agent";
       license = lib.licenses.wtfpl;
       mainProgram = "albedo";
       platforms = lib.platforms.unix;
     };
+  };
+in
+  symlinkJoin {
+    name = "albedo-${client.version}";
+    paths = [client server];
+    nativeBuildInputs = [makeWrapper];
+    postBuild = ''
+      rm $out/bin/albedo
+      makeWrapper ${client}/bin/albedo $out/bin/albedo \
+        --set-default ALBEDO_DAEMON ${server}/bin/albedo-daemon
+    '';
+    passthru = {
+      inherit client server render usageCore;
+      daemon = server;
+    };
+    meta =
+      client.meta
+      // {
+        description = "coding agent daemon with a Charm terminal client";
+      };
   }

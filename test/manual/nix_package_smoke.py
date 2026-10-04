@@ -47,7 +47,10 @@ with tempfile.TemporaryDirectory(prefix="albedo-nix-smoke-") as directory:
         with urllib.request.urlopen(req, timeout=5) as response:
             identity = json.load(response)
         assert identity["protocol"] == record["version"], identity
-        assert identity["instance_id"] == record["instance_id"], identity
+        assert identity["instance_id"], identity
+        assert identity["build"] == record["build"], identity
+        if record.get("instance_id"):
+            assert identity["instance_id"] == record["instance_id"], identity
         assert identity["state"] == "ready", identity
         print(json.dumps({"binary": binary, "sessions": [], "server": identity}))
     finally:

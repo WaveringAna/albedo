@@ -27,7 +27,7 @@ ALBEDO_ROOT=/path/to/albedo albedo
 go -C cli install -ldflags "-X main.buildRoot=$(pwd)" ./cmd/albedo
 ```
 
-nix package (includes the compiled daemon and python runtime):
+The default Nix package includes the client, compiled server, and Python runtime:
 
 ```sh
 nix build .#albedo
@@ -37,7 +37,23 @@ python3 test/manual/nix_package_smoke.py "$PWD/result/bin/albedo"
 ALBEDO_NO_BROWSER=1 ALBEDO_TEST_BINARY="$PWD/result/bin/albedo" python3 test/daemon/integration.py
 ```
 
-`default.nix` is also available through `pkgs.callPackage ./default.nix { }`.
+Build the components separately with `nix build .#albedo-client` or
+`nix build .#albedo-server`. The client provides `bin/albedo` without a server
+runtime dependency. The server provides `bin/albedo-daemon` with its runtime
+and native helpers. `.#daemon` remains an alias for `.#albedo-server`.
+
+To use the separate packages together:
+
+```sh
+nix build .#albedo-client --out-link result-client
+nix build .#albedo-server --out-link result-server
+ALBEDO_DAEMON="$PWD/result-server/bin/albedo-daemon" ./result-client/bin/albedo
+```
+
+`default.nix` returns the combined package when called with
+`pkgs.callPackage ./default.nix { inherit usage-core; }`, where `usage-core`
+is the pinned source input from `flake.nix`. Its `client` and `server`
+attributes expose the separate packages.
 no checkout or gleam compiler is needed at runtime. `ALBEDO_DAEMON` can override
 the packaged daemon with an absolute executable path. when the running daemon
 is from another build, the packaged cli asks in a terminal whether to restart it,
