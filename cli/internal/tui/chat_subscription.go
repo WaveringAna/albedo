@@ -68,8 +68,7 @@ func (m ChatModel) startStreamSubscription() tea.Cmd {
 			if ctx.Err() != nil {
 				return
 			}
-			var failure *daemon.StreamError
-			if errors.As(err, &failure) {
+			if failure, ok := errors.AsType[*daemon.StreamError](err); ok {
 				switch failure.Kind {
 				case daemon.StreamProtocol:
 					if recovered {

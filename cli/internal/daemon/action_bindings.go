@@ -84,7 +84,7 @@ func resolveBinding(raw, row, form, session json.RawMessage) (json.RawMessage, e
 	if !strings.HasPrefix(binding.Pointer, "/") {
 		return nil, errors.New("invalid JSON pointer")
 	}
-	for _, token := range strings.Split(binding.Pointer[1:], "/") {
+	for token := range strings.SplitSeq(binding.Pointer[1:], "/") {
 		token = strings.ReplaceAll(strings.ReplaceAll(token, "~1", "/"), "~0", "~")
 		if len(raw) > 0 && raw[0] == '[' {
 			var array []json.RawMessage

@@ -172,3 +172,14 @@ func TestANoteTheAgentNeverAnsweredHasNoSignoff(t *testing.T) {
 		t.Fatalf("entries %v, want %v", kinds, want)
 	}
 }
+
+func TestTranscriptDeduplicatedMessageKeepsCommittedIdentity(t *testing.T) {
+	state := newTranscriptState()
+	state.apply(daemon.StreamEvent{Type: daemon.EventText, Text: "answer"}, "agent")
+	entries := state.apply(daemon.StreamEvent{
+		Type: daemon.EventMessage, Text: "answer", EntryID: "message-1", Position: 7,
+	}, "agent")
+	if len(entries) != 1 || entries[0].ID != "message-1" || entries[0].Seq != 7 {
+		t.Fatalf("settled message lost committed identity: %#v", entries)
+	}
+}

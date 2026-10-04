@@ -3,6 +3,7 @@ package tui
 import (
 	"albedo/cli/internal/daemon"
 	"cmp"
+	"slices"
 	"strings"
 	"time"
 )
@@ -189,9 +190,9 @@ func (t *transcriptState) apply(evt daemon.StreamEvent, agentName string) []Hist
 		t.streamedHash, t.streamedLen = fnvOffset64, 0
 		entries = t.settle(agentName)
 		if duplicate {
-			for i := len(entries) - 1; i >= 0; i-- {
-				if entries[i].Kind == EntryAssistant {
-					entries[i].ID, entries[i].Seq = evt.EntryID, evt.Position
+			for index, entry := range slices.Backward(entries) {
+				if entry.Kind == EntryAssistant {
+					entries[index].ID, entries[index].Seq = evt.EntryID, evt.Position
 					break
 				}
 			}

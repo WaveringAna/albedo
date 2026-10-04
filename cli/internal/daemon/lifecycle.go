@@ -109,8 +109,7 @@ func Discover(ctx context.Context, homeDir string) (Discovery, error) {
 		if !processAlive(snapshot.Pid) && endpointRefused(err) {
 			return Discovery{Kind: Stale, Snapshot: snapshot}, nil
 		}
-		var api *APIError
-		if errors.As(err, &api) {
+		if api, ok := errors.AsType[*APIError](err); ok {
 			if api.StatusCode == http.StatusUnauthorized || api.StatusCode == http.StatusForbidden {
 				return fail(AuthenticationFailed, err)
 			}
@@ -119,8 +118,7 @@ func Discover(ctx context.Context, homeDir string) (Discovery, error) {
 			}
 			return fail(UnhealthyDaemon, err)
 		}
-		var protocol *ProtocolError
-		if errors.As(err, &protocol) {
+		if _, ok := errors.AsType[*ProtocolError](err); ok {
 			return fail(UnhealthyDaemon, err)
 		}
 		return fail(UnreachableDaemon, err)
@@ -139,7 +137,7 @@ func Discover(ctx context.Context, homeDir string) (Discovery, error) {
 
 // Rediscover waits for a verified replacement endpoint without starting one.
 func Rediscover(ctx context.Context, homeDir string) (ConnectionSnapshot, error) {
-	for attempt := 0; attempt < 20; attempt++ {
+	for range 20 {
 		discovery, err := Discover(ctx, homeDir)
 		if err == nil && discovery.Kind == Running {
 			return discovery.Snapshot, nil
@@ -153,8 +151,7 @@ func Rediscover(ctx context.Context, homeDir string) (ConnectionSnapshot, error)
 			if errors.As(err, &api) && api.Code != "daemon_stopping" && api.Code != "daemon_unavailable" {
 				return ConnectionSnapshot{}, err
 			}
-			var protocol *ProtocolError
-			if errors.As(err, &protocol) {
+			if _, ok := errors.AsType[*ProtocolError](err); ok {
 				return ConnectionSnapshot{}, err
 			}
 		}

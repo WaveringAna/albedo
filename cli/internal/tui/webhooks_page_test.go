@@ -130,8 +130,7 @@ func TestWebhookSaveRetainsCreatedSecretAfterLaterFailure(t *testing.T) {
 	if msg.Err == nil || msg.Reveal == nil || msg.Reveal.Secret != "whsec_created" || requests != 2 {
 		t.Fatalf("lost committed secret: %+v requests=%d", msg, requests)
 	}
-	var apiErr *daemon.APIError
-	if !errors.As(msg.Err, &apiErr) {
+	if _, ok := errors.AsType[*daemon.APIError](msg.Err); !ok {
 		t.Fatalf("lost failure: %v", msg.Err)
 	}
 	m, _ = m.Update(msg)

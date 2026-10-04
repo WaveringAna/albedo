@@ -25,7 +25,7 @@ func TestAgentCardReplacesProgressAndDeduplicatesMailAnimation(t *testing.T) {
 	if !strings.Contains(view, "map wake paths") || !strings.Contains(view, "checking replay") || strings.Contains(view, "tracing delivery") {
 		t.Fatalf("narrow card did not show current request and progress: %s", view)
 	}
-	for _, row := range strings.Split(model.View(), "\n") {
+	for row := range strings.SplitSeq(model.View(), "\n") {
 		if ansi.StringWidth(row) > model.Width {
 			t.Fatalf("card overflowed terminal width: %q", row)
 		}

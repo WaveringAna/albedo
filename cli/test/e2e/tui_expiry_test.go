@@ -68,7 +68,7 @@ func TestTUIExpiredSubmissionsRemainUnresolvedAcrossNavigation(t *testing.T) {
 	driver.Update(tea.WindowSizeMsg{Width: 120, Height: 100})
 	driver.connected()
 	var handles []*daemon.OperationHandle
-	for index := 0; index < tui.MaxPendingUsers+1; index++ {
+	for index := range tui.MaxPendingUsers + 1 {
 		prompt := fmt.Sprintf("unresolved user %d", index)
 		driver.App.Chat.TextArea.SetValue(prompt)
 		if index == 0 {

@@ -4,6 +4,7 @@ import (
 	"albedo/cli/internal/daemon"
 	"context"
 	"errors"
+	"maps"
 	"slices"
 
 	tea "charm.land/bubbletea/v2"
@@ -74,9 +75,7 @@ func (m *AppModel) ApplyUI(prefs daemon.UIPreferences) {
 	if current.Opens == nil {
 		current.Opens = map[string]int{}
 	}
-	for id, opens := range prefs.Opens {
-		current.Opens[id] = opens
-	}
+	maps.Copy(current.Opens, prefs.Opens)
 	for id, etag := range prefs.SessionETags {
 		current.Pinned = slices.DeleteFunc(current.Pinned, func(v string) bool { return v == id })
 		current.Archived = slices.DeleteFunc(current.Archived, func(v string) bool { return v == id })

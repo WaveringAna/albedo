@@ -43,7 +43,7 @@ func loadWireContract(root string) (*wireContract, error) {
 func (contract *wireContract) dereference(value map[string]any) map[string]any {
 	if reference, ok := value["$ref"].(string); ok {
 		var current any = contract.document
-		for _, part := range strings.Split(strings.TrimPrefix(reference, "#/"), "/") {
+		for part := range strings.SplitSeq(strings.TrimPrefix(reference, "#/"), "/") {
 			current = current.(map[string]any)[strings.ReplaceAll(strings.ReplaceAll(part, "~1", "/"), "~0", "~")]
 		}
 		return current.(map[string]any)
@@ -138,7 +138,7 @@ func (contract *wireContract) responseSchema(request *http.Request, response *ht
 	if !ok {
 		return nil, nil
 	}
-	mediaType := strings.Split(response.Header.Get("Content-Type"), ";")[0]
+	mediaType, _, _ := strings.Cut(response.Header.Get("Content-Type"), ";")
 	media, ok := content[mediaType].(map[string]any)
 	if !ok {
 		return nil, fmt.Errorf("undocumented response media type %q", mediaType)

@@ -121,9 +121,7 @@ func mutateAcknowledgement(t *testing.T, path string, fault acknowledgementFault
 		}
 		defer response.Body.Close()
 		if strings.HasPrefix(response.Header.Get("Content-Type"), "text/event-stream") {
-			for key, values := range response.Header {
-				writer.Header()[key] = values
-			}
+			maps.Copy(writer.Header(), response.Header)
 			writer.WriteHeader(response.StatusCode)
 			_ = http.NewResponseController(writer).Flush()
 			_, _ = io.Copy(flushingResponseWriter{writer}, response.Body)

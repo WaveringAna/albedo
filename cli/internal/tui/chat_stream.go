@@ -119,8 +119,8 @@ func (m *ChatModel) handleStreamEvent(evt daemon.StreamEvent) {
 	// Usage or thinking may have settled the stream before its saved message.
 	if matchedStream && evt.EntryID != "" && m.History.Find(evt.EntryID) < 0 {
 		history := m.History.Entries()
-		for i := len(history) - 1; i >= 0; i-- {
-			if history[i].Kind == EntryAssistant && history[i].ID == "" {
+		for i, h := range slices.Backward(history) {
+			if h.Kind == EntryAssistant && h.ID == "" {
 				m.History.Identify(i, evt.EntryID, evt.Position)
 				break
 			}

@@ -79,7 +79,7 @@ func pythonSourceLine(preview *daemon.ToolCodePreview) string {
 	if preview == nil {
 		return ""
 	}
-	for _, line := range strings.Split(preview.Text, "\n") {
+	for line := range strings.SplitSeq(preview.Text, "\n") {
 		line = strings.TrimSpace(line)
 		if line != "" && !strings.HasPrefix(line, "#") {
 			return line

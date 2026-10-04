@@ -100,8 +100,8 @@ func scanSSEFrames(ctx context.Context, scanner *bufio.Scanner, consume func([]b
 			}
 			continue
 		}
-		if strings.HasPrefix(line, "data:") {
-			fragment := strings.TrimPrefix(line, "data:")
+		if after, ok := strings.CutPrefix(line, "data:"); ok {
+			fragment := after
 			fragment = strings.TrimPrefix(fragment, " ")
 			if data.Len()+len(fragment)+1 > 1048577 {
 				return streamFailure(StreamProtocol, errors.New("SSE frame exceeds 1 MiB"))

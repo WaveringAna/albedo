@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"albedo/cli/internal/daemon/protocol"
@@ -71,14 +72,17 @@ func UpgradeKernel(ctx context.Context, conn *Connection, id string) (KernelUpgr
 }
 
 func (r KernelUpgradeResult) Message() string {
-	message := fmt.Sprintf("Kernel %s; %d background jobs stopped.", r.State, len(r.StoppedJobs))
+	var message strings.Builder
+	fmt.Fprintf(&message, "Kernel %s; %d background jobs stopped.", r.State, len(r.StoppedJobs))
 	for _, warning := range r.Warnings {
-		message += " " + warning.Detail
+		message.WriteByte(' ')
+		message.WriteString(warning.Detail)
 	}
 	if r.Failure != nil {
-		message += " " + r.Failure.Detail
+		message.WriteByte(' ')
+		message.WriteString(r.Failure.Detail)
 	}
-	return message
+	return message.String()
 }
 func CompactSession(ctx context.Context, conn *Connection, id, strategy string) (CompactionResult, error) {
 	body := protocol.CompactionRequest{Strategy: optionalText(strategy)}
