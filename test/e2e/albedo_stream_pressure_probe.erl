@@ -140,15 +140,15 @@ wakes(_) -> 0.
 
 session_sample(Id) ->
     State = session_state(Id),
-    Watchers = element(14, State),
-    Samples = [case process_info(element(2, Watcher), messages) of
+    Watchers = 'albedo@daemon@session_diagnostics':watcher_owners(State),
+    Samples = [case process_info(Watcher, messages) of
         undefined -> #{wakes => 0, blocked => 0};
-        {messages, Messages} -> #{wakes => wakes(Messages), blocked => blocked(element(2, Watcher))}
+        {messages, Messages} -> #{wakes => wakes(Messages), blocked => blocked(Watcher)}
     end || Watcher <- Watchers],
     Peak = lists:foldl(fun(Sample, Acc) ->
         maps:merge_with(fun(_, A, B) -> max(A, B) end, Acc, Sample)
     end, #{wakes => 0, blocked => 0}, Samples),
-    Peak#{watchers => length(Watchers), sequence => element(12, State)}.
+    Peak#{watchers => length(Watchers), sequence => 'albedo@daemon@session_diagnostics':sequence(State)}.
 
 session_pressure_json(Id) -> json:encode(session_pressure(Id, 1500, #{})).
 session_pressure(Id, Left, Peak) ->
@@ -172,12 +172,10 @@ session_removed(Id, Left) ->
 %% bounded value rather than copying the worker's full durable argument state.
 progress_json(Id) ->
     State = session_state(Id),
-    Projection = lists:keyfind(projection, 1,
-        [Value || Value <- tuple_to_list(State), is_tuple(Value)]),
-    true = is_tuple(Projection),
+    Projection = 'albedo@daemon@session_diagnostics':progress(State),
     json:encode(#{projection_bytes => bytes(Projection),
         projection_size => erlang:external_size(Projection),
-        watchers => length(element(14, State))}).
+        watchers => length('albedo@daemon@session_diagnostics':watcher_owners(State))}).
 
 %% sys calls acknowledge suspension/resumption of the real session owner.
 suspend_session_json(Id) ->
@@ -195,8 +193,7 @@ resume_session_json(Id) ->
 %% The ready file acknowledges the monitor before the HTTP client cancels.
 worker_exit_json(Id, RunId, ReadyPath) ->
     State = session_state(Id),
-    {some, Run} = 'albedo@daemon@turn':owner(element(9, State), RunId),
-    Worker = element(3, Run),
+    {some, Worker} = 'albedo@daemon@session_diagnostics':worker(State, RunId),
     Monitor = monitor(process, Worker),
     true = is_process_alive(Worker),
     ok = file:write_file(ReadyPath, <<"monitor_ready">>),

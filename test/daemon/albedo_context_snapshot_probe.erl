@@ -79,9 +79,7 @@ actor(Id) ->
     Check = self(),
     {Reader, ReaderMonitor} = spawn_monitor(fun() ->
         State = sys:get_state(Pid),
-        %% history is field 6 in session_state.State.
-        state = element(1, State),
-        Check ! {checked, element(7, State) =:= none,
+        Check ! {checked, 'albedo@daemon@session_diagnostics':history_unloaded(State),
             contains(State, <<"REPLAY_SENTINEL:">>)}
     end),
     {Unloaded, Reachable} = receive

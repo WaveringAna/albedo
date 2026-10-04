@@ -150,26 +150,15 @@ anatomy(Pid) -> anatomy(Pid, proc_lib:get_label(Pid)).
 anatomy(Pid, Label) ->
     case try sys:get_state(Pid, 2000) catch Class:Reason -> {Class, Reason} end of
         State when is_tuple(State), tuple_size(State) > 1 ->
-            Names = fields(element(1, State), tuple_size(State) - 1),
-            Rows = [{N, element(I + 1, State)} || {I, N} <- lists:enumerate(Names)],
+            Rows = [{I, element(I + 1, State)} || I <- lists:seq(1, tuple_size(State) - 1)],
             [io_lib:format("~0p state (~s flat, ~s heap)~n",
                            [Label, ?MB(flat(State)), ?MB(heap(State))]),
-             [io_lib:format("  ~-14s flat ~10s  heap ~10s  binaries ~10s~s~n",
-                            [N, ?MB(flat(V)), ?MB(heap(V)), ?MB(binaries(V)), detail(N, V)])
+             [io_lib:format("  field_~B flat ~10s  heap ~10s  binaries ~10s~n",
+                            [N, ?MB(flat(V)), ?MB(heap(V)), ?MB(binaries(V))])
               || {N, V} <- Rows]];
         Other ->
             io_lib:format("~0p state unavailable: ~0p~n", [Label, Other])
     end.
-
-%% session.State, in declaration order; an unknown shape falls back to indices.
-fields(state, 16) ->
-    [info, host, kernel, home, self, history, latest_usage, activity, steering,
-     sequence, events, watchers, notice, context, pin, last_touch];
-fields(_, N) -> [list_to_atom("field_" ++ integer_to_list(I)) || I <- lists:seq(1, N)].
-
-detail(history, {some, Entries}) -> io_lib:format("  (~b entries)", [length(Entries)]);
-detail(events, Events) when is_list(Events) -> io_lib:format("  (~b events)", [length(Events)]);
-detail(_, _) -> "".
 
 flat(Term) -> erts_debug:flat_size(Term) * ?WORD.
 heap(Term) -> erts_debug:size(Term) * ?WORD.

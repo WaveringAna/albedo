@@ -26,3 +26,12 @@ Erlang owners. Reuse Gleam owners for pure validation and text projection.
 A new Erlang shim should supply a native capability, not duplicate an existing
 Gleam helper. Keep typed values through internal projections and encode JSON at
 the wire boundary; see [command state projections](commands.md#contributing-commands).
+
+## session diagnostics
+
+`daemon/session_diagnostics.gleam` owns named facts from `session_state.State`
+for native probes: watcher owners, sequence, history residency, tool progress,
+and the current run's worker. Erlang probes must call these typed accessors
+instead of indexing the state tuple or searching its fields by constructor tag.
+The memory inspector reports numbered fields and sizes; it must not mirror
+Gleam record names or create atoms for field labels.
