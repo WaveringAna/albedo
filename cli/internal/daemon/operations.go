@@ -146,7 +146,7 @@ func GetInput(ctx context.Context, conn *Connection, session, id string) (Operat
 	err := executeRead(ctx, conn, operation{Name: "read input", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
 		return protocol.NewGetInputRequest(base, session, id)
 	}, Policy: readRecovery}, func(data []byte) error {
-		if err := decodeRequired(data, &input, "id", "session_id", "kind", "admission", "http_status", "problem", "accepted_at", "acceptance_order", "delivery", "blocking_reason", "transcript_position", "turn", "client_id"); err != nil {
+		if err := decodeRequired(data, &input); err != nil {
 			return err
 		}
 		if input.ID != id || input.SessionID != session {
@@ -262,7 +262,7 @@ func ResolveCreation(ctx context.Context, conn *Connection, handle *OperationHan
 	if err != nil {
 		if api, ok := errors.AsType[*APIError](err); ok && len(api.Decision) > 0 {
 			var decision protocol.CreationDecision
-			if parseErr := decodeRequired(api.Decision, &decision, "kind", "session_id", "admission", "http_status", "creation", "decided_at", "deleted_at"); parseErr != nil {
+			if parseErr := decodeRequired(api.Decision, &decision); parseErr != nil {
 				return Session{}, &ProtocolError{Code: "invalid_response", Operation: "read creation decision", Cause: parseErr}
 			}
 			if decision.Kind != "creation" || decision.SessionID != handle.ID() {

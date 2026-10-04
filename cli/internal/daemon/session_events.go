@@ -45,7 +45,7 @@ func decodeChatEvent(raw json.RawMessage) (*wireChatEvent, error) {
 		}
 	case "status":
 		var data protocol.SessionStatus
-		if err := decodeRequired(envelope.Data, &data, "phase", "run_id", "interrupt_requested", "blocking_reason"); err != nil {
+		if err := decodeRequired(envelope.Data, &data); err != nil {
 			return nil, err
 		}
 		if err := validateSessionStatus(data); err != nil {
@@ -158,7 +158,7 @@ func decodeChatEvent(raw json.RawMessage) (*wireChatEvent, error) {
 		return &wireChatEvent{CallID: data.ToolCallID, StreamEvent: event}, nil
 	case "usage":
 		var data protocol.Usage
-		if err := decodeRequired(envelope.Data, &data, "model", "observed_at", "prompt_tokens", "cached_prompt_tokens", "cache_write_tokens", "completion_tokens", "total_tokens", "elapsed_ms", "tokens_per_second", "context_window_tokens", "cache_ttl_seconds", "cache_fade"); err != nil {
+		if err := decodeRequired(envelope.Data, &data); err != nil {
 			return nil, err
 		}
 		event.Usage = usageValue(data)

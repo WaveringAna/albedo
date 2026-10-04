@@ -33,12 +33,12 @@ func decodeSessionCommand(raw json.RawMessage) (SessionCommand, error) {
 	var commandID string
 	if discriminator.Delivery == "input" {
 		var input protocol.InputCommand
-		if err := decodeRequired(raw, &input, "id", "slash_name", "description", "arguments", "caller_permissions", "delivery", "command_id"); err != nil {
+		if err := decodeRequired(raw, &input); err != nil {
 			return SessionCommand{}, err
 		}
 		command = protocol.HTTPCommand{ID: input.ID, SlashName: input.SlashName, Description: input.Description, Arguments: input.Arguments, CallerPermissions: input.CallerPermissions, Delivery: input.Delivery}
 		commandID = input.CommandID
-	} else if err := decodeRequired(raw, &command, "id", "slash_name", "description", "arguments", "caller_permissions", "delivery", "operation"); err != nil {
+	} else if err := decodeRequired(raw, &command); err != nil {
 		return SessionCommand{}, err
 	}
 	if command.ID == "" || !strings.HasPrefix(command.SlashName, "/") || command.Arguments == nil {

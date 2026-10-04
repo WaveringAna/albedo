@@ -63,7 +63,7 @@ func interruptCaptured(ctx context.Context, conn *Connection, id string, runID *
 	err := executeMutation(ctx, conn, operation{Name: "interrupt session", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
 		return protocol.NewInterruptSessionRequestWithBody(base, id, "application/json", body)
 	}, Body: protocol.InterruptRequest{RunID: runID, ThroughInputOrder: inputOrder}, Policy: noRecovery}, []int{200}, func(data []byte, _ int) error {
-		if err := decodeRequired(data, &result, "run_id", "state", "cancelled_input_ids", "warnings"); err != nil {
+		if err := decodeRequired(data, &result); err != nil {
 			return err
 		}
 		switch result.State {
@@ -108,7 +108,7 @@ func (c *ChatClient) CancelSubmission(ctx context.Context, submissionID string) 
 	err := executeMutation(ctx, c.conn, operation{Name: "cancel input", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
 		return protocol.NewCancelInputRequestWithBody(base, c.agentID, submissionID, "application/json", body)
 	}, Body: struct{}{}, Policy: noRecovery}, []int{200}, func(data []byte, _ int) error {
-		if err := decodeRequired(data, &result, "input", "result"); err != nil {
+		if err := decodeRequired(data, &result); err != nil {
 			return err
 		}
 		if result.Input.ID != submissionID {
@@ -132,7 +132,7 @@ func (c *ChatClient) CancelSubmission(ctx context.Context, submissionID string) 
 
 func decodeSubmission(data []byte, _ int) (SendResult, error) {
 	var input protocol.Input
-	if err := decodeRequired(data, &input, "id", "session_id", "kind", "admission", "http_status", "delivery", "problem", "accepted_at", "acceptance_order"); err != nil {
+	if err := decodeRequired(data, &input); err != nil {
 		return SendResult{}, err
 	}
 	if err := validInput(input); err != nil {

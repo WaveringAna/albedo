@@ -84,7 +84,7 @@ func sessionValue(wire protocol.Session) Session {
 }
 func decodeSession(data []byte) (Session, error) {
 	var wire protocol.Session
-	if err := decodeRequired(data, &wire, "id", "name", "workspace", "parent_id", "root_id", "status", "preview", "preferences", "current_progress", "activity", "cursor", "creation", "configuration_resource", "history", "pending_inputs", "input_order", "kernel"); err != nil {
+	if err := decodeRequired(data, &wire); err != nil {
 		return Session{}, err
 	}
 	if err := validateSession(wire); err != nil {
@@ -143,7 +143,7 @@ func GetSessionConfiguration(ctx context.Context, conn *Connection, id string) (
 	err := executeRead(ctx, conn, operation{Name: "read session configuration", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
 		return protocol.NewGetSessionRequest(base, id, &protocol.GetSessionParams{View: new("configuration")})
 	}, Validator: &result.ETag, Policy: readRecovery}, func(data []byte) error {
-		if err := decodeRequired(data, &result.Value, "id", "name", "workspace", "preferences", "selection", "revision", "family_revision"); err != nil {
+		if err := decodeRequired(data, &result.Value); err != nil {
 			return err
 		}
 		if result.ETag == "" || result.Value.ID != id {
@@ -163,7 +163,7 @@ func patchSession(ctx context.Context, conn *Connection, id, etag string, body a
 		return protocol.NewPatchSessionRequestWithBody(base, id, &protocol.PatchSessionParams{View: "configuration", IfMatch: headers.Get("If-Match")}, "application/merge-patch+json", body)
 	}, Headers: headers, Body: body, Policy: authRecovery}, []int{200}, func(data []byte, _ int) error {
 		var change protocol.SessionChange
-		if err := decodeRequired(data, &change, "resource", "session", "move"); err != nil {
+		if err := decodeRequired(data, &change); err != nil {
 			return err
 		}
 		if change.Resource.ETag == "" || change.Session.ID != id || change.Resource.Value.ID != id || change.Resource.ETag != change.Session.ConfigurationResource.ETag {
@@ -203,7 +203,7 @@ func DeleteSession(ctx context.Context, conn *Connection, id string, tree bool, 
 		return protocol.NewDeleteSessionRequest(base, id, &params)
 	}, Headers: headers, Policy: authRecovery}, []int{200}, func(data []byte, _ int) error {
 		var wire protocol.SessionDeletion
-		if err := decodeRequired(data, &wire, "state", "deleted_count", "remaining_count", "deleted_ids", "remaining", "truncated"); err != nil {
+		if err := decodeRequired(data, &wire); err != nil {
 			return err
 		}
 		if wire.DeletedCount < 0 || wire.RemainingCount < 0 || wire.State != "complete" && wire.State != "partial" || wire.State == "complete" && wire.RemainingCount != 0 {
@@ -231,7 +231,7 @@ func listSessions(ctx context.Context, conn *Connection, query protocol.ListSess
 		var page protocol.SessionPage
 		err := executeRead(ctx, conn, operation{Name: "list sessions", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
 			return protocol.NewListSessionsRequest(base, &query)
-		}, Policy: readRecovery}, func(data []byte) error { return decodeRequired(data, &page, "items", "next") })
+		}, Policy: readRecovery}, func(data []byte) error { return decodeRequired(data, &page) })
 		if err != nil {
 			return nil, err
 		}

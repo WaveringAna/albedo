@@ -36,7 +36,7 @@ func GetCachePolicy(ctx context.Context, conn *Connection, query CachePolicyQuer
 	var result protocol.CachePolicyPage
 	err := executeRead(ctx, conn, operation{Name: "inspect cache policy", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
 		return protocol.NewListModelsRequest(base, &params)
-	}, Policy: readRecovery}, func(data []byte) error { return decodeRequired(data, &result, "entries", "layers", "matched", "next") })
+	}, Policy: readRecovery}, func(data []byte) error { return decodeRequired(data, &result) })
 	return result, err
 }
 func GetRequestRecords(ctx context.Context, conn *Connection, session, next string, limit int) (RequestRecordPage, error) {
@@ -47,7 +47,7 @@ func GetRequestRecords(ctx context.Context, conn *Connection, session, next stri
 	var result protocol.RequestRecordPage
 	err := executeRead(ctx, conn, operation{Capability: "context", Name: "inspect provider requests", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
 		return protocol.NewGetContextRequest(base, session, &params)
-	}, Policy: readRecovery}, func(data []byte) error { return decodeRequired(data, &result, "items", "next") })
+	}, Policy: readRecovery}, func(data []byte) error { return decodeRequired(data, &result) })
 	return result, err
 }
 func GetQuotaHistory(ctx context.Context, conn *Connection, next string, limit int) (QuotaPage, error) {

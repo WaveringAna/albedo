@@ -23,7 +23,7 @@ func ReloadSession(ctx context.Context, conn *Connection, id string, request Rel
 	err := executeMutation(ctx, conn, operation{Name: "reload session", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
 		return protocol.NewReloadSessionRequestWithBody(base, id, "application/json", body)
 	}, Body: protocol.ReloadRequest{Target: optionalText(request.Target)}, Policy: noRecovery, Timeout: completedActionTimeout}, []int{200}, func(data []byte, _ int) error {
-		if err := decodeRequired(data, &w, "session", "models", "cache_policy"); err != nil {
+		if err := decodeRequired(data, &w); err != nil {
 			return err
 		}
 		if w.CachePolicy != nil && (w.CachePolicy.State != "refreshed" && w.CachePolicy.State != "failed" || (w.CachePolicy.State == "failed") != (w.CachePolicy.Failure != nil)) {
@@ -65,7 +65,7 @@ func UpgradeKernel(ctx context.Context, conn *Connection, id string) (KernelUpgr
 	err := executeMutation(ctx, conn, operation{Name: "upgrade kernel", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
 		return protocol.NewUpgradeKernelRequestWithBody(base, id, "application/json", body)
 	}, Body: struct{}{}, Policy: noRecovery, Timeout: completedActionTimeout}, []int{200}, func(data []byte, _ int) error {
-		return decodeRequired(data, &w, "old_build", "new_build", "state", "stopped_jobs", "warnings", "failure", "old_kernel_id", "new_kernel_id")
+		return decodeRequired(data, &w)
 	})
 	return KernelUpgradeResult(w), err
 }
@@ -86,7 +86,7 @@ func CompactSession(ctx context.Context, conn *Connection, id, strategy string) 
 	err := executeMutation(ctx, conn, operation{Name: "compact session", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
 		return protocol.NewCompactSessionRequestWithBody(base, id, "application/json", body)
 	}, Body: body, Policy: noRecovery, Timeout: completedActionTimeout}, []int{200}, func(data []byte, _ int) error {
-		return decodeRequired(data, &w, "selection_applied", "effective_strategy", "state", "observation", "failure")
+		return decodeRequired(data, &w)
 	})
 	return CompactionResult(w), err
 }

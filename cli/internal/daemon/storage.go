@@ -48,7 +48,7 @@ func GetStorageReport(ctx context.Context, conn *Connection) (StorageReport, err
 		err := executeRead(ctx, conn, operation{Capability: "storage_report", Name: "read storage", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
 			return protocol.NewGetStorageRequest(base, &params)
 		}, Policy: readRecovery}, func(data []byte) error {
-			return decodeRequired(data, &w, "database", "sessions", "images", "files", "measured_at")
+			return decodeRequired(data, &w)
 		})
 		if err != nil {
 			return result, err

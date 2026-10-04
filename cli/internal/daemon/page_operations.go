@@ -329,19 +329,19 @@ func validateExtensionAcknowledgment(data []byte, route, method string) error {
 	switch {
 	case strings.HasPrefix(route, "/extensions/links/"):
 		var result protocol.LinkChange
-		return decodeRequired(data, &result, "resource", "notifications", "notification_count", "truncated")
+		return decodeRequired(data, &result)
 	case method == http.MethodDelete && (strings.HasPrefix(route, "/extensions/work/") || strings.HasPrefix(route, "/extensions/paperclips/") || strings.HasPrefix(route, "/extensions/schedule/")):
 		var result protocol.ExtensionDeletion
-		return decodeRequired(data, &result, "id", "notification")
+		return decodeRequired(data, &result)
 	case strings.HasPrefix(route, "/extensions/work/"):
 		var result protocol.WorkChange
-		return decodeRequired(data, &result, "resource", "notification")
+		return decodeRequired(data, &result)
 	case strings.HasPrefix(route, "/extensions/paperclips/"):
 		var result protocol.PaperclipChange
-		return decodeRequired(data, &result, "resource", "notification")
+		return decodeRequired(data, &result)
 	case strings.HasPrefix(route, "/extensions/schedule/"):
 		var result protocol.ScheduleChange
-		return decodeRequired(data, &result, "resource", "notification")
+		return decodeRequired(data, &result)
 	default:
 		if !json.Valid(data) {
 			return fieldError("extension operation result")

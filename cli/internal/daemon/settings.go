@@ -43,7 +43,7 @@ func GetSettings(ctx context.Context, conn *Connection) (Settings, error) {
 	err := executeRead(ctx, conn, operation{Name: "read shared settings", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
 		return protocol.NewGetSettingsRequest(base, nil)
 	}, Policy: readRecovery}, func(data []byte) error {
-		return decodeRequired(data, &wire, "providers", "mcp", "extensions", "capabilities", "models", "ui", "group_resources")
+		return decodeRequired(data, &wire)
 	})
 	if err != nil {
 		return Settings{}, err
@@ -299,7 +299,7 @@ func RecordOpen(ctx context.Context, conn *Connection, session string) (UIPrefer
 	err = executeMutation(ctx, conn, operation{Name: "record session visit", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
 		return protocol.NewRecordVisitRequestWithBody(base, session, id, "application/json", body)
 	}, Body: struct{}{}, Policy: noRecovery}, []int{201, 200}, func(data []byte, _ int) error {
-		if err := decodeRequired(data, &visit, "visit_id", "session_id", "opens"); err != nil {
+		if err := decodeRequired(data, &visit); err != nil {
 			return err
 		}
 		if visit.VisitID != id || visit.SessionID != session {

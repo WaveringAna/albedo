@@ -53,7 +53,7 @@ func readCapabilityCatalog(ctx context.Context, conn *Connection, session string
 		err := executeRead(ctx, conn, operation{Capability: "catalog", Name: "read session catalog", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
 			return protocol.NewGetCatalogRequest(base, session, &params)
 		}, Policy: readRecovery}, func(data []byte) error {
-			return decodeRequired(data, &catalog, "discovery", "discovery_failure", "loaded")
+			return decodeRequired(data, &catalog)
 		})
 		if err != nil {
 			return CapabilityCatalog{}, err

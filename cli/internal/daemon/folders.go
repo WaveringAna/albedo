@@ -100,7 +100,7 @@ func workspaceDirectory(ctx context.Context, conn *Connection, location string, 
 		err := executeRead(ctx, conn, operation{Capability: "workspace_browsing", Name: "browse workspace", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
 			return protocol.NewGetWorkspacesRequest(base, &params)
 		}, Policy: readRecovery}, func(data []byte) error {
-			return decodeRequired(data, &page, "directory", "parent", "home", "host", "items", "next")
+			return decodeRequired(data, &page)
 		})
 		if err != nil {
 			return result, err
@@ -150,13 +150,13 @@ func previewValue(w protocol.WorkspacePreview, path string) (FolderPreview, erro
 		switch kind.Kind {
 		case "git":
 			var r protocol.GitFacts
-			if err := decodeRequired(w.Repository, &r, "kind", "root", "branch", "revision", "changed", "touched_at"); err != nil {
+			if err := decodeRequired(w.Repository, &r); err != nil {
 				return result, err
 			}
 			result.Repo = &Repo{Kind: r.Kind, Root: r.Root, Branch: value(r.Branch), Commit: value(r.Revision), Changed: intPointer(r.Changed), Touched: timestampSeconds(value(r.TouchedAt))}
 		case "jj":
 			var r protocol.JJFacts
-			if err := decodeRequired(w.Repository, &r, "kind", "root", "change_id", "revision", "changed", "touched_at", "bookmark"); err != nil {
+			if err := decodeRequired(w.Repository, &r); err != nil {
 				return result, err
 			}
 			result.Repo = &Repo{Kind: r.Kind, Root: r.Root, Change: value(r.ChangeID), Commit: value(r.Revision), Changed: intPointer(r.Changed), Touched: timestampSeconds(value(r.TouchedAt))}
@@ -214,7 +214,7 @@ func hosts(ctx context.Context, conn *Connection) ([]protocol.Host, error) {
 		var page protocol.HostPage
 		err := executeRead(ctx, conn, operation{Capability: "host_probes", Name: "list hosts", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
 			return protocol.NewListHostsRequest(base, &params)
-		}, Policy: readRecovery}, func(data []byte) error { return decodeRequired(data, &page, "items", "next") })
+		}, Policy: readRecovery}, func(data []byte) error { return decodeRequired(data, &page) })
 		if err != nil {
 			return nil, err
 		}
@@ -263,7 +263,7 @@ func WarmHost(ctx context.Context, conn *Connection, host string) (HostStatus, e
 	if err != nil {
 		return HostStatus{}, err
 	}
-	if err := decodeRequired(body, &w, "target", "state", "detail", "observed_at", "os", "architecture", "home", "authentication"); err != nil {
+	if err := decodeRequired(body, &w); err != nil {
 		return HostStatus{}, invalidResponse(op, "", err)
 	}
 	if w.Target != host {

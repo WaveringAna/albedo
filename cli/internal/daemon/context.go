@@ -36,7 +36,7 @@ func GetContextSnapshot(ctx context.Context, conn *Connection, id string) (Conte
 		return protocol.NewGetContextRequest(base, id, &protocol.GetContextParams{View: new("summary")})
 	}, Policy: readRecovery}, func(data []byte) error {
 		var w protocol.ContextSummary
-		if err := decodeRequired(data, &w, "state", "snapshot_id", "captured_at", "provider", "model", "protocol", "context_window_tokens", "compaction", "sections", "reason"); err != nil {
+		if err := decodeRequired(data, &w); err != nil {
 			return err
 		}
 		if w.State != "ready" && w.State != "pending" {
@@ -67,7 +67,7 @@ func GetContextPage(ctx context.Context, conn *Connection, id, snapshotID, secti
 		return protocol.NewGetContextRequest(base, id, &params)
 	}, Policy: readRecovery}, func(data []byte) error {
 		var w protocol.ContextSectionPage
-		if err := decodeRequired(data, &w, "snapshot_id", "section_id", "text", "omitted", "page", "page_count"); err != nil {
+		if err := decodeRequired(data, &w); err != nil {
 			return err
 		}
 		if w.SnapshotID != snapshotID || w.SectionID != section || w.Page != int64(page) || len(w.Text) > 32768 || w.PageCount < 1 || w.Page >= w.PageCount {

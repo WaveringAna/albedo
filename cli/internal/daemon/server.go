@@ -26,7 +26,7 @@ type ServerNotice struct{ ID, Kind, Message string }
 
 func decodeServer(body []byte) (ServerInfo, error) {
 	var server protocol.Server
-	if err := decodeRequired(body, &server, "instance_id", "protocol", "state", "capabilities", "build", "digest", "extensions", "quota", "notices"); err != nil {
+	if err := decodeRequired(body, &server); err != nil {
 		return ServerInfo{}, &ProtocolError{Code: "invalid_server", Operation: "read server", Cause: err}
 
 	}

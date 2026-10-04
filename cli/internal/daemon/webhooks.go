@@ -80,7 +80,7 @@ func ListWebhooks(ctx context.Context, conn *Connection, sessionID string) ([]We
 		var page protocol.HookPage
 		err := executeRead(ctx, conn, operation{Name: "list webhooks", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
 			return protocol.NewListHooksRequest(base, &params)
-		}, Policy: readRecovery}, func(data []byte) error { return decodeRequired(data, &page, "items", "next") })
+		}, Policy: readRecovery}, func(data []byte) error { return decodeRequired(data, &page) })
 		if err != nil {
 			return nil, err
 		}
@@ -110,7 +110,7 @@ func ListWebhooks(ctx context.Context, conn *Connection, sessionID string) ([]We
 func hookChange(ctx context.Context, conn *Connection, op operation, status int, secret bool) (*WebhookResult, error) {
 	var w protocol.HookChange
 	err := executeMutation(ctx, conn, op, []int{status}, func(data []byte, _ int) error {
-		if err := decodeRequired(data, &w, "resource", "notification"); err != nil {
+		if err := decodeRequired(data, &w); err != nil {
 			return err
 		}
 		if w.Resource.ETag == "" || w.Resource.Value.ID == "" {
@@ -170,7 +170,7 @@ func DeleteWebhook(ctx context.Context, conn *Connection, id, etag string) (*Web
 	err = executeMutation(ctx, conn, operation{Name: "delete webhook", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
 		return protocol.NewDeleteHookRequest(base, id, &protocol.DeleteHookParams{View: "configuration", IfMatch: etag})
 	}, Headers: headers, Policy: noRecovery}, []int{200}, func(data []byte, _ int) error {
-		if err := decodeRequired(data, &w, "id", "notification"); err != nil {
+		if err := decodeRequired(data, &w); err != nil {
 			return err
 		}
 		if w.ID != id {
@@ -190,7 +190,7 @@ func GetWebhookPermission(ctx context.Context, conn *Connection, id string) (Web
 	err := executeRead(ctx, conn, operation{Name: "read webhook agent permission", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
 		return protocol.NewGetHookPermissionRequest(base, id)
 	}, Validator: &r.ETag, Policy: readRecovery}, func(data []byte) error {
-		if err := decodeRequired(data, &w, "session_id", "agent_manage", "revision"); err != nil {
+		if err := decodeRequired(data, &w); err != nil {
 			return err
 		}
 		if w.SessionID != id || r.ETag == "" {
@@ -210,7 +210,7 @@ func SetWebhookPermission(ctx context.Context, conn *Connection, id, etag string
 	err = executeMutation(ctx, conn, operation{Name: "edit webhook agent permission", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
 		return protocol.NewPatchHookPermissionRequestWithBody(base, id, &protocol.PatchHookPermissionParams{IfMatch: etag}, "application/merge-patch+json", body)
 	}, Headers: headers, Body: protocol.HookPermissionPatch{AgentManage: &enabled}, Policy: noRecovery}, []int{200}, func(data []byte, _ int) error {
-		if err := decodeRequired(data, &w, "resource", "notification"); err != nil {
+		if err := decodeRequired(data, &w); err != nil {
 			return err
 		}
 		if w.Resource.Value.SessionID != id || w.Resource.ETag == "" || w.Resource.Value.AgentManage != enabled {

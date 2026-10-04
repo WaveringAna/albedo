@@ -22,7 +22,7 @@ func getLinkConfiguration(ctx context.Context, conn *Connection, workspace strin
 	err := executeRead(ctx, conn, operation{Name: "read linked workspace membership", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
 		return protocol.NewGetLinkGroupRequest(base, &params)
 	}, Validator: &result.ETag, Policy: readRecovery}, func(data []byte) error {
-		if err := decodeRequired(data, &result.Value, "workspace", "group_id", "members", "revision", "next"); err != nil {
+		if err := decodeRequired(data, &result.Value); err != nil {
 			return err
 		}
 		if result.Value.Workspace == "" || result.Value.GroupID == "" || result.ETag == "" {

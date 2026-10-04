@@ -39,7 +39,7 @@ func SignInList(ctx context.Context, conn *Connection) (SignIns, error) {
 	var result SignIns
 	err := executeRead(ctx, conn, operation{Capability: "provider_auth", Name: "list provider accounts", BuildRequest: func(base string, body io.Reader) (*http.Request, error) { return protocol.NewGetAuthRequest(base) }, Policy: readRecovery}, func(data []byte) error {
 		var w protocol.Auth
-		if err := decodeRequired(data, &w, "providers", "accounts"); err != nil {
+		if err := decodeRequired(data, &w); err != nil {
 			return err
 		}
 		if w.Providers == nil || w.Accounts == nil {
@@ -95,7 +95,7 @@ func StartSignInWithID(ctx context.Context, conn *Connection, id, provider, flow
 	for attempt := range 2 {
 		err = executeMutation(ctx, conn, op, []int{201, 200}, func(data []byte, _ int) error {
 			var w protocol.Login
-			if err := decodeRequired(data, &w, "id", "provider", "url", "expires_at", "state", "instructions", "progress", "accounts", "failure"); err != nil {
+			if err := decodeRequired(data, &w); err != nil {
 				return err
 			}
 			if w.ID != id || w.Provider != provider {
@@ -139,7 +139,7 @@ func PollSignIn(ctx context.Context, conn *Connection, id string) (SignInStatus,
 	var etag string
 	err := executeRead(ctx, conn, operation{Capability: "provider_auth", Name: "read provider login", BuildRequest: func(base string, body io.Reader) (*http.Request, error) { return protocol.NewGetLoginRequest(base, id) }, Validator: &etag, Policy: readRecovery}, func(data []byte) error {
 		var w protocol.Login
-		if err := decodeRequired(data, &w, "id", "provider", "url", "expires_at", "state", "instructions", "progress", "accounts", "failure"); err != nil {
+		if err := decodeRequired(data, &w); err != nil {
 			return err
 		}
 		if w.ID != id {
@@ -161,7 +161,7 @@ func SignInInput(ctx context.Context, conn *Connection, id, input, etag string) 
 		return protocol.NewAnswerLoginRequestWithBody(base, id, &protocol.AnswerLoginParams{IfMatch: etag}, "application/merge-patch+json", body)
 	}, Body: protocol.LoginPatch{Response: &input}, Headers: headers, Validator: &next, Policy: noRecovery}, []int{200}, func(data []byte, _ int) error {
 		var w protocol.Login
-		if err := decodeRequired(data, &w, "id", "state", "accounts", "progress", "failure"); err != nil {
+		if err := decodeRequired(data, &w); err != nil {
 			return err
 		}
 		_, err := loginValue(w, next)

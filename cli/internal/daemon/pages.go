@@ -133,7 +133,7 @@ func decodePageDocument(data []byte) (*PageDocument, error) {
 		return nil, fieldError("page")
 	}
 	var document protocol.PageDescriptor
-	if err := decodeRequired(page, &document, "title", "empty_state", "rows", "glance", "actions", "summary"); err != nil {
+	if err := decodeRequired(page, &document); err != nil {
 		return nil, err
 	}
 	return pageValue(document)

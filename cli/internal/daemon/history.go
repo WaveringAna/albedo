@@ -30,7 +30,7 @@ func (c *ChatClient) History(ctx context.Context, before int64, rows int) (*Hist
 	err := executeRead(ctx, c.conn, operation{Name: "read history", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
 		return protocol.NewGetHistoryRequest(base, c.agentID, &params)
 	}, Policy: readRecovery}, func(data []byte) error {
-		if err := decodeRequired(data, &wire, "items", "older", "newer", "high_water"); err != nil {
+		if err := decodeRequired(data, &wire); err != nil {
 			return err
 		}
 		if wire.Items == nil || len(wire.Items) > 200 || wire.HighWater < 0 {
@@ -203,7 +203,7 @@ func ReadEntryContent(ctx context.Context, conn *Connection, session, entry stri
 		var page protocol.EntryContentPage
 		err := executeRead(ctx, conn, operation{Name: "read history content", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
 			return protocol.NewGetHistoryContentRequest(base, session, entry, &params)
-		}, Policy: readRecovery}, func(data []byte) error { return decodeRequired(data, &page, "entry_id", "parts", "next", "image") })
+		}, Policy: readRecovery}, func(data []byte) error { return decodeRequired(data, &page) })
 		if err != nil {
 			return nil, err
 		}

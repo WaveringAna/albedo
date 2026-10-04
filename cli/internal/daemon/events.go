@@ -195,7 +195,7 @@ func decodeToolProgress(raw json.RawMessage) (*ToolProgress, error) {
 		return nil, errors.New("tool progress exceeds 8 KiB")
 	}
 	var wire protocol.ToolProgress
-	if err := decodeRequired(raw, &wire, "call_id", "tool_call_id", "name", "phase", "intent"); err != nil {
+	if err := decodeRequired(raw, &wire); err != nil {
 		return nil, err
 	}
 	if wire.CallID == "" || wire.Name == "" || len(wire.Name) > 100 || (wire.Phase != "generating" && wire.Phase != "running") {

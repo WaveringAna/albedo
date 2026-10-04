@@ -53,7 +53,7 @@ func listModels(ctx context.Context, conn *Connection, params protocol.ListModel
 		var page protocol.ModelPage
 		err := executeRead(ctx, conn, operation{Name: "list models", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
 			return protocol.NewListModelsRequest(base, &params)
-		}, Policy: readRecovery}, func(data []byte) error { return decodeRequired(data, &page, "items", "next") })
+		}, Policy: readRecovery}, func(data []byte) error { return decodeRequired(data, &page) })
 		if err != nil {
 			return nil, err
 		}

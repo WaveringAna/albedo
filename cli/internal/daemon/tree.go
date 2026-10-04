@@ -29,7 +29,7 @@ func GetSessionTree(ctx context.Context, conn *Connection, id string, after, lim
 		return protocol.NewGetHistoryRequest(base, id, &params)
 	}, Policy: readRecovery}, func(data []byte) error {
 		var w protocol.CheckpointPage
-		if err := decodeRequired(data, &w, "items", "older", "newer", "high_water"); err != nil {
+		if err := decodeRequired(data, &w); err != nil {
 			return err
 		}
 		result.Items = []TreeCheckpoint{}

@@ -181,7 +181,7 @@ func decodeAgentEvent(raw json.RawMessage) (*AgentEvent, error) {
 		}
 	case "mail":
 		var d protocol.MailMetadata
-		if err := decodeRequired(envelope.Data, &d, "mail_id", "sender_session_id", "receiver_session_id", "kind", "bytes", "sender_label"); err != nil {
+		if err := decodeRequired(envelope.Data, &d); err != nil {
 			return nil, err
 		}
 		event.MailID = d.MailID
@@ -197,7 +197,7 @@ func decodeAgentEvent(raw json.RawMessage) (*AgentEvent, error) {
 		event.SessionIDs, event.ScopeDirty = d.SessionIDs, d.ScopeDirty
 	case "failure":
 		var d protocol.SafeReason
-		if err := decodeRequired(envelope.Data, &d, "code", "detail"); err != nil {
+		if err := decodeRequired(envelope.Data, &d); err != nil {
 			return nil, err
 		}
 		return nil, streamFailure(StreamTerminal, &APIError{Code: d.Code, Message: d.Detail})
@@ -218,7 +218,7 @@ func GetAgents(ctx context.Context, conn *Connection, id string) (AgentsSnapshot
 		var page protocol.SessionPage
 		err := executeRead(ctx, conn, operation{Name: "read session family", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
 			return protocol.NewListSessionsRequest(base, &params)
-		}, Policy: readRecovery}, func(data []byte) error { return decodeRequired(data, &page, "items", "next", "family") })
+		}, Policy: readRecovery}, func(data []byte) error { return decodeRequired(data, &page, "family") })
 		if err != nil {
 			return result, err
 		}
