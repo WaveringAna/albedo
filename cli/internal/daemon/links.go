@@ -55,7 +55,7 @@ func PrepareLinkMerge(ctx context.Context, conn *Connection, session Session, ot
 		encoded, _ := json.Marshal(map[string]any{"source": "literal", "value": v})
 		return protocol.Binding(encoded)
 	}
-	operation := protocol.ActionOperation{OperationID: "mergeLinkGroups", Method: request.Method, PathTemplate: request.URL.Path, Path: map[string]protocol.Binding{}, Query: map[string]protocol.Binding{"workspace": literal(current.Value.Workspace), "view": literal("configuration")}, Headers: map[string]protocol.Binding{"If-Match": literal(current.ETag)}, Body: map[string]protocol.Binding{"/other_workspace": literal(other.Value.Workspace), "/other_etag": literal(other.ETag)}, ResultSchema: json.RawMessage(`{"type":"object","required":["resource","notifications","notification_count","truncated"]}`)}
+	operation := protocol.ActionOperation{OperationID: "mergeLinkGroups", Method: request.Method, PathTemplate: request.URL.Path, Path: map[string]protocol.Binding{}, Query: map[string]protocol.Binding{"workspace": literal(current.Value.Workspace), "view": literal("configuration")}, Headers: map[string]protocol.Binding{"If-Match": literal(current.ETag)}, Body: map[string]protocol.Binding{"/other_workspace": literal(other.Value.Workspace), "/other_etag": literal(other.ETag)}, ResultSchema: json.RawMessage(`{}`)}
 	doc := &PageDocument{Title: "Link workspace groups", Summary: "The complete groups will share memory and work after you confirm.", Session: &session, Rows: []PageRow{}, Actions: []PageAction{{ID: "merge", Key: "enter", Label: "link these groups", Confirmation: "Link both displayed workspace groups?", Confirm: true, Operation: operation}}}
 	for _, group := range []linkConfiguration{current, other} {
 		detail := strings.Join(group.Value.Members, "\n")

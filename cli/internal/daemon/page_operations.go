@@ -227,8 +227,9 @@ func executeBoundOperation(ctx context.Context, conn *Connection, declared proto
 	if method == http.MethodGet {
 		policy = readRecovery
 	}
+	target := extensionAcknowledgmentTarget(declared.OperationID)
 	var resultSchema *jsonschema.Resolved
-	if method != http.MethodGet && len(declared.ResultSchema) > 0 && string(bytes.TrimSpace(declared.ResultSchema)) != "{}" {
+	if target == nil && method != http.MethodGet && len(declared.ResultSchema) > 0 && string(bytes.TrimSpace(declared.ResultSchema)) != "{}" {
 		var schema jsonschema.Schema
 		if err := json.Unmarshal(declared.ResultSchema, &schema); err != nil {
 			return nil, fmt.Errorf("invalid declared result schema: %w", err)
@@ -247,17 +248,21 @@ func executeBoundOperation(ctx context.Context, conn *Connection, declared proto
 	}
 	var payload []byte
 	err := executeMutation(ctx, conn, op, statuses, func(data []byte, _ int) error {
-		result, err := dynamicValue(data)
-		if err != nil {
-			return err
-		}
 		if resultSchema != nil {
+			result, err := dynamicValue(data)
+			if err != nil {
+				return err
+			}
 			if err := resultSchema.Validate(result); err != nil {
 				return fmt.Errorf("declared result schema: %w", err)
 			}
 		}
-		if err := validateExtensionAcknowledgment(data, template, method); err != nil {
-			return err
+		if target != nil {
+			if err := decodeRequired(data, target); err != nil {
+				return err
+			}
+		} else if !json.Valid(data) {
+			return fieldError("extension operation result")
 		}
 		payload = slices.Clone(data)
 		return nil
@@ -297,27 +302,19 @@ func extensionResult(data []byte) CommandResult {
 
 // Built-in operations have typed contracts independent of their page layout.
 // Additional extensions describe their own result schema in the catalog.
-func validateExtensionAcknowledgment(data []byte, route, method string) error {
-	switch {
-	case strings.HasPrefix(route, "/extensions/links/"):
-		var result protocol.LinkChange
-		return decodeRequired(data, &result)
-	case method == http.MethodDelete && (strings.HasPrefix(route, "/extensions/work/") || strings.HasPrefix(route, "/extensions/paperclips/") || strings.HasPrefix(route, "/extensions/schedule/")):
-		var result protocol.ExtensionDeletion
-		return decodeRequired(data, &result)
-	case strings.HasPrefix(route, "/extensions/work/"):
-		var result protocol.WorkChange
-		return decodeRequired(data, &result)
-	case strings.HasPrefix(route, "/extensions/paperclips/"):
-		var result protocol.PaperclipChange
-		return decodeRequired(data, &result)
-	case strings.HasPrefix(route, "/extensions/schedule/"):
-		var result protocol.ScheduleChange
-		return decodeRequired(data, &result)
+func extensionAcknowledgmentTarget(operationID string) any {
+	switch operationID {
+	case "mergeLinkGroups", "unlinkWorkspace":
+		return new(protocol.LinkChange)
+	case "deleteWork", "deletePaperclips", "deleteSchedule":
+		return new(protocol.ExtensionDeletion)
+	case "createWork", "patchWork":
+		return new(protocol.WorkChange)
+	case "createPaperclips", "patchPaperclips":
+		return new(protocol.PaperclipChange)
+	case "createSchedule", "patchSchedule":
+		return new(protocol.ScheduleChange)
 	default:
-		if !json.Valid(data) {
-			return fieldError("extension operation result")
-		}
 		return nil
 	}
 }
