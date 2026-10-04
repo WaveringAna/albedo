@@ -1,6 +1,5 @@
 -module(albedo_settings_http).
 -export([composition_revision/1, mcp_definitions/1, observe/2, patch/8]).
--import(albedo_settings, [named/1, normalize_profile/2]).
 -import(albedo_settings_store, [with_lock/2, object/2, check/1, commit_group/2]).
 
 %% These are HTTP boundary projections. Persisted names remain owned by the
@@ -85,11 +84,11 @@ documents(Home) -> maps:from_list([{File, albedo_settings_store:read(Home, File)
 
 groups(Docs) ->
     Config0 = maps:get(<<"config.json">>, Docs),
-    Config = named(Config0), Creds = maps:get(<<"creds.json">>, Docs),
+    Config = saved_config(Config0), Creds = maps:get(<<"creds.json">>, Docs),
     Extensions = maps:get(<<"extensions.json">>, Docs),
     Picker = maps:get(<<"picker.json">>, Docs),
     Profiles = maps:map(fun(Name, Profile) ->
-        {ok, Normalized} = normalize_profile(Name, Profile),
+        {ok, Normalized} = 'albedo@daemon@configuration':normalize_profile(Name, Profile),
         #{<<"extension">> => maps:get(<<"extension">>, Normalized),
           <<"endpoint">> => nonempty(maps:get(<<"baseUrl">>, Normalized)),
           <<"protocol">> => maps:get(<<"protocol">>, Normalized),
@@ -137,7 +136,7 @@ nonempty(<<>>) -> null; nonempty(Value) -> Value.
 
 candidate(_, <<"providers">>, Patch, Docs, _, _) ->
     fields(Patch, [<<"profiles">>, <<"default_profile">>]),
-    Config = named(maps:get(<<"config.json">>, Docs)), Creds = maps:get(<<"creds.json">>, Docs),
+    Config = saved_config(maps:get(<<"config.json">>, Docs)), Creds = maps:get(<<"creds.json">>, Docs),
     Changes = object(<<"profiles">>, Patch),
     {SavedProfiles, SavedKeys} = maps:fold(fun(Name, Profile, {Profiles0, Keys0}) ->
         Keys = case maps:find(<<"apiKey">>, Profile) of
@@ -156,7 +155,7 @@ candidate(_, <<"providers">>, Patch, Docs, _, _) ->
                 Public = translate(maps:remove(<<"api_key">>, Change), provider_fields()),
                 Complete = maps:merge(Old, Public),
                 Standard = Complete#{<<"baseUrl">> => case maps:get(<<"baseUrl">>, Complete, <<>>) of null -> <<>>; Endpoint -> Endpoint end, <<"protocol">> => maps:get(<<"protocol">>, Complete, <<"responses">>)},
-                {ok, Validated} = normalize_profile(Name, Standard),
+                {ok, Validated} = 'albedo@daemon@configuration':normalize_profile(Name, Standard),
                 Valid = maps:merge(maps:remove(<<"apiKey">>, Standard), maps:remove(<<"apiKey">>, Validated)),
                 nullable_text(maps:get(<<"effort">>, Valid, null), 100), nullable_text(maps:get(<<"accountId">>, Valid, null), 512),
                 case maps:get(<<"imageEdge">>, Valid, null) of null -> ok; Edge -> counter(Edge, 1, 65536) end,
@@ -166,7 +165,7 @@ candidate(_, <<"providers">>, Patch, Docs, _, _) ->
                         _ -> Keys0
                     end;
                     {ok, null} -> maps:remove(Name, Keys0);
-                    {ok, Key} -> text(Key, 1, 16384), {ok, _} = normalize_profile(Name, Standard#{<<"apiKey">> => Key}), Keys0#{Name => #{<<"apiKey">> => Key}}
+                    {ok, Key} -> text(Key, 1, 16384), {ok, _} = 'albedo@daemon@configuration':normalize_profile(Name, Standard#{<<"apiKey">> => Key}), Keys0#{Name => #{<<"apiKey">> => Key}}
                 end,
                 {Profiles0#{Name => Valid}, NewKeys}
         end
@@ -329,10 +328,10 @@ end) end).
 
 
 validate_provider_accounts(Docs, Providers, Logins) ->
-    Config = named(maps:get(<<"config.json">>, Docs)), Creds = maps:get(<<"creds.json">>, Docs),
+    Config = saved_config(maps:get(<<"config.json">>, Docs)), Creds = maps:get(<<"creds.json">>, Docs),
     Accounts = object(<<"accounts">>, Creds), Keys = object(<<"providers">>, Creds),
     maps:foreach(fun(Name, Profile) ->
-        {ok, Normalized} = normalize_profile(Name, Profile),
+        {ok, Normalized} = 'albedo@daemon@configuration':normalize_profile(Name, Profile),
         Extension = maps:get(<<"extension">>, Normalized),
         ensure(lists:member(Extension, Providers), 400, <<"provider_unknown">>, <<"Provider extension is not installed">>),
         case maps:get(<<"accountId">>, Profile, null) of
@@ -346,3 +345,9 @@ validate_provider_accounts(Docs, Providers, Logins) ->
                 ensure(not maps:is_key(Name, Keys), 400, <<"credential_conflict">>, <<"Clear the API key before selecting an OAuth account">>)
         end
     end, object(<<"providers">>, Config)).
+
+saved_config(Document) ->
+    case 'albedo@daemon@configuration':named_config(Document) of
+        {ok, Value} -> Value;
+        {error, Reason} -> throw({settings, Reason})
+    end.

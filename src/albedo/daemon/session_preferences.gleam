@@ -5,10 +5,12 @@ import albedo/daemon/session_catalog
 import albedo/daemon/session_configuration
 import albedo/daemon/store
 import gleam/dict
+import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
 import gleam/list
 import gleam/option.{Some}
 import gleam/result
+import gleam/string
 import sqlight
 
 pub type PreferencesImport {
@@ -18,6 +20,99 @@ pub type PreferencesImport {
     opens: List(#(String, Int)),
     choices: List(#(String, String, String, Bool)),
   )
+}
+
+/// Decode the previous documents before the native owner calls the SQL import.
+pub fn decode_import(
+  picker: Dynamic,
+  capabilities: Dynamic,
+) -> Result(PreferencesImport, Nil) {
+  let picker_decoder = {
+    use pinned <- decode.optional_field("pinned", [], identifiers())
+    use archived <- decode.optional_field("archived", [], identifiers())
+    use opens <- decode.optional_field(
+      "opens",
+      dict.new(),
+      decode.dict(identifier(), count()),
+    )
+    decode.success(#(pinned, archived, opens))
+  }
+  use #(pinned, archived, opens) <- result.try(
+    decode.run(picker, picker_decoder) |> result.replace_error(Nil),
+  )
+  let scopes = {
+    use skills <- decode.optional_field(
+      "skills",
+      dict.new(),
+      decode.dict(identifier(), decode.bool),
+    )
+    use instructions <- decode.optional_field(
+      "instructions",
+      dict.new(),
+      decode.dict(identifier(), decode.bool),
+    )
+    use mcp <- decode.optional_field(
+      "mcp",
+      dict.new(),
+      decode.dict(identifier(), decode.bool),
+    )
+    decode.success([
+      #("skills", skills),
+      #("instructions", instructions),
+      #("mcp", mcp),
+    ])
+  }
+  let choices_decoder = {
+    use sessions <- decode.optional_field(
+      "sessions",
+      dict.new(),
+      decode.dict(identifier(), scopes),
+    )
+    decode.success(sessions)
+  }
+  use sessions <- result.try(
+    decode.run(capabilities, choices_decoder) |> result.replace_error(Nil),
+  )
+  let choices =
+    sessions
+    |> dict.to_list
+    |> list.flat_map(fn(entry) {
+      let #(session, kinds) = entry
+      list.flat_map(kinds, fn(kind) {
+        kind.1
+        |> dict.to_list
+        |> list.map(fn(choice) { #(session, kind.0, choice.0, choice.1) })
+      })
+    })
+  Ok(PreferencesImport(pinned, archived, dict.to_list(opens), choices))
+}
+
+fn identifier() -> decode.Decoder(String) {
+  use value <- decode.then(decode.string)
+  case string.byte_size(value) > 0 && string.byte_size(value) <= 512 {
+    True -> decode.success(value)
+    False -> decode.failure("", "session preference identifier")
+  }
+}
+
+fn identifiers() -> decode.Decoder(List(String)) {
+  use values <- decode.then(decode.list(identifier()))
+  let unique =
+    list.fold(values, dict.new(), fn(unique, id) {
+      dict.insert(unique, id, Nil)
+    })
+  case list.length(values) == dict.size(unique) {
+    True -> decode.success(values)
+    False -> decode.failure([], "unique session preference identifiers")
+  }
+}
+
+fn count() -> decode.Decoder(Int) {
+  use value <- decode.then(decode.int)
+  case value >= 0 {
+    True -> decode.success(value)
+    False -> decode.failure(0, "nonnegative session opening count")
+  }
 }
 
 pub fn migrate(

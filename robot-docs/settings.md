@@ -48,9 +48,9 @@ Workspace edits are standalone patches with the observed family revision. The na
 
 Global settings remain in `config.json`, `extensions.json`, `capabilities.json`, `picker.json`, and `creds.json`. `settings-revisions.json` stores group publication counters, including secret-only changes. The settings journal publishes affected files atomically under one home lock. Malformed or unreadable documents fail operations. Writes retain unrelated fields and use sealed, synced temporary files.
 
-`daemon/settings.gleam` and `albedo_settings_http.erl` own group observations and publication. Provider validation belongs to `daemon/configuration`; MCP validation belongs to its extension. OAuth refresh, profile settings, and credential writes share the home lock.
+`daemon/settings.gleam` and `albedo_settings_http.erl` own group observations and publication. Provider validation and saved-profile normalization belong to `daemon/configuration`; MCP validation belongs to its extension. OAuth refresh, profile settings, and credential writes share the home lock.
 
-`daemon/session_configuration.gleam` owns SQL preferences, selection, and visit identities. `session_configure.gleam` validates and installs actor configuration. `session_preferences.gleam` imports existing picker and session capability preferences once: SQL commits an import marker before the settings journal removes imported fields. Global capability defaults remain file-owned.
+`daemon/session_configuration.gleam` owns SQL preferences, selection, and visit identities. `session_configure.gleam` validates and installs actor configuration. `session_preferences.gleam` decodes and imports existing picker and session capability preferences once. Its native adapter keeps the home lock across file reads, SQL application, and journal cleanup: SQL commits an import marker before the settings journal removes imported fields. Global capability defaults remain file-owned.
 
 Catalog revision includes inspected content and file identity, workspace, global composition revisions, and resolved choices. Unchanged inputs retain their revision. The settings lock does not make external filesystem edits atomic.
 

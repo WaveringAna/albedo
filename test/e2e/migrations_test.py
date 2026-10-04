@@ -283,3 +283,107 @@ class MigrationsTest(unittest.TestCase):
             self.assertIn("legacy image", serialized)
             self.assertIn(PNG, serialized)
             self.assertIn("legacy cell readable", serialized)
+
+    def test_session_preferences_import_once_without_removing_global_fields(self):
+        provider = Provider(lambda _request: text("done"))
+        self.addCleanup(provider.close)
+        with Albedo(provider) as app:
+            session = app.session()
+            database = app.home / "albedo.sqlite"
+            picker_path = app.home / "picker.json"
+            caps_path = app.home / "capabilities.json"
+            originals = {}
+
+            def prepare(_app):
+                with sqlite3.connect(database) as db:
+                    db.execute("DELETE FROM session_preferences_import")
+                for path in (picker_path, caps_path):
+                    originals[path] = (
+                        json.loads(path.read_text()) if path.exists() else {}
+                    )
+                picker = {
+                    **originals[picker_path],
+                    "pinned": [session],
+                    "archived": [session],
+                    "opens": {session: 7},
+                }
+                caps = {
+                    **originals[caps_path],
+                    "sessions": {session: {"skills": {"missing-legacy-skill": False}}},
+                }
+                picker_path.write_text(json.dumps(picker))
+                caps_path.write_text(json.dumps(caps))
+
+            app.restart(prepare=prepare)
+            with app.api(f"/sessions/{session}") as response:
+                preferences = json.load(response)["preferences"]
+            self.assertTrue(preferences["pinned"])
+            self.assertTrue(preferences["archived"])
+            self.assertEqual(preferences["opens"], 7)
+            self.assertEqual(
+                json.loads(picker_path.read_text()), originals[picker_path]
+            )
+            self.assertEqual(json.loads(caps_path.read_text()), originals[caps_path])
+
+            def imported_state():
+                with sqlite3.connect(database) as db:
+                    self.assertEqual(
+                        db.execute(
+                            "SELECT version FROM session_preferences_import"
+                        ).fetchall(),
+                        [(1,)],
+                    )
+                    return db.execute(
+                        "SELECT kind,preference_key,enabled FROM session_selection WHERE session=?",
+                        (session,),
+                    ).fetchall()
+
+            first = imported_state()
+            self.assertEqual(first, [("skills", "missing-legacy-skill", 0)])
+            app.restart()
+            self.assertEqual(imported_state(), first)
+            with app.api(f"/sessions/{session}") as response:
+                self.assertEqual(json.load(response)["preferences"], preferences)
+
+    def test_failed_preferences_import_keeps_legacy_files_for_retry(self):
+        provider = Provider(lambda _request: text("done"))
+        self.addCleanup(provider.close)
+        with Albedo(provider) as app:
+            session = app.session()
+            database = app.home / "albedo.sqlite"
+            picker_path = app.home / "picker.json"
+            original = picker_path.read_bytes() if picker_path.exists() else b"{}"
+            legacy = json.dumps({"pinned": [session], "opens": {session: 7}}).encode()
+
+            def prepare(_app):
+                with sqlite3.connect(database) as db:
+                    db.execute("DELETE FROM session_preferences_import")
+                    db.execute(
+                        "CREATE TRIGGER reject_preference_import BEFORE UPDATE OF pinned ON sessions BEGIN SELECT RAISE(ABORT, 'import fixture failure'); END"
+                    )
+                picker_path.write_bytes(legacy)
+
+            def restore(_app):
+                with sqlite3.connect(database) as db:
+                    db.execute("DROP TRIGGER IF EXISTS reject_preference_import")
+                picker_path.write_bytes(original)
+
+            try:
+                with self.assertRaises(AssertionError):
+                    app.restart(prepare=prepare)
+                self.assertEqual(picker_path.read_bytes(), legacy)
+                with sqlite3.connect(database) as db:
+                    self.assertEqual(
+                        db.execute(
+                            "SELECT version FROM session_preferences_import"
+                        ).fetchall(),
+                        [],
+                    )
+                    self.assertEqual(
+                        db.execute(
+                            "SELECT pinned,opens FROM sessions WHERE id=?", (session,)
+                        ).fetchone(),
+                        (0, 0),
+                    )
+            finally:
+                app.restart(prepare=restore)

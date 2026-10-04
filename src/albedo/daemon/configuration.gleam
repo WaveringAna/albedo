@@ -248,6 +248,74 @@ pub type SavedProfile {
   )
 }
 
+/// The native publisher keeps raw documents so unrelated fields survive edits.
+pub fn named_config(config: Dynamic) -> Result(Dict(String, Dynamic), String) {
+  use fields <- result.try(
+    decode.run(config, decode.dict(decode.string, decode.dynamic))
+    |> result.replace_error("invalid settings section"),
+  )
+  case dict.get(fields, "providers") {
+    Ok(providers) -> {
+      use _ <- result.try(
+        decode.run(providers, decode.dict(decode.string, decode.dynamic))
+        |> result.replace_error("invalid settings section"),
+      )
+      Ok(fields)
+    }
+    Error(_) ->
+      case dict.size(fields) {
+        0 -> Ok(dict.from_list([#("providers", dynamic.properties([]))]))
+        _ ->
+          Ok(
+            fields
+            |> dict.delete("apiKey")
+            |> dict.insert("active", dynamic.string("default"))
+            |> dict.insert(
+              "providers",
+              dynamic.properties([
+                #(dynamic.string("default"), config),
+              ]),
+            ),
+          )
+      }
+  }
+}
+
+pub fn normalize_profile(
+  name: String,
+  saved: Dynamic,
+) -> Result(Dict(String, Dynamic), String) {
+  use profile <- result.map(validate_profile(name, saved))
+  let fields =
+    dict.from_list([
+      #("extension", dynamic.string(profile.extension)),
+      #("baseUrl", dynamic.string(profile.endpoint)),
+      #("model", dynamic.string(profile.model)),
+      #("protocol", dynamic.string(types.protocol_name(profile.protocol))),
+    ])
+  case profile.api_key {
+    None -> fields
+    Some(key) -> dict.insert(fields, "apiKey", dynamic.string(key))
+  }
+}
+
+pub fn validate_saved_config(
+  config: Dynamic,
+) -> Result(Dict(String, Dynamic), String) {
+  use named <- result.try(named_config(config))
+  let assert Ok(providers) = dict.get(named, "providers")
+  let assert Ok(profiles) =
+    decode.run(providers, decode.dict(decode.string, decode.dynamic))
+  use _ <- result.try(
+    list.try_each(dict.to_list(profiles), fn(entry) {
+      validate_profile(entry.0, entry.1)
+      |> result.map(fn(_) { Nil })
+      |> result.replace_error("invalid config.json provider profile")
+    }),
+  )
+  Ok(named)
+}
+
 fn saved_profile_decoder() -> decode.Decoder(SavedProfile) {
   use extension <- decode.optional_field("extension", "openai", decode.string)
   use endpoint <- decode.optional_field("baseUrl", "", decode.string)
