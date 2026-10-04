@@ -22,6 +22,9 @@ without starting a kernel. Unknown observations are null. The list contains up
 to 100 live jobs ordered by ID, with `id`, nullable `pid`, and `command` (up to
 4096 scalars); the count can exceed the list when remote jobs have no summaries.
 The TUI uses these observations for its idle-job status, animation, and sidebar.
+The Erlang port owner truncates commands through `text_scalars.take`, which
+scans only the retained prefix and copies it. Do not convert the entire command
+to a codepoint list to take a bounded preview; see [runtime](runtime.md#unicode-scalar-limits).
 
 `/jobs` reads `GET /extensions/run/sessions/{id}/jobs`, whose page declares the
 stop action. `POST /extensions/run/sessions/{id}/jobs/{job_id}/stop` supervises

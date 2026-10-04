@@ -926,5 +926,5 @@ job_summaries(Jobs) ->
           P when is_integer(P), P > 0 -> {some, P};
           _ -> none
       end,
-      unicode:characters_to_binary(lists:sublist(unicode:characters_to_list(maps:get(command, Group, <<>>)), 4096))}
+      'albedo@text_scalars':take(maps:get(command, Group, <<>>), 4096)}
      || {Id, Group} <- lists:sublist(lists:sort(maps:to_list(Jobs)), 100)].
