@@ -1,13 +1,13 @@
 -module(albedo_settings_http).
--export([composition_revision/1, mcp_definitions/1, observe/2, patch/8]).
+-export([composition_revision/1, mcp_definitions/1, observe/2, patch/8, json_null/0]).
 -import(albedo_settings_store, [with_lock/2, object/2, check/1, commit_group/2]).
 
 %% These are HTTP boundary projections. Persisted names remain owned by the
 %% harness, including callers from trusted model tools.
 observe(Home, Group) -> with_lock(Home, fun() -> guarded(fun() ->
     Groups = case Group of
-        <<"ui">> -> #{<<"ui">> => ui_group(albedo_settings_store:read(Home, <<"picker.json">>))};
-        _ -> groups(documents(Home))
+        <<"ui">> -> #{<<"ui">> => projection('albedo@daemon@settings_projection':ui_group(albedo_settings_store:read(Home, <<"picker.json">>)))};
+        _ -> projection('albedo@daemon@settings_projection':groups(documents(Home)))
     end,
     Revisions = albedo_settings_store:read(Home, <<"settings-revisions.json">>),
     Value = case Group of
@@ -20,7 +20,7 @@ end) end).
 
 patch(Home, Group, Match, PatchJSON, Providers, Logins, Resolve, Defaults) ->
     Captured = with_lock(Home, fun() -> guarded(fun() ->
-        Docs = documents(Home), Groups = groups(Docs), Prior = group(Group, Groups),
+        Docs = documents(Home), Groups = projection('albedo@daemon@settings_projection':groups(Docs)), Prior = group(Group, Groups),
         Revisions = albedo_settings_store:read(Home, <<"settings-revisions.json">>),
         match_group(Group, Match, Prior, Revisions),
         {ok, Patch} = albedo_http_api:parse(PatchJSON),
@@ -41,7 +41,7 @@ patch(Home, Group, Match, PatchJSON, Providers, Logins, Resolve, Defaults) ->
                 check(albedo_mcp:check_candidate(Name, Definition, Secret))
             end, Checked),
             with_lock(Home, fun() -> guarded(fun() ->
-                Docs = documents(Home), Prior = group(Group, groups(Docs)),
+                Docs = documents(Home), Prior = group(Group, projection('albedo@daemon@settings_projection':groups(Docs))),
                 Revisions = albedo_settings_store:read(Home, <<"settings-revisions.json">>),
                 match_group(Group, Match, Prior, Revisions),
                 {Next, Validation} = candidate(Home, Group, Patch, Docs, Resolve, Defaults),
@@ -67,7 +67,7 @@ checked_candidates(Patch, Docs) ->
         || {Name, Change} <- lists:sort(maps:to_list(object(<<"definitions">>, Patch))), Change =/= null].
 
 publish(Home, Group, Docs, Next, Validation, Revisions) ->
-    Value = group(Group, groups(Next)),
+    Value = group(Group, projection('albedo@daemon@settings_projection':groups(Next))),
     Changed = maps:filter(fun(File, V) -> V =/= maps:get(File, Docs) end, Next),
     NextRevisions = case map_size(Changed) of
         0 -> Revisions;
@@ -81,50 +81,6 @@ publish(Home, Group, Docs, Next, Validation, Revisions) ->
 
 documents(Home) -> maps:from_list([{File, albedo_settings_store:read(Home, File)} || File <-
     [<<"config.json">>, <<"creds.json">>, <<"extensions.json">>, <<"capabilities.json">>, <<"picker.json">>]]).
-
-groups(Docs) ->
-    Config0 = maps:get(<<"config.json">>, Docs),
-    Config = saved_config(Config0), Creds = maps:get(<<"creds.json">>, Docs),
-    Extensions = maps:get(<<"extensions.json">>, Docs),
-    Picker = maps:get(<<"picker.json">>, Docs),
-    Profiles = maps:map(fun(Name, Profile) ->
-        {ok, Normalized} = 'albedo@daemon@configuration':normalize_profile(Name, Profile),
-        #{<<"extension">> => maps:get(<<"extension">>, Normalized),
-          <<"endpoint">> => nonempty(maps:get(<<"baseUrl">>, Normalized)),
-          <<"protocol">> => maps:get(<<"protocol">>, Normalized),
-          <<"model">> => maps:get(<<"model">>, Normalized),
-          <<"effort">> => maps:get(<<"effort">>, Profile, null),
-          <<"image_edge">> => maps:get(<<"imageEdge">>, Profile, null),
-          <<"account_id">> => maps:get(<<"accountId">>, Profile, null),
-          <<"has_key">> => case maps:get(<<"apiKey">>, Profile, <<>>) of
-              <<_, _/binary>> -> true;
-              _ -> case maps:get(Name, object(<<"providers">>, Creds), #{}) of
-                  #{<<"apiKey">> := <<_, _/binary>>} -> true;
-                  _ -> false
-              end
-          end}
-    end, object(<<"providers">>, Config)),
-    maps:merge(composition_groups(Docs),
-      #{<<"providers">> => #{<<"default_profile">> => nonempty(maps:get(<<"active">>, Config, null)), <<"profiles">> => Profiles},
-        <<"models">> => #{<<"raised_caps">> => object(<<"raisedCaps">>, Extensions), <<"cache_ttl_priors">> => cache_priors(Profiles)},
-        <<"ui">> => ui_group(Picker)}).
-
-ui_group(Picker) ->
-    true = is_boolean(maps:get(<<"thinking">>, Picker, false)),
-    true = is_boolean(maps:get(<<"tools">>, Picker, false)),
-    strings(maps:get(<<"dismissed_notices">>, Picker, []), 1000, 512),
-    #{<<"thinking">> => maps:get(<<"thinking">>, Picker, false),
-      <<"tools">> => maps:get(<<"tools">>, Picker, false),
-      <<"dismissed_notices">> => maps:get(<<"dismissed_notices">>, Picker, [])}.
-
-composition_groups(Docs) ->
-    Extensions = maps:get(<<"extensions.json">>, Docs), Caps = maps:get(<<"capabilities.json">>, Docs),
-    Creds = maps:get(<<"creds.json">>, Docs),
-    MCP = object(<<"servers">>, object(<<"mcp">>, Extensions)),
-    #{
-      <<"mcp">> => #{<<"definitions">> => maps:map(fun(Name, Definition) -> mcp_view(Definition, maps:get(Name, object(<<"mcp">>, Creds), #{})) end, MCP)},
-      <<"extensions">> => #{<<"defaults">> => object(<<"enabled">>, Extensions)},
-      <<"capabilities">> => #{<<"preferences">> => flatten(object(<<"global">>, Caps))}}.
 
 group(Name, Groups) -> case maps:find(Name, Groups) of {ok, Value} -> Value; error -> refusal(400, <<"invalid_request">>, <<"unknown settings group">>) end.
 validator(Name, Value, Revisions) -> #{<<"url">> => <<"/settings?group=", Name/binary>>, <<"etag">> => group_etag(Name, Value, Revisions)}.
@@ -230,15 +186,11 @@ candidate(_, <<"mcp">>, Patch, Docs, _, _) ->
 
 provider_fields() -> [{<<"extension">>, <<"extension">>}, {<<"endpoint">>, <<"baseUrl">>}, {<<"protocol">>, <<"protocol">>},
     {<<"model">>, <<"model">>}, {<<"effort">>, <<"effort">>}, {<<"image_edge">>, <<"imageEdge">>}, {<<"account_id">>, <<"accountId">>}].
-mcp_fields() -> [{<<"enabled">>, <<"enabled">>}, {<<"transport">>, <<"type">>}, {<<"command">>, <<"command">>},
-    {<<"arguments">>, <<"args">>}, {<<"cwd">>, <<"cwd">>}, {<<"url">>, <<"url">>}, {<<"bearer_token_env_var">>, <<"bearerTokenEnvVar">>},
-    {<<"enabled_tools">>, <<"enabledTools">>}, {<<"disabled_tools">>, <<"disabledTools">>},
-    {<<"startup_timeout_ms">>, <<"startupTimeoutMs">>}, {<<"call_timeout_ms">>, <<"callTimeoutMs">>}].
 translate(Map, Names) -> maps:from_list([{Stored, maps:get(Wire, Map)} || {Wire, Stored} <- Names, maps:is_key(Wire, Map)]).
 
 mcp_candidate(Patch, Prior, Secrets0) ->
-    fields(Patch, [Wire || {Wire, _} <- mcp_fields()] ++ [<<"environment">>, <<"headers">>, <<"secrets">>]),
-    Public0 = maps:merge(Prior, translate(Patch, mcp_fields())),
+    fields(Patch, [Wire || {Wire, _} <- 'albedo@daemon@settings_projection':mcp_fields()] ++ [<<"environment">>, <<"headers">>, <<"secrets">>]),
+    Public0 = maps:merge(Prior, translate(Patch, 'albedo@daemon@settings_projection':mcp_fields())),
     SecretPatch = object(<<"secrets">>, Patch), fields(SecretPatch, [<<"bearer_token">>, <<"environment">>, <<"headers">>]),
     {Public1, Secrets1} = lists:foldl(fun({Wire, Stored}, {Public, Secrets}) ->
         PublicChanges = maps:get(Wire, Patch, #{}), SecretChanges = maps:get(Wire, SecretPatch, #{}),
@@ -277,23 +229,6 @@ secret_choices(_, null) -> #{};
 secret_choices(Prior, Changes) -> maps:fold(fun(K, null, Acc) -> maps:remove(K, Acc); (K, V, Acc) -> text(V, 0, 16384), Acc#{K => V} end, Prior, Changes).
 boolean_choices(Prior, Changes) -> maps:fold(fun(K, null, Acc) -> maps:remove(K, Acc); (K, V, Acc) when is_boolean(V) -> text(K, 1, 512), Acc#{K => V} end, Prior, Changes).
 
-mcp_view(Definition, Secret) ->
-    Defaults = #{<<"enabled">> => true, <<"transport">> => maps:get(<<"type">>, Definition), <<"command">> => null,
-       <<"arguments">> => [], <<"cwd">> => null, <<"url">> => null, <<"bearer_token_env_var">> => null,
-       <<"enabled_tools">> => null, <<"disabled_tools">> => [], <<"startup_timeout_ms">> => 20000, <<"call_timeout_ms">> => 60000},
-    Public = maps:from_list([{Wire, maps:get(Stored, Definition)} || {Wire, Stored} <- mcp_fields(), maps:is_key(Stored, Definition)]),
-    (maps:merge(Defaults, Public))#{<<"environment">> => source_view(object(<<"env">>, Definition)), <<"headers">> => source_view(object(<<"headers">>, Definition)),
-       <<"secret_presence">> => #{<<"bearer_token">> => maps:is_key(<<"bearerToken">>, Secret),
-          <<"environment">> => lists:sort(maps:keys(object(<<"env">>, Secret))), <<"headers">> => lists:sort(maps:keys(object(<<"headers">>, Secret)))}}.
-source_view(Sources) -> maps:map(fun(_, #{<<"env">> := Name}) -> #{<<"source">> => <<"env">>, <<"value">> => Name}; (_, Text) when is_binary(Text) -> #{<<"source">> => <<"literal">>, <<"value">> => Text} end, Sources).
-flatten(Kinds) -> maps:fold(fun(Kind, Choices, Acc) -> maps:fold(fun(Name, Value, Out) -> Out#{<<Kind/binary, ":", Name/binary>> => Value} end, Acc, Choices) end, #{}, Kinds).
-
-cache_priors(Profiles) ->
-    lists:sublist([json:decode('albedo@daemon@settings':cache_prior_json(Name,
-        maps:get(<<"extension">>, Profile), case maps:get(<<"endpoint">>, Profile) of null -> <<>>; Endpoint -> Endpoint end,
-        maps:get(<<"model">>, Profile)))
-        || {Name, Profile} <- lists:sort(maps:to_list(Profiles))], 200).
-
 fields(Map, Allowed) when is_map(Map) -> true = lists:all(fun(K) -> lists:member(K, Allowed) end, maps:keys(Map));
 fields(_, _) -> erlang:error(invalid_object).
 text(Value, Min, Max) -> true = is_binary(Value) andalso byte_size(Value) >= Min andalso byte_size(Value) =< Max.
@@ -319,7 +254,7 @@ end) end).
 composition_revision(Home) -> with_lock(Home, fun() -> guarded(fun() ->
     Documents = maps:from_list([{File, albedo_settings_store:read(Home, File)} || File <-
         [<<"extensions.json">>, <<"capabilities.json">>, <<"creds.json">>]]),
-    Groups = composition_groups(Documents),
+    Groups = projection('albedo@daemon@settings_projection':composition_groups(Documents)),
     Revisions = albedo_settings_store:read(Home, <<"settings-revisions.json">>),
     Selected = [{Name, group_etag(Name, group(Name, Groups), Revisions)} ||
         Name <- [<<"extensions">>, <<"mcp">>, <<"capabilities">>]],
@@ -345,6 +280,13 @@ validate_provider_accounts(Docs, Providers, Logins) ->
                 ensure(not maps:is_key(Name, Keys), 400, <<"credential_conflict">>, <<"Clear the API key before selecting an OAuth account">>)
         end
     end, object(<<"providers">>, Config)).
+
+%% Gleam returns native JSON maps so validators retain the existing encoding.
+json_null() -> null.
+
+projection({ok, Value}) -> Value;
+projection({error, invalid_section}) -> throw({settings, <<"invalid settings section">>});
+projection({error, invalid_value}) -> erlang:error(invalid_settings_value).
 
 saved_config(Document) ->
     case 'albedo@daemon@configuration':named_config(Document) of

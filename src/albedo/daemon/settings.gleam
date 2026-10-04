@@ -1,11 +1,8 @@
 //// Daemon-owned persisted settings. Wire values are decoded before mutation.
 
-import albedo/harness/cache_ttl
 import albedo/harness/oauth
-import gleam/json
-import gleam/option.{type Option, None, Some}
+import gleam/option.{type Option}
 import gleam/result
-import gleam/uri
 
 pub type Group {
   Providers
@@ -65,34 +62,3 @@ pub fn patch_group(
 pub fn mcp_definitions(
   home: String,
 ) -> Result(List(#(String, Bool)), #(Int, String, String))
-
-/// Public cache priors use the same lookup as model requests.
-pub fn cache_prior_json(
-  provider: String,
-  provider_extension: String,
-  endpoint: String,
-  model: String,
-) -> String {
-  let host =
-    uri.parse(endpoint)
-    |> result.map(fn(uri) { uri.host })
-    |> result.unwrap(None)
-    |> option.unwrap("")
-  let entry = cache_ttl.lookup(provider_extension, host, model)
-  let seconds =
-    option.then(entry, cache_ttl.clock_tier)
-    |> option.map(fn(tier) { tier.seconds })
-  json.object([
-    #("provider", json.string(provider)),
-    #("model", json.string(model)),
-    #("ttl_seconds", json.nullable(seconds, json.int)),
-    #(
-      "source",
-      json.string(case entry {
-        Some(entry) -> entry.source
-        None -> "unknown"
-      }),
-    ),
-  ])
-  |> json.to_string
-}
