@@ -627,8 +627,8 @@ fn serialize_input(input: types.Input) -> String {
   case input {
     types.User(text) -> "¶user: " <> cap(text, message_chars)
     types.Assistant(text) -> "¶ai: " <> cap(text, message_chars)
-    types.UserImage(text, image) ->
-      "¶user: " <> cap(text, message_chars) <> " " <> image_note(image)
+    types.UserImage(text, images) ->
+      "¶user: " <> cap(text, message_chars) <> image_notes(images)
     types.ToolOutput(id, output, images) ->
       "¶out "
       <> cap(id, 80)
@@ -883,8 +883,8 @@ fn archive_inputs(
   case images {
     [] -> []
     [first, ..rest] -> [
-      types.UserImage(archive_prompt(dropped), first),
-      ..list.map(rest, fn(image) { types.UserImage("", image) })
+      types.UserImage(archive_prompt(dropped), [first]),
+      ..list.map(rest, fn(image) { types.UserImage("", [image]) })
     ]
   }
 }

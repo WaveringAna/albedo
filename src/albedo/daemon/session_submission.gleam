@@ -15,9 +15,9 @@ pub fn input(submission: Submission) -> types.Input {
     turn.Note(origin) -> note.wrap(origin, submission.text)
     _ -> submission.text
   }
-  case submission.image {
-    Some(image) -> types.UserImage(text, image)
-    None -> types.User(text)
+  case submission.images {
+    [] -> types.User(text)
+    images -> types.UserImage(text, images)
   }
 }
 
@@ -56,7 +56,7 @@ pub fn display(submission: Submission) -> operations.Display {
     turn.source_name(submission.source),
     submission.client_id,
     submission.operation_id,
-    option.map(submission.image, fn(image) {
+    list.map(submission.images, fn(image) {
       let #(mime_type, width, height, bytes) = types.image_meta(image)
       operations.ImageMetadata(mime_type, width, height, bytes)
     }),

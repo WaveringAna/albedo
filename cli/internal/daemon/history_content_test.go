@@ -58,7 +58,7 @@ func TestPagedContentValidatesOffsetsAndReconstructsUTF8(t *testing.T) {
 				}
 				return
 			}
-			if err != nil || len(page.Events) != 6 || page.Events[0].Type != EventUser || page.Events[0].Text != "inspect this image" || page.Events[0].Image == nil || page.Events[0].Image.Bytes != 3 || page.Events[2].Type != EventMessage || page.Events[2].Text != "雪月" || page.Events[4].Type != EventMessage || page.Events[4].Text != strings.Repeat("complete reply ", 128) {
+			if err != nil || len(page.Events) != 6 || page.Events[0].Type != EventUser || page.Events[0].Text != "inspect this image" || len(page.Events[0].Images) != 1 || page.Events[0].Images[0].Bytes != 3 || page.Events[2].Type != EventMessage || page.Events[2].Text != "雪月" || page.Events[4].Type != EventMessage || page.Events[4].Text != strings.Repeat("complete reply ", 128) {
 				t.Fatalf("history lost full text or image metadata: %+v, %v", page, err)
 			}
 			if imageReads != 0 {

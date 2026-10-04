@@ -103,10 +103,12 @@ class OperationLifecycleTests(InputScenario):
         intent = {
             "kind": "message",
             "text": "recover after storage repair",
-            "image": {
-                "mime_type": "image/png",
-                "data": base64.b64encode(png(2, 2)).decode(),
-            },
+            "images": [
+                {
+                    "mime_type": "image/png",
+                    "data": base64.b64encode(png(2, 2)).decode(),
+                }
+            ],
         }
         with self.database() as database:
             database.execute(
@@ -211,7 +213,7 @@ class OperationLifecycleTests(InputScenario):
                     "kind": "message",
                     "text": "same image",
                     "client_id": f"image-echo-{index}",
-                    "image": attachment,
+                    "images": [attachment],
                 },
             )
             self.committed(session, input_id)

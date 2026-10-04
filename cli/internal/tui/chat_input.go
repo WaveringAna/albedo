@@ -72,11 +72,6 @@ func (m *ChatModel) handleInput(msg tea.Msg) (tea.Cmd, bool) {
 
 		switch msg.String() {
 		case "esc":
-			if m.AttachedImage != nil {
-				m.AttachedImage = nil
-				m.CopyStatus = "image removed"
-				return nil, true
-			}
 			if m.isSending {
 				m.interruptDeferred = true
 				m.Stopping = true
@@ -89,6 +84,14 @@ func (m *ChatModel) handleInput(msg tea.Msg) (tea.Cmd, bool) {
 			}
 		case "ctrl+v":
 			return PasteClipboardImageCmd(m.SessionID, m.Generation), true
+		case "backspace", "ctrl+h", "ctrl+w", "alt+backspace", "ctrl+backspace":
+			if m.deleteMarker(true) {
+				return nil, true
+			}
+		case "delete":
+			if m.deleteMarker(false) {
+				return nil, true
+			}
 		case "ctrl+g":
 			return m.openEditorCmd(), true
 		case "ctrl+l":
@@ -203,16 +206,31 @@ func (m *ChatModel) handleInput(msg tea.Msg) (tea.Cmd, bool) {
 			}
 		}
 		return nil, true
+	case tea.PasteMsg:
+		text := strings.ReplaceAll(msg.Content, "\r\n", "\n")
+		if !collapses(text) {
+			return nil, false
+		}
+		m.TextArea.InsertString(m.Pastes.add(text))
+		m.syncLayout()
+		return nil, true
 	case ClipboardImagePastedMsg:
 		if msg.SessionID != m.SessionID || msg.Generation != m.Generation {
 			return nil, true
 		}
-		if msg.Err == nil && msg.Image != nil {
-			m.AttachedImage = msg.Image
-			m.CopyStatus = ""
-			m.refreshViewportContent()
-		} else if msg.Err != nil {
+		switch {
+		case msg.Err != nil:
 			m.AddError(fmt.Sprintf("Could not paste the image: %v", msg.Err))
+		case msg.Image == nil:
+		case len(m.Images.referenced(m.TextArea.Value())) >= MaxPromptImages:
+			m.AddError(fmt.Sprintf("A prompt can attach at most %d images.", MaxPromptImages))
+		default:
+			m.TextArea.InsertString(m.Images.add(pastedImage{*msg.Image, msg.thumb}))
+			m.CopyStatus = msg.hint
+			m.syncLayout()
+			if msg.transmit != "" {
+				return tea.Raw(msg.transmit), true
+			}
 		}
 		return nil, true
 	case ChatEditorFinishedMsg:
@@ -234,15 +252,35 @@ func (m *ChatModel) handleInput(msg tea.Msg) (tea.Cmd, bool) {
 }
 
 func (m *ChatModel) updateComposer(msg tea.Msg, cmds []tea.Cmd) tea.Cmd {
-	oldMenu, oldH := min(4, len(m.CommandMenu.Matches(m.TextArea.Value()))), m.promptHeight()
+	oldRows := m.inputRows()
 	var taCmd tea.Cmd
 	m.TextArea, taCmd = m.TextArea.Update(msg)
-	if min(4, len(m.CommandMenu.Matches(m.TextArea.Value()))) != oldMenu || m.promptHeight() != oldH {
+	if m.inputRows() != oldRows {
 		m.syncLayout()
 	}
 	cmds = append(cmds, taCmd)
 
 	return tea.Batch(cmds...)
+}
+
+// deleteMarker removes the whole image or paste marker that a deletion at
+// the cursor would cut into, reporting whether there was one.
+func (m *ChatModel) deleteMarker(backward bool) bool {
+	lines := strings.Split(m.TextArea.Value(), "\n")
+	row := m.TextArea.Line()
+	if row >= len(lines) {
+		return false
+	}
+	start, end, ok := markerSpan([]rune(lines[row]), m.TextArea.Column(), backward)
+	if !ok {
+		return false
+	}
+	m.TextArea.SetCursorColumn(end)
+	for range end - start {
+		m.TextArea, _ = m.TextArea.Update(tea.KeyPressMsg{Code: tea.KeyBackspace})
+	}
+	m.syncLayout()
+	return true
 }
 
 // wordBackwardAtStart reports whether the prompt has no word before its cursor.
@@ -300,16 +338,22 @@ func (m *ChatModel) submitInput(input string, cmds *[]tea.Cmd) {
 	m.Stopped = false
 
 	continuation := input == "."
-	image := m.AttachedImage
-	if continuation {
-		image = nil
+	var images []daemon.ImageAttachment
+	var pastes []string
+	if !continuation {
+		var pasted []pastedImage
+		input, pasted = m.Images.resolve(input)
+		for _, image := range pasted {
+			images = append(images, image.ImageAttachment)
+		}
+		input, pastes = m.Pastes.resolve(input)
 	}
-	handle, err := m.client.PrepareTurn(input, image, continuation)
+	handle, err := m.client.PrepareTurn(input, images, pastes, continuation)
 	if err != nil {
 		m.AddError(err.Error())
 		return
 	}
-	cmd := m.sendCmd(handle, input, image, continuation)
+	cmd := m.sendCmd(handle, input, images, pastes, continuation)
 	if continuation {
 		if m.pendingContinuations == nil {
 			m.pendingContinuations = make(map[string]pendingOperation)
@@ -317,8 +361,9 @@ func (m *ChatModel) submitInput(input string, cmds *[]tea.Cmd) {
 		m.pendingContinuations[handle.ID()] = pendingOperation{Handle: handle}
 	}
 	if !continuation {
-		m.AttachedImage = nil
-		m.pendingUsers = append(m.pendingUsers, PendingUserTurn{Text: input, Image: image, At: time.Now().UnixMilli(), Handle: handle, OperationID: handle.ID()})
+		m.Images.restore(nil)
+		m.Pastes.restore(nil)
+		m.pendingUsers = append(m.pendingUsers, PendingUserTurn{Text: input, Images: images, Pastes: pastes, At: time.Now().UnixMilli(), Handle: handle, OperationID: handle.ID()})
 	}
 	m.isSending, m.sentHere, m.Follow = true, true, true
 	m.reseedMood()
@@ -356,7 +401,7 @@ func (m *ChatModel) handleSubmittedCommand(input string, cmds *[]tea.Cmd) {
 		m.pendingUsers = append(m.pendingUsers, PendingUserTurn{Text: trimmed, At: time.Now().UnixMilli(), Handle: handle, OperationID: handle.ID()})
 		m.isSending, m.sentHere, m.Follow = true, true, true
 		m.TurnFailed, m.Stopped = false, false
-		*cmds = append(*cmds, m.sendCmd(handle, trimmed, nil, false), m.startAnimation())
+		*cmds = append(*cmds, m.sendCmd(handle, trimmed, nil, nil, false), m.startAnimation())
 		m.refreshViewportContent()
 		return
 	}

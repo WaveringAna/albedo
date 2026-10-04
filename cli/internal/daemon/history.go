@@ -125,7 +125,7 @@ func historyEntryEvents(entry protocol.HistoryEntry) ([]StreamEvent, error) {
 			}
 		case "image":
 			if part.Image != nil {
-				event.Image = &ImageMetadata{MimeType: ImageMimeType(part.Image.MimeType), Width: int(part.Image.Width), Height: int(part.Image.Height), Bytes: int(part.Image.OriginalBytes)}
+				event.Images = append(event.Images, ImageMetadata{MimeType: ImageMimeType(part.Image.MimeType), Width: int(part.Image.Width), Height: int(part.Image.Height), Bytes: int(part.Image.OriginalBytes)})
 			}
 		case "trace":
 			event.ToolTrace = ParseToolTrace(part.Trace)

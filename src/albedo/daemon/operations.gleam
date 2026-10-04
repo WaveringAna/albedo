@@ -210,7 +210,7 @@ pub type Display {
     source: String,
     client_id: String,
     operation_id: Option(String),
-    image: Option(ImageMetadata),
+    images: List(ImageMetadata),
   )
 }
 

@@ -106,6 +106,18 @@ class StateRetentionTests(unittest.TestCase):
         self.app.__enter__()
         self.addCleanup(self.app.__exit__, None, None, None)
 
+    def test_saved_pastes_older_than_the_retention_are_deleted(self):
+        folder = self.app.home / "pastes" / "some-session"
+        folder.mkdir(parents=True)
+        old, young = folder / "old-1.md", folder / "young-1.md"
+        for path in (old, young):
+            path.write_text("pasted")
+        eleven_days_ago = time.time() - 11 * 86400
+        os.utime(old, (eleven_days_ago, eleven_days_ago))
+        self.app.restart()
+        wait_until(lambda: not old.exists(), 15, "an expired paste was kept")
+        self.assertTrue(young.exists(), "a paste inside its retention was deleted")
+
     def test_a_session_inside_its_retention_keeps_an_old_file(self):
         session = self.app.session()
         self.app.prompt(session, "remember this").close()

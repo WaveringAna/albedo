@@ -14,7 +14,8 @@ import (
 // WorkspaceRetry is a turn refused because the session's folder had gone
 // missing; it goes out again once the session moves.
 type WorkspaceRetry struct {
-	Image    *daemon.ImageAttachment
+	Images   []daemon.ImageAttachment
+	Pastes   []string
 	Missing  string
 	Prompt   string
 	Continue bool

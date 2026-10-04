@@ -579,10 +579,7 @@ fn user(parts: List(Part)) -> Result(List(types.Input), String) {
   )
   case images {
     [] -> [types.User(text(parts))]
-    [first, ..more] -> [
-      types.UserImage(text(parts), first),
-      ..list.map(more, types.UserImage("", _))
-    ]
+    images -> [types.UserImage(text(parts), images)]
   }
 }
 

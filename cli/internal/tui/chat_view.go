@@ -344,9 +344,6 @@ func (m ChatModel) View() string {
 	if !m.Follow {
 		status = fmt.Sprintf("history · %d rows below · pgdn", max(0, m.scrollLimit-m.scrollOffset))
 	}
-	if m.AttachedImage != nil {
-		status = daemon.ImageLabel(m.AttachedImage.ImageMetadata) + " attached · esc remove"
-	}
 	if m.CopyStatus != "" {
 		status = m.CopyStatus
 	}
@@ -355,6 +352,9 @@ func (m ChatModel) View() string {
 		statusStyle = m.Styles.Error
 	}
 	rows = append(rows, statusStyle.Render(status))
+	if len(m.effortOptions) == 0 {
+		rows = append(rows, m.chipStrip(width)...)
+	}
 	rows = append(rows, m.Styles.Decor.Render(strings.Repeat("─", width)))
 	if len(m.effortOptions) > 0 {
 		rows = append(rows, "", m.Styles.Bold.Render(ansi.Truncate("Reasoning effort", width, "")), m.effortSelectorView(), m.Styles.Faint.Render(ansi.Truncate("← → choose  ·  enter apply  ·  esc cancel", width, "")))

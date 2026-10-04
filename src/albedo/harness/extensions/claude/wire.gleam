@@ -287,12 +287,17 @@ fn add(
     types.User(text) -> Ok(push(history, "user", [text_block(text, last)]))
     types.Assistant(text) ->
       Ok(push(history, "assistant", [text_block(text, last)]))
-    types.UserImage(text, image) -> {
+    types.UserImage(text, images) -> {
       // An empty text carries no block: compaction frames follow the archive
       // prompt as bare images in one user message.
+      let count = list.length(images)
+      let images =
+        list.index_map(images, fn(image, index) {
+          image_block(files, image, last && index == count - 1)
+        })
       let blocks = case text {
-        "" -> [image_block(files, image, last)]
-        _ -> [text_block(text, False), image_block(files, image, last)]
+        "" -> images
+        _ -> [text_block(text, False), ..images]
       }
       Ok(push(history, "user", blocks))
     }

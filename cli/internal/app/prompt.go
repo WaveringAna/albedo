@@ -79,7 +79,7 @@ func (s *Service) RunPrompt(ctx context.Context, options PromptOptions) (PromptR
 // awaitReply follows the logical turn containing this submission. The actor
 // publishes membership before any worker events, and completion after them.
 func awaitReply(ctx context.Context, client *daemon.ChatClient, prompt string) (answer string, failure error) {
-	handle, err := client.PrepareTurn(prompt, nil, false)
+	handle, err := client.PrepareTurn(prompt, nil, nil, false)
 	if err != nil {
 		return "", err
 	}

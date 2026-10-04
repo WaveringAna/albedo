@@ -69,8 +69,11 @@ pub fn text(
 pub fn row_text(input: types.Input) -> String {
   case input {
     types.User(text) -> "[user]\n" <> text
-    types.UserImage(text, image) ->
-      "[user with " <> image_description(image) <> "]\n" <> text
+    types.UserImage(text, images) ->
+      "[user with "
+      <> string.join(list.map(images, image_description), ", ")
+      <> "]\n"
+      <> text
     types.Assistant(text) -> "[assistant]\n" <> text
     types.ToolOutput(id, output, images) ->
       "[tool "

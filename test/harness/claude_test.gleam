@@ -671,7 +671,7 @@ pub fn claude_attested_body_streams_through_the_transport_test() -> Nil {
     types.Request(
       "claude-opus-5-5",
       None,
-      [types.UserImage("what is this", image)],
+      [types.UserImage("what is this", [image])],
       [],
       None,
       types.defaults,

@@ -72,7 +72,7 @@ func TestTUIExpiredSubmissionsRemainUnresolvedAcrossNavigation(t *testing.T) {
 		prompt := fmt.Sprintf("unresolved user %d", index)
 		driver.App.Chat.TextArea.SetValue(prompt)
 		if index == 0 {
-			driver.App.Chat.AttachedImage = &daemon.ImageAttachment{Data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC", ImageMetadata: daemon.ImageMetadata{MimeType: daemon.ImagePNG, Width: 1, Height: 1, Bytes: 69}}
+			driver.pasteImage(&daemon.ImageAttachment{Data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC", ImageMetadata: daemon.ImageMetadata{MimeType: daemon.ImagePNG, Width: 1, Height: 1, Bytes: 69}})
 		}
 		var sent tui.ChatTurnSentMsg
 		for _, message := range driver.results(driver.Update(tea.KeyPressMsg{Code: tea.KeyEnter})) {
@@ -143,7 +143,7 @@ func TestTUIExpiredSubmissionsRemainUnresolvedAcrossNavigation(t *testing.T) {
 	for _, event := range history.Events {
 		if event.Type == daemon.EventUser && event.OperationID == handles[0].ID() {
 			matched = true
-			if event.Image == nil || event.Image.Width != 1 || event.Image.Height != 1 {
+			if len(event.Images) != 1 || event.Images[0].Width != 1 || event.Images[0].Height != 1 {
 				t.Fatalf("expired image metadata lost: %+v", event)
 			}
 			driver.Update(tui.ChatStreamEventMsg{SessionID: session.ID, Generation: driver.App.Chat.Generation, Event: event})
@@ -151,7 +151,7 @@ func TestTUIExpiredSubmissionsRemainUnresolvedAcrossNavigation(t *testing.T) {
 	}
 	if !matched {
 		for _, event := range history.Events {
-			t.Logf("durable event %s input=%s image=%v", event.Type, event.OperationID, event.Image != nil)
+			t.Logf("durable event %s input=%s images=%d", event.Type, event.OperationID, len(event.Images))
 		}
 		t.Fatal("durable history did not retain the expired input identity")
 	}
@@ -205,25 +205,32 @@ func TestTUIRejectedSubmissionRestoresPromptAndImage(t *testing.T) {
 	driver := newTUIDriver(t)
 	t.Cleanup(func() { driver.App.Chat.Close() })
 	driver.connected()
-	image := &daemon.ImageAttachment{Data: "invalid", ImageMetadata: daemon.ImageMetadata{MimeType: daemon.ImagePNG, Width: 1, Height: 1, Bytes: 1}}
-	driver.App.Chat.AttachedImage = image
-	driver.App.Chat.TextArea.SetValue("restore this rejected image")
-	var sent tui.ChatTurnSentMsg
-	for _, message := range driver.results(driver.Update(tea.KeyPressMsg{Code: tea.KeyEnter})) {
-		if result, ok := message.(tui.ChatTurnSentMsg); ok {
-			sent = result
+	image := daemon.ImageAttachment{Data: "invalid", ImageMetadata: daemon.ImageMetadata{MimeType: daemon.ImagePNG, Width: 1, Height: 1, Bytes: 1}}
+	driver.App.Chat.TextArea.SetValue("restore this rejected image ")
+	driver.pasteImage(&image)
+	send := func() tui.ChatTurnSentMsg {
+		var sent tui.ChatTurnSentMsg
+		for _, message := range driver.results(driver.Update(tea.KeyPressMsg{Code: tea.KeyEnter})) {
+			if result, ok := message.(tui.ChatTurnSentMsg); ok {
+				sent = result
+			}
+			driver.Update(message)
 		}
-		driver.Update(message)
+		return sent
 	}
+	sent := send()
 	api, ok := errors.AsType[*daemon.APIError](sent.Err)
 	if !ok || api.StatusCode != http.StatusBadRequest || sent.Handle == nil {
 		t.Fatalf("real daemon did not reject image: %+v", sent)
 	}
-	if driver.App.Chat.TextArea.Value() != sent.Prompt || driver.App.Chat.AttachedImage != image {
-		t.Fatal("rejection lost prompt or attachment")
+	if sent.Prompt != "restore this rejected image [Image #1]" || driver.App.Chat.TextArea.Value() != sent.Prompt {
+		t.Fatalf("rejection lost the prompt: %q", driver.App.Chat.TextArea.Value())
+	}
+	// Sending the restored prompt again carries the restored image.
+	if again := send(); len(again.Images) != 1 || again.Images[0] != image {
+		t.Fatalf("rejection lost the attachment: %+v", again.Images)
 	}
 	// A following valid submission demonstrates that the rejected row left no pending intent.
-	driver.App.Chat.AttachedImage = nil
 	driver.App.Chat.TextArea.SetValue("valid after rejection")
 	for _, message := range driver.results(driver.Update(tea.KeyPressMsg{Code: tea.KeyEnter})) {
 		if result, ok := message.(tui.ChatTurnSentMsg); ok && result.Err != nil {

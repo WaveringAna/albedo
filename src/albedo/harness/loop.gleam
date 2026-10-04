@@ -818,9 +818,9 @@ fn summarize(
 fn render_summary_input(input: types.Input) -> String {
   case input {
     types.User(text) -> "[user]\n" <> bounded_summary_text(text)
-    types.UserImage(text, image) ->
+    types.UserImage(text, images) ->
       "[user with "
-      <> describe_image(image)
+      <> string.join(list.map(images, describe_image), ", ")
       <> "; binary omitted]\n"
       <> bounded_summary_text(text)
     types.Assistant(text) -> "[assistant]\n" <> bounded_summary_text(text)

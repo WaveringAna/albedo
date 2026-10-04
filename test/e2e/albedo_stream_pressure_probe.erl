@@ -239,7 +239,7 @@ maintenance_json(Id) ->
     after
         erlang:trace(all, false, [call]),
         erlang:trace_pattern({Module, run, 1}, false, [local]),
-        catch erlang:resume_process(Owner)
+        try erlang:resume_process(Owner) catch _:_ -> ok end
     end.
 
 maintenance_calls(Module, Deadline, Workers) ->

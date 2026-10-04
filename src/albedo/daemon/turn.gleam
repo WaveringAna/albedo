@@ -37,7 +37,7 @@ pub type Submission {
     text: String,
     client_id: String,
     source: Source,
-    image: Option(types.Image),
+    images: List(types.Image),
     submission_id: Option(String),
     operation_id: Option(String),
   )
@@ -178,14 +178,14 @@ pub fn admit(
   }
 }
 
-/// Text or an image within the prompt size limits. An activation whose display
+/// Text or images within the prompt size limits. An activation whose display
 /// differs from its text may send a larger body.
 fn bounded(submission: Submission) -> Bool {
   let maximum = case submission.display == submission.text {
     True -> 1_048_576
     False -> 2_200_000
   }
-  { string.trim(submission.text) != "" || submission.image != None }
+  { string.trim(submission.text) != "" || submission.images != [] }
   && string.byte_size(submission.text) <= maximum
   && string.byte_size(submission.display) <= 1_048_576
 }

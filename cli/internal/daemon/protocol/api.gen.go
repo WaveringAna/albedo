@@ -1314,10 +1314,13 @@ type MailMetadata struct {
 type MessageInputRequest struct {
 	ClientID *string `json:"client_id,omitempty"`
 
-	// Image Strict base64; decoded dimensions and provider constraints are validated before admission.
-	Image *ImageUpload `json:"image,omitempty"`
-	Kind  string       `json:"kind"`
-	Text  string       `json:"text"`
+	// Images Attached in order; the text's numbered image markers say where each was attached.
+	Images []ImageUpload `json:"images,omitempty"`
+	Kind   string        `json:"kind"`
+
+	// Pastes Pasted text the text marks by number; a long one is saved to a file the model reads.
+	Pastes []string `json:"pastes,omitempty"`
+	Text   string   `json:"text"`
 }
 
 // Model defines model for Model.

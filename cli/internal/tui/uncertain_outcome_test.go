@@ -18,27 +18,26 @@ func TestUncertainSubmissionRetainsPendingUntilStreamEcho(t *testing.T) {
 		t.Run(fmt.Sprintf("queued=%v", queued), func(t *testing.T) {
 			m := newTestChatModel(t, &daemon.Session{ID: "s"})
 			m.SetSize(80, 30)
-			image := &daemon.ImageAttachment{}
-			m.AttachedImage = image
+			image := daemon.ImageAttachment{Data: "image"}
 			var commands []tea.Cmd
-			m.submitInput("check this", &commands)
+			m.submitInput("check this "+m.Images.add(pastedImage{ImageAttachment: image}), &commands)
 			handle := m.pendingUsers[0].Handle
 			m.pendingUsers[0].Queued = queued
 			m.TextArea.Reset()
 			m.interruptDeferred = true
 
 			m, cmd := m.Update(ChatTurnSentMsg{
-				SessionID: "s", Generation: m.Generation, Prompt: "check this", Image: image,
+				SessionID: "s", Generation: m.Generation, Prompt: "check this [Image #1]", Images: []daemon.ImageAttachment{image},
 				Handle: handle, OperationID: handle.ID(),
 				Err: fmt.Errorf("send: %w", &daemon.UncertainOutcomeError{Operation: "submit", Cause: io.ErrUnexpectedEOF, Handle: handle}),
 			})
 			if cmd == nil || m.isSending || m.interruptDeferred {
 				t.Fatal("uncertain acknowledgement must settle sending and schedule receipt recovery")
 			}
-			if m.TextArea.Value() != "" || m.AttachedImage != nil {
+			if m.TextArea.Value() != "" || len(m.Images.byNumber) != 0 {
 				t.Fatal("uncertain send restored a duplicate prompt or image")
 			}
-			if len(m.pendingUsers) != 1 || m.pendingUsers[0].Image != image || m.pendingUsers[0].Queued != queued {
+			if len(m.pendingUsers) != 1 || len(m.pendingUsers[0].Images) != 1 || m.pendingUsers[0].Images[0] != image || m.pendingUsers[0].Queued != queued {
 				t.Fatalf("lost pending submission: %+v", m.pendingUsers)
 			}
 			if len(m.Notices) != 1 || m.Notices[0].Message == "" {
@@ -70,10 +69,9 @@ func TestUncertainSubmissionRetainsPendingUntilStreamEcho(t *testing.T) {
 func TestStreamEchoBeforeUncertainAcknowledgementDoesNotRestoreSubmission(t *testing.T) {
 	m := newTestChatModel(t, &daemon.Session{ID: "s"})
 	m.SetSize(80, 30)
-	image := &daemon.ImageAttachment{}
-	m.AttachedImage = image
+	image := daemon.ImageAttachment{Data: "image"}
 	var commands []tea.Cmd
-	m.submitInput("already accepted", &commands)
+	m.submitInput("already accepted "+m.Images.add(pastedImage{ImageAttachment: image}), &commands)
 	handle := m.pendingUsers[0].Handle
 	m.TextArea.Reset()
 	for _, event := range []daemon.StreamEvent{
@@ -84,11 +82,11 @@ func TestStreamEchoBeforeUncertainAcknowledgementDoesNotRestoreSubmission(t *tes
 	}
 
 	m, cmd := m.Update(ChatTurnSentMsg{
-		SessionID: "s", Generation: m.Generation, Prompt: "already accepted", Image: image,
+		SessionID: "s", Generation: m.Generation, Prompt: "already accepted [Image #1]", Images: []daemon.ImageAttachment{image},
 		Handle: handle, OperationID: handle.ID(),
 		Err: &daemon.UncertainOutcomeError{Operation: "submit", Cause: io.EOF, Handle: handle},
 	})
-	if cmd != nil || m.isSending || len(m.pendingUsers) != 0 || m.TextArea.Value() != "" || m.AttachedImage != nil {
+	if cmd != nil || m.isSending || len(m.pendingUsers) != 0 || m.TextArea.Value() != "" || len(m.Images.byNumber) != 0 {
 		t.Fatal("late uncertain acknowledgement restored or resubmitted an echoed message")
 	}
 	users := 0
@@ -203,9 +201,9 @@ func TestScheduledReceiptPollStopsAfterExpiry(t *testing.T) {
 	for _, prompt := range []string{"waiting input", "."} {
 		t.Run(prompt, func(t *testing.T) {
 			m := newTestChatModel(t, &daemon.Session{ID: "s"})
-			image := &daemon.ImageAttachment{}
+			image := daemon.ImageAttachment{Data: "image"}
 			if prompt != "." {
-				m.AttachedImage = image
+				prompt += " " + m.Images.add(pastedImage{ImageAttachment: image})
 			}
 			var commands []tea.Cmd
 			m.submitInput(prompt, &commands)
@@ -229,7 +227,7 @@ func TestScheduledReceiptPollStopsAfterExpiry(t *testing.T) {
 			if command != nil || m.operationRecoverable(handle.ID()) {
 				t.Fatal("already scheduled tick restarted expired receipt recovery")
 			}
-			if prompt != "." && (len(m.pendingUsers) != 1 || m.pendingUsers[0].Handle != handle || m.pendingUsers[0].Image != image) {
+			if prompt != "." && (len(m.pendingUsers) != 1 || m.pendingUsers[0].Handle != handle || len(m.pendingUsers[0].Images) != 1 || m.pendingUsers[0].Images[0] != image) {
 				t.Fatal("expiry lost the original submission or attachment")
 			}
 		})

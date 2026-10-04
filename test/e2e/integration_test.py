@@ -1,5 +1,6 @@
 """Session setup, ingress failures, workspace repair, and image inspection."""
 
+import base64
 import json
 from pathlib import Path
 import sqlite3
@@ -9,6 +10,7 @@ import urllib.parse
 
 from harness import exclusive, operation_id
 
+from image_limits_test import png
 from integration_fixture import IntegrationScenario
 
 
@@ -191,7 +193,9 @@ class IntegrationTest(IntegrationScenario):
                         {
                             "kind": "message",
                             "text": "reject this",
-                            "image": {"mime_type": "image/png", "data": "not base64"},
+                            "images": [
+                                {"mime_type": "image/png", "data": "not base64"}
+                            ],
                         },
                         method="PUT",
                     ).close()
@@ -202,7 +206,7 @@ class IntegrationTest(IntegrationScenario):
                     {
                         "kind": "message",
                         "text": "describe this image",
-                        "image": {"mime_type": "image/png", "data": png},
+                        "images": [{"mime_type": "image/png", "data": png}],
                     },
                     method="PUT",
                 ).close()
@@ -232,6 +236,71 @@ class IntegrationTest(IntegrationScenario):
                     ("image/png", 2, 3, 24),
                 )
                 self.assertNotIn(png, json.dumps(image))
+
+    def test_message_images_follow_their_text_in_attachment_order(self):
+        app = self.app_for("responses")
+        session = app.session()
+        first, second = (
+            base64.b64encode(png(width, height)).decode()
+            for width, height in ((2, 3), (4, 5))
+        )
+        upload = [
+            {"mime_type": "image/png", "data": first},
+            {"mime_type": "image/png", "data": second},
+        ]
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            app.api(
+                f"/sessions/{session}/inputs/{operation_id()}",
+                {"kind": "message", "text": "too many", "images": upload * 6},
+                method="PUT",
+            ).close()
+        self.assertEqual(caught.exception.code, 400)
+        start = len(self.provider.requests)
+        text = "[Image #1] is before, then I wrote this, and [Image #2] is after"
+        app.api(
+            f"/sessions/{session}/inputs/{operation_id()}",
+            {"kind": "message", "text": text, "images": upload},
+            method="PUT",
+        ).close()
+        app.idle(session)
+        request = json.dumps(self.records(start)[0]["request"])
+        positions = [
+            request.index(needle)
+            for needle in (text, "base64," + first, "base64," + second)
+        ]
+        self.assertEqual(positions, sorted(positions))
+        user = next(e for e in self.history(app, session) if e["kind"] == "user")
+        self.assertEqual(self.entry_text(user), text)
+        self.assertEqual(
+            [
+                (part["image"]["width"], part["image"]["height"])
+                for part in user["content"]
+                if part["kind"] == "image"
+            ],
+            [(2, 3), (4, 5)],
+        )
+
+    def test_short_pastes_are_inlined_and_long_ones_saved_for_the_model(self):
+        app = self.app_for("responses")
+        session = app.session()
+        short = "\n".join(f"short line {n}" for n in range(20))
+        long = "\n".join(f"long line {n}" for n in range(150))
+        text = "read [Paste #1, +20 lines] and then [Paste #2, +150 lines] please"
+        start = len(self.provider.requests)
+        input_id = operation_id()
+        app.api(
+            f"/sessions/{session}/inputs/{input_id}",
+            {"kind": "message", "text": text, "pastes": [short, long]},
+            method="PUT",
+        ).close()
+        app.idle(session)
+        saved = app.home / "pastes" / session / f"{input_id}-2.md"
+        self.assertEqual(saved.read_text(), long)
+        request = json.dumps(self.records(start)[0]["request"])
+        sent = f"read {short} and then [Paste #2, 150 lines, saved to {saved}] please"
+        self.assertIn(json.dumps(sent)[1:-1], request)
+        user = next(e for e in self.history(app, session) if e["kind"] == "user")
+        self.assertEqual(self.entry_text(user), text)
 
     def test_busy_messages_join_next_model_request_in_order(self):
         app = self.app_for("responses")

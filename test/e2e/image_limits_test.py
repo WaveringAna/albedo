@@ -84,7 +84,7 @@ class ImageLimitsTest(unittest.TestCase):
                 {
                     "kind": "message",
                     "text": "look",
-                    "image": {"mime_type": "image/png", "data": data},
+                    "images": [{"mime_type": "image/png", "data": data}],
                 },
                 method="PUT",
             ).close()
@@ -132,7 +132,7 @@ class ImageLimitsTest(unittest.TestCase):
                 attach = {
                     "kind": "message",
                     "text": "look",
-                    "image": {"mime_type": "image/png", "data": WIDE_DATA},
+                    "images": [{"mime_type": "image/png", "data": WIDE_DATA}],
                 }
 
                 def switch(name):

@@ -41,7 +41,7 @@ retention() ->
     Parent = self(),
     {Producer, Monitor} = spawn_monitor(fun() ->
         Parent ! {snapshot, capture([{user, <<"VISIBLE_SENTINEL:", (binary:copy(<<"v">>, 256))/binary>>},
-            replay(1, 1048576), {user_image, <<"image">>, inline()},
+            replay(1, 1048576), {user_image, <<"image">>, [inline()]},
             {tool_output, <<"call">>, <<"tool">>, [stored()]}])}
     end),
     Snapshot = receive {snapshot, Value} -> Value end,

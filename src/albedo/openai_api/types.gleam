@@ -187,7 +187,8 @@ pub fn image_size(image: Image) -> Int {
 
 pub type Input {
   User(String)
-  UserImage(String, Image)
+  /// User text and the images attached to it, in attachment order.
+  UserImage(String, List(Image))
   Assistant(String)
   ToolOutput(call_id: String, output: String, images: List(Image))
   Replay(ReplayItem)

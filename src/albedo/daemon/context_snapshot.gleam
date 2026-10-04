@@ -19,7 +19,7 @@ const preview_characters = 180
 
 type InspectionEntry {
   UserText(text: String)
-  UserImageText(text: String, image: ImageMetadata)
+  UserImageText(text: String, images: List(ImageMetadata))
   AssistantText(text: String)
   ToolResult(id: String, output: String, images: List(ImageMetadata))
   ReplayMarker
@@ -351,7 +351,8 @@ pub fn retained_tool_calls(snapshot: Snapshot) -> Option(List(String)) {
 fn inspection_entry(input: types.Input) -> InspectionEntry {
   case input {
     types.User(text) -> UserText(text)
-    types.UserImage(text, image) -> UserImageText(text, image_metadata(image))
+    types.UserImage(text, images) ->
+      UserImageText(text, list.map(images, image_metadata))
     types.Assistant(text) -> AssistantText(text)
     types.ToolOutput(id, output, images) ->
       ToolResult(id, output, list.map(images, image_metadata))
@@ -378,9 +379,10 @@ fn render_entry(entry: InspectionEntry) -> String {
   case entry {
     UserText(text) -> "[user]
 " <> text
-    UserImageText(text, image) -> "[user]
-" <> text <> "
-" <> image_label(image)
+    UserImageText(text, images) -> "[user]
+" <> text <> string.concat(
+        list.map(images, fn(image) { "\n" <> image_label(image) }),
+      )
     AssistantText(text) -> "[assistant]
 " <> text
     ToolResult(id, output, images) -> "[tool output · " <> id <> "]

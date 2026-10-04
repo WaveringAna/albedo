@@ -6383,8 +6383,18 @@ components:
         text:
           type: string
           maxLength: 1048576
-        image:
-          $ref: '#/components/schemas/ImageUpload'
+        images:
+          type: array
+          description: Attached in order; the text's numbered image markers say where each was attached.
+          items:
+            $ref: '#/components/schemas/ImageUpload'
+          maxItems: 10
+        pastes:
+          type: array
+          description: Pasted text the text marks by number; a long one is saved to a file the model reads.
+          items:
+            type: string
+          maxItems: 20
         client_id:
           type: string
           maxLength: 512
@@ -6394,7 +6404,10 @@ components:
       - properties:
           text:
             pattern: \S
-      - required: [image]
+      - required: [images]
+        properties:
+          images:
+            minItems: 1
       examples:
       - kind: message
         text: Fix the parser.
@@ -6446,7 +6459,7 @@ components:
       - $ref: '#/components/schemas/ContinueInputRequest'
       - $ref: '#/components/schemas/SkillInputRequest'
       - $ref: '#/components/schemas/CommandInputRequest'
-      x-max-encoded-bytes: 9200000
+      x-max-encoded-bytes: 72200000
     Turn:
       type: object
       properties:

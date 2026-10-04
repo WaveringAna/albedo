@@ -16,13 +16,17 @@
 %% the input with stored references. Read is fun(Hash) -> {ok, Base64} | {error, nil}.
 %% Payloads that would need JSON escaping stay inline (a request writes a
 %% stored payload verbatim between quotes).
-externalize({user_image, Text, Image}, Read) ->
-    {Stored, Blobs} = store(Image, Read),
+externalize({user_image, Text, Images}, Read) ->
+    {Stored, Blobs} = store_all(Images, Read),
     {{user_image, Text, Stored}, Blobs};
 externalize({tool_output, Id, Text, Images}, Read) ->
-    Pairs = [store(Image, Read) || Image <- Images],
-    {{tool_output, Id, Text, [S || {S, _} <- Pairs]}, lists:append([B || {_, B} <- Pairs])};
+    {Stored, Blobs} = store_all(Images, Read),
+    {{tool_output, Id, Text, Stored}, Blobs};
 externalize(Input, _) -> {Input, []}.
+
+store_all(Images, Read) ->
+    Pairs = [store(Image, Read) || Image <- Images],
+    {[S || {S, _} <- Pairs], lists:append([B || {_, B} <- Pairs])}.
 
 store({image, Mime, {inline_data, Data}, W, H, Bytes} = Image, Read) ->
     case byte_size(Data) =:= 4 * ((Bytes + 2) div 3) andalso clean(Data) of
@@ -39,8 +43,8 @@ hash(Data) -> binary:encode_hex(crypto:hash(sha256, Data), lowercase).
 
 %% A decoded row's images with their readers attached; packed refs that fail
 %% the shape check make the row invalid.
-attach({user_image, Text, Image}, Read) ->
-    case load(Image, Read) of
+attach({user_image, Text, Images}, Read) ->
+    case results([load(Image, Read) || Image <- Images]) of
         {ok, Loaded} -> {ok, {user_image, Text, Loaded}};
         error -> error
     end;
@@ -68,7 +72,7 @@ load(_, _) -> error.
 
 %% The row form of an input: readers dropped, inline payloads in the legacy
 %% bare-binary shape so rows that were never externalized read as before.
-pack({user_image, Text, Image}) -> {user_image, Text, pack_image(Image)};
+pack({user_image, Text, Images}) -> {user_image, Text, [pack_image(I) || I <- Images]};
 pack({tool_output, Id, Text, Images}) -> {tool_output, Id, Text, [pack_image(I) || I <- Images]};
 pack(Input) -> Input.
 
@@ -106,7 +110,11 @@ inline_payload({image, Mime, {stored_data, _, _, Read}, W, H, Bytes}) ->
 
 %% Rebuilds a term with every image payload mapped through Replace; everything
 %% else keeps its structure. An image tuple whose payload is neither inline
-%% nor stored is walked like any other tuple.
+%% nor stored is walked like any other tuple. A user message with one image
+%% takes the shape rows had before messages held several, so fingerprints
+%% saved then still match.
+transform({user_image, Text, [Image]}, Replace) when is_binary(Text) ->
+    {user_image, Text, transform(Image, Replace)};
 transform({image, Mime, {inline_data, _}, _, _, _} = Image, Replace) when is_binary(Mime) -> Replace(Image);
 transform({image, Mime, {stored_data, _, _, _}, _, _, _} = Image, Replace) when is_binary(Mime) -> Replace(Image);
 transform(T, Replace) when is_tuple(T) -> list_to_tuple(transform(tuple_to_list(T), Replace));
@@ -137,12 +145,14 @@ referenced(Payloads, Candidates) ->
 hashes(Payload) ->
     try binary_to_term(Payload, [safe]) of
         {1, {user_image, _, {image, _, {stored_data, Hash, _}, _, _, _}}} -> [Hash];
-        {1, {tool_output, _, _, Images}} when is_list(Images) ->
-            [Hash || {image, _, {stored_data, Hash, _}, _, _, _} <- Images];
+        {1, {user_image, _, Images}} when is_list(Images) -> stored_hashes(Images);
+        {1, {tool_output, _, _, Images}} when is_list(Images) -> stored_hashes(Images);
         {1, {image_fit, _, _, {image, _, {stored_data, Hash, _}, _, _, _}}} -> [Hash];
         _ -> []
     catch _:_ -> []
     end.
+
+stored_hashes(Images) -> [Hash || {image, _, {stored_data, Hash, _}, _, _, _} <- Images].
 
 %% One legacy row, rewritten: {rewrite, Payload, Blobs} when it held inline images
 %% that moved to the image table, keep otherwise (including rows that do not

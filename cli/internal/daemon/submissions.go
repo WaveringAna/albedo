@@ -22,7 +22,8 @@ type SubmissionRequest struct {
 	CatalogRevision  string
 	CommandArguments json.RawMessage
 	Content          *string
-	Image            *ImageAttachment
+	Images           []ImageAttachment
+	Pastes           []string
 	Type             string
 	ClientID         string
 	SubmissionID     string
@@ -79,8 +80,8 @@ func interruptCaptured(ctx context.Context, conn *Connection, id string, runID *
 	return result.State == "requested", err
 }
 
-func (c *ChatClient) PrepareTurn(content string, image *ImageAttachment, continuation bool) (*OperationHandle, error) {
-	payload := SubmissionRequest{ClientID: c.clientID, Content: &content, Type: "user", Image: image}
+func (c *ChatClient) PrepareTurn(content string, images []ImageAttachment, pastes []string, continuation bool) (*OperationHandle, error) {
+	payload := SubmissionRequest{ClientID: c.clientID, Content: &content, Type: "user", Images: images, Pastes: pastes}
 	if continuation {
 		payload.Type, payload.Content = "continue", nil
 	}
@@ -99,8 +100,8 @@ func (c *ChatClient) ResolveOperation(ctx context.Context, handle *OperationHand
 	return ResolveOperation(ctx, c.conn, handle)
 }
 
-func (c *ChatClient) Send(ctx context.Context, content string, image *ImageAttachment) (*SendResult, error) {
-	handle, err := c.PrepareTurn(content, image, false)
+func (c *ChatClient) Send(ctx context.Context, content string, images []ImageAttachment) (*SendResult, error) {
+	handle, err := c.PrepareTurn(content, images, nil, false)
 	if err != nil {
 		return nil, err
 	}

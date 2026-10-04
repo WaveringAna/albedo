@@ -172,6 +172,12 @@ func (d *tuiDriver) connected() {
 	}
 }
 
+// pasteImage delivers image as a clipboard paste at the composer's cursor.
+func (d *tuiDriver) pasteImage(image *daemon.ImageAttachment) {
+	chat := d.App.Chat
+	d.Update(tui.ClipboardImagePastedMsg{SessionID: chat.SessionID, Generation: chat.Generation, Image: image})
+}
+
 // View returns the rendered terminal contents without styling.
 func (d *tuiDriver) View() string {
 	d.t.Helper()

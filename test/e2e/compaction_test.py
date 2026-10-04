@@ -159,10 +159,12 @@ class ImageToolOutputTest(unittest.TestCase):
                     {
                         "kind": "message",
                         "text": "keep this upload",
-                        "image": {
-                            "mime_type": "image/png",
-                            "data": uploaded_image,
-                        },
+                        "images": [
+                            {
+                                "mime_type": "image/png",
+                                "data": uploaded_image,
+                            }
+                        ],
                     },
                     method="PUT",
                 ).close()

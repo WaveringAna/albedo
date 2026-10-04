@@ -257,10 +257,12 @@ class OperationsTests(InputScenario):
         intent = {
             "kind": "message",
             "text": "inspect image",
-            "image": {
-                "mime_type": "image/png",
-                "data": base64.b64encode(png(2, 2)).decode(),
-            },
+            "images": [
+                {
+                    "mime_type": "image/png",
+                    "data": base64.b64encode(png(2, 2)).decode(),
+                }
+            ],
         }
         self.duplicates(session, input_id, intent)
         self.committed(session, input_id)
@@ -270,10 +272,12 @@ class OperationsTests(InputScenario):
             input_id,
             {
                 **intent,
-                "image": {
-                    **intent["image"],
-                    "data": base64.b64encode(png(3, 2)).decode(),
-                },
+                "images": [
+                    {
+                        **intent["images"][0],
+                        "data": base64.b64encode(png(3, 2)).decode(),
+                    }
+                ],
             },
         )
         users = self.users(session)
@@ -389,10 +393,12 @@ class WaitingOperationsTests(InputScenario):
                 {
                     "kind": "message",
                     "text": "second image",
-                    "image": {
-                        "mime_type": "image/png",
-                        "data": base64.b64encode(png(2, 2)).decode(),
-                    },
+                    "images": [
+                        {
+                            "mime_type": "image/png",
+                            "data": base64.b64encode(png(2, 2)).decode(),
+                        }
+                    ],
                 },
             ),
             (operation_id(), self.skill_intent(session, "saved arguments")),

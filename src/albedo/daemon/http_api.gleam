@@ -67,7 +67,14 @@ pub fn host(observation: ssh.Observation) -> json.Json {
 
 pub const ordinary_body_limit = 65_536
 
-pub const input_body_limit = 9_200_000
+/// Room for a message's text and its largest images, base64 encoded.
+pub const input_body_limit = 72_200_000
+
+/// The most images one message may attach.
+pub const max_message_images = 10
+
+/// The most pasted texts one message may carry.
+pub const max_message_pastes = 20
 
 pub const response_limit = 1_048_576
 
@@ -106,7 +113,8 @@ pub type ImageUpload {
 pub type Input {
   MessageInput(
     text: String,
-    image: Option(ImageUpload),
+    images: List(ImageUpload),
+    pastes: List(String),
     client_id: Option(String),
   )
   ContinueInput(client_id: Option(String))
@@ -637,19 +645,19 @@ pub fn input(req: request.Request(BitArray)) -> Result(Input, Failure) {
   use kind <- result.try(body(
     req,
     [
-      "kind", "text", "image", "client_id", "candidate_id", "catalog_revision",
-      "arguments", "command_id",
+      "kind", "text", "images", "pastes", "client_id", "candidate_id",
+      "catalog_revision", "arguments", "command_id",
     ],
     decode.field("kind", decode.string, decode.success),
   ))
   case kind {
     "message" ->
-      body(req, ["kind", "text", "image", "client_id"], {
+      body(req, ["kind", "text", "images", "pastes", "client_id"], {
         use text <- decode.field("text", decode.string)
-        use image <- decode.optional_field(
-          "image",
-          None,
-          decode.map(
+        use images <- decode.optional_field(
+          "images",
+          [],
+          decode.list(
             object(["mime_type", "data"], {
               use mime_type <- decode.field(
                 "mime_type",
@@ -658,11 +666,29 @@ pub fn input(req: request.Request(BitArray)) -> Result(Input, Failure) {
               use data <- decode.field("data", decode.string)
               decode.success(ImageUpload(mime_type, data))
             }),
-            option.Some,
           ),
         )
+        use pastes <- decode.optional_field(
+          "pastes",
+          [],
+          decode.list(decode.string),
+        )
         use client_id <- nullable_string("client_id")
-        decode.success(MessageInput(text, image, client_id))
+        decode.success(MessageInput(text, images, pastes, client_id))
+      })
+      |> result.try(fn(input) {
+        case input {
+          MessageInput(images:, pastes:, ..) ->
+            case
+              list.length(images) > max_message_images,
+              list.length(pastes) > max_message_pastes
+            {
+              True, _ -> Error(at_most(max_message_images, "images"))
+              _, True -> Error(at_most(max_message_pastes, "pastes"))
+              False, False -> Ok(input)
+            }
+          _ -> Ok(input)
+        }
       })
     "continue" ->
       body(req, ["kind", "client_id"], {
@@ -698,6 +724,10 @@ pub fn input(req: request.Request(BitArray)) -> Result(Input, Failure) {
   }
 }
 
+fn at_most(limit: Int, what: String) -> Failure {
+  invalid("a message carries at most " <> int.to_string(limit) <> " " <> what)
+}
+
 pub fn interrupt(req: request.Request(BitArray)) -> Result(Interrupt, Failure) {
   body(req, ["run_id", "through_input_order"], {
     use run_id <- decode.field(
@@ -720,12 +750,13 @@ pub fn interrupt(req: request.Request(BitArray)) -> Result(Interrupt, Failure) {
 
 pub fn input_intent(input: Input) -> json.Json {
   json.object(case input {
-    MessageInput(text, image, _) -> [
+    MessageInput(text, images, pastes, _) -> [
       #("kind", json.string("message")),
       #("text", json.string(text)),
+      #("pastes", json.array(pastes, json.string)),
       #(
-        "image",
-        json.nullable(image, fn(image) {
+        "images",
+        json.array(images, fn(image) {
           json.object([
             #("mime_type", json.string(image.mime_type)),
             #("data", json.string(image.data)),

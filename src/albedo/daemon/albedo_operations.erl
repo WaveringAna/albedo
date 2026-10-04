@@ -15,15 +15,20 @@ validate_id(Id, Now) ->
     end.
 
 %% Record tags must exist before safe ETF decoding in a restarted VM.
+%% Displays saved before messages held several images carry an option.
 decode_display(Payload) ->
     case binary_to_term(Payload, [safe]) of
-        {display, Text, Source, ClientId, OperationId, Image} = Display
+        {display, Text, Source, ClientId, OperationId, Images}
           when is_binary(Text), is_binary(Source), is_binary(ClientId) ->
             case OperationId of none -> ok; {some, Id} when is_binary(Id) -> ok end,
-            case Image of
-                none -> Display;
-                {some, {image_metadata, Mime, Width, Height, Bytes}}
-                  when is_binary(Mime), is_integer(Width), is_integer(Height),
-                       is_integer(Bytes) -> Display
-            end
+            Listed = case Images of
+                none -> [];
+                {some, Image} -> [Image];
+                _ when is_list(Images) -> Images
+            end,
+            [ok = image_metadata(Image) || Image <- Listed],
+            {display, Text, Source, ClientId, OperationId, Listed}
     end.
+
+image_metadata({image_metadata, Mime, Width, Height, Bytes})
+  when is_binary(Mime), is_integer(Width), is_integer(Height), is_integer(Bytes) -> ok.

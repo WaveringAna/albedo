@@ -2,6 +2,7 @@
 
 import albedo/actor_call
 import albedo/daemon/conversation
+import albedo/daemon/pastes
 import albedo/daemon/reaper
 import albedo/daemon/session
 import albedo/daemon/state_expiry
@@ -34,8 +35,20 @@ pub fn run(sweep: Sweep) -> Nil {
     })
   release_idle(reports, sweep)
   case sweep.expire_states {
-    True -> expire(reports, sweep)
+    True -> {
+      expire(reports, sweep)
+      prune_pastes(sweep)
+    }
     False -> Nil
+  }
+}
+
+/// Saved pastes expire on the same schedule as kernel state.
+fn prune_pastes(sweep: Sweep) -> Nil {
+  case pastes.prune(sweep.home, sweep.state_expiry_seconds) {
+    0 -> Nil
+    count ->
+      io.println("paste expiry: deleted " <> int.to_string(count) <> " files")
   }
 }
 

@@ -91,7 +91,7 @@ collect(Ref, Monitors, Count, Left, Acc) ->
             end
     end.
 
-input_images({user_image, _, Image}) -> [Image];
+input_images({user_image, _, Images}) -> Images;
 input_images({tool_output, _, _, Images}) -> Images;
 input_images(_) -> [].
 

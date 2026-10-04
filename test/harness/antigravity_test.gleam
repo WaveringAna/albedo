@@ -494,8 +494,8 @@ pub fn frame_archive_images_carry_no_empty_text_part_test() -> Nil {
   let assert Ok(second) = types.image("image/png", "aGk=", 2, 3, 2)
   let request =
     openai_api.request(claude, [
-      types.UserImage("the archive prompt", first),
-      types.UserImage("", second),
+      types.UserImage("the archive prompt", [first]),
+      types.UserImage("", [second]),
     ])
   let assert [user] =
     at(

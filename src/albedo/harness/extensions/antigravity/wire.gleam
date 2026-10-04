@@ -151,13 +151,14 @@ pub fn encode(
 fn add(history: History, input: Input, model: Model) -> Result(History, Error) {
   case input {
     User(text) -> Ok(push(history, "user", [text_part(text)]))
-    UserImage(text, image) -> {
+    UserImage(text, images) -> {
       // An empty text carries no part: compaction frames follow the archive
       // prompt as bare images in one user content, and Claude routes reject
       // the empty text part Cloud Code Assist translates for them.
+      let images = list.map(images, inline)
       let parts = case text {
-        "" -> [inline(image)]
-        _ -> [text_part(text), inline(image)]
+        "" -> images
+        _ -> [text_part(text), ..images]
       }
       Ok(push(history, "user", parts))
     }

@@ -237,7 +237,7 @@ fn tool_text(text: String, images: List(types.Image)) -> String {
 fn encode_input(protocol: Protocol, input: Input) -> Result(Json, Error) {
   case input {
     User(text) -> Ok(message("user", text))
-    UserImage(text, image) -> Ok(image_message(protocol, text, image))
+    UserImage(text, images) -> Ok(image_message(protocol, text, images))
     Assistant(text) -> Ok(message("assistant", text))
     ToolOutput(id, text, images) ->
       Ok(case protocol {
@@ -270,13 +270,17 @@ fn message(role: String, content: String) -> Json {
   json.object([#("role", json.string(role)), #("content", json.string(content))])
 }
 
-fn image_message(protocol: Protocol, text: String, image: types.Image) -> Json {
+fn image_message(
+  protocol: Protocol,
+  text: String,
+  images: List(types.Image),
+) -> Json {
   // An empty text part is rejected by some endpoints, and frame archives
   // attach images with no text by design.
-  let img = image_part(protocol, image)
+  let images = list.map(images, image_part(protocol, _))
   let parts = case text {
-    "" -> [img]
-    _ -> [text_part(protocol, text), img]
+    "" -> images
+    _ -> [text_part(protocol, text), ..images]
   }
   json.object([
     #("role", json.string("user")),

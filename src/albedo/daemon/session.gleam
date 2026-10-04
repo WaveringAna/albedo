@@ -57,7 +57,7 @@ const restart_note = Submission(
   restart_text,
   "daemon",
   turn.Note("daemon restart"),
-  None,
+  [],
   None,
   None,
 )
@@ -365,7 +365,7 @@ pub fn start(
           text,
           origin,
           turn.JobWake,
-          None,
+          [],
           Some(mail.new_id()),
           None,
         ),
@@ -410,7 +410,7 @@ pub fn submit_mail(
       mail.text(letter),
       letter.id,
       turn.Mail(letter.id, letter.kind),
-      None,
+      [],
       None,
       None,
     ),
@@ -421,11 +421,11 @@ pub fn submit(
   session: Session,
   text: String,
   client_id: String,
-  image: Option(types.Image),
+  images: List(types.Image),
 ) -> Result(Bool, SubmissionError) {
   call_submit(
     session,
-    Submission(text, text, client_id, turn.Chat, image, None, None),
+    Submission(text, text, client_id, turn.Chat, images, None, None),
   )
 }
 
@@ -1799,13 +1799,13 @@ fn command_op(
     command.Submit(display, text, client) ->
       submitted(
         session,
-        Submission(display, text, client, turn.Chat, None, None, None),
+        Submission(display, text, client, turn.Chat, [], None, None),
         "submitted",
       )
     command.Note(origin, display, text) ->
       submitted(
         session,
-        Submission(display, text, "", turn.Note(origin), None, None, None),
+        Submission(display, text, "", turn.Note(origin), [], None, None),
         "queued",
       )
     command.KernelReport ->
@@ -2261,22 +2261,25 @@ fn admit(
   }
 }
 
-/// Why the session's provider would refuse the submission's image, so it is
-/// turned away before the transcript keeps it rather than failing every
-/// request after.
+/// Why the session's provider would refuse one of the submission's images,
+/// so it is turned away before the transcript keeps it rather than failing
+/// every request after.
 fn refused_image(
   state: State,
   submission: Submission,
 ) -> #(State, Option(String)) {
-  case submission.image {
-    None -> #(state, None)
-    Some(image) ->
+  case submission.images {
+    [] -> #(state, None)
+    images ->
       case session_provider.configured_client(state) {
         // Without a provider the turn is refused on its own when it starts.
         Error(_) -> #(state, None)
         Ok(#(state, client)) -> #(
           state,
-          types.image_refusal(client.images, image),
+          list.find_map(images, fn(image) {
+            types.image_refusal(client.images, image) |> option.to_result(Nil)
+          })
+            |> option.from_result,
         )
       }
   }
@@ -3084,7 +3087,7 @@ pub fn continuation(client: String, operation_id: String) -> Submission {
     continue_prompt,
     client,
     turn.Continue,
-    None,
+    [],
     None,
     Some(operation_id),
   )

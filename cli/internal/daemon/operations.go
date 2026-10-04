@@ -60,11 +60,11 @@ func NewSubmission(session string, fields SubmissionRequest) (*OperationHandle, 
 		if fields.Content == nil {
 			return nil, errors.New("message input requires text")
 		}
-		var uploaded *protocol.ImageUpload
-		if fields.Image != nil {
-			uploaded = &protocol.ImageUpload{MimeType: string(fields.Image.MimeType), Data: fields.Image.Data}
+		uploaded := make([]protocol.ImageUpload, len(fields.Images))
+		for i, image := range fields.Images {
+			uploaded[i] = protocol.ImageUpload{MimeType: string(image.MimeType), Data: image.Data}
 		}
-		body = protocol.MessageInputRequest{Kind: kind, Text: *fields.Content, Image: uploaded, ClientID: optionalText(fields.ClientID)}
+		body = protocol.MessageInputRequest{Kind: kind, Text: *fields.Content, Images: uploaded, Pastes: fields.Pastes, ClientID: optionalText(fields.ClientID)}
 	case "continue":
 		body = protocol.ContinueInputRequest{Kind: kind, ClientID: optionalText(fields.ClientID)}
 	case "skill":

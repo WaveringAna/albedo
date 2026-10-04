@@ -371,7 +371,7 @@ class DaemonTest(unittest.TestCase):
             before = app.history(session)
             path = f"/sessions/{session}/inputs/{operation_id()}"
             for authorization in ({}, {"Authorization": "Bearer wrong"}):
-                for length in ("2", "9200001", "invalid"):
+                for length in ("2", "72200001", "invalid"):
                     with self.subTest(authorization=authorization, length=length):
                         status, headers, body = refused_request(
                             app, path, {**authorization, "Content-Length": length}
@@ -380,7 +380,7 @@ class DaemonTest(unittest.TestCase):
                         self.assertEqual(json.loads(body)["status"], 401)
                         self.assertEqual(headers["www-authenticate"].lower(), "bearer")
             for framing in (
-                {"Content-Length": "9200001"},
+                {"Content-Length": "72200001"},
                 {"Content-Length": "invalid"},
                 {"Transfer-Encoding": "chunked"},
             ):
@@ -405,7 +405,7 @@ class DaemonTest(unittest.TestCase):
                 ({"Content-Length": "-1"}, 400),
                 ({"Content-Length": "+1"}, 400),
                 ({"Content-Length": "1x"}, 400),
-                ({"Content-Length": "9200001"}, 413),
+                ({"Content-Length": "72200001"}, 413),
             ):
                 with self.subTest(framing=framing):
                     status, _, body = refused_request(

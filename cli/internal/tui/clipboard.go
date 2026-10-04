@@ -232,6 +232,11 @@ type ClipboardImagePastedMsg struct {
 	Image      *daemon.ImageAttachment
 	SessionID  string
 	Generation int64
+	// thumb is set once transmit has handed the image to the terminal.
+	thumb    *thumbnail
+	transmit string
+	// hint says why the terminal shows no thumbnail when a setting would fix it.
+	hint string
 }
 
 func PasteClipboardImageCmd(sessionID string, gen int64) tea.Cmd {
@@ -240,6 +245,14 @@ func PasteClipboardImageCmd(sessionID string, gen int64) tea.Cmd {
 			return ClipboardImagePastedMsg{SessionID: sessionID, Generation: gen}
 		}
 		img, err := ReadClipboardImage()
-		return ClipboardImagePastedMsg{SessionID: sessionID, Generation: gen, Image: img, Err: err}
+		msg := ClipboardImagePastedMsg{SessionID: sessionID, Generation: gen, Image: img, Err: err}
+		if img != nil {
+			g := terminalGraphics()
+			if thumb, transmit, ok := transmitThumbnail(g, *img); ok {
+				msg.thumb, msg.transmit = &thumb, transmit
+			}
+			msg.hint = g.hint
+		}
+		return msg
 	}
 }

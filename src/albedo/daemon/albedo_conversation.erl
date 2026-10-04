@@ -10,7 +10,9 @@ row_atoms() -> [stored_data].
 unpack(Bytes,Read) ->
   try binary_to_term(Bytes,[safe]) of
     {1,{Tag,Text}=Input} when (Tag=:=user orelse Tag=:=assistant), is_binary(Text) -> {ok,Input};
-    {1,{user_image,Text,_}=Input} when is_binary(Text) -> attached(Input,Read);
+    %% Rows from before multiple images hold one image, not a list.
+    {1,{user_image,Text,Images}=Input} when is_binary(Text),is_list(Images) -> attached(Input,Read);
+    {1,{user_image,Text,Image}} when is_binary(Text) -> attached({user_image,Text,[Image]},Read);
     %% Tool outputs saved before tool images carry no image list.
     {1,{tool_output,Id,Text}} when is_binary(Id),is_binary(Text) -> {ok,{tool_output,Id,Text,[]}};
     {1,{tool_output,Id,Text,Images}=Input} when is_binary(Id),is_binary(Text),is_list(Images) -> attached(Input,Read);

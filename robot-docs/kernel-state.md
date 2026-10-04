@@ -21,6 +21,8 @@ State files without `definitions` continue to load.
 
 A session's state file is deleted when the session has been idle longer than `ALBEDO_STATE_EXPIRY_SECONDS` (default 1209600, 14 days; range 1 to 31536000). Idle time is the session's last assistant reply, read fresh from the store at each sweep, not from the registry's cached copy. A session with no assistant reply yet is never expired. A session that later returns finds no saved state and gets the ordinary "kernel was reset" notice.
 
+The same sweep deletes saved pastes (`$ALBEDO_HOME/pastes/<session>/<input>-<n>.md`, see `daemon/pastes.gleam`) whose file is older than the retention, whatever their session's activity.
+
 The sweep runs once shortly after startup and then every `min(1 day, retention)` seconds, in its own process, never in a request or in the registry. A filesystem or store error ends that sweep quietly. It logs one line, `python state expiry: reclaimed N files (B bytes)`, when it deleted something.
 
 Never deleted: the state of a session that holds a live kernel or is running a turn (a failed or timed-out status check counts as protected), and the state of any session the store knows about that is still inside its retention.

@@ -167,7 +167,7 @@ func TestPromptTimeoutWhileQueuedDoesNotInterruptAnotherTurn(t *testing.T) {
 	if got := len(suite.provider.requests(profile)); got != 1 {
 		t.Fatalf("cancelled queued prompt still ran: %d requests", got)
 	}
-	missing, err := client.PrepareTurn("never submitted", nil, false)
+	missing, err := client.PrepareTurn("never submitted", nil, nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}

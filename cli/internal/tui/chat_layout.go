@@ -112,7 +112,15 @@ func (m ChatModel) inputRows() int {
 		return 4 // breathing room, title, choices, keyboard hint; no composer
 	}
 	menu := min(4, len(m.CommandMenu.Matches(m.TextArea.Value())))
-	return m.promptHeight() + menu
+	return m.promptHeight() + menu + m.chipHeight()
+}
+
+// chipHeight is the rows the attachment strip takes above the composer.
+func (m ChatModel) chipHeight() int {
+	if len(m.chips()) == 0 {
+		return 0
+	}
+	return chipRows
 }
 
 func (m ChatModel) chromeRows() int {

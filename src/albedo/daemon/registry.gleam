@@ -637,7 +637,7 @@ fn dispatch_schedule(
               <> "] "
               <> job.prompt,
             "schedule",
-            None,
+            [],
           )
           |> result.is_ok
       }
@@ -1153,12 +1153,12 @@ fn create_identified(
                   mail.text(letter),
                   "",
                   turn.Mail(input_id, mail.Task),
-                  None,
+                  [],
                   Some(input_id),
                   Some(input_id),
                 )
               let input_intent =
-                http_api.input_intent(http_api.MessageInput(task, None, None))
+                http_api.input_intent(http_api.MessageInput(task, [], [], None))
                 |> json.to_string
               let input =
                 operations.Request(

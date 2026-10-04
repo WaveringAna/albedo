@@ -74,7 +74,7 @@ fn count(ledger: store.Store, sql: String) -> Int {
 
 fn inputs() -> List(types.Input) {
   [
-    types.UserImage("look", test_image()),
+    types.UserImage("look", [test_image()]),
     types.ToolOutput("call", "rendered", [test_image(), test_image()]),
   ]
 }
@@ -102,7 +102,7 @@ pub fn commit_keeps_one_payload_and_rows_load_references_test() -> Nil {
   )
   |> should.equal(0)
 
-  let assert [types.UserImage("look", first), types.ToolOutput(_, _, [_, _])] =
+  let assert [types.UserImage("look", [first]), types.ToolOutput(_, _, [_, _])] =
     loaded(ledger, "s")
   let assert types.StoredData(_, size, read) = types.image_data(first)
   size |> should.equal(24 + 8)
@@ -136,7 +136,7 @@ pub fn deleting_a_session_releases_only_unshared_payloads_test() -> Nil {
     )
   let assert Ok(_) = conversation.delete_claimed(ledger, "a", claim, [])
   count(ledger, "SELECT count(*) FROM images") |> should.equal(1)
-  let assert [types.UserImage(_, kept), ..] = loaded(ledger, "b")
+  let assert [types.UserImage(_, [kept]), ..] = loaded(ledger, "b")
   let assert types.StoredData(read: read, ..) = types.image_data(kept)
   read() |> should.equal(Ok(png))
 
@@ -170,13 +170,13 @@ pub fn migration_moves_legacy_payloads_once_after_a_backup_test() -> Nil {
         decode.dynamic,
       )
     })
-  let assert [types.UserImage("old", before)] = loaded(ledger, "s")
+  let assert [types.UserImage("old", [before])] = loaded(ledger, "s")
   types.image_data(before) |> should.equal(types.InlineData(png))
 
   let backup = path <> ".backup/before.sqlite"
   image_store.run(ledger, backup) |> should.equal(Ok(1))
   exists(backup) |> should.be_true
-  let assert [types.UserImage("old", after)] = loaded(ledger, "s")
+  let assert [types.UserImage("old", [after])] = loaded(ledger, "s")
   let assert types.StoredData(read: read, ..) = types.image_data(after)
   read() |> should.equal(Ok(png))
   image_store.run(ledger, backup) |> should.equal(Ok(0))
@@ -190,10 +190,10 @@ pub fn migration_converts_text_images_without_changing_references_test() -> Nil 
     conversation.commit(
       ledger,
       "s",
-      [types.UserImage("look", test_image())],
+      [types.UserImage("look", [test_image()])],
       conversation.Idle,
     )
-  let assert [types.UserImage(_, image)] = loaded(ledger, "s")
+  let assert [types.UserImage(_, [image])] = loaded(ledger, "s")
   let assert types.StoredData(hash, _, _) = types.image_data(image)
   let assert Ok(_) =
     store.write(ledger, "UPDATE images SET data=? WHERE hash=?", [
@@ -210,7 +210,7 @@ pub fn migration_converts_text_images_without_changing_references_test() -> Nil 
   count(ledger, "SELECT count(*) FROM images WHERE typeof(data)='blob'")
   |> should.equal(1)
   count(ledger, "SELECT length(data) FROM images") |> should.equal(24)
-  let assert [types.UserImage(_, migrated)] = loaded(ledger, "s")
+  let assert [types.UserImage(_, [migrated])] = loaded(ledger, "s")
   let assert types.StoredData(migrated_hash, _, read) =
     types.image_data(migrated)
   migrated_hash |> should.equal(hash)
@@ -226,7 +226,7 @@ pub fn failed_backup_keeps_text_images_untouched_test() -> Nil {
     conversation.commit(
       ledger,
       "s",
-      [types.UserImage("look", test_image())],
+      [types.UserImage("look", [test_image()])],
       conversation.Idle,
     )
   let assert Ok(_) =
@@ -244,11 +244,11 @@ pub fn fingerprints_ignore_where_a_payload_lives_test() -> Nil {
     conversation.commit(
       ledger,
       "s",
-      [types.UserImage("look", test_image())],
+      [types.UserImage("look", [test_image()])],
       conversation.Idle,
     )
   let stored = loaded(ledger, "s")
-  let inline = [types.UserImage("look", test_image())]
+  let inline = [types.UserImage("look", [test_image()])]
 
   fingerprint(#("source", stored))
   |> should.equal(fingerprint(#("source", inline)))

@@ -12,6 +12,7 @@ import albedo/daemon/http_session_stream
 import albedo/daemon/http_wire
 import albedo/daemon/image
 import albedo/daemon/operations
+import albedo/daemon/pastes
 import albedo/daemon/registry.{
   type Config, type Message, CreateIdentified, Existing, Lookup, SessionDeleted,
 }
@@ -493,7 +494,7 @@ pub fn input(
     use _ <- result.try(http_api.json_parameters(req, []))
     use input <- result.try(http_api.input(req))
     let #(kind, client) = case input {
-      http_api.MessageInput(_, _, client) -> #("message", client)
+      http_api.MessageInput(_, _, _, client) -> #("message", client)
       http_api.ContinueInput(client) -> #("continue", client)
       http_api.SkillInput(_, _, _, client) -> #("skill", client)
       http_api.CommandInput(_, _, client) -> #("command", client)
@@ -529,6 +530,7 @@ pub fn input(
             host,
             worker,
             input,
+            id,
             input_id,
           ))
           session.admit_durable(worker, request, prepared)
@@ -567,39 +569,46 @@ fn prepare_input(
   host: runtime.Runtime,
   worker: session.Session,
   input: http_api.Input,
+  session_id: String,
   input_id: String,
 ) -> Result(turn.Submission, String) {
   let client = case input {
-    http_api.MessageInput(_, _, client)
+    http_api.MessageInput(_, _, _, client)
     | http_api.ContinueInput(client)
     | http_api.SkillInput(_, _, _, client)
     | http_api.CommandInput(_, _, client) -> option.unwrap(client, "")
   }
   case input {
-    http_api.MessageInput(text, uploaded, _) -> {
-      use image <- result.try(case uploaded {
-        None -> Ok(None)
-        Some(uploaded) -> {
+    http_api.MessageInput(text, uploaded, pasted, _) -> {
+      use images <- result.try(
+        list.try_map(uploaded, fn(uploaded) {
           use inspected <- result.try(
             image.from_base64(uploaded.data)
             |> result.replace_error("image_invalid"),
           )
           case types.image_meta(inspected).0 == uploaded.mime_type {
-            True -> Ok(Some(inspected))
+            True -> Ok(inspected)
             False -> Error("image_invalid")
           }
-        }
-      })
-      use _ <- result.try(case string.trim(text) != "" || image != None {
+        }),
+      )
+      use _ <- result.try(case string.trim(text) != "" || images != [] {
         True -> Ok(Nil)
         False -> Error("message is empty")
       })
+      use expanded <- result.try(pastes.expand(
+        text,
+        pasted,
+        config.home,
+        session_id,
+        input_id,
+      ))
       Ok(turn.Submission(
         text,
-        text,
+        expanded,
         client,
         turn.Chat,
-        image,
+        images,
         Some(input_id),
         Some(input_id),
       ))
@@ -645,7 +654,7 @@ fn prepare_input(
         text,
         client,
         turn.Chat,
-        None,
+        [],
         Some(input_id),
         Some(input_id),
       ))
@@ -670,7 +679,7 @@ fn prepare_input(
         text,
         client,
         turn.Chat,
-        None,
+        [],
         Some(input_id),
         Some(input_id),
       ))

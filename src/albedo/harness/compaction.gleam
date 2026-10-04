@@ -312,9 +312,8 @@ fn estimate_text(text: String) -> Int {
 pub fn input_bytes(input: types.Input) -> Int {
   case input {
     types.User(text) | types.Assistant(text) -> string.byte_size(text)
-    types.UserImage(text, image) -> {
-      string.byte_size(text) + types.image_size(image)
-    }
+    types.UserImage(text, images) ->
+      string.byte_size(text) + fold_cost(images, types.image_size)
     types.ToolOutput(id, output, images) ->
       string.byte_size(id)
       + string.byte_size(output)
@@ -338,8 +337,9 @@ pub fn estimate_input(input: types.Input) -> Int {
   // to be an exact provider tokenizer. Image payload bytes affect transport
   // size, not vision tokens, so image cost is estimated from dimensions.
   case input {
-    types.UserImage(text, image) ->
-      estimate_text(text) + estimate_image(image) + 20
+    types.UserImage(text, images) ->
+      estimate_text(text)
+      + fold_cost(images, fn(image) { estimate_image(image) + 20 })
     types.ToolOutput(id, output, [_, ..] as images) ->
       estimate_text(id <> output)
       + fold_cost(images, fn(image) { estimate_image(image) + 20 })

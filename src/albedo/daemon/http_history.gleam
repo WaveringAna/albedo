@@ -170,7 +170,7 @@ fn project_row(
             ),
           ]
         }
-        types.UserImage(text, image) -> [
+        types.UserImage(text, images) -> [
           entry(
             "",
             "user",
@@ -180,7 +180,9 @@ fn project_row(
                 option.map(ownership.display, fn(display) { display.text })
                   |> option.unwrap(text),
               ),
-              Image("image", image),
+              ..list.index_map(images, fn(image, index) {
+                Image("image-" <> int.to_string(index), image)
+              })
             ],
             Some(id),
             None,

@@ -46,9 +46,8 @@ func (m *ChatModel) resend(retry *WorkspaceRetry) tea.Cmd {
 	if retry == nil {
 		return nil
 	}
-	if retry.Image != nil && m.AttachedImage == nil {
-		m.AttachedImage = retry.Image
-	}
+	m.Images.restore(unseen(retry.Images))
+	m.Pastes.restore(retry.Pastes)
 	m.TextArea.Reset()
 	m.syncLayout()
 	var cmds []tea.Cmd
@@ -73,10 +72,10 @@ func (m ChatModel) resolveOperationCmd(handle *daemon.OperationHandle) tea.Cmd {
 	return tea.Tick(15*time.Second, func(time.Time) tea.Msg { return ChatOperationPollMsg{SessionID: id, Generation: gen, Handle: handle} })
 }
 
-func (m *ChatModel) sendCmd(handle *daemon.OperationHandle, prompt string, image *daemon.ImageAttachment, isCont bool) tea.Cmd {
+func (m *ChatModel) sendCmd(handle *daemon.OperationHandle, prompt string, images []daemon.ImageAttachment, pastes []string, isCont bool) tea.Cmd {
 	client, id, gen := m.client, m.SessionID, m.Generation
 	return func() tea.Msg {
-		msg := ChatTurnSentMsg{SessionID: id, Generation: gen, Prompt: prompt, Image: image, Continue: isCont, Handle: handle, OperationID: handle.ID()}
+		msg := ChatTurnSentMsg{SessionID: id, Generation: gen, Prompt: prompt, Images: images, Pastes: pastes, Continue: isCont, Handle: handle, OperationID: handle.ID()}
 		result, err := client.SubmitOperation(context.Background(), handle)
 		msg.Err = err
 		if err == nil && result != nil {
@@ -214,14 +213,13 @@ func (m *ChatModel) handleOperationResults(msg tea.Msg) (tea.Cmd, bool) {
 				}
 				if m.TextArea.Value() == "" {
 					m.TextArea.SetValue(msg.Prompt)
+					m.Images.restore(unseen(msg.Images))
+					m.Pastes.restore(msg.Pastes)
 				}
-			}
-			if m.AttachedImage == nil && msg.Image != nil {
-				m.AttachedImage = msg.Image
 			}
 			if apiErr, ok := errors.AsType[*daemon.APIError](msg.Err); ok && (apiErr.Code == "workspace_invalid" || apiErr.Code == "workspace_unavailable") && m.Workspace != "" {
 				m.Status.Running, m.Status.Idle = false, true
-				retry := &WorkspaceRetry{Missing: m.Workspace, Prompt: msg.Prompt, Continue: msg.Continue, Image: msg.Image}
+				retry := &WorkspaceRetry{Missing: m.Workspace, Prompt: msg.Prompt, Continue: msg.Continue, Images: msg.Images, Pastes: msg.Pastes}
 				cmds = append(cmds, func() tea.Msg { return ChatOpenFolderPickerMsg{Retry: retry} })
 			} else {
 				m.AddError(fmt.Sprintf("Could not send the message: %v", msg.Err))

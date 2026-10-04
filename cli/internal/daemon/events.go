@@ -150,7 +150,7 @@ type StreamEvent struct {
 	Snapshot        *Session
 	Receipt         *InputReceipt
 	OperationID     string
-	Image           *ImageMetadata
+	Images          []ImageMetadata
 	Usage           *Usage
 	ToolTrace       *ToolTrace
 	Timestamp       *int64

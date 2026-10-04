@@ -135,7 +135,8 @@ type ChatTurnSentMsg struct {
 	Handle          *daemon.OperationHandle
 	OperationID     string
 	Err             error
-	Image           *daemon.ImageAttachment
+	Images          []daemon.ImageAttachment
+	Pastes          []string
 	SessionID       string
 	Prompt          string
 	Generation      int64

@@ -160,8 +160,11 @@ fn input_identity(input: types.Input) -> String {
   case input {
     types.User(text) -> "user\n" <> text
     types.Assistant(text) -> "assistant\n" <> text
-    types.UserImage(text, image) ->
-      "user_image\n" <> image_identity(image) <> "\n" <> text
+    types.UserImage(text, images) ->
+      "user_image\n"
+      <> string.join(list.map(images, image_identity), "\n")
+      <> "\n"
+      <> text
     types.ToolOutput(id, output, images) ->
       "tool_output\n"
       <> id

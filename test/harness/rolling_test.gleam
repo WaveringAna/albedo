@@ -130,7 +130,7 @@ pub fn image_estimate_uses_dimensions_not_base64_transport_size_test() -> Nil {
   let payload = string.repeat("A", 5 * 1024 * 1024)
   let assert Ok(image) =
     types.image("image/png", payload, 1024, 1024, 3 * 1024 * 1024)
-  let input = types.UserImage("inspect", image)
+  let input = types.UserImage("inspect", [image])
   let transport_includes_payload =
     compaction.input_bytes(input) > 5 * 1024 * 1024
   transport_includes_payload |> should.equal(True)

@@ -83,7 +83,8 @@ pub fn apply(input: types.Input, fit: transcript.ImageFit) -> types.Input {
     }
   }
   case input {
-    types.UserImage(text, image) -> types.UserImage(text, swap(image))
+    types.UserImage(text, images) ->
+      types.UserImage(text, list.map(images, swap))
     types.ToolOutput(id, text, images) ->
       types.ToolOutput(id, text, list.map(images, swap))
     _ -> input
@@ -92,8 +93,7 @@ pub fn apply(input: types.Input, fit: transcript.ImageFit) -> types.Input {
 
 fn images(input: types.Input) -> List(types.Image) {
   case input {
-    types.UserImage(_, image) -> [image]
-    types.ToolOutput(_, _, images) -> images
+    types.UserImage(_, images) | types.ToolOutput(_, _, images) -> images
     _ -> []
   }
 }
@@ -171,7 +171,8 @@ pub fn apply_replacements(
     dict.get(images, source(image)) |> result.unwrap(image)
   }
   case input {
-    types.UserImage(text, image) -> types.UserImage(text, swap(image))
+    types.UserImage(text, images) ->
+      types.UserImage(text, list.map(images, swap))
     types.ToolOutput(id, text, images) ->
       types.ToolOutput(id, text, list.map(images, swap))
     _ -> input

@@ -32,7 +32,8 @@ type PendingUserTurn struct {
 	Handle         *daemon.OperationHandle
 	OperationID    string
 	BlockingReason string
-	Image          *daemon.ImageAttachment
+	Images         []daemon.ImageAttachment
+	Pastes         []string
 	Text           string
 	At             int64
 	Queued         bool
@@ -90,7 +91,9 @@ type ChatModel struct {
 	progressOrder    []string
 	eventChan        chan streamDelivery
 	streamStopped    bool
-	AttachedImage    *daemon.ImageAttachment
+	// Images and Pastes are what was pasted into the composer as markers.
+	Images promptImages
+	Pastes promptPastes
 	// window is the context window of windowModel, read once per model so
 	// the footer can say how full the context is.
 	window  *int

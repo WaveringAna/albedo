@@ -184,7 +184,7 @@ Arrays replace the complete array. Writable fields are listed for each resource.
 defines these rules.
 
 Ordinary JSON request bodies have a 64 KiB limit. Input admission has a
-9,200,000-byte limit, including encoded images. JSON responses and SSE data
+72,200,000-byte limit, room for ten encoded images. JSON responses and SSE data
 frames have a 1 MiB limit. Resource-specific limits below apply as well.
 HTTP body framing accepts valid fixed-length and chunked requests, enforcing
 the same byte limit while reading. Ambiguous framing, unsupported content
@@ -696,13 +696,20 @@ has optional `client_id` for echo correlation and exactly one variant:
 
 | `kind` | Fields |
 | --- | --- |
-| `message` | `text`; optional `image` with `mime_type` and base64 `data` |
+| `message` | `text`; optional `images`, up to ten, each with `mime_type` and base64 `data`; optional `pastes`, up to twenty texts |
 | `continue` | No content fields |
 | `skill` | `candidate_id`, `catalog_revision`, and `arguments` as text |
 | `command` | `command_id` and typed `arguments`; only a catalog entry with `delivery: "input"` |
 
 A message requires nonblank text or an image. Images accept PNG, JPEG, GIF,
 and WebP, subject to decoding, dimension, and selected-provider bounds. The
+model receives the text, then the images in upload order. The CLI marks
+where each was attached with `[Image #N]` in the text, numbered from 1 in
+upload order. Pastes are marked the same way, `[Paste #N, …]` for the Nth
+paste. The model receives a paste under 100 lines and 32 KiB in place of its
+marker. A longer one is saved to `$ALBEDO_HOME/pastes/<session>/<input>-<n>.md`
+and its marker names that file. History shows the text as sent, markers
+intact. The
 daemon preserves original upload metadata and the full durable payload.
 Provider-specific fitting stays daemon-owned and appears in durable history.
 

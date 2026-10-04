@@ -38,20 +38,20 @@ pub fn reverse_fits_preserve_chains_repeated_sources_and_reuse_test() -> Nil {
   let original = picture("A")
   let second = picture("B")
   let third = picture("C")
-  let input = types.UserImage("look", original)
+  let input = types.UserImage("look", [original])
   let later = image_fit.add(image_fit.replacements(), fit("A", third))
   image_fit.apply_replacements(input, later)
-  |> should.equal(types.UserImage("look", third))
+  |> should.equal(types.UserImage("look", [third]))
   let earlier = image_fit.add(later, fit("A", second))
   image_fit.apply_replacements(input, earlier)
-  |> should.equal(types.UserImage("look", second))
+  |> should.equal(types.UserImage("look", [second]))
   let chain =
     image_fit.add(
       image_fit.add(image_fit.replacements(), fit("B", third)),
       fit("A", second),
     )
   image_fit.apply_replacements(input, chain)
-  |> should.equal(types.UserImage("look", third))
+  |> should.equal(types.UserImage("look", [third]))
 }
 
 fn session() -> conversation.Info {
@@ -134,7 +134,7 @@ pub fn ranged_images_equal_full_history_with_later_fits_test() -> Nil {
     conversation.commit(
       ledger,
       "session",
-      [types.UserImage("before", original)],
+      [types.UserImage("before", [original])],
       conversation.Idle,
     )
   let assert Ok(_) =
@@ -148,7 +148,7 @@ pub fn ranged_images_equal_full_history_with_later_fits_test() -> Nil {
     conversation.commit(
       ledger,
       "session",
-      [types.UserImage("reuse", original)],
+      [types.UserImage("reuse", [original])],
       conversation.Idle,
     )
   let assert Ok(before_last_fit) = conversation.snapshot(ledger, "session")
@@ -177,12 +177,12 @@ pub fn ranged_images_equal_full_history_with_later_fits_test() -> Nil {
     conversation.fold_sources(ledger, snapshot, 3, 3, [], fn(acc, row) {
       conversation.Continue([fingerprint(row.entry.input), ..acc])
     })
-  reused |> should.equal([fingerprint(types.UserImage("reuse", third))])
+  reused |> should.equal([fingerprint(types.UserImage("reuse", [third]))])
   let assert Ok(before) =
     conversation.fold_sources(ledger, before_last_fit, 3, 3, [], fn(acc, row) {
       conversation.Continue([fingerprint(row.entry.input), ..acc])
     })
-  before |> should.equal([fingerprint(types.UserImage("reuse", original))])
+  before |> should.equal([fingerprint(types.UserImage("reuse", [original]))])
   let assert Ok(_) = history.fork(ledger, "session", "branch", 2)
   let assert Ok(branch) = conversation.snapshot(ledger, "branch")
   let assert Ok(branch_stats) = conversation.source_stats(ledger, branch, 0)
@@ -190,7 +190,7 @@ pub fn ranged_images_equal_full_history_with_later_fits_test() -> Nil {
   let assert Ok(branch_rows) = conversation.load_sources(ledger, "branch")
   let assert [first, ..] = branch_rows
   fingerprint(first.entry.input)
-  |> should.equal(fingerprint(types.UserImage("before", second)))
+  |> should.equal(fingerprint(types.UserImage("before", [second])))
   runtime.stop(host)
   cleanup(path)
 }
