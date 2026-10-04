@@ -464,7 +464,6 @@ pub fn start(
 /// session stays idle.
 pub fn start_background(
   state: session_state.State(message),
-  kernel: runtime.Session,
   client: extension.Upstream,
   request: types.Request,
   prefix: requests.Prefix,
@@ -478,31 +477,13 @@ pub fn start_background(
   // The worker's closures must capture these fields, never `state`: the
   // session state carries the loaded transcript.
   let worker =
-    loop.Loop(
-      state.info.model,
-      state.info.effort,
-      state.host,
-      kernel,
-      state.pin,
+    loop.CallContext(
+      runtime.ledger(state.host),
       client,
-      // A background call must never show on the session's stream, and must
-      // never block on it either.
-      fn(_event) { True },
-      state.generation,
-      fn(_step, _attempt, _index, _name, _fragment) { True },
-      fn(_step, _attempt, _index, _call_id, _name) { True },
-      fn(_attempt) { Nil },
-      fn(_progress_id) { Nil },
-      fn(_inputs, _stage, _thought) { Error("a background call never commits") },
-      fn(_fits) { Error("a background call never commits") },
-      fn(_request, _observation, _compacted) { Nil },
-      fn(_metadata) { Ok(Nil) },
-      fn() { Ok([]) },
-      fn(_head) { Nil },
-      fn(_call) { Nil },
       state.info.id,
       state.info.provider,
       run_id,
+      None,
     )
   let pid =
     process.spawn_unlinked(fn() {

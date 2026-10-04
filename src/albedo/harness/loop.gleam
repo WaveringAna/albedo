@@ -5,6 +5,7 @@ import albedo/daemon/events as view
 import albedo/daemon/image_fit
 import albedo/daemon/message_content
 import albedo/daemon/requests
+import albedo/daemon/store
 import albedo/daemon/tool_progress
 import albedo/daemon/transcript
 import albedo/daemon/usage
@@ -64,6 +65,29 @@ pub type Loop {
   )
 }
 
+/// Dependencies shared by turn, summarizer, and background provider calls.
+pub type CallContext {
+  CallContext(
+    ledger: store.Store,
+    upstream: extension.Upstream,
+    session: String,
+    profile: String,
+    run_id: String,
+    report_call: Option(fn(extension.SentCall) -> Nil),
+  )
+}
+
+fn call_context(state: Loop) -> CallContext {
+  CallContext(
+    runtime.ledger(state.host),
+    state.upstream,
+    state.session,
+    state.profile,
+    state.run_id,
+    Some(state.report_call),
+  )
+}
+
 /// A live session keeps the system prompt it was cached with after its
 /// capabilities change; the change reaches the model as a transcript update
 /// instead. `head` is how many original inputs compaction had replaced when
@@ -113,7 +137,7 @@ pub fn run(
   state.record_context(request, prepared.observation, prepared.compacted)
   use #(row, turn, sent, attempt) <- result.try(
     call(
-      state,
+      call_context(state),
       requests.Turn,
       request,
       request_prefix(request, history, original, prepared.observation),
@@ -274,7 +298,7 @@ pub fn compact(state: Loop, inputs: List(types.Input)) -> Result(Nil, String) {
 /// recorded under `prefix`. It commits nothing and publishes nothing; it
 /// answers the call's usage.
 pub fn background(
-  state: Loop,
+  state: CallContext,
   request: types.Request,
   prefix: requests.Prefix,
 ) -> Result(Option(types.Usage), String) {
@@ -443,7 +467,7 @@ fn bounded(text: String, limit: Int, note: String) -> String {
 /// attached once committed, with the call as it went out. A row that cannot
 /// be written is logged and skipped, never a failed turn.
 fn call(
-  state: Loop,
+  state: CallContext,
   kind: requests.Kind,
   request: types.Request,
   prefix: requests.Prefix,
@@ -476,12 +500,14 @@ fn call(
       // account served while the request streams.
       let row =
         requests.record(
-          runtime.ledger(state.host),
+          state.ledger,
           requests.Call(
             state.session,
             kind,
             state.profile,
-            provider_label(state),
+            types.protocol_name(state.upstream.protocol)
+              <> ":"
+              <> state.upstream.endpoint,
             state.upstream.account(),
             request.model,
             started,
@@ -519,7 +545,11 @@ fn call(
         )
       // Extensions hear a turn's call as sent, never a rebuilt one.
       case kind, outcome {
-        requests.Turn, Ok(_) -> state.report_call(sent)
+        requests.Turn, Ok(_) ->
+          case state.report_call {
+            Some(report) -> report(sent)
+            None -> Nil
+          }
         _, _ -> Nil
       }
       case outcome {
@@ -572,11 +602,6 @@ fn fading(state: Loop, sent: extension.SentCall) -> Option(cache_fade.Fade) {
     sent.started_ms,
     sent.finished_ms,
   )
-}
-
-/// How a call reached its provider: the protocol over the endpoint.
-fn provider_label(state: Loop) -> String {
-  types.protocol_name(state.upstream.protocol) <> ":" <> state.upstream.endpoint
 }
 
 /// The request's prefix identity: its head, and the projection that stands in
@@ -763,7 +788,7 @@ fn summarize(
     )
   use #(_, turn, _, _) <- result.try(
     call(
-      state,
+      call_context(state),
       requests.Summarizer,
       summary_request,
       // The summarizer's history is exactly what it says; nothing replaced.

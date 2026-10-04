@@ -2720,12 +2720,11 @@ fn start_background(
   case turn.running(state.activity), kernel {
     Some(_), _ -> refused(state, "the session is busy")
     None, None -> refused(state, "the session has no live kernel")
-    None, Some(live) ->
+    None, Some(_) ->
       case session_provider.configured_client(state) {
         Ok(#(primed, client)) ->
           session_run.start_background(
             primed,
-            live,
             client,
             request,
             prefix,
