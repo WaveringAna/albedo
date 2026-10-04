@@ -13,28 +13,24 @@
 order(_, [], _, _) -> [];
 order(Scope, Values, Session, Identity) ->
     Now = erlang:system_time(millisecond),
-    {Limited, Open} = lists:partition(fun(V) -> limited(V, Now) end, Values),
-    {Selected, Rest} = lists:partition(fun selected/1, spread(Scope, Open, Session, Identity)),
-    Selected ++ Rest ++ lists:sort(fun(A, B) -> until_of(A) =< until_of(B) end, Limited).
-
-spread(_, [], _, _) -> [];
-spread(Scope, Values, Session, Identity) ->
-    case erlang:get({?MODULE, Scope, Session}) of
-        Pinned when is_binary(Pinned), Pinned =/= <<>> ->
-            {Hit, Others} = lists:partition(fun(V) -> Identity(V) =:= Pinned end, Values),
-            Hit ++ Others;
-        _ ->
-            Start = fnv1a(Session) rem length(Values),
-            {Head, Tail} = lists:split(Start, Values),
-            Tail ++ Head
-    end.
+    Sticky = case erlang:get({?MODULE, Scope, Session}) of
+        Pinned when is_binary(Pinned), Pinned =/= <<>> -> {some, Pinned};
+        _ -> none
+    end,
+    Entries = [begin
+        Until = until_of(Value),
+        Id = case Sticky of
+            {some, _} when Until =< Now -> Identity(Value);
+            _ -> <<>>
+        end,
+        {entry, Value, Id, maps:get(<<"selected">>, Value, false) =:= true, Until}
+    end || Value <- Values],
+    'albedo@harness@accounts':order(Entries, Session, Sticky, Now).
 
 %% Sticks the session to the account it was just given.
 remember(Scope, Session, Id) ->
     erlang:put({?MODULE, Scope, Session}, Id),
     ok.
-
-selected(V) -> maps:get(<<"selected">>, V, false) =:= true.
 
 limited(V, Now) -> until_of(V) > Now.
 
@@ -91,7 +87,3 @@ local_time(Ms) ->
         true -> Clock;
         false -> io_lib:format("~4..0B-~2..0B-~2..0B ~s", [Y, Mo, D, Clock])
     end).
-
-fnv1a(Bytes) ->
-    lists:foldl(fun(Byte, Hash) -> ((Hash bxor Byte) * 16777619) band 16#ffffffff end,
-                16#811c9dc5, binary_to_list(Bytes)).

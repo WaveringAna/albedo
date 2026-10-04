@@ -1,14 +1,20 @@
-// Account quota and capacity routing are stateful provider failures not exercised by scripted E2E responses.
+//// Account quota, capacity routing, and exact pool ordering require provider
+//// limit states and captured clocks the E2E fake provider cannot reproduce.
+
+import albedo/clock
+import albedo/harness/accounts
 import albedo/harness/extensions/alibaba/extension as alibaba
 import albedo/harness/extensions/antigravity/extension as antigravity
 import albedo/harness/oauth
 import albedo/harness/rotation
 import albedo/openai_api
 import albedo/openai_api/types
+import gleam/dict.{type Dict}
+import gleam/dynamic.{type Dynamic}
 import gleam/erlang/process
 import gleam/int
 import gleam/list
-import gleam/option.{Some}
+import gleam/option.{None, Some}
 import gleam/string
 import gleeunit/should
 
@@ -226,3 +232,69 @@ fn write(base: String, relative: String, content: String) -> String
 
 @external(erlang, "albedo_skills_test_support", "cleanup")
 fn cleanup(root: String) -> Nil
+
+pub fn account_order_keeps_selected_limited_and_tied_deadlines_distinct_test() -> Nil {
+  let entries = [
+    accounts.Entry("limited-selected", "a", True, 300),
+    accounts.Entry("open", "b", False, 0),
+    accounts.Entry("selected", "c", True, 0),
+    accounts.Entry("limited-first", "d", False, 200),
+    accounts.Entry("limited-second", "e", False, 200),
+  ]
+  accounts.order(entries, "session", Some("b"), 100)
+  |> should.equal([
+    "selected",
+    "open",
+    "limited-first",
+    "limited-second",
+    "limited-selected",
+  ])
+  accounts.order(entries, "session", Some("a"), 100)
+  |> should.equal([
+    "selected",
+    "open",
+    "limited-first",
+    "limited-second",
+    "limited-selected",
+  ])
+  accounts.order([], "session", None, 100) |> should.equal([])
+}
+
+pub fn account_spreading_preserves_fnv1a_byte_hash_test() -> Nil {
+  let entries =
+    list.map([0, 1, 2, 3, 4, 5, 6], fn(value) {
+      accounts.Entry(value, int.to_string(value), False, 0)
+    })
+  // FNV-1a over these bytes is 0x4F9F2CAB, including 32-bit overflow.
+  accounts.order(entries, "hello", None, 0)
+  |> should.equal([2, 3, 4, 5, 6, 0, 1])
+}
+
+@external(erlang, "albedo_accounts", "order")
+fn native_order(
+  scope: String,
+  values: List(Dict(String, Dynamic)),
+  session: String,
+  identity: fn(Dict(String, Dynamic)) -> String,
+) -> List(Dict(String, Dynamic))
+
+@external(erlang, "albedo_accounts", "remember")
+fn remember(scope: String, session: String, identity: String) -> Dynamic
+
+pub fn native_order_only_reads_identity_for_usable_sticky_accounts_test() -> Nil {
+  let account = dict.from_list([#("access", dynamic.string("unread token"))])
+  let no_identity = fn(_) {
+    panic as "this order does not need account identity"
+  }
+  native_order("identity-contract", [account], "unpinned", no_identity)
+  |> should.equal([account])
+  let _ = remember("identity-contract", "pinned", "chosen")
+  let limited =
+    dict.insert(
+      account,
+      "limitedUntil",
+      dynamic.int(clock.system_ms() + 1_000_000),
+    )
+  native_order("identity-contract", [limited], "pinned", no_identity)
+  |> should.equal([limited])
+}
