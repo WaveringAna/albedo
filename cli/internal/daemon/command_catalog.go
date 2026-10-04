@@ -41,6 +41,10 @@ func decodeSessionCommand(raw json.RawMessage) (SessionCommand, error) {
 	} else if err := decodeRequired(raw, &command); err != nil {
 		return SessionCommand{}, err
 	}
+	return sessionCommandValue(command, commandID)
+}
+
+func sessionCommandValue(command protocol.HTTPCommand, commandID string) (SessionCommand, error) {
 	if command.ID == "" || !strings.HasPrefix(command.SlashName, "/") || command.Arguments == nil {
 		return SessionCommand{}, fieldError("command")
 	}

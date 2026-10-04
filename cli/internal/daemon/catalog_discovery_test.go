@@ -41,3 +41,26 @@ func TestLoadedCommandsRemainReadableWhenDiscoveryFails(t *testing.T) {
 		t.Fatalf("fresh discovery failure was hidden or assigned a revision: %+v %v", catalog, err)
 	}
 }
+
+func TestLoadedPageUsesDeclaredReadWhenDiscoveryFails(t *testing.T) {
+	conn := controlledConnection(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/sessions/s":
+			_ = json.NewEncoder(w).Encode(canonicalSession("s", generationA, 0))
+		case "/sessions/s/catalog":
+			_, _ = w.Write([]byte(`{"discovery":null,"discovery_failure":{"code":"discovery_unavailable","detail":"unavailable"},"loaded":{"revision":"loaded","next":null,"commands":[{"id":"links","slash_name":"/link","description":"Links","arguments":[],"caller_permissions":["client"],"delivery":"read","operation":{"operation_id":"readCustomPage","method":"GET","path_template":"/extensions/custom/page","path":{},"headers":{},"body":{},"result_schema":{},"query":{"scope":{"source":"literal","value":"loaded"}}}}]}}`))
+		case "/extensions/custom/page":
+			if r.URL.Query().Get("scope") != "loaded" {
+				t.Errorf("declared filter lost: %s", r.URL)
+			}
+			_, _ = w.Write([]byte(`{"page":{"title":"Retained page","empty_state":"Empty","rows":[],"glance":null,"actions":[],"summary":""}}`))
+		default:
+			t.Errorf("page guessed a route: %s", r.URL)
+			w.WriteHeader(404)
+		}
+	})
+	page, err := LoadPage(t.Context(), conn, "s", "/links")
+	if err != nil || page.Title != "Retained page" {
+		t.Fatalf("retained aliased page unavailable: %#v, %v", page, err)
+	}
+}

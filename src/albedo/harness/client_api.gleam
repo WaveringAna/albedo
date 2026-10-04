@@ -152,7 +152,7 @@ pub type PageRow {
   PageRow(
     id: String,
     text: String,
-    badge: String,
+    badge: Option(String),
     tone: String,
     detail: Option(String),
     resource: json.Json,
@@ -183,7 +183,7 @@ pub fn page(value: Page) -> json.Json {
         json.object([
           #("id", json.string(row.id)),
           #("text", json.string(row.text)),
-          #("badge", json.string(row.badge)),
+          #("badge", json.nullable(row.badge, json.string)),
           #("tone", json.string(row.tone)),
           #("detail", json.nullable(row.detail, json.string)),
           #("resource", row.resource),
@@ -191,4 +191,45 @@ pub fn page(value: Page) -> json.Json {
       }),
     ),
   ])
+}
+
+/// Standard field defaults; callers can update labels, bindings, or choices.
+pub fn text_field(name: String, required: Bool) -> Field {
+  Field(name, name, "text", required, json.null(), [], "", None)
+}
+
+pub fn integer_field(name: String, required: Bool) -> Field {
+  Field(..text_field(name, required), kind: "integer")
+}
+
+pub fn choice_field(
+  name: String,
+  required: Bool,
+  choices: List(String),
+) -> Field {
+  Field(
+    ..text_field(name, required),
+    kind: "choice",
+    choices: list.map(choices, fn(value) { #(json.string(value), value) }),
+  )
+}
+
+/// An operation with no bindings or result constraints.
+pub fn operation_defaults(
+  id: String,
+  method: http.Method,
+  path_template: String,
+  success_status: Int,
+) -> Operation {
+  Operation(
+    id,
+    method,
+    path_template,
+    [],
+    [],
+    [],
+    [],
+    json.object([]),
+    Some(success_status),
+  )
 }

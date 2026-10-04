@@ -861,6 +861,9 @@ filters entries without changing these identities. Discovery contains
 and preferences. Remote files come from the last observed mirror; preparation
 refreshes stale mirrors. Loaded contains its composition revision and prepared command
 definitions. Reading discovery does not reload the prompt or start a kernel.
+Before a composition exists, `native_commands` supplies static HTTP declarations
+from selected extensions. Clients use these declarations only while the loaded
+revision is null; observing them does not prepare an extension or start a kernel.
 If desired discovery fails, `discovery` is null and `discovery_failure` contains
 a safe reason. Retained loaded commands remain readable. Successful discovery
 sets `discovery_failure` to null; clients need a discovery revision to edit selection.
@@ -894,6 +897,9 @@ snapshot. Form fields can declare `default_binding` with a `row` or `session`
 source and JSON pointer to prefill an edit. The resolved value replaces the
 literal default and must fit the declared field type. Missing optional form values omit their bindings. Result schemas
 are JSON Schema 2020-12 fragments, without remote schema retrieval.
+An operation can declare `success_status` as 200 or 201. Without it, reads
+require 200 and mutations accept 200 or 201; acknowledgment validation still
+applies.
 An edit binds `If-Match` to the row's observed validator. The adapter never
 fetches a newer validator just to overwrite data from a stale screen.
 Field types are text, secret,
@@ -1329,7 +1335,7 @@ include a resolution note; it never changes the original message. A model's
 resolving session comes from trusted runtime context. DELETE requires `If-Match`.
 Models can file, list, and resolve still-open or acknowledged items with a
 nonempty resolution. Human terminal decisions cannot be overwritten by a model.
-All edits use `If-Match`. Listings preserve open-first order and global glances.
+All edits use `If-Match`. Listings use newest-first cursor order and global glances.
 
 ### Schedule
 

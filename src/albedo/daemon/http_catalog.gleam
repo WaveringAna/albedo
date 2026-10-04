@@ -4,6 +4,7 @@ import albedo/daemon/http_api
 import albedo/daemon/session_catalog
 import albedo/harness/client_api
 import albedo/harness/command
+import albedo/harness/extension
 import albedo/harness/runtime
 import gleam/json
 import gleam/list
@@ -83,35 +84,12 @@ pub fn commands(observed: runtime.CatalogObservation) -> List(json.Json) {
         }),
       )
       let command = command.1
-      json.object([
-        #(
-          "id",
-          json.string(
-            entry.0 <> ":" <> entry.1.slash_name <> ":" <> entry.1.operation.id,
-          ),
-        ),
-        #("slash_name", json.string(command.name)),
-        #("description", json.string(command.description)),
-        #("arguments", json.array(entry.1.arguments, client_api.field)),
-        #(
-          "caller_permissions",
-          json.array(
-            case command.model_callable {
-              True -> ["human", "model"]
-              False -> ["human"]
-            },
-            json.string,
-          ),
-        ),
-        #(
-          "delivery",
-          json.string(case entry.1.delivery {
-            client_api.Read -> "read"
-            client_api.Mutation -> "mutation"
-          }),
-        ),
-        #("operation", client_api.operation(entry.1.operation)),
-      ])
+      client_command(
+        entry.0,
+        entry.1,
+        command.description,
+        command.model_callable,
+      )
     })
   let inputs =
     observed.commands
@@ -138,4 +116,70 @@ pub fn commands(observed: runtime.CatalogObservation) -> List(json.Json) {
       ])
     })
   list.append(declared, inputs)
+}
+
+fn client_command(
+  owner: String,
+  binding: client_api.Command,
+  description: String,
+  model_callable: Bool,
+) -> json.Json {
+  json.object([
+    #(
+      "id",
+      json.string(
+        owner <> ":" <> binding.slash_name <> ":" <> binding.operation.id,
+      ),
+    ),
+    #("slash_name", json.string(binding.slash_name)),
+    #("description", json.string(description)),
+    #("arguments", json.array(binding.arguments, client_api.field)),
+    #(
+      "caller_permissions",
+      json.array(
+        case model_callable {
+          True -> ["human", "model"]
+          False -> ["human"]
+        },
+        json.string,
+      ),
+    ),
+    #(
+      "delivery",
+      json.string(case binding.delivery {
+        client_api.Read -> "read"
+        client_api.Mutation -> "mutation"
+      }),
+    ),
+    #("operation", client_api.operation(binding.operation)),
+  ])
+}
+
+/// Static human HTTP bindings are readable before any composition is prepared.
+pub fn native_commands(
+  installed: List(extension.Extension),
+  discovery: session_catalog.Snapshot,
+) -> List(json.Json) {
+  installed
+  |> list.filter(fn(item) {
+    list.any(discovery.candidates, fn(candidate) {
+      candidate.kind == "extension"
+      && candidate.id == item.name
+      && candidate.valid
+      && candidate.eligible
+      && candidate.effective_enabled
+    })
+  })
+  |> list.flat_map(fn(item) {
+    item.plugins
+    |> list.flat_map(fn(plugin) {
+      case plugin {
+        extension.ClientPlugin(bindings) ->
+          list.map(bindings, fn(binding) {
+            client_command(item.name, binding, item.description, False)
+          })
+        _ -> []
+      }
+    })
+  })
 }

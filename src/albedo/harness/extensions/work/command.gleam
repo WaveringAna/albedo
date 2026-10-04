@@ -3,14 +3,15 @@
 //// learns about it at its next step instead of from a stale read.
 
 import albedo/harness/command.{
-  type Command, type Context, Argument, Command, Data, Note, UserCall,
+  type Command, type Context, Argument, Command, Data, UserCall,
 }
 import albedo/harness/extensions/work/ledger as work
+import albedo/harness/extensions/work/notifications
+import albedo/harness/extensions/work/service
 import albedo/harness/page
 import gleam/int
 import gleam/json
-import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{None}
 import gleam/result
 import gleam/string
 
@@ -48,89 +49,31 @@ fn listing(store: work.Store, cwd: String) -> Result(command.Outcome, String) {
   use items <- result.try(
     work.list(store, cwd, 0, 200) |> result.map_error(describe),
   )
-  let ordered = list.sort(items, fn(a, b) { int.compare(rank(a), rank(b)) })
-  let rows = list.map(ordered, row(_, cwd))
-  let pending = list.filter(ordered, fn(item) { rank(item) < 3 })
   Ok(
     Data(
-      page.to_json(page.Document(
-        "work",
-        summary(items),
-        "nothing tracked yet · a adds an item",
-        rows,
-        [
-          page.Action(
-            "a",
-            "add",
-            "add",
-            False,
-            page.Text("title", False),
-            False,
-          ),
-          page.Action(
-            "e",
-            "rename",
-            "edit",
-            True,
-            page.Text("title", True),
-            False,
-          ),
-          page.Action("d", "done", "status", True, page.Value("done"), False),
-          page.Action(
-            "s",
-            "status",
-            "status",
-            True,
-            page.Choice(["open", "active", "blocked", "done", "cancelled"]),
-            False,
-          ),
-          page.Action("x", "remove", "remove", True, page.NoInput, True),
-        ],
-        Some(page.Glance("pending work", list.map(pending, row(_, cwd)))),
-      )),
+      page.legacy(service.page(items, cwd), [
+        page.Action("a", "add", "add", False, page.Text("title", False), False),
+        page.Action(
+          "e",
+          "rename",
+          "edit",
+          True,
+          page.Text("title", True),
+          False,
+        ),
+        page.Action("d", "done", "status", True, page.Value("done"), False),
+        page.Action(
+          "s",
+          "status",
+          "status",
+          True,
+          page.Choice(["open", "active", "blocked", "done", "cancelled"]),
+          False,
+        ),
+        page.Action("x", "remove", "remove", True, page.NoInput, True),
+      ]),
     ),
   )
-}
-
-/// Rank and tone: active work first, then blocked, open, and finished items last.
-fn status_style(status: work.Status) -> #(Int, page.Tone) {
-  case status {
-    work.Active -> #(0, page.Active)
-    work.Blocked -> #(1, page.Warning)
-    work.Open -> #(2, page.Plain)
-    work.Done -> #(3, page.Muted)
-    work.Cancelled -> #(4, page.Muted)
-  }
-}
-
-fn rank(item: work.Item) -> Int {
-  status_style(item.status).0
-}
-
-/// An item filed in a linked workspace says where.
-fn row(item: work.Item, cwd: String) -> page.Row {
-  let detail = case item.workspace == cwd {
-    True -> item.notes
-    False -> string.trim(item.notes <> "\n\nfiled in " <> item.workspace)
-  }
-  page.detail_row(
-    int.to_string(item.id),
-    item.title,
-    work.status_name(item.status),
-    status_style(item.status).1,
-    detail,
-  )
-}
-
-fn summary(items: List(work.Item)) -> String {
-  [work.Active, work.Blocked, work.Open, work.Done]
-  |> list.filter_map(fn(status) {
-    case list.count(items, fn(item) { item.status == status }) {
-      0 -> Error(Nil)
-      count -> Ok(int.to_string(count) <> " " <> work.status_name(status))
-    }
-  })
-  |> string.join(" · ")
 }
 
 fn applied(
@@ -174,18 +117,7 @@ fn change(
       Error("unknown action " <> action <> "; use add, edit, status, or remove")
   })
   let label = "#" <> int.to_string(item.id) <> " · " <> item.title
-  let queued =
-    ctx.state(Note(
-      "work",
-      verb <> " " <> label,
-      "<system-note>The user "
-        <> verb
-        <> " work item "
-        <> label
-        <> " (status "
-        <> work.status_name(item.status)
-        <> ") in the shared work ledger.</system-note>",
-    ))
+  let queued = notifications.queue(item, verb, ctx.state)
   Ok(
     Data(
       json.object([

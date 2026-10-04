@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"maps"
 	"net/http"
 	"net/url"
@@ -35,52 +34,31 @@ func LoadPage(ctx context.Context, conn *Connection, session, command string) (*
 	if command == "/ttl" || command == "/quota" || command == "/requests" {
 		return loadPlatformInspector(ctx, conn, snapshot, command)
 	}
-	var buildRequest func(string, io.Reader) (*http.Request, error)
-	switch command {
-	case "/work":
-		buildRequest = func(base string, _ io.Reader) (*http.Request, error) {
-			return protocol.NewListWorkRequest(base, &protocol.ListWorkParams{Workspace: snapshot.Workspace})
+	if command == "/links" {
+		command = "/link"
+	}
+	commands, err := ListSessionCommands(ctx, conn, session)
+	if err != nil {
+		return nil, err
+	}
+	for _, declared := range commands {
+		if declared.Name != command || declared.Delivery != "read" {
+			continue
 		}
-	case "/paperclips":
-		buildRequest = func(base string, _ io.Reader) (*http.Request, error) {
-			return protocol.NewListPaperclipsRequest(base, nil)
-		}
-	case "/schedule":
-		buildRequest = func(base string, _ io.Reader) (*http.Request, error) {
-			return protocol.NewListScheduleRequest(base, &protocol.ListScheduleParams{SessionID: session})
-		}
-	case "/links":
-		buildRequest = func(base string, _ io.Reader) (*http.Request, error) {
-			return protocol.NewGetLinkGroupRequest(base, &protocol.GetLinkGroupParams{Workspace: snapshot.Workspace})
-		}
-	default:
-		catalog, err := GetCapabilityCatalog(ctx, conn, session)
+		payload, err := executeBoundOperation(ctx, conn, declared.Operation, nil, map[string]json.RawMessage{}, &snapshot)
 		if err != nil {
 			return nil, err
 		}
-		for _, declared := range catalog.Commands {
-			if declared.Name == command && declared.Delivery == "read" {
-				payload, err := executeBoundOperation(ctx, conn, declared.Operation, nil, map[string]json.RawMessage{}, &snapshot)
-				if err != nil {
-					return nil, err
-				}
-				doc, err := readResultPage(payload, declared.Name, declared.Description)
-				if err == nil {
-					doc.Session = &snapshot
-					doc.read = &pageRead{Name: declared.Name, Description: declared.Description, Operation: declared.Operation, Form: map[string]json.RawMessage{}}
-				}
-				return doc, err
-			}
+		doc, err := readResultPage(payload, declared.Name, declared.Description)
+		if err == nil {
+			doc.Session = &snapshot
+			doc.read = &pageRead{Name: declared.Name, Description: declared.Description, Operation: declared.Operation, Form: map[string]json.RawMessage{}}
 		}
-		return nil, fmt.Errorf("no declared page for %s", command)
+		return doc, err
 	}
-	var doc *PageDocument
-	err = executeRead(ctx, conn, operation{Name: "read " + command + " page", BuildRequest: buildRequest, Policy: readRecovery}, func(data []byte) error { var err error; doc, err = decodePageDocument(data); return err })
-	if doc != nil {
-		doc.Session = &snapshot
-	}
-	return doc, err
+	return nil, fmt.Errorf("no declared page for %s", command)
 }
+
 func RefreshPage(ctx context.Context, conn *Connection, session, command string, previous *PageDocument) (*PageDocument, error) {
 	if previous == nil || previous.read == nil {
 		return LoadPage(ctx, conn, session, command)

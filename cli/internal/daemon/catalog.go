@@ -106,11 +106,24 @@ func readCapabilityCatalog(ctx context.Context, conn *Connection, session string
 				result.Diagnostics = append(result.Diagnostics, reason.Detail)
 			}
 		}
+		commands := make([]SessionCommand, 0, len(catalog.Loaded.Commands)+len(catalog.NativeCommands))
+		if catalog.Loaded.Revision == nil {
+			for _, declared := range catalog.NativeCommands {
+				command, err := sessionCommandValue(declared, "")
+				if err != nil {
+					return CapabilityCatalog{}, err
+				}
+				commands = append(commands, command)
+			}
+		}
 		for _, raw := range catalog.Loaded.Commands {
 			command, err := decodeSessionCommand(raw)
 			if err != nil {
 				return CapabilityCatalog{}, err
 			}
+			commands = append(commands, command)
+		}
+		for _, command := range commands {
 			if !seenCommands[command.ID] {
 				seenCommands[command.ID] = true
 				result.Commands = append(result.Commands, command)

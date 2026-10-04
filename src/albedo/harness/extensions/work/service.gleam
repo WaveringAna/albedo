@@ -4,6 +4,7 @@ import albedo/harness/client_api
 import albedo/harness/command
 import albedo/harness/extension
 import albedo/harness/extensions/work/ledger as work
+import albedo/harness/extensions/work/notifications
 import albedo/harness/page
 import gleam/dynamic/decode
 import gleam/http.{Delete, Get, Patch, Post}
@@ -391,21 +392,7 @@ fn notify(target: Option(String), item: work.Item, verb: String) -> json.Json {
   let outcome = case target {
     None -> #("not_requested", None)
     Some(session) ->
-      case
-        command.context(session).state(command.Note(
-          "work",
-          verb <> " work item " <> item.title,
-          "<system-note>The user "
-            <> verb
-            <> " work item #"
-            <> int.to_string(item.id)
-            <> " · "
-            <> item.title
-            <> " (status "
-            <> work.status_name(item.status)
-            <> ") in the shared work ledger.</system-note>",
-        ))
-      {
+      case notifications.queue(item, verb, command.context(session).state) {
         Ok(_) -> #("queued", None)
         Error(_) -> #(
           "failed",
@@ -424,7 +411,11 @@ fn notify(target: Option(String), item: work.Item, verb: String) -> json.Json {
 }
 
 fn descriptor(items: List(work.Item), workspace: String) -> json.Json {
-  client_api.page(client_api.Page(
+  client_api.page(page(items, workspace))
+}
+
+pub fn page(items: List(work.Item), workspace: String) -> client_api.Page {
+  client_api.Page(
     title: "work",
     summary: int.to_string(list.length(items)) <> " items",
     empty_state: "nothing tracked yet",
@@ -434,13 +425,13 @@ fn descriptor(items: List(work.Item), workspace: String) -> json.Json {
       client_api.PageRow(
         id: int.to_string(item.id),
         text: item.title,
-        badge: work.status_name(item.status),
+        badge: Some(work.status_name(item.status)),
         tone: "plain",
         detail: Some(api.content_preview(item.notes, 4000)),
         resource: resource(item, workspace),
       )
     }),
-  ))
+  )
 }
 
 fn actions(workspace: String) -> List(client_api.Action) {
@@ -452,50 +443,22 @@ fn actions(workspace: String) -> List(client_api.Action) {
       keyboard_hint: "a",
       confirmation: None,
       fields: [
-        client_api.Field(
-          name: "title",
-          label: "title",
-          kind: "text",
-          required: True,
-          default: json.null(),
-          choices: [],
-          description: "",
-          default_binding: None,
-        ),
-        client_api.Field(
-          name: "notes",
-          label: "notes",
-          kind: "text",
-          required: False,
-          default: json.null(),
-          choices: [],
-          description: "",
-          default_binding: None,
-        ),
-        client_api.Field(
-          name: "parent_id",
-          label: "parent_id",
-          kind: "text",
-          required: False,
-          default: json.null(),
-          choices: [],
-          description: "",
-          default_binding: None,
-        ),
+        client_api.text_field("title", True),
+        client_api.text_field("notes", False),
+        client_api.text_field("parent_id", False),
       ],
       operation: client_api.Operation(
-        id: "createWork",
-        method: Post,
-        path_template: "/extensions/work/items",
-        path: [],
+        ..client_api.operation_defaults(
+          "createWork",
+          Post,
+          "/extensions/work/items",
+          201,
+        ),
         query: query,
-        headers: [],
         body: [
           #("/session_id", client_api.Session("/id")),
           ..client_api.form_body(["title", "notes", "parent_id"])
         ],
-        result_schema: json.object([]),
-        success_status: Some(201),
       ),
     ),
     client_api.Action(
@@ -505,43 +468,31 @@ fn actions(workspace: String) -> List(client_api.Action) {
       confirmation: None,
       fields: [
         client_api.Field(
-          name: "title",
-          label: "title",
-          kind: "text",
-          required: False,
-          default: json.null(),
-          choices: [],
-          description: "",
+          ..client_api.text_field("title", False),
           default_binding: Some(client_api.Row("/resource/value/" <> "title")),
         ),
         client_api.Field(
-          name: "notes",
-          label: "notes",
-          kind: "text",
-          required: False,
-          default: json.null(),
-          choices: [],
-          description: "",
+          ..client_api.text_field("notes", False),
           default_binding: Some(client_api.Row("/resource/value/" <> "notes")),
         ),
         client_api.Field(
-          name: "status",
-          label: "status",
-          kind: "choice",
-          required: False,
-          default: json.null(),
-          choices: list.map(
-            ["open", "active", "blocked", "done", "cancelled"],
-            fn(value) { #(json.string(value), value) },
-          ),
-          description: "",
+          ..client_api.choice_field("status", False, [
+            "open",
+            "active",
+            "blocked",
+            "done",
+            "cancelled",
+          ]),
           default_binding: Some(client_api.Row("/resource/value/" <> "status")),
         ),
       ],
       operation: client_api.Operation(
-        id: "patchWork",
-        method: Patch,
-        path_template: "/extensions/work/items/{item_id}",
+        ..client_api.operation_defaults(
+          "patchWork",
+          Patch,
+          "/extensions/work/items/{item_id}",
+          200,
+        ),
         path: [#("item_id", client_api.Row("/resource/value/id"))],
         query: query,
         headers: [#("If-Match", client_api.Row("/resource/etag"))],
@@ -549,8 +500,6 @@ fn actions(workspace: String) -> List(client_api.Action) {
           #("/notify_session_id", client_api.Session("/id")),
           ..client_api.form_body(["title", "notes", "status"])
         ],
-        result_schema: json.object([]),
-        success_status: Some(200),
       ),
     ),
     client_api.Action(
@@ -560,9 +509,12 @@ fn actions(workspace: String) -> List(client_api.Action) {
       confirmation: None,
       fields: [],
       operation: client_api.Operation(
-        id: "patchWork",
-        method: Patch,
-        path_template: "/extensions/work/items/{item_id}",
+        ..client_api.operation_defaults(
+          "patchWork",
+          Patch,
+          "/extensions/work/items/{item_id}",
+          200,
+        ),
         path: [#("item_id", client_api.Row("/resource/value/id"))],
         query: query,
         headers: [#("If-Match", client_api.Row("/resource/etag"))],
@@ -570,8 +522,6 @@ fn actions(workspace: String) -> List(client_api.Action) {
           #("/status", client_api.Literal(json.string("done"))),
           #("/notify_session_id", client_api.Session("/id")),
         ],
-        result_schema: json.object([]),
-        success_status: Some(200),
       ),
     ),
     client_api.Action(
@@ -581,15 +531,15 @@ fn actions(workspace: String) -> List(client_api.Action) {
       confirmation: Some("Delete this item?"),
       fields: [],
       operation: client_api.Operation(
-        id: "deleteWork",
-        method: Delete,
-        path_template: "/extensions/work/items/{item_id}",
+        ..client_api.operation_defaults(
+          "deleteWork",
+          Delete,
+          "/extensions/work/items/{item_id}",
+          200,
+        ),
         path: [#("item_id", client_api.Row("/resource/value/id"))],
         query: [#("notify_session_id", client_api.Session("/id")), ..query],
         headers: [#("If-Match", client_api.Row("/resource/etag"))],
-        body: [],
-        result_schema: json.object([]),
-        success_status: Some(200),
       ),
     ),
   ]

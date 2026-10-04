@@ -332,7 +332,7 @@ fn descriptor(items: List(ledger.Job), session: String) -> json.Json {
       client_api.PageRow(
         id: int.to_string(item.id),
         text: api.content_preview(item.prompt, 1000),
-        badge: item.kind,
+        badge: Some(item.kind),
         tone: "plain",
         detail: None,
         resource: resource(item),
@@ -344,47 +344,15 @@ fn descriptor(items: List(ledger.Job), session: String) -> json.Json {
 fn actions(session: String) -> List(client_api.Action) {
   let fields = [
     client_api.Field(
-      name: "kind",
-      label: "kind",
+      ..client_api.text_field("kind", True),
       kind: "choice",
-      required: True,
-      default: json.null(),
       choices: list.map(["once", "recurring", "heartbeat"], fn(value) {
         #(json.string(value), value)
       }),
-      description: "",
-      default_binding: None,
     ),
-    client_api.Field(
-      name: "prompt",
-      label: "prompt",
-      kind: "text",
-      required: True,
-      default: json.null(),
-      choices: [],
-      description: "",
-      default_binding: None,
-    ),
-    client_api.Field(
-      name: "delay_seconds",
-      label: "delay_seconds",
-      kind: "integer",
-      required: False,
-      default: json.null(),
-      choices: [],
-      description: "",
-      default_binding: None,
-    ),
-    client_api.Field(
-      name: "every_seconds",
-      label: "every_seconds",
-      kind: "integer",
-      required: False,
-      default: json.null(),
-      choices: [],
-      description: "",
-      default_binding: None,
-    ),
+    client_api.text_field("prompt", True),
+    client_api.integer_field("delay_seconds", False),
+    client_api.integer_field("every_seconds", False),
   ]
   [
     client_api.Action(
@@ -394,12 +362,12 @@ fn actions(session: String) -> List(client_api.Action) {
       confirmation: None,
       fields: fields,
       operation: client_api.Operation(
-        id: "createSchedule",
-        method: Post,
-        path_template: "/extensions/schedule/jobs",
-        path: [],
-        query: [],
-        headers: [],
+        ..client_api.operation_defaults(
+          "createSchedule",
+          Post,
+          "/extensions/schedule/jobs",
+          201,
+        ),
         body: [
           #("/session_id", client_api.Literal(json.string(session))),
           ..client_api.form_body([
@@ -409,8 +377,6 @@ fn actions(session: String) -> List(client_api.Action) {
             "every_seconds",
           ])
         ],
-        result_schema: json.object([]),
-        success_status: Some(201),
       ),
     ),
     client_api.Action(
@@ -420,56 +386,33 @@ fn actions(session: String) -> List(client_api.Action) {
       confirmation: None,
       fields: [
         client_api.Field(
-          name: "kind",
-          label: "kind",
+          ..client_api.text_field("kind", False),
           kind: "choice",
-          required: False,
-          default: json.null(),
           choices: list.map(["once", "recurring", "heartbeat"], fn(value) {
             #(json.string(value), value)
           }),
-          description: "",
           default_binding: Some(client_api.Row("/resource/value/" <> "kind")),
         ),
         client_api.Field(
-          name: "prompt",
-          label: "prompt",
-          kind: "text",
-          required: False,
-          default: json.null(),
-          choices: [],
-          description: "",
+          ..client_api.text_field("prompt", False),
           default_binding: Some(client_api.Row("/resource/value/" <> "prompt")),
         ),
+        client_api.integer_field("delay_seconds", False),
         client_api.Field(
-          name: "delay_seconds",
-          label: "delay_seconds",
-          kind: "integer",
-          required: False,
-          default: json.null(),
-          choices: [],
-          description: "",
-          default_binding: None,
-        ),
-        client_api.Field(
-          name: "every_seconds",
-          label: "every_seconds",
-          kind: "integer",
-          required: False,
-          default: json.null(),
-          choices: [],
-          description: "",
+          ..client_api.integer_field("every_seconds", False),
           default_binding: Some(client_api.Row(
             "/resource/value/" <> "every_seconds",
           )),
         ),
       ],
       operation: client_api.Operation(
-        id: "patchSchedule",
-        method: Patch,
-        path_template: "/extensions/schedule/jobs/{job_id}",
+        ..client_api.operation_defaults(
+          "patchSchedule",
+          Patch,
+          "/extensions/schedule/jobs/{job_id}",
+          200,
+        ),
         path: [#("job_id", client_api.Row("/resource/value/id"))],
-        query: [],
         headers: [#("If-Match", client_api.Row("/resource/etag"))],
         body: client_api.form_body([
           "kind",
@@ -477,8 +420,6 @@ fn actions(session: String) -> List(client_api.Action) {
           "delay_seconds",
           "every_seconds",
         ]),
-        result_schema: json.object([]),
-        success_status: Some(200),
       ),
     ),
     client_api.Action(
@@ -487,31 +428,22 @@ fn actions(session: String) -> List(client_api.Action) {
       keyboard_hint: "",
       confirmation: None,
       fields: [
-        client_api.Field(
-          name: "delay_seconds",
-          label: "delay_seconds",
-          kind: "integer",
-          required: False,
-          default: json.null(),
-          choices: [],
-          description: "",
-          default_binding: None,
-        ),
+        client_api.integer_field("delay_seconds", False),
       ],
       operation: client_api.Operation(
-        id: "patchSchedule",
-        method: Patch,
-        path_template: "/extensions/schedule/jobs/{job_id}",
+        ..client_api.operation_defaults(
+          "patchSchedule",
+          Patch,
+          "/extensions/schedule/jobs/{job_id}",
+          200,
+        ),
         path: [#("job_id", client_api.Row("/resource/value/id"))],
-        query: [],
         headers: [#("If-Match", client_api.Row("/resource/etag"))],
         body: [
           #("/kind", client_api.Literal(json.string("once"))),
           #("/every_seconds", client_api.Literal(json.null())),
           ..client_api.form_body(["delay_seconds"])
         ],
-        result_schema: json.object([]),
-        success_status: Some(200),
       ),
     ),
     client_api.Action(
@@ -521,15 +453,14 @@ fn actions(session: String) -> List(client_api.Action) {
       confirmation: Some("Delete this item?"),
       fields: [],
       operation: client_api.Operation(
-        id: "deleteSchedule",
-        method: Delete,
-        path_template: "/extensions/schedule/jobs/{job_id}",
+        ..client_api.operation_defaults(
+          "deleteSchedule",
+          Delete,
+          "/extensions/schedule/jobs/{job_id}",
+          200,
+        ),
         path: [#("job_id", client_api.Row("/resource/value/id"))],
-        query: [],
         headers: [#("If-Match", client_api.Row("/resource/etag"))],
-        body: [],
-        result_schema: json.object([]),
-        success_status: Some(200),
       ),
     ),
   ]

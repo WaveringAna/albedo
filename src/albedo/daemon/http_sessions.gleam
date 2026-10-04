@@ -309,6 +309,28 @@ pub fn catalog(
       "" | "commands" -> http_catalog.commands(observed)
       _ -> []
     }
+    use native_commands <- result.try(
+      case observed.loaded_revision, observed.discovery {
+        None, Ok(discovery) if kind == "" || kind == "commands" -> {
+          let commands =
+            http_catalog.native_commands(runtime.installed(host), discovery)
+          use shown <- result.try(catalog_page(commands, 262_144))
+          case
+            list.length(commands) <= 200
+            && list.length(shown) == list.length(commands)
+          {
+            True -> Ok(Some(shown))
+            False ->
+              Error(http_api.Failure(
+                503,
+                "catalog_item_unavailable",
+                "native command declarations exceed the catalog size limit",
+              ))
+          }
+        }
+        _, _ -> Ok(None)
+      },
+    )
     let binding = http_api.page_binding(req, parameters)
     use cursor <- result.try(case list.key_find(parameters, "next") {
       Error(_) -> Ok(#("", 0))
@@ -388,55 +410,74 @@ pub fn catalog(
     }
     Ok(http_api.reply(
       200,
-      json.object([
-        #("discovery", case observed.discovery {
-          Error(_) -> json.null()
-          Ok(discovery) ->
-            json.object([
-              #("revision", json.string(discovery.revision)),
-              #("workspace", json.string(discovery.workspace)),
-              #("candidates", json.array(shown_candidates, fn(value) { value })),
-              #(
-                "diagnostics",
-                json.array(list.take(discovery.diagnostics, 200), fn(detail) {
-                  http_api.reason(
-                    "discovery_diagnostic",
-                    http_api.scalar_prefix(detail, 256),
-                  )
-                }),
-              ),
-              #(
-                "next",
-                next(
-                  "discovery",
-                  offset("discovery") + list.length(shown_candidates),
-                  list.length(candidates),
-                  discovery.revision,
-                ),
-              ),
-            ])
-        }),
-        #("discovery_failure", case observed.discovery {
-          Ok(_) -> json.null()
-          Error(reason) -> http_api.reason("discovery_unavailable", reason)
-        }),
-        #(
-          "loaded",
-          json.object([
-            #("revision", json.nullable(observed.loaded_revision, json.string)),
-            #("commands", json.array(shown_commands, fn(value) { value })),
+      json.object(
+        list.append(
+          [
+            #("discovery", case observed.discovery {
+              Error(_) -> json.null()
+              Ok(discovery) ->
+                json.object([
+                  #("revision", json.string(discovery.revision)),
+                  #("workspace", json.string(discovery.workspace)),
+                  #(
+                    "candidates",
+                    json.array(shown_candidates, fn(value) { value }),
+                  ),
+                  #(
+                    "diagnostics",
+                    json.array(
+                      list.take(discovery.diagnostics, 200),
+                      fn(detail) {
+                        http_api.reason(
+                          "discovery_diagnostic",
+                          http_api.scalar_prefix(detail, 256),
+                        )
+                      },
+                    ),
+                  ),
+                  #(
+                    "next",
+                    next(
+                      "discovery",
+                      offset("discovery") + list.length(shown_candidates),
+                      list.length(candidates),
+                      discovery.revision,
+                    ),
+                  ),
+                ])
+            }),
+            #("discovery_failure", case observed.discovery {
+              Ok(_) -> json.null()
+              Error(reason) -> http_api.reason("discovery_unavailable", reason)
+            }),
             #(
-              "next",
-              next(
-                "loaded",
-                offset("loaded") + list.length(shown_commands),
-                list.length(commands),
-                option.unwrap(observed.loaded_revision, "unloaded"),
-              ),
+              "loaded",
+              json.object([
+                #(
+                  "revision",
+                  json.nullable(observed.loaded_revision, json.string),
+                ),
+                #("commands", json.array(shown_commands, fn(value) { value })),
+                #(
+                  "next",
+                  next(
+                    "loaded",
+                    offset("loaded") + list.length(shown_commands),
+                    list.length(commands),
+                    option.unwrap(observed.loaded_revision, "unloaded"),
+                  ),
+                ),
+              ]),
             ),
-          ]),
+          ],
+          case native_commands {
+            None -> []
+            Some(commands) -> [
+              #("native_commands", json.array(commands, fn(value) { value })),
+            ]
+          },
         ),
-      ]),
+      ),
     ))
   }
   http_api.answer(outcome)

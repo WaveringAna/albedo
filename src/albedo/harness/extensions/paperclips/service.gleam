@@ -1,10 +1,10 @@
 import albedo/daemon/bus
 import albedo/daemon/http_api as api
 import albedo/harness/client_api
-import albedo/harness/command
 import albedo/harness/extension
-import albedo/harness/extensions/paperclips/command as presentation
 import albedo/harness/extensions/paperclips/ledger
+import albedo/harness/extensions/paperclips/notifications
+import albedo/harness/extensions/paperclips/presentation
 import albedo/harness/page
 import gleam/dict
 import gleam/dynamic/decode
@@ -240,20 +240,8 @@ fn dispatch(
       )
       let notification = case fields.1, current.session {
         None, _ -> notification("not_requested", None)
-        Some(reply), Some(session) ->
-          case
-            command.context(session).state(command.Note(
-              "paperclips",
-              "answered vent #" <> int.to_string(id),
-              "<system-note>The user read your vent #"
-                <> int.to_string(id)
-                <> " ("
-                <> current.message
-                <> ") and answers: "
-                <> reply
-                <> "</system-note>",
-            ))
-          {
+        Some(reply), Some(_) ->
+          case notifications.reply(current, reply) {
             Ok(_) -> notification("queued", None)
             Error(_) ->
               notification(
@@ -384,7 +372,14 @@ fn descriptor(
   items: List(ledger.Vent),
   labels: dict.Dict(String, String),
 ) -> json.Json {
-  client_api.page(client_api.Page(
+  client_api.page(page(items, labels))
+}
+
+pub fn page(
+  items: List(ledger.Vent),
+  labels: dict.Dict(String, String),
+) -> client_api.Page {
+  client_api.Page(
     title: "paperclips",
     summary: int.to_string(list.length(items)) <> " items",
     empty_state: "no paperclips",
@@ -400,7 +395,7 @@ fn descriptor(
           },
           1000,
         ),
-        badge: ledger.status_name(item.status),
+        badge: Some(ledger.status_name(item.status)),
         tone: "plain",
         detail: Some(api.content_preview(
           presentation.detail(labels, item),
@@ -409,7 +404,7 @@ fn descriptor(
         resource: resource(item),
       )
     }),
-  ))
+  )
 }
 
 fn actions() -> List(client_api.Action) {
@@ -420,60 +415,21 @@ fn actions() -> List(client_api.Action) {
       keyboard_hint: "a",
       confirmation: None,
       fields: [
-        client_api.Field(
-          name: "topic",
-          label: "topic",
-          kind: "choice",
-          required: False,
-          default: json.null(),
-          choices: list.map(
-            ["harness", "workflow", "bug", "user", "other"],
-            fn(value) { #(json.string(value), value) },
-          ),
-          description: "",
-          default_binding: None,
-        ),
-        client_api.Field(
-          name: "title",
-          label: "title",
-          kind: "text",
-          required: False,
-          default: json.null(),
-          choices: [],
-          description: "",
-          default_binding: None,
-        ),
-        client_api.Field(
-          name: "message",
-          label: "message",
-          kind: "text",
-          required: True,
-          default: json.null(),
-          choices: [],
-          description: "",
-          default_binding: None,
-        ),
-        client_api.Field(
-          name: "suggestion",
-          label: "suggestion",
-          kind: "text",
-          required: False,
-          default: json.null(),
-          choices: [],
-          description: "",
-          default_binding: None,
-        ),
+        client_api.choice_field("topic", False, [
+          "harness", "workflow", "bug", "user", "other",
+        ]),
+        client_api.text_field("title", False),
+        client_api.text_field("message", True),
+        client_api.text_field("suggestion", False),
       ],
       operation: client_api.Operation(
-        id: "createPaperclips",
-        method: Post,
-        path_template: "/extensions/paperclips/items",
-        path: [],
-        query: [],
-        headers: [],
+        ..client_api.operation_defaults(
+          "createPaperclips",
+          Post,
+          "/extensions/paperclips/items",
+          201,
+        ),
         body: client_api.form_body(["topic", "title", "message", "suggestion"]),
-        result_schema: json.object([]),
-        success_status: Some(201),
       ),
     ),
     client_api.Action(
@@ -483,26 +439,20 @@ fn actions() -> List(client_api.Action) {
       confirmation: None,
       fields: [
         client_api.Field(
-          name: "reply",
-          label: "reply",
-          kind: "text",
-          required: True,
-          default: json.null(),
-          choices: [],
-          description: "",
+          ..client_api.text_field("reply", True),
           default_binding: Some(client_api.Row("/resource/value/" <> "reply")),
         ),
       ],
       operation: client_api.Operation(
-        id: "patchPaperclips",
-        method: Patch,
-        path_template: "/extensions/paperclips/items/{item_id}",
+        ..client_api.operation_defaults(
+          "patchPaperclips",
+          Patch,
+          "/extensions/paperclips/items/{item_id}",
+          200,
+        ),
         path: [#("item_id", client_api.Row("/resource/value/id"))],
-        query: [],
         headers: [#("If-Match", client_api.Row("/resource/etag"))],
         body: client_api.form_body(["reply"]),
-        result_schema: json.object([]),
-        success_status: Some(200),
       ),
     ),
     client_api.Action(
@@ -512,15 +462,15 @@ fn actions() -> List(client_api.Action) {
       confirmation: None,
       fields: [],
       operation: client_api.Operation(
-        id: "patchPaperclips",
-        method: Patch,
-        path_template: "/extensions/paperclips/items/{item_id}",
+        ..client_api.operation_defaults(
+          "patchPaperclips",
+          Patch,
+          "/extensions/paperclips/items/{item_id}",
+          200,
+        ),
         path: [#("item_id", client_api.Row("/resource/value/id"))],
-        query: [],
         headers: [#("If-Match", client_api.Row("/resource/etag"))],
         body: [#("/status", client_api.Literal(json.string("acknowledged")))],
-        result_schema: json.object([]),
-        success_status: Some(200),
       ),
     ),
     client_api.Action(
@@ -530,31 +480,25 @@ fn actions() -> List(client_api.Action) {
       confirmation: None,
       fields: [
         client_api.Field(
-          name: "resolution",
-          label: "resolution",
-          kind: "text",
-          required: False,
-          default: json.null(),
-          choices: [],
-          description: "",
+          ..client_api.text_field("resolution", False),
           default_binding: Some(client_api.Row(
             "/resource/value/" <> "resolution",
           )),
         ),
       ],
       operation: client_api.Operation(
-        id: "patchPaperclips",
-        method: Patch,
-        path_template: "/extensions/paperclips/items/{item_id}",
+        ..client_api.operation_defaults(
+          "patchPaperclips",
+          Patch,
+          "/extensions/paperclips/items/{item_id}",
+          200,
+        ),
         path: [#("item_id", client_api.Row("/resource/value/id"))],
-        query: [],
         headers: [#("If-Match", client_api.Row("/resource/etag"))],
         body: [
           #("/status", client_api.Literal(json.string("resolved"))),
           ..client_api.form_body(["resolution"])
         ],
-        result_schema: json.object([]),
-        success_status: Some(200),
       ),
     ),
     client_api.Action(
@@ -564,15 +508,15 @@ fn actions() -> List(client_api.Action) {
       confirmation: None,
       fields: [],
       operation: client_api.Operation(
-        id: "patchPaperclips",
-        method: Patch,
-        path_template: "/extensions/paperclips/items/{item_id}",
+        ..client_api.operation_defaults(
+          "patchPaperclips",
+          Patch,
+          "/extensions/paperclips/items/{item_id}",
+          200,
+        ),
         path: [#("item_id", client_api.Row("/resource/value/id"))],
-        query: [],
         headers: [#("If-Match", client_api.Row("/resource/etag"))],
         body: [#("/status", client_api.Literal(json.string("dismissed")))],
-        result_schema: json.object([]),
-        success_status: Some(200),
       ),
     ),
     client_api.Action(
@@ -582,15 +526,14 @@ fn actions() -> List(client_api.Action) {
       confirmation: Some("Delete this item?"),
       fields: [],
       operation: client_api.Operation(
-        id: "deletePaperclips",
-        method: Delete,
-        path_template: "/extensions/paperclips/items/{item_id}",
+        ..client_api.operation_defaults(
+          "deletePaperclips",
+          Delete,
+          "/extensions/paperclips/items/{item_id}",
+          200,
+        ),
         path: [#("item_id", client_api.Row("/resource/value/id"))],
-        query: [],
         headers: [#("If-Match", client_api.Row("/resource/etag"))],
-        body: [],
-        result_schema: json.object([]),
-        success_status: Some(200),
       ),
     ),
   ]

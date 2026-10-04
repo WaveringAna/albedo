@@ -7450,6 +7450,13 @@ components:
     Catalog:
       type: object
       properties:
+        native_commands:
+          type: array
+          items:
+            $ref: '#/components/schemas/HTTPCommand'
+          maxItems: 200
+          description: Static HTTP declarations for selected extensions when no composition has
+            been loaded. Reading these declarations does not prepare extensions or start a kernel.
         discovery:
           type: [object, 'null']
           properties:

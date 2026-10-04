@@ -1,5 +1,6 @@
 import albedo/daemon/bus
 import albedo/daemon/http_api as api
+import albedo/harness/client_api
 import albedo/harness/command
 import albedo/harness/extension
 import albedo/harness/extensions/links/ledger
@@ -13,7 +14,7 @@ import gleam/http/response
 import gleam/int
 import gleam/json
 import gleam/list
-import gleam/option
+import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
 import gleam/uri
@@ -356,121 +357,82 @@ fn change(
 fn linked_memory(workspaces: List(String)) -> String
 
 fn descriptor(group: ledger.Group, members: List(String)) -> json.Json {
+  client_api.page(page(group, members))
+}
+
+pub fn page(group: ledger.Group, members: List(String)) -> client_api.Page {
   let query = [
-    #("workspace", literal(json.string(group.workspace))),
-    #("view", literal(json.string("configuration"))),
+    #("workspace", client_api.Literal(json.string(group.workspace))),
+    #("view", client_api.Literal(json.string("configuration"))),
   ]
-  let merge =
-    json.object([
-      #("id", json.string("merge")),
-      #("label", json.string("link")),
-      #("keyboard_hint", json.string("a")),
-      #("confirmation", json.null()),
-      #("fields", json.array([field("other_workspace")], fn(field) { field })),
-      #(
-        "operation",
-        operation(
-          "mergeLinkGroups",
-          "POST",
-          query,
-          [#("If-Match", literal(json.string(ledger.etag(group))))],
-          [#("/other_workspace", binding("form", "/other_workspace"))],
+  client_api.Page(
+    title: "links",
+    summary: int.to_string(group.total - 1) <> " linked",
+    empty_state: "not linked",
+    glance: None,
+    actions: [
+      client_api.Action(
+        id: "merge",
+        label: "link",
+        keyboard_hint: "a",
+        confirmation: None,
+        fields: [
+          client_api.Field(
+            ..client_api.text_field("other_workspace", True),
+            label: "workspace",
+            description: "path or host:/path",
+          ),
+        ],
+        operation: client_api.Operation(
+          ..client_api.operation_defaults(
+            "mergeLinkGroups",
+            Post,
+            "/extensions/links/groups",
+            200,
+          ),
+          query: query,
+          headers: [
+            #("If-Match", client_api.Literal(json.string(ledger.etag(group)))),
+          ],
+          body: client_api.form_body(["other_workspace"]),
         ),
       ),
-    ])
-  let unlink =
-    json.object([
-      #("id", json.string("unlink")),
-      #("label", json.string("unlink")),
-      #("keyboard_hint", json.string("x")),
-      #(
-        "confirmation",
-        json.string(
+      client_api.Action(
+        id: "unlink",
+        label: "unlink",
+        keyboard_hint: "x",
+        confirmation: Some(
           "Unlink this workspace? Its memory and work items will remain.",
         ),
-      ),
-      #("fields", json.array([], fn(field) { field })),
-      #(
-        "operation",
-        operation(
-          "unlinkWorkspace",
-          "DELETE",
-          [#("member", binding("row", "/resource/value/member")), ..query],
-          [#("If-Match", binding("row", "/resource/etag"))],
-          [],
+        fields: [],
+        operation: client_api.Operation(
+          ..client_api.operation_defaults(
+            "unlinkWorkspace",
+            Delete,
+            "/extensions/links/groups",
+            200,
+          ),
+          query: [
+            #("member", client_api.Row("/resource/value/member")),
+            ..query
+          ],
+          headers: [#("If-Match", client_api.Row("/resource/etag"))],
         ),
       ),
-    ])
-  json.object([
-    #("title", json.string("links")),
-    #("summary", json.string(int.to_string(group.total - 1) <> " linked")),
-    #("empty_state", json.string("not linked")),
-    #("glance", json.null()),
-    #("actions", json.array([merge, unlink], fn(action) { action })),
-    #(
-      "rows",
-      json.array(members, fn(member) {
-        json.object([
-          #("id", json.string(api.etag(member) |> string.replace("\"", ""))),
-          #("text", json.string(member)),
-          #("badge", json.null()),
-          #("tone", json.string("plain")),
-          #("detail", json.null()),
-          #(
-            "resource",
-            json.object([
-              #("url", json.string(url(group.workspace))),
-              #("etag", json.string(ledger.etag(group))),
-              #("value", json.object([#("member", json.string(member))])),
-            ]),
-          ),
-        ])
-      }),
-    ),
-  ])
-}
-
-fn literal(value: json.Json) -> json.Json {
-  json.object([#("source", json.string("literal")), #("value", value)])
-}
-
-fn binding(source: String, pointer: String) -> json.Json {
-  json.object([
-    #("source", json.string(source)),
-    #("pointer", json.string(pointer)),
-  ])
-}
-
-fn operation(
-  id: String,
-  method: String,
-  query: List(#(String, json.Json)),
-  headers: List(#(String, json.Json)),
-  body: List(#(String, json.Json)),
-) -> json.Json {
-  json.object([
-    #("operation_id", json.string(id)),
-    #("method", json.string(method)),
-    #("path_template", json.string("/extensions/links/groups")),
-    #("path", json.object([])),
-    #("query", json.object(query)),
-    #("headers", json.object(headers)),
-    #("body", json.object(body)),
-    #("result_schema", json.object([])),
-    #("success_status", json.int(200)),
-  ])
-}
-
-fn field(name: String) -> json.Json {
-  json.object([
-    #("name", json.string(name)),
-    #("label", json.string("workspace")),
-    #("type", json.string("text")),
-    #("required", json.bool(True)),
-    #("default", json.null()),
-    #("choices", json.array([], fn(value) { value })),
-    #("minimum", json.null()),
-    #("maximum", json.null()),
-    #("description", json.string("path or host:/path")),
-  ])
+    ],
+    rows: list.map(members, fn(member) {
+      client_api.PageRow(
+        id: api.etag(member) |> string.replace("\"", ""),
+        text: member,
+        badge: None,
+        tone: "plain",
+        detail: None,
+        resource: json.object([
+          #("url", json.string(url(group.workspace))),
+          #("etag", json.string(ledger.etag(group))),
+          #("value", json.object([#("member", json.string(member))])),
+        ]),
+      )
+    }),
+  )
 }

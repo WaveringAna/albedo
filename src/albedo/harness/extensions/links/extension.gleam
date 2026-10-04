@@ -13,14 +13,11 @@ import albedo/harness/command.{
 }
 import albedo/harness/extension
 import albedo/harness/extensions/links/ledger
-import albedo/harness/extensions/links/presence.{
-  type Presence, Gone, Here, Unknown,
-}
+import albedo/harness/extensions/links/presence.{type Presence, Gone}
 import albedo/harness/extensions/links/service
 import albedo/harness/links
 import albedo/harness/location
 import albedo/harness/page
-import albedo/harness/ssh
 import gleam/int
 import gleam/json
 import gleam/list
@@ -120,7 +117,7 @@ fn command(storage: store.Store, workspace: String) -> Command {
     fn(_, caller, args) {
       let #(action, details) = page.args(args, "")
       case action, caller {
-        "", _ -> Ok(listing(links.group(storage, workspace)))
+        "", _ -> listing(storage, workspace)
         _, UserCall -> change(storage, workspace, action, details)
         _, _ -> Error("only a user links workspaces")
       }
@@ -128,24 +125,25 @@ fn command(storage: store.Store, workspace: String) -> Command {
   )
 }
 
-fn listing(group: List(String)) -> command.Outcome {
-  let rows = case group {
-    [_] | [] -> []
-    [own, ..linked] -> [
-      page.detail_row(own, own, "here", page.Active, ""),
-      ..list.map2(linked, presence.presences(linked, page_wait_ms), row)
-    ]
-  }
-  Data(
-    page.to_json(page.Document(
-      "links",
-      case list.length(group) {
-        n if n > 1 -> int.to_string(n - 1) <> " linked"
-        _ -> ""
-      },
-      "not linked · a links a workspace holding the same project",
-      rows,
-      [
+fn listing(
+  storage: store.Store,
+  workspace: String,
+) -> Result(command.Outcome, String) {
+  use group <- result.try(ledger.read(storage, workspace))
+  // Refresh the same bounded presence cache used by the extension context.
+  let _ = presence.presences(group.members, page_wait_ms)
+  let document = service.page(group, group.members)
+  // Legacy text actions identify members by their workspace, not their HTTP row hash.
+  let document =
+    client_api.Page(
+      ..document,
+      rows: list.map(document.rows, fn(row) {
+        client_api.PageRow(..row, id: row.text)
+      }),
+    )
+  Ok(
+    Data(
+      page.legacy(document, [
         page.Action(
           "a",
           "link",
@@ -155,41 +153,9 @@ fn listing(group: List(String)) -> command.Outcome {
           False,
         ),
         page.Action("x", "unlink", "remove", True, page.NoInput, True),
-      ],
-      None,
-    )),
+      ]),
+    ),
   )
-}
-
-/// A linked member as the page shows it. A host that does not answer is not
-/// a gone folder: the row says why, and nothing suggests removing it.
-fn row(member: String, presence: Presence) -> page.Row {
-  case presence {
-    Here -> page.detail_row(member, member, "", page.Plain, "")
-    Gone ->
-      page.detail_row(
-        member,
-        member,
-        "gone",
-        page.Muted,
-        "its folder no longer exists; its memory and work items stay until you remove it",
-      )
-    Unknown(target, why) -> {
-      let #(badge, tone) = case why {
-        ssh.Warming -> #("connecting", page.Muted)
-        ssh.NeedsAuth(..) -> #("sign in", page.Warning)
-        ssh.Unreachable(_) | ssh.Unsupported(_) -> #("unreachable", page.Muted)
-      }
-      page.detail_row(
-        member,
-        member,
-        badge,
-        tone,
-        ssh.describe(target, why)
-          <> "; its memory and work items are still read",
-      )
-    }
-  }
 }
 
 fn change(

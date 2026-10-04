@@ -282,22 +282,6 @@ pub fn list(store: Store, limit: Int) -> Result(List(Vent), Error) {
   })
 }
 
-/// The review listing: open vents first, then acknowledged, then the quietly
-/// finished ones, newest within each rank — so an old open vent is never
-/// crowded out of triage by newer closed ones.
-pub fn review(store: Store, limit: Int) -> Result(List(Vent), Error) {
-  use _ <- result.try(within(limit))
-  storage.query(store, fn(db) {
-    rows(
-      db,
-      "SELECT "
-        <> columns
-        <> " FROM paperclips ORDER BY CASE status WHEN 'open' THEN 0 WHEN 'acknowledged' THEN 1 WHEN 'resolved' THEN 2 ELSE 3 END, id DESC LIMIT ?",
-      [sqlight.int(limit)],
-    )
-  })
-}
-
 /// The display name for each of `ids`, one query for a whole listing: the
 /// name someone gave the session, else a child's family name, else its
 /// title — the same precedence the agents view uses. An unnamed session, or

@@ -1,15 +1,12 @@
-//// An extension's own screen, described as data. A page command (a command
-//// with `page: True`) answers one `Document` when run without arguments; a
-//// client renders it and runs each action as the same command with
-//// `action` = the action's `run` and `details` = the selected row's id (for
-//// row actions) followed by the entered text or chosen option, separated by a
-//// space. The client re-runs the page command afterwards, so the document is
-//// always rebuilt from the extension's own state rather than patched locally.
+//// Sidebar rows and text-command page envelopes. Extensions build their
+//// presentation once as a client_api.Page. The legacy adapter keeps the
+//// command envelope and action/details syntax around that same presentation.
 
+import albedo/harness/client_api
 import gleam/dict.{type Dict}
 import gleam/json
 import gleam/list
-import gleam/option.{type Option, None, Some}
+import gleam/option
 import gleam/result
 import gleam/string
 
@@ -89,59 +86,6 @@ pub type Glance {
   Glance(title: String, rows: List(Row))
 }
 
-pub type Document {
-  Document(
-    title: String,
-    summary: String,
-    /// Shown instead of rows when there are none.
-    empty: String,
-    rows: List(Row),
-    actions: List(Action),
-    glance: Option(Glance),
-  )
-}
-
-pub fn to_json(document: Document) -> json.Json {
-  json.object([
-    #(
-      "page",
-      json.object([
-        #("title", json.string(document.title)),
-        #("summary", json.string(document.summary)),
-        #("empty", json.string(document.empty)),
-        #("rows", json.array(document.rows, row_json)),
-        #("actions", json.array(document.actions, action_json)),
-        #("glance", case document.glance {
-          None -> json.null()
-          Some(glance) ->
-            json.object([
-              #("title", json.string(glance.title)),
-              #("rows", json.array(glance.rows, row_json)),
-            ])
-        }),
-      ]),
-    ),
-  ])
-}
-
-fn row_json(row: Row) -> json.Json {
-  json.object([
-    #("id", json.string(row.id)),
-    #("text", json.string(row.text)),
-    #("badge", json.string(row.badge)),
-    #("detail", json.string(row.detail)),
-    #(
-      "tone",
-      json.string(case row.tone {
-        Plain -> "plain"
-        Active -> "active"
-        Warning -> "warning"
-        Muted -> "muted"
-      }),
-    ),
-  ])
-}
-
 fn action_json(action: Action) -> json.Json {
   let input = case action.input {
     NoInput -> [#("input", json.string("none"))]
@@ -173,4 +117,33 @@ fn action_json(action: Action) -> json.Json {
     ],
     input,
   ))
+}
+
+/// Preserve the command document envelope around the canonical HTTP page.
+/// Text command actions retain their own argument syntax.
+pub fn legacy(document: client_api.Page, actions: List(Action)) -> json.Json {
+  json.object([
+    #(
+      "page",
+      json.object([
+        #("title", json.string(document.title)),
+        #("summary", json.string(document.summary)),
+        #("empty", json.string(document.empty_state)),
+        #(
+          "rows",
+          json.array(document.rows, fn(row) {
+            json.object([
+              #("id", json.string(row.id)),
+              #("text", json.string(row.text)),
+              #("badge", json.string(option.unwrap(row.badge, ""))),
+              #("tone", json.string(row.tone)),
+              #("detail", json.string(option.unwrap(row.detail, ""))),
+            ])
+          }),
+        ),
+        #("actions", json.array(actions, action_json)),
+        #("glance", json.nullable(document.glance, fn(value) { value })),
+      ]),
+    ),
+  ])
 }

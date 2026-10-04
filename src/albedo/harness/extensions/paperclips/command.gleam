@@ -4,16 +4,15 @@
 //// The ledger is global, so the triaging session is often not the one that
 //// vented.
 
-import albedo/harness/command.{
-  type Command, Argument, Command, Data, Note, UserCall,
-}
+import albedo/harness/command.{type Command, Argument, Command, Data, UserCall}
 import albedo/harness/extensions/paperclips/ledger as paperclips
+import albedo/harness/extensions/paperclips/notifications
+import albedo/harness/extensions/paperclips/service
 import albedo/harness/page
-import gleam/dict
 import gleam/int
 import gleam/json
 import gleam/list
-import gleam/option.{type Option, None, Some}
+import gleam/option.{None}
 import gleam/result
 import gleam/string
 
@@ -44,7 +43,7 @@ pub fn command(store: paperclips.Store) -> Command {
 
 fn listing(store: paperclips.Store) -> Result(command.Outcome, String) {
   use vents <- result.try(
-    paperclips.review(store, 200) |> result.map_error(describe),
+    paperclips.page(store, 0, 200) |> result.map_error(describe),
   )
   use labels <- result.try(
     paperclips.session_labels(
@@ -57,158 +56,31 @@ fn listing(store: paperclips.Store) -> Result(command.Outcome, String) {
     )
     |> result.map_error(describe),
   )
-  let rows = list.map(vents, row(labels, _))
-  let open = list.filter(vents, fn(vent) { vent.status == paperclips.Open })
   Ok(
     Data(
-      page.to_json(page.Document(
-        "paperclips",
-        summary(vents),
-        "nothing vented yet · the model files vents with vent()",
-        rows,
-        [
-          page.Action(
-            "a",
-            "acknowledge",
-            "acknowledge",
-            True,
-            page.NoInput,
-            False,
-          ),
-          page.Action(
-            "n",
-            "reply",
-            "reply",
-            True,
-            page.Text("answer", False),
-            False,
-          ),
-          page.Action("r", "resolve", "resolve", True, page.NoInput, False),
-          page.Action("d", "dismiss", "dismiss", True, page.NoInput, False),
-          page.Action("x", "remove", "remove", True, page.NoInput, True),
-        ],
-        Some(page.Glance("open vents", list.map(open, glance_row))),
-      )),
+      page.legacy(service.page(vents, labels), [
+        page.Action(
+          "a",
+          "acknowledge",
+          "acknowledge",
+          True,
+          page.NoInput,
+          False,
+        ),
+        page.Action(
+          "n",
+          "reply",
+          "reply",
+          True,
+          page.Text("answer", False),
+          False,
+        ),
+        page.Action("r", "resolve", "resolve", True, page.NoInput, False),
+        page.Action("d", "dismiss", "dismiss", True, page.NoInput, False),
+        page.Action("x", "remove", "remove", True, page.NoInput, True),
+      ]),
     ),
   )
-}
-
-/// Open vents first, then acknowledged, then the quietly finished ones —
-/// the tone each status wears. `paperclips.review` already orders rows this
-/// way, newest within each rank.
-fn status_style(status: paperclips.Status) -> #(Int, page.Tone) {
-  case status {
-    paperclips.Open -> #(0, page.Warning)
-    paperclips.Acknowledged -> #(1, page.Active)
-    paperclips.Resolved -> #(2, page.Muted)
-    paperclips.Dismissed -> #(3, page.Muted)
-  }
-}
-
-pub fn title(vent: paperclips.Vent) -> String {
-  case vent.title {
-    "" -> short_title(vent.message)
-    title -> title
-  }
-}
-
-fn row(labels: dict.Dict(String, String), vent: paperclips.Vent) -> page.Row {
-  page.detail_row(
-    int.to_string(vent.id),
-    title(vent),
-    paperclips.status_name(vent.status),
-    status_style(vent.status).1,
-    detail(labels, vent),
-  )
-}
-
-/// The glance sidebar shows one short line per open vent; its details wait
-/// for the page itself, so the 3-second glance poll never builds them.
-fn glance_row(vent: paperclips.Vent) -> page.Row {
-  page.detail_row(
-    int.to_string(vent.id),
-    title(vent),
-    paperclips.status_name(vent.status),
-    status_style(vent.status).1,
-    "",
-  )
-}
-
-/// The columns of the list a titleless vent's title may take.
-const title_columns = 64
-
-/// The list shows one short line per vent even when the model did not set
-/// a title; the full text belongs in the detail.
-fn short_title(message: String) -> String {
-  let flat = string.replace(message, "\n", " ")
-  case string.length(flat) <= title_columns {
-    True -> flat
-    False ->
-      flat
-      |> string.to_graphemes
-      |> list.take(title_columns)
-      |> string.concat
-      <> "…"
-  }
-}
-
-/// Everything the detail pane shows for one vent.
-pub fn detail(
-  labels: dict.Dict(String, String),
-  vent: paperclips.Vent,
-) -> String {
-  [
-    vent.message,
-    case vent.suggestion {
-      "" -> ""
-      suggestion -> "\n\nsuggestion: " <> suggestion
-    },
-    case vent.reply {
-      "" -> ""
-      reply -> "\n\nanswered: " <> reply
-    },
-    case vent.resolution {
-      "" -> ""
-      resolution ->
-        "\n\nresolved by session "
-        <> session_label(labels, vent.resolved_by)
-        <> ": "
-        <> resolution
-    },
-    "\n\nfiled "
-      <> vent.created_at
-      <> " by session "
-      <> session_label(labels, vent.session)
-      <> " in "
-      <> vent.cwd,
-  ]
-  |> string.concat
-}
-
-/// The filing session by its name when it has one, else a short id.
-fn session_label(
-  labels: dict.Dict(String, String),
-  session: Option(String),
-) -> String {
-  case session {
-    Some(session) ->
-      dict.get(labels, session) |> result.unwrap(string.slice(session, 0, 8))
-    None -> "—"
-  }
-}
-
-fn summary(vents: List(paperclips.Vent)) -> String {
-  [
-    paperclips.Open, paperclips.Acknowledged, paperclips.Resolved,
-    paperclips.Dismissed,
-  ]
-  |> list.filter_map(fn(status) {
-    case list.count(vents, fn(vent) { vent.status == status }) {
-      0 -> Error(Nil)
-      count -> Ok(int.to_string(count) <> " " <> paperclips.status_name(status))
-    }
-  })
-  |> string.join(" · ")
 }
 
 fn change(
@@ -273,22 +145,7 @@ fn reply(
     paperclips.answer(store, vent.id, answer) |> result.map_error(describe),
   )
   let label = "#" <> int.to_string(vent.id)
-  let note =
-    Note(
-      "paperclips",
-      "answered vent " <> label,
-      "<system-note>The user read your vent "
-        <> label
-        <> " ("
-        <> vent.message
-        <> ") and answers: "
-        <> answer
-        <> "</system-note>",
-    )
-  let queued = case vent.session {
-    Some(session) -> command.context(session).state(note)
-    None -> Error("the vent records no session to answer")
-  }
+  let queued = notifications.reply(vent, answer)
   Ok(
     Data(
       json.object([

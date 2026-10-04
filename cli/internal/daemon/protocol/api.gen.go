@@ -230,7 +230,10 @@ type Catalog struct {
 		Next     *PageToken        `json:"next" nullable:"true"`
 		Revision *ID               `json:"revision" nullable:"true"`
 	} `json:"loaded"`
-	Pages []PageDescriptor `json:"pages,omitempty"`
+
+	// NativeCommands Static HTTP declarations for selected extensions when no composition has been loaded. Reading these declarations does not prepare extensions or start a kernel.
+	NativeCommands []HTTPCommand    `json:"native_commands,omitempty"`
+	Pages          []PageDescriptor `json:"pages,omitempty"`
 }
 
 // CatalogCandidate defines model for CatalogCandidate.
