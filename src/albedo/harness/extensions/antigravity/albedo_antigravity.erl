@@ -313,7 +313,7 @@ exchange(Code, Redirect, Progress, {endpoints, TokenUrl, UserinfoUrl, _} = Endpo
                   <<"expires_in">> := In} when is_integer(In), In > 0 ->
                     Progress(<<"getting user info">>),
                     Email = email(UserinfoUrl, Access),
-                    case discover(Access, Endpoints, Progress) of
+                    case discover(Access, Endpoints, Progress, Email) of
                         {ok, Project} ->
                             {ok, json:encode(maps:merge(Email, #{
                                 <<"type">> => <<"oauth">>,
@@ -322,7 +322,7 @@ exchange(Code, Redirect, Progress, {endpoints, TokenUrl, UserinfoUrl, _} = Endpo
                                 <<"expires">> => erlang:system_time(millisecond) + In * 1000 - ?EXPIRY_MARGIN_MS,
                                 <<"projectId">> => Project
                             }))};
-                        {error, Reason} -> {error, verification(Reason, Email)}
+                        {error, _} = Error -> Error
                     end;
                 #{<<"access_token">> := _} -> {error, <<"no refresh token received; sign in again">>};
                 _ -> {error, <<"Antigravity token exchange response is incomplete">>}
@@ -343,9 +343,12 @@ email(Url, Access) ->
 
 %% Finds the account's Cloud Code Assist project, provisioning the free tier
 %% first when the account has none, as the Antigravity IDE does.
-discover(Access, {endpoints, _, _, CloudCode}, Progress) ->
+discover(Access, Endpoints, Progress) ->
+    discover(Access, Endpoints, Progress, #{}).
+
+discover(Access, {endpoints, _, _, CloudCode}, Progress, Email) ->
     Progress(<<"checking cloud code assist account status">>),
-    Call = fun(Method, Path, Body) -> cloud_code(Method, CloudCode, Path, Access, Body) end,
+    Call = fun(Method, Path, Body) -> cloud_code(Method, CloudCode, Path, Access, Body, Email) end,
     maybe
         {ok, Initial} ?= load(Call),
         ok ?= eligible(Initial),
@@ -411,7 +414,7 @@ settle(Call, #{<<"name">> := <<_, _/binary>> = Name}, Deadline) ->
     end;
 settle(_, _, _) -> {error, <<"onboardUser returned an operation without a name">>}.
 
-cloud_code(Method, Base, Path, Access, Body) ->
+cloud_code(Method, Base, Path, Access, Body, Email) ->
     Headers = [{"authorization", "Bearer " ++ binary_to_list(Access)},
                {"user-agent", binary_to_list(sign_in_user_agent())}],
     Encoded = case Body of
@@ -423,7 +426,11 @@ cloud_code(Method, Base, Path, Access, Body) ->
             try {ok, json:decode(Response)}
             catch _:_ -> {error, <<"Cloud Code Assist returned invalid JSON">>}
             end;
-        {ok, Status, Response} -> {error, failure(Path, Status, Response)};
+        {ok, Status, Response} ->
+            case 'albedo@harness@extensions@antigravity@errors':verification_url(Response) of
+                {ok, Url} -> {error, verification(Url, Email)};
+                {error, nil} -> {error, failure(Path, Status, Response)}
+            end;
         Error -> Error
     end.
 
@@ -431,17 +438,13 @@ failure(What, Status, Body) ->
     iolist_to_binary(io_lib:format("~s failed (~B): ~s", [What, Status, binary:part(Body, 0, min(byte_size(Body), 2048))])).
 
 %% Google asks some accounts to verify before Cloud Code Assist serves them.
-verification(Reason, Email) ->
-    case binary:match(Reason, <<"VALIDATION_REQUIRED">>) of
-        nomatch -> Reason;
-        _ ->
-            Url = case re:run(Reason, <<"\"validation_url\"\\s*:\\s*\"([^\"]+)\"">>, [{capture, all_but_first, binary}]) of
-                {match, [Found]} -> Found;
-                _ -> <<"https://accounts.google.com">>
-            end,
-            For = case Email of #{<<"email">> := E} -> <<" for ", E/binary>>; _ -> <<>> end,
-            <<"Account verification required", For/binary, ". Visit ", Url/binary, " to continue, then sign in again.">>
-    end.
+verification(Link, Email) ->
+    Url = case Link of
+        <<>> -> <<"https://accounts.google.com">>;
+        _ -> Link
+    end,
+    For = case Email of #{<<"email">> := E} -> <<" for ", E/binary>>; _ -> <<>> end,
+    <<"Account verification required", For/binary, ". Visit ", Url/binary, " to continue, then sign in again.">>.
 
 http(Method, Url0, Headers, Body) ->
     case albedo_http:request(Method, Url0, Headers, Body, 30000, 10000) of

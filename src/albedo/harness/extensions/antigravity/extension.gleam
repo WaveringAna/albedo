@@ -4,6 +4,7 @@
 
 import albedo/harness/extension
 import albedo/harness/extensions/antigravity/catalog
+import albedo/harness/extensions/antigravity/errors
 import albedo/harness/extensions/antigravity/stream
 import albedo/harness/extensions/antigravity/wire
 import albedo/harness/oauth
@@ -14,7 +15,6 @@ import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
 import gleam/int
 import gleam/json
-import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
@@ -221,14 +221,14 @@ pub fn explain(
           )
       }
     types.HttpError(status, body) ->
-      Some(case validation_url(body) {
-        Ok(url) ->
+      Some(case errors.verification_url(body) {
+        Ok(url) if url != "" ->
           "Google requires account verification for "
           <> account
           <> ". Visit "
           <> url
           <> ", then send your message again"
-        Error(_) ->
+        _ ->
           "Cloud Code Assist API error ("
           <> int.to_string(status)
           <> "): "
@@ -250,28 +250,6 @@ fn limit_message(account: String, limit: rotation.Limited) -> String {
     limit.next,
     "no other Google account has room. Add one with /login or wait for the reset",
   )
-}
-
-fn validation_url(body: String) -> Result(String, Nil) {
-  let detail = {
-    use reason <- decode.optional_field("reason", "", decode.string)
-    use url <- decode.optional_field(
-      "metadata",
-      "",
-      decode.optional_field("validation_url", "", decode.string, decode.success),
-    )
-    decode.success(#(reason, url))
-  }
-  use details <- result.try(
-    json.parse(body, decode.at(["error", "details"], decode.list(detail)))
-    |> result.replace_error(Nil),
-  )
-  list.find_map(details, fn(detail) {
-    case detail {
-      #("VALIDATION_REQUIRED", url) if url != "" -> Ok(url)
-      _ -> Error(Nil)
-    }
-  })
 }
 
 fn access_decoder() -> decode.Decoder(Access) {
