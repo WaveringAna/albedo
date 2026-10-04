@@ -15,7 +15,7 @@ The Go client returns `daemon.APIError` for HTTP failures, retaining the status,
 
 ## contributing commands
 
-`CommandPlugin` in an extension declares static commands; a `ManagedPlugin` contributes dynamic ones through `Managed.commands` (this is how skills registers its slash commands). the type lives in [`command.gleam`](../src/albedo/harness/command.gleam):
+`CommandPlugin` in an extension declares static commands. Human HTTP resource commands use `command.resource` for catalog metadata; their reads and changes belong to the extension service. a `ManagedPlugin` contributes dynamic ones through `Managed.commands` (this is how skills registers its slash commands). the type lives in [`command.gleam`](../src/albedo/harness/command.gleam):
 
 ```gleam
 Command(

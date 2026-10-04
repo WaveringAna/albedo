@@ -1288,7 +1288,7 @@ pub fn command_entries(
 
 pub fn client_commands(
   composition: Composition,
-) -> List(#(String, client_api.Command)) {
+) -> List(#(String, client_api.Command, command.Command)) {
   let commands = command_entries(composition)
   composition.extensions
   |> list.flat_map(fn(item) {
@@ -1297,12 +1297,12 @@ pub fn client_commands(
       case plugin {
         ClientPlugin(bindings) ->
           bindings
-          |> list.filter(fn(binding) {
-            list.any(commands, fn(command) {
-              command.0 == item.name && command.1.name == binding.slash_name
+          |> list.filter_map(fn(binding) {
+            list.find(commands, fn(entry) {
+              entry.0 == item.name && entry.1.name == binding.slash_name
             })
+            |> result.map(fn(entry) { #(item.name, binding, entry.1) })
           })
-          |> list.map(fn(binding) { #(item.name, binding) })
         _ -> []
       }
     })

@@ -1,6 +1,6 @@
 import albedo/harness/client_api
+import albedo/harness/command.{Argument}
 import albedo/harness/extension as harness_extension
-import albedo/harness/extensions/paperclips/command as paperclips_command
 import albedo/harness/extensions/paperclips/ledger as paperclips
 import albedo/harness/extensions/paperclips/migrations/reply
 import albedo/harness/extensions/paperclips/migrations/resolution
@@ -20,6 +20,23 @@ pub fn extension() -> harness_extension.Extension {
     "A vent channel: the model records friction, the user reviews it in /paperclips.",
     ["python"],
     [
+      harness_extension.CommandPlugin([
+        command.resource(
+          "/paperclips",
+          "Review what the model vented about: acknowledge <id>, reply <id> <text>, resolve <id>, dismiss <id>, remove <id>. A reply reaches the model as a note.",
+          [
+            Argument("action", "what to do; omit to review the vents", False, [
+              "acknowledge", "reply", "resolve", "dismiss", "remove",
+            ]),
+            Argument(
+              "details",
+              "reply: <id> <text> · the rest: <id>",
+              False,
+              [],
+            ),
+          ],
+        ),
+      ]),
       harness_extension.ClientPlugin([
         client_api.Command(
           "/paperclips",
@@ -63,17 +80,13 @@ pub fn extension() -> harness_extension.Extension {
       harness_extension.ToolPlugin(vent_instructions, [], ["paperclips"], []),
       // The prepared workspace records where a new vent was filed; the
       // ledger itself is global, so /paperclips needs no workspace.
-      harness_extension.ManagedPlugin(fn(store, _, workspace) {
+      harness_extension.ManagedPlugin(fn(_, _, workspace) {
         Ok(
-          harness_extension.Managed(
-            ..harness_extension.empty(),
-            routes: [
-              #("paperclips", fn(store, session, request) {
-                rpc.handle(store, workspace, session, request)
-              }),
-            ],
-            commands: [paperclips_command.command(store)],
-          ),
+          harness_extension.Managed(..harness_extension.empty(), routes: [
+            #("paperclips", fn(store, session, request) {
+              rpc.handle(store, workspace, session, request)
+            }),
+          ]),
         )
       }),
     ],

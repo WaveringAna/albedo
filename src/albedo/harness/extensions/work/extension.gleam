@@ -1,7 +1,7 @@
 import albedo/daemon/store
 import albedo/harness/client_api
+import albedo/harness/command.{Argument}
 import albedo/harness/extension as harness_extension
-import albedo/harness/extensions/work/command as work_command
 import albedo/harness/extensions/work/ledger as work
 import albedo/harness/extensions/work/migrations/cwd
 import albedo/harness/extensions/work/rpc
@@ -17,6 +17,26 @@ pub fn extension() -> harness_extension.Extension {
     "A durable revision-checked work ledger shared by humans and agents.",
     ["python"],
     [
+      harness_extension.CommandPlugin([
+        command.resource(
+          "/work",
+          "Show the shared work ledger, or change it: add <title>, edit <id> <title>, status <id> <status>, remove <id>. The agent is told about every change.",
+          [
+            Argument(
+              "action",
+              "what to change; omit to list the ledger",
+              False,
+              ["add", "edit", "status", "remove"],
+            ),
+            Argument(
+              "details",
+              "add: <title> · edit: <id> <title> · status: <id> <open|active|blocked|done|cancelled> · remove: <id>",
+              False,
+              [],
+            ),
+          ],
+        ),
+      ]),
       harness_extension.ClientPlugin([
         client_api.Command(
           "/work",
@@ -57,15 +77,11 @@ pub fn extension() -> harness_extension.Extension {
       // The prepared workspace scopes both the Python route and /work page.
       harness_extension.ManagedPlugin(fn(store, _, workspace) {
         Ok(
-          harness_extension.Managed(
-            ..harness_extension.empty(),
-            routes: [
-              #("work", fn(_, _, request) {
-                rpc.handle(store, workspace, request)
-              }),
-            ],
-            commands: [work_command.command(store, workspace)],
-          ),
+          harness_extension.Managed(..harness_extension.empty(), routes: [
+            #("work", fn(_, _, request) {
+              rpc.handle(store, workspace, request)
+            }),
+          ]),
         )
       }),
     ],

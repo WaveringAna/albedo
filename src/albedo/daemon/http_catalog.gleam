@@ -9,7 +9,6 @@ import albedo/harness/runtime
 import gleam/json
 import gleam/list
 import gleam/option.{None}
-import gleam/result
 
 pub fn encode(candidate: session_catalog.Candidate) -> json.Json {
   json.object([
@@ -77,18 +76,12 @@ fn argument(argument: command.Argument) -> json.Json {
 pub fn commands(observed: runtime.CatalogObservation) -> List(json.Json) {
   let declared =
     observed.client_commands
-    |> list.filter_map(fn(entry) {
-      use command <- result.map(
-        list.find(observed.commands, fn(command) {
-          command.0 == entry.0 && command.1.name == entry.1.slash_name
-        }),
-      )
-      let command = command.1
+    |> list.map(fn(entry) {
       client_command(
         entry.0,
         entry.1,
-        command.description,
-        command.model_callable,
+        entry.2.description,
+        entry.2.model_callable,
       )
     })
   let inputs =

@@ -85,14 +85,24 @@ pub type Command {
     model_callable: Bool,
     /// User invocations submit the outcome as a turn instead of returning it.
     user_turn: Bool,
-    /// Run with no arguments, it answers a page document (`page.document`) that
-    /// a client renders as the extension's own screen; its actions run this
-    /// same command with arguments.
+    /// Marks commands whose client presentation is an HTTP resource page.
     page: Bool,
     /// Prepares a selected skill without running a command or submitting a turn.
     skill_activation: Option(fn(String) -> Result(#(String, String), String)),
     run: fn(Context, Caller, Dict(String, String)) -> Result(Outcome, String),
   )
+}
+
+/// Catalog metadata for a human HTTP resource operation. Its implementation
+/// belongs to the extension service, never to the kernel command dispatcher.
+pub fn resource(
+  name: String,
+  description: String,
+  arguments: List(Argument),
+) -> Command {
+  Command(name, description, arguments, False, False, True, None, fn(_, _, _) {
+    Error("command is an HTTP resource operation")
+  })
 }
 
 /// The context every dispatch path builds: state serializes through the

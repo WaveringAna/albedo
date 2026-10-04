@@ -6,23 +6,15 @@
 import albedo/harness/client_api
 import gleam/http
 
-import albedo/daemon/conversation
-import albedo/daemon/store
-import albedo/harness/command.{
-  type Command, type StateOp, Argument, Command, Data, Note, UserCall,
-}
+import albedo/harness/command.{Argument}
 import albedo/harness/extension
 import albedo/harness/extensions/links/ledger
 import albedo/harness/extensions/links/presence.{type Presence, Gone}
 import albedo/harness/extensions/links/service
 import albedo/harness/links
-import albedo/harness/location
-import albedo/harness/page
-import gleam/int
 import gleam/json
 import gleam/list
-import gleam/option.{None, Some}
-import gleam/result
+import gleam/option.{Some}
 import gleam/string
 
 pub fn extension() -> extension.Extension {
@@ -31,6 +23,23 @@ pub fn extension() -> extension.Extension {
     "Workspaces linked into one project share memory and work items.",
     [],
     [
+      extension.CommandPlugin([
+        command.resource(
+          "/link",
+          "Show the workspaces linked with this one, or change them: add <workspace>, remove <workspace>. Linked workspaces share memory and work items; each keeps its own, so removing one loses nothing.",
+          [
+            Argument("action", "what to change; omit to list the links", False, [
+              "add", "remove",
+            ]),
+            Argument(
+              "details",
+              "add: <path or host:/path> · remove: <workspace as listed>",
+              False,
+              [],
+            ),
+          ],
+        ),
+      ]),
       extension.ClientPlugin([
         client_api.Command(
           "/link",
@@ -58,7 +67,6 @@ pub fn extension() -> extension.Extension {
           extension.Managed(
             ..extension.empty(),
             context: context(links.group(storage, workspace)),
-            commands: [command(storage, workspace)],
           ),
         )
       }),
@@ -91,189 +99,3 @@ fn describe(member: String, presence: Presence) -> String {
     _ -> member
   }
 }
-
-/// How long the page waits for a remote member's host to answer.
-const page_wait_ms = 5000
-
-fn command(storage: store.Store, workspace: String) -> Command {
-  Command(
-    "/link",
-    "Show the workspaces linked with this one, or change them: add <workspace>, remove <workspace>. Linked workspaces share memory and work items; each keeps its own, so removing one loses nothing.",
-    [
-      Argument("action", "what to change; omit to list the links", False, [
-        "add", "remove",
-      ]),
-      Argument(
-        "details",
-        "add: <path or host:/path> · remove: <workspace as listed>",
-        False,
-        [],
-      ),
-    ],
-    False,
-    False,
-    True,
-    None,
-    fn(_, caller, args) {
-      let #(action, details) = page.args(args, "")
-      case action, caller {
-        "", _ -> listing(storage, workspace)
-        _, UserCall -> change(storage, workspace, action, details)
-        _, _ -> Error("only a user links workspaces")
-      }
-    },
-  )
-}
-
-fn listing(
-  storage: store.Store,
-  workspace: String,
-) -> Result(command.Outcome, String) {
-  use group <- result.try(ledger.read(storage, workspace))
-  // Refresh the same bounded presence cache used by the extension context.
-  let _ = presence.presences(group.members, page_wait_ms)
-  let document = service.page(group, group.members)
-  // Legacy text actions identify members by their workspace, not their HTTP row hash.
-  let document =
-    client_api.Page(
-      ..document,
-      rows: list.map(document.rows, fn(row) {
-        client_api.PageRow(..row, id: row.text)
-      }),
-    )
-  Ok(
-    Data(
-      page.legacy(document, [
-        page.Action(
-          "a",
-          "link",
-          "add",
-          False,
-          page.Text("workspace", False),
-          False,
-        ),
-        page.Action("x", "unlink", "remove", True, page.NoInput, True),
-      ]),
-    ),
-  )
-}
-
-fn change(
-  storage: store.Store,
-  workspace: String,
-  action: String,
-  details: String,
-) -> Result(command.Outcome, String) {
-  let group = links.group(storage, workspace)
-  use #(message, notes) <- result.try(case action {
-    "add" -> {
-      use other <- result.try(
-        location.workspace(details)
-        |> result.map_error(fn(failure) { failure.detail })
-        |> result.map(location.to_string),
-      )
-      use _ <- result.try(case other == workspace, list.contains(group, other) {
-        True, _ -> Error("that is this workspace")
-        _, True -> Error("already linked with " <> other)
-        False, False -> Ok(Nil)
-      })
-      let theirs = links.group(storage, other)
-      use _ <- result.try(links.link(storage, workspace, other))
-      Ok(#(
-        "linked with " <> other,
-        list.append(joined(group, theirs), joined(theirs, group)),
-      ))
-    }
-    "remove" -> {
-      use _ <- result.try(case group, list.contains(group, details) {
-        [_, _, ..], True -> Ok(Nil)
-        _, _ -> Error(details <> " is not linked with this workspace")
-      })
-      use _ <- result.try(links.unlink(storage, details))
-      let rest = list.filter(group, fn(member) { member != details })
-      Ok(
-        #(
-          case details == workspace {
-            True -> "left the group"
-            False -> "unlinked " <> details
-          },
-          [
-            #(details, left(rest)),
-            ..list.map(rest, fn(member) { #(member, unlinked(details)) })
-          ],
-        ),
-      )
-    }
-    _ -> Error("unknown action " <> action <> "; use add or remove")
-  })
-  let told = case tell(storage, notes) {
-    0 -> "; no session was open to tell"
-    1 -> "; told 1 open session"
-    n -> "; told " <> int.to_string(n) <> " open sessions"
-  }
-  Ok(Data(json.object([#("message", json.string(message <> told))])))
-}
-
-/// The note for every workspace in `members` that now reads `others`. It
-/// carries their memory as a new session's snapshot holds it, so a session
-/// that opened before the link sees the same text without rebuilding its
-/// prompt (and losing its prompt cache).
-fn joined(
-  members: List(String),
-  others: List(String),
-) -> List(#(String, StateOp)) {
-  let names = string.join(others, ", ")
-  let snapshot = case linked_memory(others) {
-    "" -> ""
-    memory -> " Their memory, as a new session's snapshot holds it:\n" <> memory
-  }
-  let note =
-    note(
-      "linked with " <> names,
-      "The user linked this workspace with "
-        <> names
-        <> ": memory and the work ledger now also read their notes and items. What you write stays in this workspace."
-        <> snapshot,
-    )
-  list.map(members, fn(member) { #(member, note) })
-}
-
-fn left(rest: List(String)) -> StateOp {
-  let names = string.join(rest, ", ")
-  note(
-    "unlinked from " <> names,
-    "The user unlinked this workspace from "
-      <> names
-      <> ": memory and the work ledger cover only this workspace again. Their notes in this session's memory snapshot are left over from before; nothing was deleted.",
-  )
-}
-
-fn unlinked(member: String) -> StateOp {
-  note(
-    "unlinked " <> member,
-    "The user unlinked "
-      <> member
-      <> " from this workspace's group: its memory and work items are no longer read here, and its notes in this session's memory snapshot are left over from before; nothing was deleted.",
-  )
-}
-
-fn note(display: String, text: String) -> StateOp {
-  Note("links", display, "<system-note>" <> text <> "</system-note>")
-}
-
-/// Queue each workspace's note in every open session there, answering how
-/// many took it. A closed session needs none: it composes its snapshot
-/// afresh when it opens.
-fn tell(storage: store.Store, notes: List(#(String, StateOp))) -> Int {
-  conversation.list(storage)
-  |> result.unwrap([])
-  |> list.count(fn(info) {
-    case list.key_find(notes, info.cwd) {
-      Ok(note) -> result.is_ok(command.context(info.id).state(note))
-      Error(Nil) -> False
-    }
-  })
-}
-
-@external(erlang, "albedo_memory", "linked")
-fn linked_memory(workspaces: List(String)) -> String

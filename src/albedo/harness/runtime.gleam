@@ -201,7 +201,7 @@ pub type CatalogObservation {
     discovery: Result(session_catalog.Snapshot, String),
     loaded_revision: Option(String),
     commands: List(#(String, command.Command)),
-    client_commands: List(#(String, client_api.Command)),
+    client_commands: List(#(String, client_api.Command, command.Command)),
   )
 }
 
