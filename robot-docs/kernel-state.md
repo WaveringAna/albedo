@@ -10,7 +10,7 @@ On restore, pickled values load first, then definitions run in recorded order. S
 
 ## caps and reply contract
 
-Pickled state is capped at 64 MiB total and 8 MiB per variable. Definition source is capped at 256 KiB total and 32 KiB per definition; over-cap entries appear in `skipped`. The snapshot/restore reply has a `state` object with existing `saved`, `restored`, `skipped`, `failed`, `engine`, and `error` fields. It may also contain:
+Pickled state is capped at 64 MiB total and 8 MiB per variable. The per-variable cap is enforced while serialising: the serialiser writes into a bounded sink that stops it past the cap, so a value too large to save costs the cap in time and memory, not its full size. Definition source is capped at 256 KiB total and 32 KiB per definition; over-cap entries appear in `skipped`. The snapshot/restore reply has a `state` object with existing `saved`, `restored`, `skipped`, `failed`, `engine`, and `error` fields. It may also contain:
 
 - `defs`: names saved or restored by definition replay; these also occur in `saved`/`restored`.
 - `largest`: up to five saved variables, biggest first, as `{"name": str, "bytes": int}`, only entries at least 64 KiB.

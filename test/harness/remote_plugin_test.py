@@ -19,6 +19,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "priv" / "python"))
 from albedo_api import PythonApi  # noqa: E402
+from albedo_capture import Capture  # noqa: E402
 from albedo_plugins import remote  # noqa: E402
 
 sys.path.insert(0, str(ROOT / "test"))
@@ -33,26 +34,6 @@ class FakeHostError(Exception):
     def __init__(self, code, message):
         super().__init__(message)
         self.code, self.message = code, message
-
-
-class FakeCapture:
-    """The retained channel a background job writes into."""
-
-    def __init__(self, id):
-        self.id, self.seen, self.tail_data = id, 0, bytearray()
-        self.raw_data = bytearray()
-        self.raw_seen = 0
-        self.data = bytearray()
-
-    def write(self, text):
-        data = text.encode()
-        self.data.extend(data)
-        self.seen += len(data)
-        self.tail_data.extend(data)
-        del self.tail_data[:-65536]
-
-    def read(self, offset=0, limit=4000):
-        return bytes(self.data[offset : offset + limit]).decode(errors="ignore")
 
 
 def fake_ssh_path() -> str:
@@ -124,7 +105,7 @@ class RemotePluginTest(unittest.IsolatedAsyncioTestCase):
             self.loop,
             daemon_host,
             FakeHostError,
-            FakeCapture,
+            Capture,
             64 * 1024,
             lambda event: None,
             lambda close: None,

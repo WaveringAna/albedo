@@ -22,7 +22,7 @@ from __future__ import annotations
 from collections import OrderedDict
 from collections.abc import Callable, Generator
 from typing import cast
-from albedo_api import RAW_RETAIN, Host, PythonApi, OutputCapture, Send, excerpt
+from albedo_api import Host, PythonApi, OutputCapture, Send, excerpt
 import albedo_proc
 import albedo_shell
 import albedo_trace
@@ -163,11 +163,7 @@ class Command(asyncio.SubprocessProtocol):
 
     def pipe_data_received(self, fd: int, data: bytes) -> None:
         # Capture is bounded and synchronous; no unbounded reader queue.
-        self.capture.raw_data.extend(
-            data[: max(0, RAW_RETAIN - len(self.capture.raw_data))]
-        )
-        self.capture.raw_seen += len(data)
-        self.capture.write(data.decode("utf-8", errors="replace"))
+        self.capture.write_bytes(data)
         self.outlet.write(data)
 
     def pipe_connection_lost(self, fd: int, exc: Exception | None) -> None:
@@ -310,12 +306,12 @@ class Job:
         """A feed of this job's output for another job's stdin: what it wrote
         so far, then the rest as it comes. Piping it retires its own wake; the
         reader's notice names the pipeline."""
-        if self.capture.raw_seen > len(self.capture.raw_data):
+        if self.capture.seen > len(self.capture.data):
             raise ValueError(
-                f"job {self.id} wrote more than it retains ({len(self.capture.raw_data)} bytes); "
+                f"job {self.id} wrote more than it retains ({len(self.capture.data)} bytes); "
                 "pipe from it before it runs: run(...).pipe(...) in one expression"
             )
-        feed = Feed(self, bytes(self.capture.raw_data))
+        feed = Feed(self, bytes(self.capture.data))
         self.outlet.feeds.append(feed)
         if self.outlet.closed:
             feed.end()
@@ -444,7 +440,7 @@ class Job:
         """The last n characters of output, or its last `lines` lines."""
         if self.exit_code is not None:
             self._read = True
-        text = bytes(self.capture.tail_data).decode("utf-8", errors="replace")
+        text = self.capture.tail().decode("utf-8", errors="replace")
         return excerpt(text, min(n, preview_limit), lines, end=True)
 
     def head(self, n: int = 4000, *, lines: int | None = None) -> str:

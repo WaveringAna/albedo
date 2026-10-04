@@ -30,7 +30,6 @@ import os
 import shlex
 import subprocess
 import sys
-import tarfile
 import tempfile
 from collections.abc import Callable
 
@@ -201,6 +200,8 @@ def staged_name(digest: str | None = None) -> str:
 
 
 def archive() -> bytes:
+    import tarfile  # staging a host is rare; not worth every kernel's boot
+
     data = io.BytesIO()
     with tarfile.open(fileobj=data, mode="w") as tar:
         tar.add(

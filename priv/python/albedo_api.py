@@ -26,7 +26,7 @@ from albedo_protocol import (
     SavedCell as SavedCell,
 )
 
-RAW_RETAIN = 1024 * 1024  # bytes a late pipe reader can replay
+RETAIN = 1024 * 1024  # output bytes kept per channel; a late pipe reads them
 
 Host = Callable[[str, dict[str, object]], Awaitable[object]]
 Send = Callable[[dict[str, object]], None]
@@ -94,13 +94,14 @@ def excerpt(text: str, chars: int, lines: int | None, *, end: bool) -> str:
 
 
 class OutputCapture(Protocol):
-    data: bytearray  # the retained start of the output
-    raw_data: bytearray  # original bytes from a job, for a late pipe reader
-    raw_seen: int  # original bytes written by that job
-    tail_data: bytearray  # its latest end
+    data: bytearray  # the retained start of the output, as written
     seen: int  # bytes written, retained or not
 
     def write(self, text: str) -> None: ...
+
+    def write_bytes(self, data: bytes | bytearray | memoryview) -> None: ...
+
+    def tail(self, limit: int = 65536) -> bytes: ...
 
     def read(self, offset: int = 0, limit: int = 4000) -> str: ...
 

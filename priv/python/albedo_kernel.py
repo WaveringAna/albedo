@@ -82,6 +82,8 @@ ARCHIVES: collections.OrderedDict[str, Capture] = collections.OrderedDict()
 # instead of running the cell twice. Queued or running ones are in EXECUTING.
 FINISHED: collections.OrderedDict[str, dict[str, object]] = collections.OrderedDict()
 FINISHED_LIMIT = 16
+# Base64 image text kept across finished results; older results drop theirs first.
+FINISHED_IMAGE_BYTES = 8 * 1024 * 1024
 EXECUTING: set[str] = set()
 # Interrupts that arrived while their cell was still queued, by cell id.
 INTERRUPTS: dict[str, str] = {}
@@ -888,9 +890,7 @@ def _mirror_state(obj: object) -> dict[str, object]:
     return {
         "job": getattr(obj, "id", None),
         "seen": capture.seen,
-        "tail": bytes(capture.tail_data[-MIRROR_TAIL:]).decode(
-            "utf-8", errors="replace"
-        ),
+        "tail": capture.tail(MIRROR_TAIL).decode("utf-8", errors="replace"),
         "exit_code": getattr(obj, "exit_code", None),
         "timed_out": getattr(obj, "timed_out", False),
         "duration": getattr(obj, "duration", None),
@@ -1269,6 +1269,15 @@ def retain_cell_result(id: str, done: dict[str, object]) -> None:
         old, _ = FINISHED.popitem(last=False)
         BACKGROUND_RESULTS.pop(old, None)
         READ_CELLS.discard(old)
+    budget = FINISHED_IMAGE_BYTES
+    for result in reversed(FINISHED.values()):
+        images = cast(list[str], result.get("images", []))
+        budget -= sum(map(len, images))
+        if budget < 0 and images:
+            result["images"] = []
+            result["output"] = (
+                f"{result['output']}\n[{len(images)} image(s) not kept for a replayed result]"
+            )
     EXECUTING.discard(id)
     CELL_TASKS.pop(id, None)
     CELL_CAPTURES.pop(id, None)

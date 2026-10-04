@@ -27,6 +27,37 @@ def engine() -> tuple[object, str]:
         return pickle, "pickle"
 
 
+class TooLarge(Exception):
+    """The value's serialisation passed the per-variable cap."""
+
+
+class _Bounded:
+    """A write sink that stops a serialiser once it has produced more than
+    `limit` bytes, so an oversized value costs the cap, not its full size."""
+
+    def __init__(self, limit: int) -> None:
+        self.limit = limit
+        self.chunks: list[bytes] = []
+        self.size = 0
+
+    def write(self, data: bytes) -> int:
+        self.size += len(data)
+        if self.size > self.limit:
+            raise TooLarge
+        self.chunks.append(bytes(data))
+        return len(data)
+
+    def getvalue(self) -> bytes:
+        return b"".join(self.chunks)
+
+
+def dumps_within(serialiser: Any, value: object, limit: int) -> bytes:
+    """`serialiser.dumps(value)`, or TooLarge once it passes `limit` bytes."""
+    sink = _Bounded(limit)
+    serialiser.dump(value, sink)
+    return sink.getvalue()
+
+
 def save_state(
     path: str,
     namespace: dict[str, object],
@@ -45,27 +76,21 @@ def save_state(
         value = namespace.get(name, injected)
         if value is injected:
             continue
+        replayed = name in definitions and isinstance(
+            value, (types.FunctionType, type, types.ModuleType)
+        )
         try:
-            blob = cast(bytes, serialiser.dumps(value))
+            blob = dumps_within(serialiser, value, STATE_MAX_VALUE)
         except BaseException as error:
-            if name not in definitions or not isinstance(
-                value, (types.FunctionType, type, types.ModuleType)
-            ):
-                skipped.append(
-                    {"name": name, "reason": f"{type(error).__name__}: {error}"[:200]}
-                )
+            reason = (
+                f"over the {STATE_MAX_VALUE}-byte per-variable cap"
+                if isinstance(error, TooLarge)
+                else f"{type(error).__name__}: {error}"[:200]
+            )
+            if not replayed:
+                skipped.append({"name": name, "reason": reason})
             continue
-        if len(blob) > STATE_MAX_VALUE:
-            if name not in definitions or not isinstance(
-                value, (types.FunctionType, type, types.ModuleType)
-            ):
-                skipped.append(
-                    {
-                        "name": name,
-                        "reason": f"{len(blob)} bytes exceeds the per-variable cap",
-                    }
-                )
-        elif total + len(blob) > STATE_MAX:
+        if total + len(blob) > STATE_MAX:
             skipped.append({"name": name, "reason": "saved state is full"})
         else:
             payload[name] = blob

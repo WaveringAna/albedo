@@ -9,13 +9,18 @@ import albedo_api
 import albedo_trace
 
 PREVIEW = 64 * 1024
-RETAIN = albedo_api.RAW_RETAIN
+RETAIN = albedo_api.RETAIN
 MAX_IMAGES = 4
 # Base64 growth and the output preview must fit the 8 MiB result frame.
 MAX_IMAGE_BYTES = 5 * 1024 * 1024
 
 
 class Capture:
+    """Output as the bytes that were written: the first RETAIN of them in
+    `data`, and once more than that has arrived, the last PREVIEW in a tail
+    buffer that exists only from then on. A pipe reader gets the exact bytes
+    back; text readers decode a window."""
+
     def __init__(
         self, id: str, kind: str = "cell", max_edge: int | None = None
     ) -> None:
@@ -23,33 +28,59 @@ class Capture:
         self.kind: str = kind
         self.max_edge: int | None = max_edge  # the session provider's, sent per cell
         self.data: bytearray = bytearray()
-        self.raw_data: bytearray = (
-            bytearray()
-        )  # bytes before UTF-8 replacement, for late pipe readers
-        self.raw_seen: int = 0
-        self.tail_data: bytearray = bytearray()
+        self._tail: bytearray | None = None
         self.seen: int = 0
         self.trace: albedo_trace.Trace = albedo_trace.Trace()
         self.interruption: str = "cancelled"
         self.images: list[bytes] = []
 
     def write(self, text: str) -> None:
-        data = text.encode("utf-8", errors="replace")
-        remaining = max(0, RETAIN - len(self.data))
-        self.data.extend(data[:remaining])
-        self.seen += len(data)
-        self.tail_data.extend(data[-PREVIEW:])
-        del self.tail_data[:-PREVIEW]
+        room = RETAIN - len(self.data)
+        if text.isascii() and len(text) > room + PREVIEW:
+            # One byte per character: keep both ends without encoding the middle.
+            self.write_bytes(text[:room].encode())
+            self.seen += len(text) - room - PREVIEW
+            self.write_bytes(text[-PREVIEW:].encode())
+            return
+        self.write_bytes(text.encode("utf-8", errors="replace"))
+
+    def write_bytes(self, data: bytes | bytearray | memoryview) -> None:
+        size = len(data)
+        self.seen += size
+        room = RETAIN - len(self.data)
+        if size <= room:
+            self.data += data
+            return
+        if self._tail is None:
+            # First overflow: `data` holds the whole stream so far, and from
+            # now on never grows again, so drop its growth slack.
+            self._tail = self.data[-PREVIEW:]
+            self.data += data[:room]
+            self.data = self.data[:]
+        if size >= PREVIEW:
+            self._tail = bytearray(data[-PREVIEW:])
+        else:
+            self._tail += data
+            del self._tail[:-PREVIEW]
+
+    def tail(self, limit: int = PREVIEW) -> bytes:
+        """The last `limit` bytes written, at most PREVIEW."""
+        limit = min(limit, PREVIEW)
+        if limit <= 0:
+            return b""
+        source = self.data if self._tail is None else self._tail
+        return bytes(source[-limit:])
 
     def read(self, offset: int = 0, limit: int = 4000) -> str:
-        return bytes(
-            self.data[max(0, offset) : max(0, offset) + min(max(0, limit), PREVIEW)]
-        ).decode("utf-8", errors="ignore")
+        start = max(0, offset)
+        return self.data[start : start + min(max(0, limit), PREVIEW)].decode(
+            "utf-8", errors="ignore"
+        )
 
     def preview(self, status: str = "ok") -> str:
         if status == "ok":
             return self.read(0, PREVIEW)
-        return bytes(self.tail_data).decode("utf-8", errors="ignore")
+        return self.tail().decode("utf-8", errors="ignore")
 
     def attach(self, data: bytes) -> str:
         """Queue one image for this cell's result; raises ValueError past the limits."""

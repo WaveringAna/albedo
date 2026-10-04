@@ -16,6 +16,9 @@ import __main__ as kernel
 def capture_state(id):
     capture = kernel.ARCHIVES[id]
     return {'images': len(capture.images), 'text': output.read(id)}
+
+def finished_images():
+    return {id: len(done['images']) for id, done in kernel.FINISHED.items()}
 """
 
 
@@ -99,6 +102,23 @@ class CellImagesTest(unittest.TestCase):
                 self.assertEqual(done["images"], [PNG])
                 self.assertEqual(self.state(child)["images"], int(refused))
                 self.assertEqual(self.state(parent)["images"], 0)
+
+    def test_replays_keep_images_within_a_budget_newest_first(self):
+        self.execute("budget", f"kernel.FINISHED_IMAGE_BYTES = {len(PNG) * 2}")
+        for id in ("first", "second", "third"):
+            self.assertEqual(self.execute(id, IMAGE)["images"], [PNG])
+        reply = self.channel.invoke("finished", name="finished_images")
+        self.assertEqual(
+            {id: reply["value"][id] for id in ("first", "second", "third")},
+            {"first": 0, "second": 1, "third": 1},
+        )
+        self.channel.send({"type": "execute", "id": "first", "code": "unused"})
+        replayed = self.channel.wait_for(
+            lambda frame: frame["type"] == "done" and frame["id"] == "first"
+        )
+        self.assertEqual(replayed["images"], [])
+        self.assertIn("1 image(s) not kept for a replayed result", replayed["output"])
+        self.assertIn("attached image/png", replayed["value"])
 
 
 if __name__ == "__main__":

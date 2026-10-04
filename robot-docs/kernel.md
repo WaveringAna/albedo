@@ -37,6 +37,25 @@ A job that finishes with its result unread wakes the session. The model reads
 the full notice with the job's handle; the transcript keeps the wake's one-line
 display (`job finished (exit_code=0, ran 1.2s): …`) as a note from `job`.
 
+## retained output
+
+Every cell and job owns one output channel (`albedo_capture.Capture`), kept
+for the 16 newest cells and 64 newest jobs plus `native`. A channel holds the
+first 1 MiB as written and, once more than that has arrived, the last 64 KiB
+in a separate tail buffer that exists only from then on; `seen` counts
+everything. Job and remote output enter as bytes (`write_bytes`), never
+decoded and re-encoded, so a UTF-8 character split across two pipe reads
+survives and a late `job.pipe()` replays the exact bytes while `seen` still
+fits in the retained start. Text readers (`output.read`, `tail()`, previews)
+decode a window on demand. A single print longer than what could be retained
+is not encoded whole when it is ASCII: the buffers see both ends and the
+middle only counts.
+
+Finished results are kept by cell id (the newest 16) for execute replays.
+Their base64 image text is capped at 8 MiB across all of them, newest first;
+an older result past the budget replays without its images and says so in
+its output.
+
 ## background cells
 
 The kernel returns a python tool result with `status=backgrounded` after 60

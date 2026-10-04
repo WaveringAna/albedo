@@ -10,7 +10,6 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import date
 import re
-import sqlite3
 from typing import cast
 
 from albedo_api import PythonApi, Text
@@ -77,6 +76,8 @@ class Memory:
         """FTS5 ranks paragraphs, including multiline entries, without a stale index."""
         if not query.strip() or not 1 <= limit <= 100:
             raise ValueError("query must be nonempty and 1 <= limit <= 100")
+        import sqlite3  # only search needs it; not worth every kernel's boot
+
         documents, cut = self._documents()
         with sqlite3.connect(":memory:") as db:
             db.execute(

@@ -53,6 +53,18 @@ class OutboxTest(unittest.TestCase):
         self.assertEqual(outbox.dropped, 1)
         self.assertNotIn(b'"c1"', b"".join(data for _, data in outbox.pending()))
 
+    def test_the_bound_sheds_the_oldest_coalescing_frame_first(self):
+        outbox = albedo_link.Outbox(frames=3)
+        outbox.add({"type": "mirror", "handle": "a"})
+        outbox.add({"type": "mirror", "handle": "b"})
+        outbox.add({"type": "done", "id": "c1"})
+        outbox.add({"type": "mirror", "handle": "c"})
+        frames = b"".join(data for _, data in outbox.pending())
+        self.assertNotIn(b'"handle":"a"', frames)
+        self.assertIn(b'"handle":"b"', frames)
+        self.assertIn(b'"handle":"c"', frames)
+        self.assertEqual(outbox.dropped, 0)
+
     def test_a_replayed_daemon_frame_is_not_applied_twice(self):
         inbound = albedo_link.Inbound()
         self.assertEqual(

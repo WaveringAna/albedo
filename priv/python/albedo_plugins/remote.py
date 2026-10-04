@@ -1154,7 +1154,7 @@ class FallbackJob:
 
     async def _copy(self, stream: Any) -> None:
         while chunk := await stream.read(8192):
-            self.capture.write(chunk.decode("utf-8", errors="replace"))
+            self.capture.write_bytes(chunk)
 
     def __await__(self):
         self._awaited = True
@@ -1174,7 +1174,7 @@ class FallbackJob:
         if self.exit_code is not None:
             self._read = True
         return excerpt(
-            bytes(self.capture.tail_data).decode("utf-8", errors="replace"),
+            self.capture.tail().decode("utf-8", errors="replace"),
             min(n, 65536),
             lines,
             end=True,

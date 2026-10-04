@@ -11,7 +11,6 @@ from typing import Any, TYPE_CHECKING
 from urllib.parse import urlsplit, urlunsplit
 
 import json
-import urllib.request
 
 from .errors import BrowserError, ConnectionLost, UnsupportedOperation
 from .events import EventScope
@@ -270,6 +269,8 @@ async def connect(
         discovery = urlunsplit((parsed.scheme, parsed.netloc, path, parsed.query, ""))
 
         def _get_discovery() -> str:
+            import urllib.request  # one GET at connect time; not worth every kernel's boot
+
             req = urllib.request.Request(discovery, headers=headers or {})
             opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
             with opener.open(req, timeout=timeout) as resp:

@@ -134,10 +134,10 @@ class Outbox:
 
         if not over():
             return
-        for seq in [seq for seq, (_, key) in self.entries.items() if key is not None]:
-            if not over():
-                return
-            self._remove(seq)
+        # `keys` indexes every coalescing entry (one per live handle or cell),
+        # so shedding them oldest first never walks the whole outbox.
+        while over() and self.keys:
+            self._remove(min(self.keys.values()))
         while over() and len(self.entries) > 1:
             self._remove(next(iter(self.entries)))
             self.dropped += 1
