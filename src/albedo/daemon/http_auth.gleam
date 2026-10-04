@@ -2,7 +2,7 @@
 
 import albedo/daemon/bus
 import albedo/daemon/http_api
-import albedo/daemon/registry.{type Config, type Message, Host, Logins}
+import albedo/daemon/registry.{type Config, type Message, Logins}
 import albedo/daemon/session_catalog
 import albedo/daemon/settings
 import albedo/harness/extension
@@ -66,7 +66,7 @@ pub fn settings(
         }
         use patch <- result.try(http_api.body(req, allowed, decode.dynamic))
         use host <- result.try(
-          actor.call(registry, 5000, Host) |> result.map_error(http_api.failure),
+          registry.host(registry) |> result.map_error(http_api.failure),
         )
         let logins = actor.call(registry, 5000, Logins)
         let providers =

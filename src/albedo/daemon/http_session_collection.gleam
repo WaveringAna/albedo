@@ -4,7 +4,7 @@ import albedo/daemon/bus
 import albedo/daemon/http_api
 import albedo/daemon/http_stream
 import albedo/daemon/http_wire
-import albedo/daemon/registry.{type Config, type Message, Existing, Host}
+import albedo/daemon/registry.{type Config, type Message, Existing}
 import albedo/daemon/session
 import albedo/daemon/session_collection
 import albedo/daemon/store
@@ -141,7 +141,7 @@ pub fn read(
       },
     )
     use host <- result.try(
-      actor.call(registry, 5000, Host) |> result.map_error(http_api.failure),
+      registry.host(registry) |> result.map_error(http_api.failure),
     )
     use filter <- result.try(collection_filter(config, host, parameters))
     case watching {

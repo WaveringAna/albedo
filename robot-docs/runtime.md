@@ -47,3 +47,10 @@ a timeout does not cancel accepted work.
 Kernel upgrade completion keeps its repeated wait until completion or owner
 death. Session closure also waits for owner termination after the acknowledgment.
 These lifetime protocols need more than a finite request/reply call.
+
+## registry host lookup
+
+`daemon/registry.host` owns the five-second runtime-host lookup. Callers retain
+`Result(Runtime, String)` and map failures at the HTTP boundary. Reuse this
+function rather than sending `Host` with a local copy of its timeout. Page
+contributors construct `page.Row` directly; forwarding constructors add no policy.

@@ -599,7 +599,7 @@ pub fn sidebar(
   Ok(page.Glance(
     "active work",
     list.map(items, fn(item) {
-      page.detail_row(
+      page.Row(
         int.to_string(item.id),
         api.content_preview(item.title, 64),
         work.status_name(item.status),

@@ -1263,3 +1263,8 @@ fn selected_effort(
       }
   }
 }
+
+/// Fetch the runtime host with the registry's five-second lookup budget.
+pub fn host(registry: Subject(Message)) -> Result(runtime.Runtime, String) {
+  actor.call(registry, 5000, Host)
+}

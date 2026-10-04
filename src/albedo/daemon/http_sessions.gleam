@@ -13,8 +13,7 @@ import albedo/daemon/http_wire
 import albedo/daemon/image
 import albedo/daemon/operations
 import albedo/daemon/registry.{
-  type Config, type Message, CreateIdentified, Existing, Host, Lookup,
-  SessionDeleted,
+  type Config, type Message, CreateIdentified, Existing, Lookup, SessionDeleted,
 }
 import albedo/daemon/requests
 import albedo/daemon/session
@@ -109,7 +108,7 @@ pub fn create(
     use _ <- result.try(http_api.require_creation(req))
     use submitted <- result.try(http_api.creation(req))
     use host <- result.try(
-      actor.call(registry, 5000, Host) |> result.map_error(http_api.failure),
+      registry.host(registry) |> result.map_error(http_api.failure),
     )
     let ledger = runtime.ledger(host)
     case actor.call(registry, 15_000, CreateIdentified(id, submitted, _)) {
@@ -190,7 +189,7 @@ pub fn read(
     )
     use watching <- result.try(http_api.wants_events(req))
     use host <- result.try(
-      actor.call(registry, 5000, Host) |> result.map_error(http_api.failure),
+      registry.host(registry) |> result.map_error(http_api.failure),
     )
     case list.key_find(parameters, "view") {
       Ok("configuration") -> {
@@ -286,7 +285,7 @@ pub fn catalog(
       },
     )
     use host <- result.try(
-      actor.call(registry, 5000, Host) |> result.map_error(http_api.failure),
+      registry.host(registry) |> result.map_error(http_api.failure),
     )
     use observed <- result.try(
       runtime.observe_catalog(host, config.home, id)
@@ -508,7 +507,7 @@ pub fn input(
         client,
       )
     use host <- result.try(
-      actor.call(registry, 5000, Host) |> result.map_error(http_api.failure),
+      registry.host(registry) |> result.map_error(http_api.failure),
     )
     let ledger = runtime.ledger(host)
     use prior <- result.try(
@@ -763,7 +762,7 @@ pub fn input_read(
   let outcome = {
     use _ <- result.try(http_api.json_parameters(req, []))
     use host <- result.try(
-      actor.call(registry, 5000, Host) |> result.map_error(http_api.failure),
+      registry.host(registry) |> result.map_error(http_api.failure),
     )
     use input <- result.try(input_outcome(runtime.ledger(host), id, input_id))
     Ok(http_api.reply(200, http_wire.input(input)))
@@ -782,7 +781,7 @@ pub fn visit(
     use _ <- result.try(http_api.json_parameters(req, []))
     use _ <- result.try(http_api.empty_body(req))
     use host <- result.try(
-      actor.call(registry, 5000, Host) |> result.map_error(http_api.failure),
+      registry.host(registry) |> result.map_error(http_api.failure),
     )
     use visit <- result.try(
       session_configuration.visit(runtime.ledger(host), id, visit_id)
@@ -814,7 +813,7 @@ pub fn cancel(
     use _ <- result.try(http_api.json_parameters(req, []))
     use _ <- result.try(http_api.empty_body(req))
     use host <- result.try(
-      actor.call(registry, 5000, Host) |> result.map_error(http_api.failure),
+      registry.host(registry) |> result.map_error(http_api.failure),
     )
     use known <- result.try(input_outcome(runtime.ledger(host), id, input_id))
     let terminal =
@@ -940,7 +939,7 @@ pub fn context(
           },
         )
         use host <- result.try(
-          actor.call(registry, 5000, Host) |> result.map_error(http_api.failure),
+          registry.host(registry) |> result.map_error(http_api.failure),
         )
         use _ <- result.try(
           conversation.get(runtime.ledger(host), id)
@@ -1077,7 +1076,7 @@ pub fn patch(
     })
     use change <- result.try(http_configuration.change(req))
     use host <- result.try(
-      actor.call(registry, 5000, Host) |> result.map_error(http_api.failure),
+      registry.host(registry) |> result.map_error(http_api.failure),
     )
     use observed <- result.try(
       conversation.capture(runtime.ledger(host), id)
@@ -1211,7 +1210,7 @@ pub fn delete(
       _ -> Error(http_api.invalid("scope must be leaf or subtree"))
     })
     use host <- result.try(
-      actor.call(registry, 5000, Host) |> result.map_error(http_api.failure),
+      registry.host(registry) |> result.map_error(http_api.failure),
     )
     use observed <- result.try(
       conversation.capture(runtime.ledger(host), id)
@@ -1288,7 +1287,7 @@ pub fn upgrade(
     use _ <- result.try(http_api.json_parameters(req, []))
     use _ <- result.try(http_api.body(req, [], decode.success(Nil)))
     use host <- result.try(
-      actor.call(registry, 5000, Host) |> result.map_error(http_api.failure),
+      registry.host(registry) |> result.map_error(http_api.failure),
     )
     use _ <- result.try(
       conversation.get(runtime.ledger(host), id)
@@ -1386,7 +1385,7 @@ pub fn compaction(
       }),
     )
     use host <- result.try(
-      actor.call(registry, 5000, Host) |> result.map_error(http_api.failure),
+      registry.host(registry) |> result.map_error(http_api.failure),
     )
     use _ <- result.try(
       conversation.get(runtime.ledger(host), id)
@@ -1465,7 +1464,7 @@ pub fn reload(
       },
     )
     use host <- result.try(
-      actor.call(registry, 5000, Host) |> result.map_error(http_api.failure),
+      registry.host(registry) |> result.map_error(http_api.failure),
     )
     use _ <- result.try(
       conversation.get(runtime.ledger(host), id)

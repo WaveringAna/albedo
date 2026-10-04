@@ -5,7 +5,7 @@ import albedo/daemon/folders
 import albedo/daemon/hosts
 import albedo/daemon/http_api
 import albedo/daemon/http_wire
-import albedo/daemon/registry.{type Config, type Message, Host, List}
+import albedo/daemon/registry.{type Config, type Message, List}
 import albedo/daemon/session_provider
 import albedo/daemon/storage_report
 import albedo/daemon/usage
@@ -372,7 +372,7 @@ pub fn models(
           },
         )
         use host <- result.try(
-          actor.call(registry, 5000, Host) |> result.map_error(http_api.failure),
+          registry.host(registry) |> result.map_error(http_api.failure),
         )
         use provider <- result.try(
           case
@@ -541,7 +541,7 @@ pub fn storage(
     )
     use limit <- result.try(http_api.limit_parameter(parameters, 50))
     use host <- result.try(
-      actor.call(registry, 5000, Host) |> result.map_error(http_api.failure),
+      registry.host(registry) |> result.map_error(http_api.failure),
     )
     use observed <- result.try(
       storage_report.observe(runtime.ledger(host), config.home)

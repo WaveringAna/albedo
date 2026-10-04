@@ -43,16 +43,6 @@ pub type Row {
   )
 }
 
-pub fn detail_row(
-  id: String,
-  text: String,
-  badge: String,
-  tone: Tone,
-  detail: String,
-) -> Row {
-  Row(id, text, badge, tone, detail)
-}
-
 /// A few rows for a client's sidebar, beside the conversation.
 pub type Glance {
   Glance(title: String, rows: List(Row))

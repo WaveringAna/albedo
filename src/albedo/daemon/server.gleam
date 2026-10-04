@@ -7,9 +7,7 @@ import albedo/daemon/http_sessions
 import albedo/daemon/http_transcript
 import albedo/daemon/http_wire
 import albedo/daemon/quota
-import albedo/daemon/registry.{
-  type Config, type Message, Config, Host, List, Shutdown,
-}
+import albedo/daemon/registry.{type Config, type Message, Config, List, Shutdown}
 import albedo/daemon/settings
 import albedo/harness/credentials
 import albedo/harness/extension
@@ -186,7 +184,7 @@ fn route_trusted(
 ) -> response.Response(mist.ResponseData) {
   case request.path_segments(req) {
     ["extensions", name, ..rest] ->
-      case actor.call(registry, 5000, Host) {
+      case registry.host(registry) {
         Error(_) ->
           ingress_error(503, "daemon_unavailable", "daemon is unavailable")
         Ok(host) ->
@@ -524,14 +522,14 @@ fn daemon_route(
     Get, ["sessions", id, "history"] ->
       http_transcript.history(
         config.token,
-        actor.call(registry, 5000, Host) |> result.map(runtime.ledger),
+        registry.host(registry) |> result.map(runtime.ledger),
         id,
         req,
       )
     Get, ["sessions", id, "history", entry_id] ->
       http_transcript.content(
         config.token,
-        actor.call(registry, 5000, Host) |> result.map(runtime.ledger),
+        registry.host(registry) |> result.map(runtime.ledger),
         id,
         entry_id,
         req,
@@ -695,7 +693,7 @@ fn protocol_server(
       _ -> Error(http_api.invalid("pagination requires include=quota_history"))
     })
     use host <- result.try(
-      actor.call(registry, 5000, Host)
+      registry.host(registry)
       |> result.map_error(fn(_) {
         http_api.Failure(503, "daemon_unavailable", "daemon is unavailable")
       }),
