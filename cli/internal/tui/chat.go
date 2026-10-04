@@ -135,9 +135,11 @@ type ChatModel struct {
 	pendingUsers         []PendingUserTurn
 	pendingContinuations map[string]pendingOperation
 	Glances              []PageGlance
-	frameLines           []string
-	CommandMenu          CommandMenuModel
-	Viewport             viewport.Model
+	// layoutSidebar is the sidebar width the last layout reserved.
+	layoutSidebar int
+	frameLines    []string
+	CommandMenu   CommandMenuModel
+	Viewport      viewport.Model
 
 	transcript         transcriptState
 	TextArea           textarea.Model
@@ -319,7 +321,9 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 			previousChrome := m.chromeRows()
 			m.Status = *msg.Status
 			m.Glances = msg.Glances
-			if m.chromeRows() != previousChrome {
+			if m.sidebarWidth() != m.layoutSidebar {
+				m.SetSize(m.Width, m.Height)
+			} else if m.chromeRows() != previousChrome {
 				m.syncViewportHeight()
 			}
 			defer m.reseedMood()

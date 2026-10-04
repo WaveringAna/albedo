@@ -132,7 +132,11 @@ func (m *ChatModel) handleStreamEvent(evt daemon.StreamEvent) {
 		if evt.Snapshot != nil {
 			m.Status = evt.Snapshot.Status
 			m.Glances = evt.Snapshot.Glances
-			m.syncViewportHeight()
+			if m.sidebarWidth() != m.layoutSidebar {
+				m.SetSize(m.Width, m.Height)
+			} else {
+				m.syncViewportHeight()
+			}
 		}
 		m.History.Clear()
 		m.burstEpoch++

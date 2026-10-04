@@ -47,12 +47,14 @@ func (m ChatModel) padding() int {
 
 func (m ChatModel) chatWidth() int { return max(1, m.Width-2*m.padding()) }
 
+// sidebarWidth is 0 without glances or room for them. The transcript keeps at
+// least 72 columns beside a sidebar of 20 to 32.
 func (m ChatModel) sidebarWidth() int {
-	margin := m.chatWidth() - min(100, m.chatWidth()) - 2
-	if margin < 16 || len(m.activeGlances()) == 0 {
+	room := m.chatWidth() - 72 - 2
+	if room < 20 || len(m.activeGlances()) == 0 {
 		return 0
 	}
-	return min(32, margin)
+	return min(32, room)
 }
 
 // actionLabel is the action row for a call, live from its progress and then

@@ -1,8 +1,9 @@
 // Transcript re-rendering on width changes, not height changes, prevents
 // expensive UI refreshes. The cost is invisible outside the process: the
 // rendered text is identical either way, so no e2e can catch a regression.
-// The sidebar's stacking is checked here too: a daemon run would need a live
-// job and an active work item at once to show both sections.
+// The sidebar's stacking, width and the stale-kernel note are checked here
+// too: a daemon run would need a live job, an active work item and a stale
+// kernel at once to show them.
 package tui
 
 import (
@@ -62,5 +63,38 @@ func TestSidebarStacksActiveWorkAboveBackgroundJobs(t *testing.T) {
 		if ansi.StringWidth(line) > 60 {
 			t.Fatalf("a %d-cell line at width 60: %q", ansi.StringWidth(line), line)
 		}
+	}
+}
+
+func TestSidebarFitsBesideANarrowerTranscript(t *testing.T) {
+	m := newTestChatModel(t, &daemon.Session{ID: "s"})
+	m.Glances = []PageGlance{{Title: "active work", Rows: []PageRow{{ID: "7", Text: "fix the parser", Tone: ToneActive}}}}
+	m.SetSize(110, 30)
+	view := ansi.Strip(m.View())
+	if !strings.Contains(view, "fix the parser") {
+		t.Fatalf("a 110-column terminal must show the sidebar:\n%s", view)
+	}
+	for line := range strings.SplitSeq(view, "\n") {
+		if ansi.StringWidth(line) > 110 {
+			t.Fatalf("a %d-cell line at width 110: %q", ansi.StringWidth(line), line)
+		}
+	}
+	// without glances the transcript takes the width back
+	m.Glances = nil
+	m.SetSize(110, 30)
+	if m.sidebarWidth() != 0 || m.Renderer.BodyWidth != 100 {
+		t.Fatalf("no sidebar must leave the full body: sidebar %d body %d", m.sidebarWidth(), m.Renderer.BodyWidth)
+	}
+}
+
+func TestAStaleKernelIsNamedOnlyWhileAJobKeepsIt(t *testing.T) {
+	m := newTestChatModel(t, &daemon.Session{ID: "s"})
+	m.Status.KernelStale = true
+	if counts := m.glanceCounts(); len(counts) != 0 {
+		t.Fatalf("a stale kernel swaps before the next turn; nothing to say: %v", counts)
+	}
+	m.Status.KernelJobs = new(int64(1))
+	if counts := m.glanceCounts(); len(counts) == 0 || counts[0] != "kernel older until jobs end" {
+		t.Fatalf("a job keeping a stale kernel must be named: %v", counts)
 	}
 }

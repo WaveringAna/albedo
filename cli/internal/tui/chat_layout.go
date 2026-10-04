@@ -133,8 +133,9 @@ func (m *ChatModel) SetSize(width, height int) {
 
 	available := max(1, m.Width-2*m.padding())
 	transcriptWidth := available
-	if sw := m.sidebarWidth(); sw > 0 {
-		transcriptWidth -= sw + 2
+	m.layoutSidebar = m.sidebarWidth()
+	if m.layoutSidebar > 0 {
+		transcriptWidth -= m.layoutSidebar + 2
 	}
 
 	m.Viewport.SetWidth(transcriptWidth)
@@ -144,7 +145,7 @@ func (m *ChatModel) SetSize(width, height int) {
 
 	// settled rows are rendered at the body width alone, so only a new body
 	// width renders them again
-	if body := min(100, available); body != m.Renderer.BodyWidth {
+	if body := min(100, transcriptWidth); body != m.Renderer.BodyWidth {
 		m.Renderer.BodyWidth = body
 		m.rebuildSettledLines()
 	}

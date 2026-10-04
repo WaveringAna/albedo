@@ -53,8 +53,9 @@ func (m ChatModel) glanceCounts() []string {
 	for _, g := range omitted {
 		counts = append(counts, fmt.Sprintf("%s %d", g.Title, len(g.Rows)))
 	}
-	if m.Status.KernelStale {
-		counts = append([]string{"kernel older"}, counts...)
+	// a stale kernel is swapped before the next turn unless a job keeps it
+	if m.Status.KernelStale && m.backgroundJobCount() > 0 {
+		counts = append([]string{"kernel older until jobs end"}, counts...)
 	}
 	return counts
 }
