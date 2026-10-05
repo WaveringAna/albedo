@@ -5,8 +5,12 @@
 package tui
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -15,7 +19,7 @@ import (
 // from the rest, which is how the session screen grew a second palette.
 func TestColorsComeFromTheTheme(t *testing.T) {
 	owners := map[string]bool{"theme.go": true, "ink.go": true, "ink_unix.go": true, "ink_other.go": true}
-	raw := regexp.MustCompile(`lipgloss\.Color\(|AdaptiveColor|\\x1b\[(3\d|4\d|9\d|7|38;|48;)|Faint\(true\)|Reverse\(true\)|"#[0-9a-fA-F]{6}"|\.Foreground\(|\)\.Background\(`)
+	positions := token.NewFileSet()
 	entries, err := os.ReadDir(".")
 	if err != nil {
 		t.Fatal(err)
@@ -25,15 +29,113 @@ func TestColorsComeFromTheTheme(t *testing.T) {
 		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") || owners[name] {
 			continue
 		}
-		src, err := os.ReadFile(name)
+		file, err := parser.ParseFile(positions, name, nil, 0)
 		if err != nil {
 			t.Fatal(err)
 		}
-		for i, line := range strings.Split(string(src), "\n") {
-			if raw.MatchString(line) {
-				t.Errorf("%s:%d picks its own color, use a theme token: %s", name, i+1, strings.TrimSpace(line))
+		for _, position := range themeViolations(file) {
+			t.Errorf("%s picks its own color, use a theme token", positions.Position(position))
+		}
+	}
+}
+
+func themeViolations(file *ast.File) []token.Pos {
+	imports := make(map[string]string)
+	for _, spec := range file.Imports {
+		path, _ := strconv.Unquote(spec.Path.Value)
+		name := path[strings.LastIndexByte(path, '/')+1:]
+		if strings.HasSuffix(path, "/lipgloss/v2") {
+			name = "lipgloss"
+		}
+		if spec.Name != nil {
+			name = spec.Name.Name
+		}
+		imports[name] = path
+	}
+	palette := regexp.MustCompile(`^#[0-9a-fA-F]{6}$`)
+	ansi := regexp.MustCompile("\x1b\\[([0-9;]*)m")
+	var violations []token.Pos
+	ast.Inspect(file, func(node ast.Node) bool {
+		switch value := node.(type) {
+		case *ast.SelectorExpr:
+			if owner, ok := value.X.(*ast.Ident); ok && strings.HasSuffix(imports[owner.Name], "/lipgloss/v2") {
+				if value.Sel.Name == "Color" || value.Sel.Name == "AdaptiveColor" {
+					violations = append(violations, value.Pos())
+				}
+			}
+		case *ast.CallExpr:
+			function, ok := ast.Unparen(value.Fun).(*ast.SelectorExpr)
+			if !ok {
+				break
+			}
+			switch function.Sel.Name {
+			case "Background":
+				if owner, ok := function.X.(*ast.Ident); ok && imports[owner.Name] == "context" {
+					break
+				}
+				violations = append(violations, value.Pos())
+			case "Foreground":
+				violations = append(violations, value.Pos())
+			case "Faint", "Reverse":
+				if len(value.Args) == 1 {
+					if argument, ok := ast.Unparen(value.Args[0]).(*ast.Ident); ok && argument.Name == "true" {
+						violations = append(violations, value.Pos())
+					}
+				}
+			}
+		case *ast.BasicLit:
+			if value.Kind != token.STRING {
+				break
+			}
+			text, err := strconv.Unquote(value.Value)
+			if err != nil {
+				break
+			}
+			if palette.MatchString(text) {
+				violations = append(violations, value.Pos())
+			}
+			for _, sequence := range ansi.FindAllStringSubmatch(text, -1) {
+				for parameter := range strings.SplitSeq(sequence[1], ";") {
+					code, _ := strconv.Atoi(parameter)
+					if code == 2 || code == 7 || code >= 30 && code <= 49 || code >= 90 && code <= 107 {
+						violations = append(violations, value.Pos())
+						return false
+					}
+				}
 			}
 		}
+		return true
+	})
+	return violations
+}
+
+func TestThemeOwnershipSurvivesFormattingAndIgnoresComments(t *testing.T) {
+	for _, scenario := range []struct {
+		source string
+		bad    bool
+	}{
+		{`// lipgloss.Color("#ffffff")
+var x = context.Background()`, false},
+		{`var x = (gl.Color)("2")`, true},
+		{`var x = gl.AdaptiveColor{}`, true},
+		{`var x = style.
+Foreground(color)`, true},
+		{`var x = style.Background(color)`, true},
+		{`var x = style.Faint((true))`, true},
+		{`var x = style.Reverse(false)`, false},
+		{`var x = "\u0023ffffff"`, true},
+		{`var x = "\u001b[38;2;1;2;3m"`, true},
+		{`var x = "\x1b[0m"`, false},
+	} {
+		t.Run(scenario.source, func(t *testing.T) {
+			file, err := parser.ParseFile(token.NewFileSet(), "screen.go", "package tui\nimport gl \"charm.land/lipgloss/v2\"\nimport \"context\"\n"+scenario.source, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if bad := len(themeViolations(file)) > 0; bad != scenario.bad {
+				t.Fatalf("color violation = %v, want %v", bad, scenario.bad)
+			}
+		})
 	}
 }
 
