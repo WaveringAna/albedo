@@ -12,6 +12,7 @@ import fcntl
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import resource
 import sys
@@ -126,19 +127,24 @@ def main():
     # most macOS's OPEN_MAX. Daemons boot on it unless a test pins their own.
     _, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
     resource.setrlimit(resource.RLIMIT_NOFILE, (min(hard, 10240), hard))
+    cpus = os.cpu_count() or 1
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "target", nargs="?", help="file.py, file:TestCase.test_method, or area"
     )
     parser.add_argument(
-        "-j", "--jobs", type=int, default=8, help="concurrent tests on the shared lane"
+        "-j",
+        "--jobs",
+        type=int,
+        default=max(1, min(4, cpus // 4)),
+        help="concurrent tests on the shared lane (default: %(default)s)",
     )
     parser.add_argument(
         "-x",
         "--exclusive-jobs",
         type=int,
-        default=12,
-        help="concurrent exclusive tests, each on a daemon of its own",
+        default=max(1, min(8, cpus // 2)),
+        help="concurrent exclusive daemons (default: %(default)s)",
     )
     args = parser.parse_args()
     if args.target:

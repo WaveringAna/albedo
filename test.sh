@@ -51,8 +51,9 @@ for test in test/harness/*_test.py; do
 done
 suite "go test" go -C cli test ./internal/... ./cmd/...
 # the Go e2e suite builds its own CLI and boots a hermetic daemon, so it must
-# never reuse a cached run
-suite "go e2e" go -C cli test -count=1 ./test/e2e
+# never reuse a cached run. Bound parallel scenarios while the other suites run.
+go_parallel="$(python3 -c 'import os; print(max(1, min(4, (os.cpu_count() or 1) // 4)))')"
+suite "go e2e" go -C cli test -count=1 -parallel="$go_parallel" ./test/e2e
 suite "python e2e" python3 test/e2e/run.py
 
 failed=0
