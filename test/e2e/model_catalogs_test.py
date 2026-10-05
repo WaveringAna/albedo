@@ -41,6 +41,12 @@ MODELS_CATALOG = {
             }
         },
     },
+    # Must not hide what a generic openai endpoint's own /models serves.
+    "openai": {
+        "id": "openai",
+        "name": "OpenAI",
+        "models": {"gpt-fixture": {"id": "gpt-fixture", "limit": {"context": 8000}}},
+    },
 }
 
 ALIBABA_MODELS = {"data": [{"id": "qwen-fresh"}, {"id": "qwen-tts-fresh"}]}
@@ -149,6 +155,7 @@ class ModelCatalogReloadTests(unittest.TestCase):
     def test_generic_openai_endpoint_lists_its_own_models(self):
         gateway = Provider(lambda _request: text("ok"), catalog=GATEWAY_MODELS)
         self.addCleanup(gateway.close)
+        self.reload("models")
         self.assertEqual(
             [item["id"] for item in self.listed("openai", gateway.url + "/")],
             ["local-a", "local-b"],

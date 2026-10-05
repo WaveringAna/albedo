@@ -60,11 +60,12 @@ pub fn defaults() -> Config {
       bedrock.extension(),
       claude.extension(),
       vertex.extension(),
-      // Before models.dev so Codex's picker keeps its own series filter;
-      // API-key OpenAI profiles keep the full catalog.
+      // Before models.dev so Codex's picker keeps its own series filter, and a
+      // generic openai endpoint lists its own /models; api.openai.com still
+      // gets models.dev's full catalog.
       codex.extension(),
-      models.extension(),
       openai.extension(),
+      models.extension(),
       snapcompact.extension(),
       rolling.extension(),
       lcm_memory.extension(),
