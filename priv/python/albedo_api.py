@@ -83,14 +83,25 @@ class Record(dict):
         return _ready(self)
 
 
-def excerpt(text: str, chars: int, lines: int | None, *, end: bool) -> str:
+def check_timeout(timeout: float) -> None:
+    """Raise unless a job timeout is within 0 < timeout <= 3600 seconds."""
+    if not 0 < timeout <= 3600:
+        raise ValueError(
+            f"timeout is in seconds: 0 < timeout <= 3600 required, got {timeout:g}"
+            + (" (milliseconds?)" if timeout > 3600 else "")
+        )
+
+
+def excerpt(text: str, chars: int, lines: int | None, *, end: bool) -> Text:
     """Output's first or last `lines` lines, else its first or last `chars`
     characters: what a job handle's head() and tail() answer."""
     if lines is not None:
         kept = text.splitlines(keepends=True)
-        return "".join(kept[-lines:] if end else kept[:lines]) if lines > 0 else ""
+        return Text(
+            "".join(kept[-lines:] if end else kept[:lines]) if lines > 0 else ""
+        )
     chars = max(1, chars)
-    return text[-chars:] if end else text[:chars]
+    return Text(text[-chars:] if end else text[:chars])
 
 
 class OutputCapture(Protocol):

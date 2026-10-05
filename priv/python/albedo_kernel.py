@@ -12,7 +12,7 @@ import albedo_proc
 import albedo_shell
 from collections.abc import Awaitable, Callable, Iterable, Sequence
 from typing import cast
-from types import CodeType, FrameType
+from types import CodeType, FrameType, ModuleType
 import albedo_trace
 import asyncio
 import builtins
@@ -21,9 +21,11 @@ import collections
 import contextvars
 import dataclasses
 import inspect
+import importlib
 import io
 import json
 import os
+import pathlib
 import reprlib
 import select
 import shutil
@@ -396,7 +398,7 @@ def watch_output(id: str, notify: Callable[[], None]) -> None:
 
 
 class Output:
-    def read(self, id: str, *, offset: int = 0, limit: int = 4000) -> str:
+    def read(self, id: str, offset: int = 0, limit: int = 4000) -> albedo_api.Text:
         """Read retained output by cell or job id: up to 1 MiB each, for the 16
         most recent cells and 64 most recent jobs."""
         capture = retained(id)
@@ -1422,6 +1424,37 @@ def open_link(argv: list[str]) -> list[str]:
     return cast(list[str], json.loads(argv[3]))
 
 
+PRELOADED = (
+    "asyncio base64 collections datetime functools hashlib itertools json math os re shutil sys textwrap time"
+).split()
+
+
+def session_builtins(bindings: dict[str, object]) -> dict[str, object]:
+    """Python's builtins plus the common standard-library modules and the
+    injected bindings. Cells may shadow any of them and `del` reveals it again;
+    a binding wins over a module of the same name."""
+    modules = {name: importlib.import_module(name) for name in PRELOADED}
+    return vars(builtins) | modules | {"Path": pathlib.Path} | bindings
+
+
+class Bindings(ModuleType):
+    """`import albedo` and `from albedo import files` answer the injected
+    bindings, for code written as if they were a library."""
+
+    def __init__(self, bindings: dict[str, object]) -> None:
+        super().__init__("albedo", "The tool bindings every cell already has.")
+        self.bindings = bindings
+
+    def __getattr__(self, name: str) -> object:
+        try:
+            return self.bindings[name]
+        except KeyError:
+            raise AttributeError(f"albedo has no binding {name!r}") from None
+
+    def __dir__(self) -> list[str]:
+        return sorted(self.bindings)
+
+
 def main():
     global NATIVE_FD
     if os.getpgrp() != os.getpid():
@@ -1473,9 +1506,11 @@ def main():
     # Plugin bindings and session objects are rebuilt on every start, never saved.
     INJECTED.update(NAMESPACE)
     # Cell globals may shadow tools; deletion reveals the original session binding.
-    NAMESPACE["__builtins__"] = vars(builtins) | {
+    bindings = {
         name: value for name, value in NAMESPACE.items() if not name.startswith("_")
     }
+    NAMESPACE["__builtins__"] = session_builtins(bindings)
+    sys.modules["albedo"] = Bindings(bindings)
     # Declare our own process group; a group we do not lead is never the supervisor's target.
     pgid = os.getpgid(0)
     send(

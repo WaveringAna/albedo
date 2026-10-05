@@ -22,7 +22,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 
-const instructions = "Agents are sessions you spawn to work in parallel; every call is async. agents.self is your handle (id, name, depth, parent). Call await agents.models() once before spawning; other providers appear as provider/model, and selecting one routes the child through that provider. Then child = await agents.self.spawn(task, name=\"scout\", model=<one of models()>, deliverable=None, evidence_bar=None, falsifier=None): it returns as soon as the child exists, never with its answer. Answers arrive later as <mail> in your conversation and start your next turn, so spawn independent children back to back and end your turn instead of waiting; never sleep or poll. Talk with await mail.submit(child, text). await agents.self.children() and siblings() return live snapshots (running, closed). await child.cancel() stops its turn; await child.close() when you are done with it keeps its messages and files and frees its kernel. await agents.get(to) returns a live handle for \"parent\", a family name, or any session id. On any handle, await h.messages(seq=0, offset=0, limit=4000) reads a page of that session's messages from row seq on (content, next_offset) and await h.search_messages(pattern) finds rows by seq: any session may read any other, so you can see what a child or another session did without waiting for mail. await agents.sessions(query=\"\", cwd=None, limit=20, offset=0) lists every session, most recently active first, as snapshots that also carry cwd, model, last_active, and matches; with a query it keeps sessions whose title or name contains it or whose messages do, and matches holds up to 3 of each one's newest matching rows as {seq, preview} to read with messages(seq=...). cwd keeps one directory. Only the user deletes agents: if one should go, ask them. Children nest at most 3 deep and 12 open per parent; mail any session by id instead of nesting to reach it. Children share your workspace, so give two children the same files only if one only reads."
+const instructions = "Agents are sessions you spawn to work in parallel; every call is async. agents.self is your handle (id, name, depth, parent). Call await agents.models() once before spawning; other providers appear as provider/model, and selecting one routes the child through that provider. Then child = await agents.self.spawn(task, name=\"scout\", model=<one of models()>, deliverable=None, evidence_bar=None, falsifier=None): it returns as soon as the child exists, never with its answer. Answers arrive later as <mail> in your conversation and start your next turn, so spawn independent children back to back and end your turn instead of waiting; never sleep or poll. Talk with await mail.submit(child, text). await agents.self.children() and siblings() return live snapshots (running, closed). await child.cancel() stops its turn, and child.cancel(tree=True) the turns of everything beneath it; await agents.cancel_all(tree=True) stops every child you have, and their descendants, in one call, so use it when the user says to stop the swarm; await child.close() when you are done with it keeps its messages and files and frees its kernel. await agents.get(to) returns a live handle for \"parent\", a family name, or any session id. On any handle, await h.messages(seq=0, offset=0, limit=4000) reads a page of that session's messages from row seq on (content, next_offset) and await h.search_messages(pattern) finds rows by seq: any session may read any other, so you can see what a child or another session did without waiting for mail. await agents.sessions(query=\"\", cwd=None, limit=20, offset=0) lists every session, most recently active first, as snapshots that also carry cwd, model, last_active, and matches; with a query it keeps sessions whose title or name contains it or whose messages do, and matches holds up to 3 of each one's newest matching rows as {seq, preview} to read with messages(seq=...). cwd keeps one directory. Only the user deletes agents: if one should go, ask them. Children nest at most 3 deep and 12 open per parent; mail any session by id instead of nesting to reach it. Children share your workspace, so give two children the same files only if one only reads."
 
 pub fn extension() -> extension.Extension {
   extension.Extension(
@@ -126,12 +126,19 @@ fn dispatch(
         }
         _ -> Ok(json.array([], json.string))
       }
-    "agents.cancel" | "agents.close" -> {
+    "agents.close" -> {
       use child <- result.try(own_child(db, session, args))
-      agents.call(case method {
-        "agents.cancel" -> agents.Stop(child.session)
-        _ -> agents.Close(child.session)
-      })
+      agents.call(agents.Close(child.session))
+    }
+    "agents.cancel" -> {
+      use child <- result.try(own_child(db, session, args))
+      use tree <- result.try(tree_flag(args))
+      stop_all(db, [child], tree)
+    }
+    "agents.cancel_all" -> {
+      use tree <- result.try(tree_flag(args))
+      use children <- result.try(family.children(db, session))
+      stop_all(db, children, tree)
     }
     "agents.messages" -> {
       use target <- result.try(addressed(db, session, args))
@@ -198,6 +205,53 @@ fn dispatch(
     }
     _ -> Error("unknown agents call " <> method)
   }
+}
+
+fn tree_flag(args: dynamic.Dynamic) -> Result(Bool, String) {
+  rpc.args(
+    args,
+    decode.field("tree", decode.bool, decode.success),
+    "tree must be a boolean",
+  )
+}
+
+/// Interrupts each member's running turn, and with `tree` the turns of
+/// everything beneath it, parents first so none can answer a stop by spawning.
+/// Answers the sessions that were running.
+fn stop_all(
+  db: store.Store,
+  members: List(family.Member),
+  tree: Bool,
+) -> Result(json.Json, String) {
+  use stopped <- result.try(stop_each(db, members, tree))
+  Ok(json.array(stopped, json.string))
+}
+
+fn stop_each(
+  db: store.Store,
+  members: List(family.Member),
+  tree: Bool,
+) -> Result(List(String), String) {
+  list.try_fold(members, [], fn(stopped, member) {
+    use running <- result.try(
+      agents.call(agents.Stop(member.session))
+      |> result.try(fn(answer) {
+        read(answer, decode.bool) |> result.replace_error("stop answered oddly")
+      }),
+    )
+    let stopped = case running {
+      True -> list.append(stopped, [member.session])
+      False -> stopped
+    }
+    case tree {
+      False -> Ok(stopped)
+      True -> {
+        use below <- result.try(family.children(db, member.session))
+        use more <- result.try(stop_each(db, below, tree))
+        Ok(list.append(stopped, more))
+      }
+    }
+  })
 }
 
 fn own_child(

@@ -106,9 +106,12 @@ class Agent:
             )
         return [_agent(item) for item in cast(list, await host("agents.siblings", {}))]
 
-    async def cancel(self) -> bool:
-        """Stop this child's running turn. It keeps its session and work."""
-        return bool(await host("agents.cancel", {"id": self.id}))
+    async def cancel(self, *, tree: bool = False) -> bool:
+        """Stop this child's running turn; it keeps its session and work. With
+        `tree=True` its own children, and theirs, are stopped too. True when a
+        turn was running."""
+        stopped = await host("agents.cancel", {"id": self.id, "tree": tree})
+        return bool(cast(list, stopped))
 
     async def close(self) -> bool:
         """Done with this child: stop it, keep its messages and files, free its kernel."""
@@ -205,6 +208,13 @@ class Agents:
         global _models_seen
         _models_seen = True
         return list(cast(list, await host("agents.models", {})))
+
+    async def cancel_all(self, *, tree: bool = True) -> list[str]:
+        """Stop the running turn of every one of your children, and with
+        `tree=True` (the default) everything beneath them. Returns the ids of the
+        sessions that were running. They keep their sessions and work."""
+        stopped = await host("agents.cancel_all", {"tree": tree})
+        return list(cast(list, stopped))
 
     async def progress(self, text: str) -> bool:
         """A short status (≤512 chars) the agents view shows without starting a

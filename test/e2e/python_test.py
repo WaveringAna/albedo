@@ -77,6 +77,17 @@ class PythonToolsTests(unittest.TestCase):
         self.assertIn("same", output)
         self.assertIn("changed", output)
 
+    def test_an_edit_miss_says_when_only_whitespace_differs(self):
+        (self.app.workspace / "note.txt").write_text("if ok:\n    run()\n")
+        output = self.execute(
+            "for old in ('if ok:\\n\\trun()', 'absent'):\n"
+            "    try:\n        files.edit('note.txt', old, 'x')\n"
+            "    except ValueError as error:\n        print(str(error).splitlines()[0])"
+        )
+        lines = output.splitlines()
+        self.assertIn("whitespace differs", lines[0])
+        self.assertNotIn("whitespace differs", lines[1])
+
     def test_find_searches_workspace_and_returns_context(self):
         (self.app.workspace / "note.txt").write_text("before\nneedle\nafter\n")
         output = self.execute(
@@ -300,6 +311,31 @@ class PythonToolsTests(unittest.TestCase):
             "print('range and path errors preserved')"
         )
         self.assertEqual(output.strip(), "range and path errors preserved")
+
+    def test_cells_get_the_api_a_model_reaches_for(self):
+        output = self.execute(
+            "job = run('echo', 'hello')\n"
+            "await job\n"
+            "assert (await job.tail()).strip() == 'hello'\n"
+            "assert (await job.head(lines=1)).strip() == 'hello'\n"
+            "assert output.read(job.id, 0, 3) == 'hel'\n"
+            "from albedo import files as imported\n"
+            "assert imported is files\n"
+            "assert re.fullmatch('a+', 'aa') and Path('.').is_dir()\n"
+            "assert hashlib.md5(b'').hexdigest() and json.dumps(os.sep)\n"
+            "try:\n"
+            "    run('true', timeout=120000)\n"
+            "except ValueError as error:\n"
+            "    assert 'seconds' in str(error) and 'milliseconds' in str(error), error\n"
+            "try:\n"
+            "    time.sleep(2)\n"
+            "except PermissionError as error:\n"
+            "    assert 'run()' in str(error) and 'asyncio.sleep' in str(error), error\n"
+            "time.sleep(0.01)\n"
+            "await asyncio.sleep(0.01)\n"
+            "print('api shapes ok')"
+        )
+        self.assertEqual(output.strip(), "api shapes ok")
 
     def test_a_cell_reports_how_long_it_ran(self):
         session = self.app.session()

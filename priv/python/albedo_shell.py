@@ -3,7 +3,8 @@
 Cells start programs with run(program, *args): no shell, supervised, traced.
 A shell line or a raw process API from a cell is refused with the run() call
 it means when the line is simple enough to read, so the refusal teaches by
-example. This is guidance, not a sandbox: libraries and plugins still spawn.
+example. A time.sleep of a second or more is refused too: it blocks the whole
+kernel, and the refusal says to run the work async or to wait on purpose. This is guidance, not a sandbox: libraries and plugins still spawn.
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ import sysconfig
 
 SHELLS = {"sh", "bash", "zsh", "dash", "ksh", "fish", "nu"}
 CELL_PREFIX = "<albedo:"  # the filename every cell compiles under
+BLOCKING_SLEEP = 1.0  # seconds; a shorter time.sleep from a cell is let through
 SPAWN_EVENTS = {
     "subprocess.Popen",
     "os.system",
@@ -235,8 +237,29 @@ def _strings(args: object) -> list[str]:
     return []
 
 
+def sleep_refusal(seconds: float) -> Refused:
+    """Why a cell may not block the kernel with time.sleep."""
+    return Refused(
+        f"time.sleep({seconds:g}) is refused here: it blocks the whole kernel, so nothing "
+        "else in this session runs while it waits. Start the work with run() and do other "
+        "useful work while it runs; its completion wakes you. If there is nothing else to "
+        "do, give the user a status report first, then wait with "
+        f"`await asyncio.sleep({seconds:g})`."
+    )
+
+
 def guard(event: str, args: tuple[object, ...]) -> None:
-    """Audit hook: a cell that spawns through subprocess or os gets run() instead."""
+    """Audit hook: a cell that spawns through subprocess or os gets run() instead,
+    and one that sleeps the kernel is told to run async work or wait explicitly."""
+    if event == "time.sleep":
+        seconds = args[0]
+        if (
+            isinstance(seconds, (int, float))
+            and seconds >= BLOCKING_SLEEP
+            and _from_cell(skip=2)
+        ):
+            raise sleep_refusal(seconds)
+        return
     if event not in SPAWN_EVENTS or not _from_cell(skip=2):
         return
     if event == "os.system":

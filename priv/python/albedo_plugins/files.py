@@ -548,7 +548,14 @@ class Files:
         if not found:
             closest = _closest(content, old_str)
             raise ValueError(
-                f"string not found in {path}" + (f"\n{closest}" if closest else "")
+                f"string not found in {path}"
+                + (
+                    "; the text is there, but whitespace differs (indentation, "
+                    "tabs, trailing spaces or line endings)"
+                    if _words(old_str) in _words(content) and _words(old_str)
+                    else ""
+                )
+                + (f"\n{closest}" if closest else "")
             )
         chosen = _choose(content, old_str, found, line_hint, path)
         replacement = (
@@ -866,6 +873,11 @@ def _candidates(content: str, found: list[_Occurrence]) -> str:
     if len(found) > CANDIDATES:
         blocks.append(f"... {len(found) - CANDIDATES} further occurrences not shown")
     return "\n\n".join(blocks)
+
+
+def _words(text: str) -> str:
+    """text with every run of whitespace as one space, to see a whitespace-only miss."""
+    return " ".join(text.split())
 
 
 def _closest(content: str, needle: str) -> str:

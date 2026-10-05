@@ -24,7 +24,7 @@ Reads decode UTF-8 with replacement and recognize Python line boundaries, includ
 `edit(path, old_str, new_str, line_hint=None)` replaces one exact, unique occurrence:
 
 - The file is read with its identity (device, inode, mode, size, mtime), written to a temporary file with the same mode, and published with `os.replace` only while that identity still matches. A concurrent change fails the edit instead of overwriting it.
-- A string that does not appear reports the closest candidates with line numbers and a similarity score.
+- A string that does not appear reports the closest candidates with line numbers and a similarity score. When the text is there and only whitespace differs (indentation, tabs, trailing spaces, line endings) the message says so first. `cells.run` replacements say the same.
 - A string that appears several times changes nothing and lists every occurrence's line range with numbered context. Retry with `line_hint=<a line inside the range you want>`, or widen `old_str`. A hint only chooses between exact occurrences; it never moves the edit elsewhere.
 
 `write(path, content)` replaces a whole file and creates parent directories, for new files rather than edits.

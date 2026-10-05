@@ -2,7 +2,7 @@
 
 Every provider call the daemon makes leaves one row in `provider_requests`, a durable account of what the transcript cannot say later: what the request cost, which account served it, how it ended, and what its prefix looked like. This is the recording half of cache- and quota-aware compaction; the analysis (a meter estimator and λ) is derived from these rows on demand, so nothing beyond them is stored.
 
-Rows are written by the worker that streams the call, one per upstream attempt: a turn retried after a gateway hiccup leaves the failed attempt and the successful one as separate rows. Recording must never fail a turn — a failed row write is logged and swallowed, and the call proceeds.
+Rows are written by the worker that streams the call, one per upstream attempt (up to 8, doubling from 250 ms, for transport failures, timeouts, an early end, a mid-stream `Overloaded`, and HTTP 502-504, 520-524 and 529 (a plain 500 is not retried); 429s belong to account rotation): a turn retried after a gateway hiccup leaves the failed attempt and the successful one as separate rows. Recording must never fail a turn — a failed row write is logged and swallowed, and the call proceeds.
 
 ## What a row holds
 

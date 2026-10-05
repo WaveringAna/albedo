@@ -826,6 +826,43 @@ class AgentsTests(unittest.TestCase):
         self.assertIsNone(snapshot["workspace_change"])
         self.assertFalse((self.app.workspace / "restored-child-cwd").exists())
 
+    def test_cancel_all_stops_every_running_turn_beneath_the_caller(self):
+        entered = {"mid": threading.Event(), "leaf": threading.Event()}
+        release = threading.Event()
+        self.addCleanup(release.set)
+        answer = self.provider.script
+
+        def held(request):
+            user = user_message(request)
+            for name, gate in entered.items():
+                if f"hold {name}" in user:
+                    gate.set()
+                    release.wait(30)
+                    return text("held turn ended")
+            if request["messages"][-1].get("role") == "user" and user == "stop all":
+                return python("print(sorted(await agents.cancel_all()))")
+            return answer(request)
+
+        self.provider.script = held
+        parent = self.app.session()
+        mid = self.spawn(parent, "mid", "hold mid")["id"]
+        leaf = self.spawn(mid, "leaf", "hold leaf")["id"]
+        for gate in entered.values():
+            self.assertTrue(gate.wait(30), "a held turn never reached the provider")
+        self.send(parent, "stop all")
+        for session in (parent, mid, leaf):
+            self.app.idle(session)
+        self.assertFalse(release.is_set())
+        result = next(
+            json.loads(part["value"])
+            for entry in reversed(self.app.history(parent)["items"])
+            if entry["kind"] == "tool_result"
+            for part in entry["content"]
+            if part["kind"] == "json" and part["field"] == "result"
+        )
+        self.assertEqual(result["status"], "ok", result)
+        self.assertEqual(result["output"].strip(), str(sorted([mid, leaf])))
+
     def test_qualified_and_inferred_cross_provider_models(self):
         parent = self.app.session()
         self.change(parent, {"name": "radio desk"})

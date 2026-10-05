@@ -59,6 +59,17 @@ pub fn ambiguous_repairs_and_compile_errors_do_not_execute_test() -> Nil {
   let assert Ok(denied) = denied.result
   denied.status |> should.equal(python.Failed)
   denied.output |> string.contains("exactly once") |> should.be_true
+  let assert Ok(spaced) =
+    runtime.execute(
+      host,
+      session,
+      "await cells.run('"
+        <> original.id
+        <> "', replacements=[('state   =\\n1', '2')])",
+      5000,
+    )
+  let assert Ok(spaced) = spaced.result
+  spaced.output |> string.contains("whitespace differs") |> should.be_true
   let assert Ok(state) =
     runtime.execute(host, session, "'state' in globals()", 5000)
   let assert Ok(state) = state.result

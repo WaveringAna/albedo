@@ -13,7 +13,7 @@
 //// ```
 ////
 //// Callbacks run in the calling process. Returning Stop closes the connection.
-//// There are no automatic retries: an interrupted attempt may have incurred cost.
+//// This module does not retry; the tool loop reissues transient failures.
 //// Replay final output using types.Replay; never flatten it to assistant text.
 //// Supports text, image input, and function tools. Audio and custom tools are
 //// unsupported. Function arguments must be validated before execution.

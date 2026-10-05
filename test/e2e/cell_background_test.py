@@ -59,7 +59,7 @@ class CellBackgroundTests(unittest.TestCase):
                     "{'answer': 42}"
                 )
                 if self.synchronous:
-                    code = "import time\nprint('before detach')\ntime.sleep(10)\nprint('after detach')"
+                    code = "import threading\nprint('before detach')\nthreading.Event().wait(10)\nprint('after detach')"
                 if self.deadline:
                     return Reply(
                         "python", tool_arguments={"code": code, "timeout_ms": 1800}

@@ -28,7 +28,7 @@ from typing import Any
 
 from albedo_protocol import RemoteCall, RemoteMessage, parse_remote
 
-from albedo_api import PythonApi, ReadyList, excerpt
+from albedo_api import PythonApi, ReadyList, Text, check_timeout, excerpt
 import albedo_bundle
 from albedo_values import InvalidValue, decode
 import albedo_shell
@@ -272,7 +272,7 @@ class RemoteRef:
 
     # --- mirrored job state: sync, like the local handle ---
 
-    def tail(self, n: int = 4000, *, lines: int | None = None) -> str:
+    def tail(self, n: int = 4000, *, lines: int | None = None) -> Text:
         """The recent output of the remote job this reference holds: the last
         n characters, or its last `lines` lines."""
         state = self._mirror()
@@ -861,8 +861,7 @@ class RemoteConnection:
             stdin: str | bytes | None = None,
             timeout: float = 300,
         ) -> FallbackJob:
-            if not 0 < timeout <= 3600:
-                raise ValueError("0 < timeout <= 3600 required")
+            check_timeout(timeout)
             if not (stdin is None or isinstance(stdin, (str, bytes))):
                 raise TypeError("in ssh command mode stdin is text or bytes")
             argv = albedo_shell.words((program, *args))
@@ -891,10 +890,9 @@ class RemoteConnection:
             stdin: str | bytes | None = None,
             timeout: float = 300,
         ) -> FallbackJob:
-            if not isinstance(script, str) or not 0 < timeout <= 3600:
-                raise ValueError(
-                    "shell script must be text; 0 < timeout <= 3600 required"
-                )
+            if not isinstance(script, str):
+                raise ValueError("shell script must be text")
+            check_timeout(timeout)
             if not (stdin is None or isinstance(stdin, (str, bytes))):
                 raise TypeError("in ssh command mode stdin is text or bytes")
             return FallbackJob(
@@ -1170,7 +1168,7 @@ class FallbackJob:
         """`exit_code` under subprocess's name; both spellings answer."""
         return self.poll()
 
-    def tail(self, n: int = 4000, *, lines: int | None = None) -> str:
+    def tail(self, n: int = 4000, *, lines: int | None = None) -> Text:
         if self.exit_code is not None:
             self._read = True
         return excerpt(
@@ -1180,7 +1178,7 @@ class FallbackJob:
             end=True,
         )
 
-    def head(self, n: int = 4000, *, lines: int | None = None) -> str:
+    def head(self, n: int = 4000, *, lines: int | None = None) -> Text:
         if self.exit_code is not None:
             self._read = True
         return excerpt(self.capture.read(0, 65536), min(n, 65536), lines, end=False)

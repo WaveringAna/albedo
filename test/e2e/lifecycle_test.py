@@ -330,11 +330,11 @@ class LifecycleTest(unittest.TestCase):
             if messages[-1]["role"] == "tool":
                 return text("tool finished")
             return python(
-                "from pathlib import Path\nimport time\n"
+                "from pathlib import Path\nimport threading\n"
                 f"with Path({str(fixture['effect'])!r}).open('a') as effect:\n"
                 "    effect.write('effect applied\\n')\n"
                 "    effect.flush()\n"
-                "time.sleep(60)"
+                "threading.Event().wait(60)"
             )
 
         provider = Provider(script)

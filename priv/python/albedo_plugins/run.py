@@ -22,7 +22,15 @@ from __future__ import annotations
 from collections import OrderedDict
 from collections.abc import Callable, Generator
 from typing import cast
-from albedo_api import Host, PythonApi, OutputCapture, Send, excerpt
+from albedo_api import (
+    Host,
+    PythonApi,
+    OutputCapture,
+    Send,
+    Text,
+    check_timeout,
+    excerpt,
+)
 import albedo_proc
 import albedo_shell
 import albedo_trace
@@ -439,14 +447,14 @@ class Job:
         """`exit_code` under subprocess's name; both spellings answer."""
         return self.poll()
 
-    def tail(self, n: int = 4000, *, lines: int | None = None) -> str:
+    def tail(self, n: int = 4000, *, lines: int | None = None) -> Text:
         """The last n characters of output, or its last `lines` lines."""
         if self.exit_code is not None:
             self._read = True
         text = self.capture.tail().decode("utf-8", errors="replace")
         return excerpt(text, min(n, preview_limit), lines, end=True)
 
-    def head(self, n: int = 4000, *, lines: int | None = None) -> str:
+    def head(self, n: int = 4000, *, lines: int | None = None) -> Text:
         """The first n characters of output, or its first `lines` lines."""
         if self.exit_code is not None:
             self._read = True
@@ -683,8 +691,7 @@ def run(
     server, a file watcher): you are not waiting for it to finish, so it
     does not keep your prompt cache warm while you are idle.
     """
-    if not 0 < timeout <= 3600:
-        raise ValueError("0 < timeout <= 3600 required")
+    check_timeout(timeout)
     if not (stdin is None or isinstance(stdin, (str, bytes, os.PathLike, Job))):
         raise TypeError(
             f"stdin is text, bytes, a path, or a job on this kernel, not {type(stdin).__name__}"

@@ -744,9 +744,9 @@ fn describe(upstream: extension.Upstream, error: types.Error) -> String {
 fn retryable(error: types.Error) -> Bool {
   case error {
     types.ConnectionError(_) | types.Timeout | types.UnexpectedEnd -> True
-    types.HttpError(502, _)
-    | types.HttpError(503, _)
-    | types.HttpError(504, _) -> True
+    types.HttpError(status, _) ->
+      list.contains([502, 503, 504, 520, 521, 522, 523, 524, 529], status)
+    types.ProviderError("Overloaded") -> True
     _ -> False
   }
 }

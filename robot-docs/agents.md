@@ -11,6 +11,8 @@ kid = await agents.self.spawn("map every wake path", name="scout", model=m[0],
 await mail.submit(kid, "also cover schedules")               # or "parent", a name, a session id
 kids = await agents.self.children()           # snapshots: running, closed
 await kid.cancel()                            # stop its turn, keep everything
+await kid.cancel(tree=True)                   # ...and the turns of everything beneath it
+await agents.cancel_all()                     # every child and descendant (tree=True by default)
 await kid.close()                             # done: keep messages + files, free the kernel
 other = await agents.get("a1b2c3")            # "parent", a family name, or any session id
 page = await other.messages(seq=0)            # page of its rows: content, next_offset
@@ -20,7 +22,7 @@ await agents.progress("on turn.gleam now")    # shows in /agents, starts no turn
 
 - spawn never returns the child's answer: the answer arrives later as `<mail>` and starts the parent's next turn. a child whose turn ends without answering forwards its last message, marked `unreviewed`.
 - names resolve inside the family (children, siblings, parent); anything else takes a session id.
-- any session may look up and read any other: `get`, `messages`, and `search_messages` resolve names and ids the way mail does, and closed agents stay readable. cancel and close work on your own children only. the model cannot delete an agent; it asks the user.
+- any session may look up and read any other: `get`, `messages`, and `search_messages` resolve names and ids the way mail does, and closed agents stay readable. cancel and close work on your own children only. `cancel(tree=True)` and `cancel_all()` stop parents before their children, so a stopped agent cannot answer by spawning, and answer the sessions that were running; they never close or delete anything. the model cannot delete an agent; it asks the user.
 - limits: 3 deep, 12 open children per parent, 1 MiB per letter, 1000 undelivered letters per session.
 
 ## mail delivery

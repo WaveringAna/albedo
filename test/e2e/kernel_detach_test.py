@@ -91,7 +91,7 @@ class KernelDetachTests(unittest.TestCase):
             os.kill(bridge, signal.SIGKILL)
 
         slept = self.cell(
-            "import time\ntime.sleep(3)\nprint('woke')\nos.getpid()",
+            "import threading\nthreading.Event().wait(3)\nprint('woke')\nos.getpid()",
             during=kill_bridge,
         )
         self.assertEqual(slept["status"], "ok", slept)

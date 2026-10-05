@@ -273,12 +273,36 @@ fn rewritten(
     })
     use changed <- result.try(case string.split(source, old) {
       [before, after] -> Ok(before <> new <> after)
+      [_] -> Error(missed(source, old))
       _ ->
         Error("replacement must match exactly once; inspect cells.read first")
     })
     use _ <- result.try(within_limit(changed))
     Ok(changed)
   })
+}
+
+/// The error for old text the cell does not contain, naming a difference in
+/// whitespace alone when that is all that separates them.
+fn missed(source: String, old: String) -> String {
+  let base = "replacement must match exactly once; inspect cells.read first"
+  case string.contains(squash(source), squash(old)) {
+    True ->
+      base
+      <> ". The text is there, but whitespace differs (indentation, tabs,"
+      <> " trailing spaces or line endings)"
+    False -> base
+  }
+}
+
+fn squash(text: String) -> String {
+  text
+  |> string.replace("\r", " ")
+  |> string.replace("\t", " ")
+  |> string.replace("\n", " ")
+  |> string.split(" ")
+  |> list.filter(fn(word) { word != "" })
+  |> string.join(" ")
 }
 
 /// The rewritten source of a dry run: nothing is saved and nothing may execute.
