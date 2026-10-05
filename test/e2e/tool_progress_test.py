@@ -7,7 +7,7 @@ import unittest
 import urllib.parse
 
 from harness import Albedo, Provider, Reply, exclusive, text
-from stream_pressure_test import StreamProbe, unread_stream
+from stream_support import StreamProbe, unread_stream
 from stream_replay_test import restart_actor
 
 

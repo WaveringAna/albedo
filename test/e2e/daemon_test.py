@@ -9,13 +9,13 @@ import json
 import resource
 import socket
 import sqlite3
-import subprocess
 import threading
 import time
 import unittest
 import urllib.error
 import urllib.parse
 
+from inspect_support import Inspection
 from harness import Albedo, Provider, Reply, exclusive, operation_id, python, text
 
 # More client connections than a macOS shell's default open-file limit.
@@ -26,41 +26,17 @@ def kill_listener_supervisor(app):
     """Kill the daemon's listener supervisor over Erlang distribution and
     return its pid: the keeper labels itself `albedo_listener`, and the
     supervisor is its one proc_lib-started link."""
-    cookie = (app.home / "inspect.cookie").read_text().strip()
-    node = f"albedo_{app.daemon._pid}@{socket.gethostname().split('.')[0]}"
     expression = (
-        f"Node = '{node}', "
-        "[Keeper] = rpc:call(Node, lists, filter, [fun(P) -> "
+        "[Keeper] = Call(lists, filter, [fun(P) -> "
         "case catch proc_lib:get_label(P) of {albedo_listener, _} -> true; _ -> false end "
-        "end, rpc:call(Node, erlang, processes, [])]), "
-        "{links, Links} = rpc:call(Node, erlang, process_info, [Keeper, links]), "
-        "[Listener] = rpc:call(Node, lists, filter, "
+        "end, Call(erlang, processes, [])]), "
+        "{links, Links} = Call(erlang, process_info, [Keeper, links]), "
+        "[Listener] = Call(lists, filter, "
         "[fun(P) -> proc_lib:initial_call(P) =/= false end, Links]), "
-        "true = rpc:call(Node, erlang, exit, [Listener, kill]), "
-        'io:format("~w", [Listener]), halt().'
+        "true = Call(erlang, exit, [Listener, kill]), "
+        'io:format("~w", [Listener])'
     )
-    result = subprocess.run(
-        [
-            "erl",
-            "+S",
-            "2:2",
-            "-sname",
-            f"listener_probe_{app.daemon._pid}",
-            "-setcookie",
-            cookie,
-            "-noshell",
-            "-eval",
-            expression,
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-        cwd=app.root,
-        timeout=40,
-    )
-    if result.returncode != 0:
-        raise AssertionError(result.stdout + result.stderr)
-    return result.stdout.strip()
+    return Inspection(app).evaluate(expression).strip()
 
 
 @dataclass

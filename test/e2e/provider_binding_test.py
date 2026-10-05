@@ -7,7 +7,7 @@ import urllib.parse
 
 from harness import exclusive
 
-from integration_fixture import IntegrationScenario, contents
+from integration_support import IntegrationScenario, contents
 
 
 class ProviderBindingTests(IntegrationScenario):

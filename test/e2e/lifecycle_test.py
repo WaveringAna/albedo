@@ -13,6 +13,7 @@ import termios
 import time
 import unittest
 
+from inspect_support import Inspection
 from harness import Albedo, Provider, exclusive, operation_id, python, text
 
 
@@ -22,33 +23,12 @@ def direct_start(daemon):
 
 
 def runtime_limits(app):
-    cookie = (app.home / "inspect.cookie").read_text().strip()
-    node = f"albedo_{app.daemon._pid}@{socket.gethostname().split('.')[0]}"
     expression = (
-        f"Node = '{node}', "
-        "Limits = [rpc:call(Node, erlang, system_info, [Key]) "
+        "Limits = [Call(erlang, system_info, [Key]) "
         "|| Key <- [process_limit, port_limit, schedulers_online]], "
-        "io:put_chars(json:encode(Limits)), halt()."
+        "io:put_chars(json:encode(Limits))"
     )
-    result = subprocess.run(
-        [
-            "erl",
-            "+S",
-            "2:2",
-            "-sname",
-            f"lifecycle_probe_{app.daemon._pid}",
-            "-setcookie",
-            cookie,
-            "-noshell",
-            "-eval",
-            expression,
-        ],
-        capture_output=True,
-        text=True,
-        timeout=20,
-        check=True,
-    )
-    return json.loads(result.stdout)
+    return json.loads(Inspection(app).evaluate(expression, timeout=20))
 
 
 def gated_launcher(app):

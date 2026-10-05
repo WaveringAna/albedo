@@ -3,10 +3,9 @@
 import json
 import os
 from pathlib import Path
-import socket
-import subprocess
 import unittest
 
+from inspect_support import Inspection
 from harness import Albedo, Provider, Reply, ROOT, exclusive
 
 
@@ -78,42 +77,12 @@ class ContextRetentionTest(unittest.TestCase):
                     return json.load(response)
 
             self.assertEqual(read(route)["state"], "ready")
-            support = ROOT / "test/daemon/albedo_context_snapshot_probe.erl"
-            subprocess.run(
-                ["erlc", "-o", str(app.root), str(support)], check=True, timeout=30
+            inspection = Inspection(
+                app, ROOT / "test/daemon/albedo_context_snapshot_probe.erl"
             )
-            cookie = (app.home / "inspect.cookie").read_text().strip()
-            node = f"albedo_{app.daemon._pid}@{socket.gethostname().split('.')[0]}"
-            beam = Path(app.root) / "albedo_context_snapshot_probe"
-            expression = (
-                f"Node = '{node}', "
-                f"{{ok, Binary}} = file:read_file({json.dumps(str(beam) + '.beam')}), "
-                "{module, albedo_context_snapshot_probe} = "
-                "rpc:call(Node, code, load_binary, "
-                '[albedo_context_snapshot_probe, "probe.erl", Binary]), '
-                "io:put_chars(rpc:call(Node, albedo_context_snapshot_probe, "
-                f"actor_json, [<<{json.dumps(session)}>>])), halt()."
+            measured = inspection.call_json(
+                "actor_json", f"[<<{json.dumps(session)}>>]"
             )
-            result = subprocess.run(
-                [
-                    "erl",
-                    "+S",
-                    "2:2",
-                    "-sname",
-                    "retention_probe",
-                    "-setcookie",
-                    cookie,
-                    "-noshell",
-                    "-eval",
-                    expression,
-                ],
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=30,
-            )
-            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            measured = json.loads(result.stdout)
             artifact = os.environ.get("ALBEDO_INSPECTOR_ARTIFACT")
             if artifact:
                 Path(artifact).write_text(json.dumps(measured, indent=2) + "\n")

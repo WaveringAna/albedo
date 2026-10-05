@@ -5,9 +5,9 @@ import json
 import time
 
 from harness import exclusive
-from stream_pressure_test import StreamProbe
+from stream_support import StreamProbe
 
-from integration_fixture import IntegrationScenario
+from integration_support import IntegrationScenario
 
 
 class ExecutionRecoveryTests(IntegrationScenario):

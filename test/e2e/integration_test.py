@@ -11,7 +11,7 @@ import urllib.parse
 from harness import exclusive, operation_id
 
 from image_limits_test import png
-from integration_fixture import IntegrationScenario
+from integration_support import IntegrationScenario
 
 
 class IntegrationTest(IntegrationScenario):

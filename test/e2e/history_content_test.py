@@ -6,7 +6,7 @@ import urllib.parse
 
 from harness import exclusive, operation_id
 
-from integration_fixture import IntegrationScenario
+from integration_support import IntegrationScenario
 
 
 class HistoryContentTests(IntegrationScenario):

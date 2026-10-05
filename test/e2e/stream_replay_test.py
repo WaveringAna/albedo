@@ -1,55 +1,19 @@
 """A replay cursor cannot skip durable events from a replacement session actor."""
 
 import json
-import socket
 import sqlite3
-import subprocess
 import unittest
 import urllib.error
 
+from inspect_support import Inspection
 from harness import Albedo, Provider, ROOT, exclusive, text
 
 
 def restart_actor(app, session):
-    support = ROOT / "test/e2e/albedo_stream_replay_probe.erl"
-    subprocess.run(
-        ["erlc", "-Werror", "-o", str(app.root), str(support)],
-        check=True,
-        timeout=30,
-    )
-    cookie = (app.home / "inspect.cookie").read_text().strip()
-    node = f"albedo_{app.daemon._pid}@{socket.gethostname().split('.')[0]}"
-    beam = app.root / "albedo_stream_replay_probe.beam"
-    expression = (
-        f"Node = '{node}', "
-        f"{{ok, Binary}} = file:read_file({json.dumps(str(beam))}), "
-        "{module, albedo_stream_replay_probe} = "
-        "rpc:call(Node, code, load_binary, "
-        '[albedo_stream_replay_probe, "probe.erl", Binary]), '
-        '<<"actor_stopped">> = rpc:call(Node, albedo_stream_replay_probe, '
-        f"restart, [<<{json.dumps(session)}>>]), "
-        'io:put_chars("actor_stopped"), halt().'
-    )
-    result = subprocess.run(
-        [
-            "erl",
-            "+S",
-            "2:2",
-            "-sname",
-            "stream_replay_probe",
-            "-setcookie",
-            cookie,
-            "-noshell",
-            "-eval",
-            expression,
-        ],
-        capture_output=True,
-        text=True,
-        check=True,
-        timeout=30,
-    )
-    if result.stdout != "actor_stopped":
-        raise AssertionError(result.stdout + result.stderr)
+    inspection = Inspection(app, ROOT / "test/e2e/albedo_stream_replay_probe.erl")
+    result = inspection.call("restart", f"[<<{json.dumps(session)}>>]")
+    if result != "actor_stopped":
+        raise AssertionError(result)
 
 
 class StreamReplayTest(unittest.TestCase):
@@ -73,6 +37,24 @@ class StreamReplayTest(unittest.TestCase):
             ],
             prompts,
         )
+
+    # exclusive: enables inspection and loads a deliberately malformed probe
+    @exclusive
+    def test_inspection_reports_rpc_and_invalid_result_failures(self):
+        with Albedo(
+            self.provider,
+            prepare=lambda app: app.daemon.env.update(ALBEDO_INSPECT="1"),
+        ) as app:
+            inspection = Inspection(app)
+            with self.assertRaisesRegex(AssertionError, "rpc_failed"):
+                inspection.evaluate("Call(albedo_missing_probe, missing, [])")
+            source = app.root / "albedo_invalid_probe.erl"
+            source.write_text(
+                "-module(albedo_invalid_probe).\n-export([answer/0]).\n"
+                'answer() -> <<"not JSON">>.\n'
+            )
+            with self.assertRaisesRegex(AssertionError, "returned invalid JSON"):
+                Inspection(app, source).call_json("answer")
 
     # exclusive: enables daemon inspection at startup
     @exclusive

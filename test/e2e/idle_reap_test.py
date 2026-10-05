@@ -6,7 +6,7 @@ import unittest
 
 from harness import latest_user
 from harness import Albedo, Provider, exclusive, python, text
-from stream_pressure_test import StreamProbe
+from stream_support import StreamProbe
 
 
 def notes_for(app, session, cursor):

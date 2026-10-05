@@ -14,7 +14,7 @@ import urllib.parse
 from pathlib import Path
 
 from harness import Albedo, Provider, exclusive, operation_id, python, text
-from stream_pressure_test import StreamProbe
+from stream_support import StreamProbe
 
 
 def user_message(request):

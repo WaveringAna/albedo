@@ -1,81 +1,11 @@
 """Unread TCP streams cannot retain unbounded activity or block model completion."""
 
 import json
-import socket
-import subprocess
 import threading
 import unittest
 
-from harness import Albedo, Provider, ROOT, exclusive, text
-
-
-class StreamProbe:
-    def __init__(self, app):
-        self.app = app
-        source = ROOT / "test/e2e/albedo_stream_pressure_probe.erl"
-        subprocess.run(
-            ["erlc", "-Werror", "-o", str(app.root), str(source)],
-            check=True,
-            timeout=30,
-        )
-
-    def call(self, function, arguments="[]"):
-        app = self.app
-        cookie = (app.home / "inspect.cookie").read_text().strip()
-        node = f"albedo_{app.daemon._pid}@{socket.gethostname().split('.')[0]}"
-        beam = app.root / "albedo_stream_pressure_probe.beam"
-        expression = (
-            f"Node = '{node}', "
-            f"{{ok, Binary}} = file:read_file({json.dumps(str(beam))}), "
-            "{module, albedo_stream_pressure_probe} = "
-            "rpc:call(Node, code, load_binary, "
-            '[albedo_stream_pressure_probe, "probe.erl", Binary]), '
-            f"io:put_chars(rpc:call(Node, albedo_stream_pressure_probe, {function}, {arguments})), halt()."
-        )
-        result = subprocess.run(
-            [
-                "erl",
-                "+S",
-                "2:2",
-                "-sname",
-                f"pressure_probe_{app.daemon._pid}",
-                "-setcookie",
-                cookie,
-                "-noshell",
-                "-eval",
-                expression,
-            ],
-            capture_output=True,
-            text=True,
-            check=False,
-            cwd=app.root,
-            timeout=40,
-        )
-        if result.returncode != 0:
-            raise AssertionError(result.stdout + result.stderr)
-        return json.loads(result.stdout)
-
-
-def unread_stream(app, path):
-    connection = socket.socket()
-    connection.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1024)
-    connection.settimeout(15)
-    connection.connect(("127.0.0.1", app.connection["port"]))
-    connection.sendall(
-        (
-            f"GET {path} HTTP/1.1\r\nHost: localhost:{app.connection['port']}\r\n"
-            f"Authorization: Bearer {app.connection['token']}\r\n"
-            "Accept: text/event-stream\r\n\r\n"
-        ).encode()
-    )
-    # Read only the readiness batch, then leave all later socket data unread.
-    initial = b""
-    while b"data: " not in initial or b"\n\n" not in initial.split(b"data: ", 1)[1]:
-        part = connection.recv(1)
-        if not part:
-            raise AssertionError("stream closed before readiness")
-        initial += part
-    return connection
+from harness import Albedo, Provider, exclusive, text
+from stream_support import StreamProbe, unread_stream
 
 
 # exclusive: enables daemon inspection at startup and measures global subscribers

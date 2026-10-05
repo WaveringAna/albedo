@@ -6,8 +6,6 @@ this exercises real actor capture, HTTP leases, and spill files without sleeps.
 
 import base64
 import json
-import socket
-import subprocess
 import threading
 import time
 import unittest
@@ -15,6 +13,7 @@ import urllib.error
 import urllib.parse
 
 from harness import Albedo, Provider, Reply, ROOT, exclusive, operation_id, text
+from inspect_support import Inspection
 from tool_progress_test import current_progress, tool_events
 
 
@@ -68,49 +67,13 @@ class ActiveOutputProbe:
     """Inspect actor memory or age a retired lease without advancing wall time."""
 
     def __init__(self, app):
-        self.app = app
-        subprocess.run(
-            [
-                "erlc",
-                "-Werror",
-                "-o",
-                str(app.root),
-                str(ROOT / "test/e2e/albedo_active_output_probe.erl"),
-            ],
-            check=True,
-            timeout=30,
+        self.inspection = Inspection(
+            app, ROOT / "test/e2e/albedo_active_output_probe.erl"
         )
 
     def call(self, function, *arguments):
-        app = self.app
-        cookie = (app.home / "inspect.cookie").read_text().strip()
-        node = f"albedo_{app.daemon._pid}@{socket.gethostname().split('.')[0]}"
         values = ",".join(f"<<{json.dumps(str(argument))}>>" for argument in arguments)
-        expression = (
-            f"Node = '{node}', {{ok, Binary}} = file:read_file({json.dumps(str(app.root / 'albedo_active_output_probe.beam'))}), "
-            "{module, albedo_active_output_probe} = rpc:call(Node, code, load_binary, "
-            '[albedo_active_output_probe, "probe.erl", Binary]), '
-            f"io:put_chars(rpc:call(Node, albedo_active_output_probe, {function}, [{values}])), halt()."
-        )
-        result = subprocess.run(
-            [
-                "erl",
-                "+S",
-                "2:2",
-                "-sname",
-                f"active_probe_{app.daemon._pid}",
-                "-setcookie",
-                cookie,
-                "-noshell",
-                "-eval",
-                expression,
-            ],
-            capture_output=True,
-            text=True,
-            check=True,
-            timeout=30,
-        )
-        return json.loads(result.stdout)
+        return self.inspection.call_json(function, f"[{values}]")
 
 
 class PausedOutput:
