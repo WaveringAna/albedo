@@ -28,11 +28,15 @@ import (
 // through the Go callback as live normalized progress. Finalized file changes
 // must also survive both the live result and durable history projection.
 func TestLateChatClientRestoresNormalizedToolProgress(t *testing.T) {
-	t.Parallel()
 	const code = "from pathlib import Path\nimport time\nPath('progress-ready').write_text('ready')\nwhile not Path('finish-progress').exists(): time.sleep(0.01)\nfiles.write('trace-display.txt', 'finished trace\\n')\nprint('finished')"
 	ready, release := make(chan struct{}), make(chan struct{})
 	var calls atomic.Int32
 	provider := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method == http.MethodGet {
+			writer.Header().Set("Content-Type", "application/json")
+			_, _ = writer.Write([]byte(`{"data":[]}`))
+			return
+		}
 		call := calls.Add(1)
 		writer.Header().Set("Content-Type", "text/event-stream")
 		flusher, _ := writer.(http.Flusher)
@@ -94,6 +98,7 @@ func TestLateChatClientRestoresNormalizedToolProgress(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	t.Parallel()
 	workspace := t.TempDir()
 	finishPath := filepath.Join(workspace, "finish-progress")
 	t.Cleanup(func() { _ = os.WriteFile(finishPath, []byte("finish"), 0o600) })

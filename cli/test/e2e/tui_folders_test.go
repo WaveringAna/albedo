@@ -22,8 +22,8 @@ import (
 )
 
 func TestTUICdMovesTheSessionThroughThePicker(t *testing.T) {
-	t.Parallel()
 	providerRoute(t, echoReply)
+	t.Parallel()
 	d := newTUIDriver(t)
 	root := t.TempDir()
 	for _, dir := range []string{"picked/src", "other", ".hidden"} {
@@ -96,8 +96,8 @@ func TestTUICdMovesTheSessionThroughThePicker(t *testing.T) {
 }
 
 func TestTUIMissingWorkspaceSendsTheTurnFromThePickedFolder(t *testing.T) {
-	t.Parallel()
 	profile := providerRoute(t, echoReply)
+	t.Parallel()
 	root := t.TempDir()
 	gone, found := filepath.Join(root, "gone"), filepath.Join(root, "found")
 	for _, dir := range []string{gone, found} {
@@ -188,8 +188,10 @@ func TestTUIMissingWorkspaceSendsTheTurnFromThePickedFolder(t *testing.T) {
 }
 
 func TestTUISessionsByFolderOpenAndStartSessions(t *testing.T) {
-	t.Parallel()
 	providerRoute(t, echoReply)
+	// Default-changing tests finish before parallel bodies. These creations
+	// send no turns and do not assert which provider the daemon selects.
+	t.Parallel()
 	cache, err := os.UserCacheDir()
 	if err != nil {
 		t.Fatal(err)
@@ -357,8 +359,8 @@ func TestTUIStartsASessionOnAHostPickedLikeAFolder(t *testing.T) {
 // daemon's next try, and the chat offers to open the daemon's ssh master
 // here so ssh can ask.
 func TestTUIOffersSignInForATurnWaitingOnItsHost(t *testing.T) {
-	t.Parallel()
 	providerRoute(t, echoReply)
+	t.Parallel()
 	session := daemonSession(t, newSession(t, "lockedhost:/srv/app"))
 	d := driveTUI(t, &session)
 	d.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
@@ -407,6 +409,7 @@ func TestTUIOffersSignInForATurnWaitingOnItsHost(t *testing.T) {
 
 // A probe is readable before its target has SSH config or session history.
 func TestHostProbeObservesUnconfiguredTargets(t *testing.T) {
+	t.Parallel()
 	for _, target := range []string{"fresh-host", "ana@fresh-host"} {
 		t.Run(target, func(t *testing.T) {
 			known, err := daemon.ListHosts(t.Context(), conn(t))

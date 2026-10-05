@@ -18,8 +18,8 @@ import (
 )
 
 func TestTUISessionPickerPinsRenamesArchivesAndDeletes(t *testing.T) {
-	t.Parallel()
 	providerRoute(t, echoReply)
+	t.Parallel()
 	d := newTUIDriver(t)
 	target := newSession(t, t.TempDir())
 	d.Dispatch(tui.ChatBackToSessionsMsg{})
@@ -68,8 +68,8 @@ func TestTUISessionPickerPinsRenamesArchivesAndDeletes(t *testing.T) {
 // The session list carries no validators, so archiving a row whose preview
 // never loaded still has to reach the daemon.
 func TestTUIArchivesASessionStraightFromTheList(t *testing.T) {
-	t.Parallel()
 	providerRoute(t, echoReply)
+	t.Parallel()
 	d := newTUIDriver(t)
 	target := newSession(t, t.TempDir())
 	d.Dispatch(tui.ChatBackToSessionsMsg{})
@@ -87,8 +87,8 @@ func TestTUIArchivesASessionStraightFromTheList(t *testing.T) {
 // A long message reaches a preview as a content reference; the session list
 // and agents view read it in full instead of failing the preview.
 func TestSessionPreviewReadsLongMessagesInFull(t *testing.T) {
-	t.Parallel()
 	profile := providerRoute(t, echoReply)
+	t.Parallel()
 	id := newSession(t, t.TempDir())
 	long := strings.Repeat("long preview line ", 12000)
 	if _, err := daemon.NewChatClient(conn(t), id).Send(t.Context(), long, nil); err != nil {
@@ -119,6 +119,7 @@ func TestTUINavigationRetainsPendingTurnsAndContinuation(t *testing.T) {
 		}
 		return echoReply(request)
 	})
+	t.Parallel()
 	session := daemonSession(t, newSession(t, t.TempDir()))
 	other := daemonSession(t, newSession(t, t.TempDir()))
 	if _, err := daemon.NewChatClient(conn(t), session.ID).Send(t.Context(), "active navigation turn", nil); err != nil {

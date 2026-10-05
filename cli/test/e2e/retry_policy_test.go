@@ -26,6 +26,9 @@ import (
 
 func TestLostCreationAcknowledgementCreatesOneSession(t *testing.T) {
 	providerRoute(t, echoReply)
+	// Default-changing tests finish before parallel bodies. These creations
+	// send no turns and do not assert which provider the daemon selects.
+	t.Parallel()
 	for _, fault := range []acknowledgementFault{dropAcknowledgement, truncateAcknowledgement, rejectAcknowledgement, emptyAcknowledgement, malformedAcknowledgement, missingAcknowledgement} {
 		t.Run(string(fault), func(t *testing.T) {
 			workspace := t.TempDir()
@@ -93,6 +96,9 @@ func TestRejectedCreationReceiptRecoversWithoutAllocatingSession(t *testing.T) {
 
 func TestInvalidTUICreationAcknowledgementRecoversCreatedSession(t *testing.T) {
 	profile := providerRoute(t, echoReply)
+	// Default-changing tests finish before parallel bodies. These creations
+	// send no turns and do not assert which provider the daemon selects.
+	t.Parallel()
 	for _, fault := range []acknowledgementFault{dropAcknowledgement, emptyAcknowledgement, malformedAcknowledgement, missingAcknowledgement} {
 		t.Run(string(fault), func(t *testing.T) {
 			initial := daemonSession(t, newFaultSession(t, profile))
@@ -163,6 +169,7 @@ func TestInvalidSubmissionAcknowledgementSendsOneTurn(t *testing.T) {
 
 func TestInvalidCommandAcknowledgementAddsOneWorkItem(t *testing.T) {
 	profile := providerRoute(t, echoReply)
+	t.Parallel()
 	for _, fault := range []acknowledgementFault{truncateAcknowledgement, emptyAcknowledgement, malformedAcknowledgement, missingAcknowledgement, negativeAcknowledgement, wrongStatusAcknowledgement} {
 		t.Run(string(fault), func(t *testing.T) {
 			id := newFaultSession(t, profile)
@@ -198,6 +205,7 @@ func TestInvalidCommandAcknowledgementAddsOneWorkItem(t *testing.T) {
 
 func TestCancellationAfterAdmissionPreservesUncertainCause(t *testing.T) {
 	profile := providerRoute(t, echoReply)
+	t.Parallel()
 	proxy := cutAcknowledgement(t, "/sessions", cancelAcknowledgement)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -262,6 +270,7 @@ func TestLostSignInAcknowledgementStartsOneLocalFlow(t *testing.T) {
 
 func TestCoreAuthenticationRefusalRecoversBeforeCreation(t *testing.T) {
 	profile := providerRoute(t, echoReply)
+	t.Parallel()
 	snapshot := conn(t).Snapshot()
 	snapshot.Token = "expired-client-token"
 	stale := daemon.NewConnection(snapshot, func(ctx context.Context) (daemon.ConnectionSnapshot, error) {
@@ -378,6 +387,9 @@ func TestWebhookCreationMissingGeneratedSecretStopsAfterOneEffect(t *testing.T) 
 
 func TestUnknownReceiptReplaysOriginalCreationOnce(t *testing.T) {
 	providerRoute(t, echoReply)
+	// Default-changing tests finish before parallel bodies. These creations
+	// send no turns and do not assert which provider the daemon selects.
+	t.Parallel()
 	workspace := t.TempDir()
 	proxy := cutAcknowledgement(t, "/sessions", hideReceiptAcknowledgement)
 	handle, err := daemon.NewCreation(daemon.CreateSessionRequest{Workspace: workspace})
@@ -428,6 +440,7 @@ func TestQueuedPromptDeadlineCancelsOnlyItsOperation(t *testing.T) {
 		}
 		return echoReply(request)
 	})
+	t.Parallel()
 	id := newSession(t, t.TempDir())
 	if _, err := daemon.NewChatClient(conn(t), id).Send(t.Context(), "active", nil); err != nil {
 		t.Fatal(err)
@@ -520,6 +533,9 @@ func (transport *submissionCounterTransport) CloseIdleConnections() {
 
 func TestTUICreationRecoveryRetainsSelectedSession(t *testing.T) {
 	profile := providerRoute(t, echoReply)
+	// Default-changing tests finish before parallel bodies. These creations
+	// send no turns and do not assert which provider the daemon selects.
+	t.Parallel()
 	initial := daemonSession(t, newFaultSession(t, profile))
 	other := daemonSession(t, newFaultSession(t, profile))
 	workspace := t.TempDir()

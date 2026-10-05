@@ -52,6 +52,7 @@ func TestTUIExpiredSubmissionsRemainUnresolvedAcrossNavigation(t *testing.T) {
 		}
 		return echoReply(request)
 	})
+	t.Parallel()
 	session := daemonSession(t, newSession(t, t.TempDir()))
 	other := daemonSession(t, newSession(t, t.TempDir()))
 	if _, err := daemon.NewChatClient(conn(t), session.ID).Send(t.Context(), "hold expired submissions", nil); err != nil {
@@ -163,6 +164,9 @@ func TestTUIExpiredSubmissionsRemainUnresolvedAcrossNavigation(t *testing.T) {
 
 func TestTUICreationExpiryStopsRecoveryWithoutSwitchingSession(t *testing.T) {
 	providerRoute(t, echoReply)
+	// Default-changing tests finish before parallel bodies. These creations
+	// send no turns and do not assert which provider the daemon selects.
+	t.Parallel()
 	initial := daemonSession(t, newSession(t, t.TempDir()))
 	other := daemonSession(t, newSession(t, t.TempDir()))
 	proxy := cutAcknowledgement(t, "/sessions", unresolvedAcknowledgement)
@@ -202,6 +206,7 @@ func TestTUICreationExpiryStopsRecoveryWithoutSwitchingSession(t *testing.T) {
 
 func TestTUIRejectedSubmissionRestoresPromptAndImage(t *testing.T) {
 	providerRoute(t, echoReply)
+	t.Parallel()
 	driver := newTUIDriver(t)
 	t.Cleanup(func() { driver.App.Chat.Close() })
 	driver.connected()

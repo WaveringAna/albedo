@@ -296,6 +296,7 @@ func (body *contractBody) Close() error {
 }
 
 func TestOpenAPIRejectsDriftInRealDaemonResponse(t *testing.T) {
+	t.Parallel()
 	response, err := conn(t).HTTPClient().Get(conn(t).BaseURL() + "/server")
 	if err != nil {
 		t.Fatal(err)

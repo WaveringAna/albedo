@@ -223,6 +223,7 @@ func TestSubmissionCancellationLeavesSharedRunningTurn(t *testing.T) {
 		}
 		return echoReply(request)
 	})
+	t.Parallel()
 	id := newSession(t, t.TempDir())
 	client := daemon.NewChatClient(conn(t), id)
 	if _, err := client.Send(t.Context(), "blocking turn", nil); err != nil {
@@ -304,6 +305,7 @@ func TestSubmissionCancellationRacesStartAndCompletion(t *testing.T) {
 		}
 		return echoReply(request)
 	})
+	t.Parallel()
 	id := newSession(t, t.TempDir())
 	client := daemon.NewChatClient(conn(t), id)
 	if _, err := client.Send(t.Context(), "hold first turn", nil); err != nil {

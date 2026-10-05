@@ -22,6 +22,7 @@ import (
 
 func TestIndependentAdapterDrivesContextTreeAndSessionCatalog(t *testing.T) {
 	profile := providerRoute(t, echoReply)
+	t.Parallel()
 	before := conn(t).Snapshot()
 	attached, err := daemon.Attach(t.Context(), before, nil)
 	if err != nil {
@@ -181,6 +182,7 @@ func TestIndependentAdapterDrivesContextTreeAndSessionCatalog(t *testing.T) {
 
 func TestTUICapabilityPageEnablesAndLoadsSkillCommands(t *testing.T) {
 	providerRoute(t, echoReply)
+	t.Parallel()
 	workspace := t.TempDir()
 	skill := filepath.Join(workspace, ".agents", "skills", "enable-review", "SKILL.md")
 	if err := os.MkdirAll(filepath.Dir(skill), 0o700); err != nil {

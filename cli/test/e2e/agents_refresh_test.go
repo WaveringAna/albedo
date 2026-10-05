@@ -33,6 +33,7 @@ func TestTUIAgentsOverflowRefreshesMembershipAndPreviews(t *testing.T) {
 		}
 		return echoReply(request)
 	})
+	t.Parallel()
 	root := daemonSession(t, newSession(t, t.TempDir()))
 	create := func(name string) daemon.Session {
 		t.Helper()

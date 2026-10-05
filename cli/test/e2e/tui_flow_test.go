@@ -101,6 +101,7 @@ func TestTUIEffortSelectorCommitsThroughTheDaemon(t *testing.T) {
 // the command's name; the command would only reject it.
 func TestTUISendsTextAfterAnArgumentlessCommandAsAPrompt(t *testing.T) {
 	profile := providerRoute(t, echoReply)
+	t.Parallel()
 	session := daemonSession(t, newSession(t, t.TempDir()))
 	// A session lists its commands once its first turn has loaded them.
 	if _, err := daemon.NewChatClient(conn(t), session.ID).Send(t.Context(), "hello", nil); err != nil {
@@ -135,6 +136,7 @@ func TestTUISendsTextAfterAnArgumentlessCommandAsAPrompt(t *testing.T) {
 
 func TestTUIExtensionPickerSwitchesCompactionStrategies(t *testing.T) {
 	profile := providerRoute(t, echoReply)
+	t.Parallel()
 	session := daemonSession(t, newSession(t, t.TempDir()))
 	d := driveTUI(t, &session)
 	defer d.App.Chat.Close()

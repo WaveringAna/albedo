@@ -71,8 +71,8 @@ func createShortcutPaperclip(t *testing.T, session string) protocol.Paperclip {
 }
 
 func TestWorkShortcutsPreserveOtherFieldsAndWorkspaceScope(t *testing.T) {
-	t.Parallel()
 	providerRoute(t, echoReply)
+	t.Parallel()
 	session := newSession(t, t.TempDir())
 	item := shortcutWorkItem(t, executeShortcut(t, session, "/work", "add a multiword title"))
 	if item.Title != "a multiword title" || item.Status != "open" {
@@ -115,8 +115,8 @@ func TestWorkShortcutsPreserveOtherFieldsAndWorkspaceScope(t *testing.T) {
 }
 
 func TestPaperclipShortcutsApplyDeclaredStatusAndReplyActions(t *testing.T) {
-	t.Parallel()
 	providerRoute(t, echoReply)
+	t.Parallel()
 	session := newSession(t, t.TempDir())
 	item := createShortcutPaperclip(t, session)
 	for _, scenario := range []struct {
@@ -136,8 +136,8 @@ func TestPaperclipShortcutsApplyDeclaredStatusAndReplyActions(t *testing.T) {
 }
 
 func TestPageShortcutsRejectInvalidArgumentsWithoutChangingResources(t *testing.T) {
-	t.Parallel()
 	providerRoute(t, echoReply)
+	t.Parallel()
 	session := newSession(t, t.TempDir())
 	work := shortcutWorkItem(t, executeShortcut(t, session, "/work", "add unchanged work"))
 	clip := createShortcutPaperclip(t, session)
@@ -171,8 +171,8 @@ func TestPageShortcutsRejectInvalidArgumentsWithoutChangingResources(t *testing.
 }
 
 func TestWorkShortcutFindsOffPageTargetAndRejectsStaleValidator(t *testing.T) {
-	t.Parallel()
 	providerRoute(t, echoReply)
+	t.Parallel()
 	session := newSession(t, t.TempDir())
 	creation, err := daemon.PreparePageShortcut(t.Context(), conn(t), session, "/work", "add paginated fixture")
 	if err != nil {
@@ -211,6 +211,7 @@ func TestWorkShortcutFindsOffPageTargetAndRejectsStaleValidator(t *testing.T) {
 
 func TestTUIPageRemoveShortcutConfirmsOrCancels(t *testing.T) {
 	providerRoute(t, echoReply)
+	t.Parallel()
 	session := daemonSession(t, newSession(t, t.TempDir()))
 	driver := driveTUI(t, &session)
 	t.Cleanup(func() { driver.App.Chat.Close() })

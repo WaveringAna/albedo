@@ -21,6 +21,7 @@ func pastedLines(label string, count int) string {
 
 func TestTUIPastesAndImagesBecomeMarkersTheModelReceivesInPlace(t *testing.T) {
 	profile := providerRoute(t, echoReply)
+	t.Parallel()
 	driver := newTUIDriver(t)
 	t.Cleanup(func() { driver.App.Chat.Close() })
 	driver.connected()

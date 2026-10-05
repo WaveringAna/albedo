@@ -79,8 +79,8 @@ func TestNewSessionIsListedAndResumes(t *testing.T) {
 // and the committed transcript records the reply. The provider's recorded
 // request is the proof the daemon actually called the model.
 func TestSendTurnReachesProviderAndTranscript(t *testing.T) {
-	t.Parallel()
 	profile := providerRoute(t, echoReply)
+	t.Parallel()
 	workspace := t.TempDir()
 	id := newSession(t, workspace)
 
@@ -118,8 +118,8 @@ func TestSendTurnReachesProviderAndTranscript(t *testing.T) {
 // the real client: agent-scoped routes, SSE replay, and status polling against
 // the live daemon.
 func TestChatClientTurnStreamsAndSettles(t *testing.T) {
-	t.Parallel()
 	profile := providerRoute(t, echoReply)
+	t.Parallel()
 	workspace := t.TempDir()
 	id := newSession(t, workspace)
 
@@ -176,9 +176,10 @@ func TestChatClientTurnStreamsAndSettles(t *testing.T) {
 }
 
 // `albedo sessions` prints shortened IDs, so send and stop must accept them the
-// way resume does.
+// way resume does. A printed prefix is unique only among the sessions that exist
+// when it is listed, and UUIDv7 IDs created together share long prefixes, so
+// this runs serially, before parallel tests create sessions.
 func TestSendAndStopAcceptAShortenedSessionID(t *testing.T) {
-	t.Parallel()
 	profile := providerRoute(t, echoReply)
 	id := newSession(t, t.TempDir())
 	prefix := listedSessionPrefix(t, id)
@@ -197,9 +198,8 @@ func TestSendAndStopAcceptAShortenedSessionID(t *testing.T) {
 
 // Another agent drives a session with `sessions send` and `sessions read`: the
 // newest turns come back as text or JSON, and a count of one leaves the older
-// turn out.
+// turn out. It addresses the session by a listed prefix, so it runs serially.
 func TestSessionsSendAndRead(t *testing.T) {
-	t.Parallel()
 	profile := providerRoute(t, echoReply)
 	id := newSession(t, t.TempDir())
 	prefix := listedSessionPrefix(t, id)
@@ -267,6 +267,7 @@ func samePath(a, b string) bool {
 // Session deletion requires approval before it reaches the daemon.
 func TestCLISessionDeletionRequiresConfirmation(t *testing.T) {
 	providerRoute(t, echoReply)
+	t.Parallel()
 	id := newSession(t, t.TempDir())
 	stdout, stderr, err := runCLI("storage", "prune", "--session", id)
 	if err == nil || !strings.Contains(stdout, "Permanently delete session "+id) || !strings.Contains(stderr, "no files have been removed") {

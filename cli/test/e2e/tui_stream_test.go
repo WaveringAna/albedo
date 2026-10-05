@@ -176,6 +176,7 @@ func pumpStreamUntil(t *testing.T, driver *tuiDriver, condition func(tea.Msg) bo
 
 func TestTUIStreamProtocolFailureRecoversDurableHistoryOnce(t *testing.T) {
 	profile := providerRoute(t, echoReply)
+	t.Parallel()
 	session := daemonSession(t, newSession(t, t.TempDir()))
 	if _, err := daemon.NewChatClient(conn(t), session.ID).Send(t.Context(), "durable stream recovery", nil); err != nil {
 		t.Fatal(err)
@@ -205,6 +206,7 @@ func TestTUIStreamProtocolFailureRecoversDurableHistoryOnce(t *testing.T) {
 
 func TestTUIProtocolFailureStopsUntilTheSessionIsReopened(t *testing.T) {
 	providerRoute(t, echoReply)
+	t.Parallel()
 	session := daemonSession(t, newSession(t, t.TempDir()))
 	proxy := faultSessionStream(t, session.ID, "repeated")
 	driver := driveTUIWithConnection(t, &session, proxy.connection)
@@ -234,6 +236,7 @@ func TestTUIProtocolFailureStopsUntilTheSessionIsReopened(t *testing.T) {
 
 func TestTUIDeletedSessionStopsItsStreamAndStatusPolling(t *testing.T) {
 	providerRoute(t, echoReply)
+	t.Parallel()
 	session := daemonSession(t, newSession(t, t.TempDir()))
 	if _, err := daemon.DeleteSession(t.Context(), conn(t), session.ID, false, sessionCondition(t, conn(t), session.ID)); err != nil {
 		t.Fatal(err)
@@ -260,6 +263,7 @@ func TestTUIDeletedSessionStopsItsStreamAndStatusPolling(t *testing.T) {
 
 func TestTUIStreamEOFReconnectsFromConsumedCursor(t *testing.T) {
 	profile := providerRoute(t, echoReply)
+	t.Parallel()
 	session := daemonSession(t, newSession(t, t.TempDir()))
 	client := daemon.NewChatClient(conn(t), session.ID)
 	if _, err := client.Send(t.Context(), "before EOF", nil); err != nil {
@@ -305,6 +309,7 @@ func TestTUIStreamEOFReconnectsFromConsumedCursor(t *testing.T) {
 
 func TestTUIResetReplacesHistoryAndPreservesOlderNavigation(t *testing.T) {
 	profile := providerRoute(t, echoReply)
+	t.Parallel()
 	session := daemonSession(t, newSession(t, t.TempDir()))
 	client := daemon.NewChatClient(conn(t), session.ID)
 	const turns = 62

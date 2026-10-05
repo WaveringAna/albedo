@@ -547,12 +547,11 @@ func cliSession(t *testing.T, workspace string) string {
 	return created.Session
 }
 
-// providerRoute registers a scripted provider profile for one scenario and
-// selects it, named after the test so failure output points at its owner.
-// Selecting is global: a scenario whose turns go to the active profile (on a
-// session the CLI or the TUI created), that saves a default, or that restarts
-// the daemon runs alone, and every other one calls t.Parallel(). Go runs the
-// parallel ones only after all the others have finished.
+// providerRoute registers and selects a profile named after the test. Call it
+// before t.Parallel(): Go finishes these selections and all serial tests before
+// resuming parallel bodies. Those bodies must not depend on the active profile
+// or change shared settings. Tests that use defaults, log in, change global
+// extensions, or restart the daemon stay serial.
 func providerRoute(t *testing.T, reply func(map[string]any) string) string {
 	t.Helper()
 	if err := suite.provider.addProfile(t.Name(), reply); err != nil {
