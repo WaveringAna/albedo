@@ -80,6 +80,17 @@ pub fn settings(
             })
           })
           |> list.map(fn(item) { item.name })
+        let composes =
+          settings.parse_group(group)
+          |> result.map(settings.composes)
+          |> result.unwrap(False)
+        use before <- result.try(case composes {
+          True ->
+            settings.composition_revision(config.home)
+            |> result.map(Some)
+            |> result.map_error(http_api.failure)
+          False -> Ok(None)
+        })
         use changed <- result.try(
           settings.patch_group(
             config.home,
@@ -119,10 +130,6 @@ pub fn settings(
           settings.composition_revision(config.home)
           |> result.map_error(http_api.failure),
         )
-        use pending <- result.try(
-          runtime.needs_reload(host, config.home)
-          |> result.map_error(http_api.failure),
-        )
         use enabled <- result.try(
           runtime.global(host) |> result.map_error(http_api.failure),
         )
@@ -141,9 +148,12 @@ pub fn settings(
           json.object([
             #("desired_revision", json.string(revision)),
             #("active_service_revision", json.string(service_revision)),
-            #("needs_reload_count", json.int(list.length(pending))),
-            #("session_ids", json.array(list.take(pending, 200), json.string)),
-            #("more", json.bool(list.length(pending) > 200)),
+            // Which sessions are behind is asked separately, through
+            // GET /sessions?needs_reload=true: it observes every loaded one.
+            #(
+              "composition_changed",
+              json.bool(composes && before != Some(revision)),
+            ),
             #(
               "validation",
               list.key_find(fields, "validation")

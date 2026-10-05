@@ -2586,13 +2586,13 @@ type Settings struct {
 type SettingsApplication struct {
 	ActiveServiceRevision *ID `json:"active_service_revision" nullable:"true"`
 
+	// CompositionChanged Whether this save changed the desired composition, so loaded sessions need a reload to apply it. Always false for providers, models and ui. A concurrent save to another composition group can make it true. GET /sessions?needs_reload=true lists the sessions.
+	CompositionChanged bool `json:"composition_changed"`
+
 	// DesiredRevision Opaque identity. Never infer a resource type or route from its contents.
-	DesiredRevision  ID       `json:"desired_revision"`
-	More             bool     `json:"more"`
-	NeedsReloadCount Counter  `json:"needs_reload_count"`
-	SessionIDs       []ID     `json:"session_ids"`
-	Validation       string   `json:"validation"`
-	Warnings         Warnings `json:"warnings"`
+	DesiredRevision ID       `json:"desired_revision"`
+	Validation      string   `json:"validation"`
+	Warnings        Warnings `json:"warnings"`
 }
 
 // SettingsChange defines model for SettingsChange.

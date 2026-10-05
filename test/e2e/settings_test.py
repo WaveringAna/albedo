@@ -469,6 +469,37 @@ class SettingsTest(unittest.TestCase):
         )
         self.assertNotIn("CAPABILITY_SKILL_MARKER", self.turn(session=disabled))
 
+    # exclusive: changes daemon-wide extension defaults
+    @exclusive
+    def test_saves_report_composition_changes_and_reload_lists_are_asked_for(self):
+        # More loaded sessions than one observation window, so the list
+        # gathers several windows.
+        sessions = [self.session] + [self.app.session() for _ in range(3)]
+        for session in sessions:
+            self.turn(session=session)
+
+        def pending():
+            return {
+                row["id"]
+                for row in self.read("/sessions?scope=all&needs_reload=true")["items"]
+            }
+
+        # A group that never feeds composition reports no change.
+        ui = self.patch("ui", {"thinking": False})
+        self.assertFalse(ui["application"]["composition_changed"])
+        self.assertNotIn("needs_reload_count", ui["application"])
+        self.assertEqual(pending(), set())
+
+        # A default every session inherits changes the desired composition,
+        # and the sessions behind it are listed when asked for.
+        extensions = self.patch("extensions", {"defaults": {"view": True}})
+        self.assertTrue(extensions["application"]["composition_changed"])
+        self.assertEqual(pending(), set(sessions))
+
+        # A reload brings one session up to date; the rest stay listed.
+        self.reload(session=sessions[0])
+        self.assertEqual(pending(), set(sessions[1:]))
+
     # exclusive: malformed preferences cannot be hidden by a session override
     @exclusive
     def test_failed_reload_keeps_loaded_commands_and_does_not_overwrite_malformed_preferences(

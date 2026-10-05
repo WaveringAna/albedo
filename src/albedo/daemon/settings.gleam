@@ -25,6 +25,16 @@ pub fn parse_group(name: String) -> Result(Group, String) {
   }
 }
 
+/// Whether saving `group` can change a session's composition. These are the
+/// groups `composition_revision` hashes (albedo_settings_http.erl); the rest
+/// never call for a reload.
+pub fn composes(group: Group) -> Bool {
+  case group {
+    Extensions | MCP | Capabilities -> True
+    Providers | Models | UI -> False
+  }
+}
+
 pub type GroupSnapshot {
   GroupSnapshot(value: String, etag: Option(String))
 }

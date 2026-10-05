@@ -59,7 +59,7 @@ func Settings() map[string]any {
 	return result
 }
 func SettingsChange(group string, value any) map[string]any {
-	return map[string]any{"group": group, "resource": map[string]any{"url": "/settings?group=" + group, "etag": "\"" + group + "-b\"", "value": value}, "application": map[string]any{"desired_revision": "desired-b", "active_service_revision": nil, "needs_reload_count": 0, "session_ids": []any{}, "more": false, "validation": "validated", "warnings": []any{}}}
+	return map[string]any{"group": group, "resource": map[string]any{"url": "/settings?group=" + group, "etag": "\"" + group + "-b\"", "value": value}, "application": map[string]any{"desired_revision": "desired-b", "active_service_revision": nil, "composition_changed": false, "validation": "validated", "warnings": []any{}}}
 }
 func Model(id string) map[string]any {
 	return map[string]any{"id": id, "label": id, "efforts": []any{map[string]string{"id": "low", "label": "Low"}, map[string]string{"id": "high", "label": "High"}}, "default_context_tokens": nil, "effective_context_tokens": nil, "max_context_tokens": nil, "max_output_tokens": nil, "input_modalities": []any{"text", "pdf"}, "image_edge": nil, "raised": false, "cap_key": "provider/" + id, "cache_policy": map[string]any{"ttl_seconds": nil, "source": nil}, "source": "catalog", "observed_at": nil}

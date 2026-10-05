@@ -4903,22 +4903,17 @@ components:
           anyOf:
           - $ref: '#/components/schemas/ID'
           - type: 'null'
-        needs_reload_count:
-          $ref: '#/components/schemas/Counter'
-        session_ids:
-          type: array
-          items:
-            $ref: '#/components/schemas/ID'
-          maxItems: 200
-        more:
+        composition_changed:
           type: boolean
+          description: Whether this save changed the desired composition, so loaded sessions need a
+            reload to apply it. Always false for providers, models and ui. A concurrent save to another
+            composition group can make it true. GET /sessions?needs_reload=true lists the sessions.
         validation:
           type: string
           enum: [passed, skipped, not_applicable]
         warnings:
           $ref: '#/components/schemas/Warnings'
-      required: [desired_revision, active_service_revision, needs_reload_count, session_ids, more, validation,
-        warnings]
+      required: [desired_revision, active_service_revision, composition_changed, validation, warnings]
       additionalProperties: false
     ProviderSettingsChange:
       type: object

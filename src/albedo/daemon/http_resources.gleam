@@ -81,6 +81,8 @@ pub fn hosts(
   http_api.answer(outcome)
 }
 
+/// `target` is the raw path segment: a bracketed IPv6 host arrives
+/// percent-encoded (`%5B::1%5D`), so it is decoded before it is parsed.
 pub fn probe(
   target: String,
   req: request.Request(BitArray),
@@ -88,6 +90,10 @@ pub fn probe(
   let outcome = {
     use _ <- result.try(http_api.json_parameters(req, []))
     use _ <- result.try(http_api.empty_body(req))
+    use target <- result.try(
+      uri.percent_decode(target)
+      |> result.replace_error(http_api.invalid("host is not validly encoded")),
+    )
     use _ <- result.try(
       location.parse(target <> ":/")
       |> result.replace(Nil)

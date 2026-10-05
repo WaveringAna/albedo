@@ -167,7 +167,11 @@ pub fn observe_composition(
     process.subject_owner(runtime.subject)
     |> result.replace_error("runtime owner is unavailable"),
   )
-  actor_call.try_call(runtime.subject, 15_000, ObserveComposition(home, id, _))
+  actor_call.try_call(runtime.subject, observe_call_ms, ObserveComposition(
+    home,
+    id,
+    _,
+  ))
   |> result.map_error(fn(error) {
     case error {
       actor_call.CalleeDown ->
@@ -3255,16 +3259,39 @@ pub fn inventory(host: Runtime) -> session_catalog.Inventory {
   )
 }
 
+/// Loaded sessions whose composition is behind their desired one. They are
+/// observed a few at a time: observation runs on the owner's worker slots, so
+/// a wider window would only queue calls until their timeouts ran out.
 pub fn needs_reload(
   host: Runtime,
   home: String,
 ) -> Result(List(String), String) {
   loaded_sessions(host)
-  |> list.try_fold([], fn(ids, id) {
-    case observe_composition(host, home, id) {
-      Error("session not found") -> Ok(ids)
-      Error(reason) -> Error(reason)
-      Ok(observed) ->
+  |> list.sized_chunk(boot_slots - 1)
+  |> list.try_fold([], fn(ids, window) {
+    use observed <- result.try(observe_window(host, home, window))
+    Ok(list.append(observed, ids))
+  })
+}
+
+/// The ids in `window` that need a reload, observed concurrently.
+fn observe_window(
+  host: Runtime,
+  home: String,
+  window: List(String),
+) -> Result(List(String), String) {
+  let answers = process.new_subject()
+  list.each(window, fn(id) {
+    process.spawn_unlinked(fn() {
+      process.send(answers, #(id, observe_composition(host, home, id)))
+    })
+  })
+  list.try_fold(window, [], fn(ids, _) {
+    case process.receive(answers, observe_timeout_ms) {
+      Error(Nil) -> Error("runtime composition observation is unavailable")
+      Ok(#(_, Error("session not found"))) -> Ok(ids)
+      Ok(#(_, Error(reason))) -> Error(reason)
+      Ok(#(id, Ok(observed))) ->
         Ok(case observed.needs_reload {
           True -> [id, ..ids]
           False -> ids
@@ -3272,3 +3299,9 @@ pub fn needs_reload(
     }
   })
 }
+
+/// How long one composition observation's call waits for the owner.
+const observe_call_ms = 15_000
+
+/// `observe_call_ms` plus a margin for the observer's reply to arrive.
+const observe_timeout_ms = 16_000

@@ -438,6 +438,13 @@ class RemoteKernelTests(unittest.TestCase):
             self.assertIn("ControlPersist=1800 ", line)
         self.assertEqual(self.host("fakehost")["state"], "ready")
 
+        # A bracketed IPv6 host travels percent-encoded in the probe's path and
+        # is probed as itself, the same host a target query names.
+        with self.app.api("/hosts/%5B::1%5D/probe", {}) as response:
+            self.assertEqual(response.status, 202)
+            self.assertEqual(json.load(response)["target"], "[::1]")
+        self.host("[::1]")
+
         # A turn at a host that needs a sign-in waits with ssh's words, and
         # the host names the control path the tui's sign-in opens.
         session = self.create("locked:/srv/app")["id"]

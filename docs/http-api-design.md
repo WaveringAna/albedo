@@ -437,8 +437,11 @@ write-only selection fields are siblings in the capabilities group.
 Every successful patch returns `{ "group": ..., "resource": ..., "application": ... }`.
 `resource` contains the updated value, canonical URL, and validator.
 `application` includes desired revision, active service revision,
-`needs_reload_count`, up to 200 affected session IDs, `more`, and warnings.
-`GET /sessions?needs_reload=true` provides the complete paged set.
+`composition_changed`, validation, and warnings. `composition_changed` says
+whether the save changed the desired composition; it is always false for
+`providers`, `models`, and `ui`, which never feed it. A patch does not observe
+sessions: `GET /sessions?needs_reload=true` pages the ones that need a reload,
+observing loaded sessions a few at a time.
 Persisted defaults do not claim that every open
 session reloaded. Global services use the new desired state on subsequent
 requests. Sessions apply composition through their explicit reload operation.

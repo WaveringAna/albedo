@@ -248,7 +248,7 @@ func nonNilMap[K comparable, V any](m map[K]V) map[K]V {
 }
 func applicationResult(application protocol.SettingsApplication) ReloadResult {
 	result := ReloadResult{Message: "Saved settings."}
-	if application.NeedsReloadCount > 0 {
+	if application.CompositionChanged {
 		result.Message = "Saved settings; reload open sessions to apply them."
 	}
 	for _, warning := range application.Warnings {
