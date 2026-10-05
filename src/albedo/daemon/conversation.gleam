@@ -131,6 +131,17 @@ pub fn capture_in(
   ))
 }
 
+/// The resolved configuration retained in an immutable creation receipt.
+pub fn resolved_creation(info: Info) -> String {
+  json.object([
+    #("workspace", json.string(info.cwd)),
+    #("provider_profile", json.string(info.provider)),
+    #("model", json.string(info.model)),
+    #("effort", json.nullable(info.effort, json.string)),
+  ])
+  |> json.to_string
+}
+
 pub type Creation {
   Creation(
     request: operations.Request,
@@ -270,16 +281,7 @@ pub fn create_child_identified(
           ))
           let info = Info(..child.info, cwd: above.workspace)
           let creation =
-            Creation(
-              ..child.creation,
-              resolved: json.object([
-                  #("workspace", json.string(info.cwd)),
-                  #("provider_profile", json.string(info.provider)),
-                  #("model", json.string(info.model)),
-                  #("effort", json.nullable(info.effort, json.string)),
-                ])
-                |> json.to_string,
-            )
+            Creation(..child.creation, resolved: resolved_creation(info))
           use _ <- result.try(
             case
               child.input.target == child.info.id

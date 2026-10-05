@@ -706,21 +706,8 @@ fn tool_progress_delta(
         )
       let overflow = was_enabled && !tool_progress_state.enabled(progress)
       let clear_previous = { invalidates_progress && had_calls } || overflow
-      let state = case clear_previous {
-        True -> invalidate_progress_timer(state)
-        False -> state
-      }
-      let state = session_state.State(..state, tool_progress: progress)
-      let state = case clear_previous {
-        True -> session_state.emit(state, view.clear_tool_progress())
-        False -> state
-      }
-      let state = case snapshot {
-        Some(snapshot) ->
-          session_state.emit(state, view.tool_progress_event(snapshot))
-        None -> state
-      }
-      answer(schedule_progress_flush(state), reply, True)
+      let state = apply_tool_progress(state, progress, snapshot, clear_previous)
+      answer(state, reply, True)
     }
   }
 }
@@ -750,23 +737,39 @@ fn tool_progress_running(
           tool_call_id: tool_call_id,
           name: name,
         )
-      let state = case invalidates_progress && had_calls {
-        True -> invalidate_progress_timer(state)
-        False -> state
-      }
-      let state = session_state.State(..state, tool_progress: progress)
-      let state = case invalidates_progress && had_calls {
-        True -> session_state.emit(state, view.clear_tool_progress())
-        False -> state
-      }
-      let state = case snapshot {
-        Some(snapshot) ->
-          session_state.emit(state, view.tool_progress_event(snapshot))
-        None -> state
-      }
-      answer(schedule_progress_flush(state), reply, True)
+      let state =
+        apply_tool_progress(
+          state,
+          progress,
+          snapshot,
+          invalidates_progress && had_calls,
+        )
+      answer(state, reply, True)
     }
   }
+}
+
+fn apply_tool_progress(
+  state: State,
+  progress: tool_progress_state.Projection,
+  snapshot: Option(tool_progress_state.Snapshot),
+  clear_previous: Bool,
+) -> State {
+  let state = case clear_previous {
+    True -> invalidate_progress_timer(state)
+    False -> state
+  }
+  let state = session_state.State(..state, tool_progress: progress)
+  let state = case clear_previous {
+    True -> session_state.emit(state, view.clear_tool_progress())
+    False -> state
+  }
+  let state = case snapshot {
+    Some(snapshot) ->
+      session_state.emit(state, view.tool_progress_event(snapshot))
+    None -> state
+  }
+  schedule_progress_flush(state)
 }
 
 fn tool_progress_reset(

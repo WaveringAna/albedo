@@ -1122,14 +1122,7 @@ fn create_identified(
       case prepared {
         Error(reason) -> #(state, rejected_operation(state, operation, reason))
         Ok(info) -> {
-          let resolved =
-            json.object([
-              #("workspace", json.string(info.cwd)),
-              #("provider_profile", json.string(info.provider)),
-              #("model", json.string(info.model)),
-              #("effort", json.nullable(info.effort, json.string)),
-            ])
-            |> json.to_string
+          let resolved = conversation.resolved_creation(info)
           let name = case intent {
             http_api.NewSession(_, name, _, _, _)
             | http_api.ForkSession(_, _, name) -> name

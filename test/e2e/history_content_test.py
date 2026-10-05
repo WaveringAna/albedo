@@ -111,6 +111,13 @@ class HistoryContentTests(IntegrationScenario):
                     (branch["provider_profile"], branch["model"]),
                     (app.profile, "fixture-model"),
                 )
+                self.assertEqual(
+                    branch["creation"]["resolved"],
+                    {
+                        key: branch[key]
+                        for key in ("workspace", "provider_profile", "model", "effort")
+                    },
+                )
                 branch_entries = self.history(app, branch_id)
                 branch_preview = self.read(app, f"/sessions/{branch_id}?tail=0")[
                     "preview"

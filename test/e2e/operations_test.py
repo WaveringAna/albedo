@@ -216,6 +216,13 @@ class OperationsTests(InputScenario):
         self.assertEqual(
             created["creation"]["submitted"]["workspace"], intent["workspace"]
         )
+        self.assertEqual(
+            created["creation"]["resolved"],
+            {
+                key: created[key]
+                for key in ("workspace", "provider_profile", "model", "effort")
+            },
+        )
         configuration = created["configuration_resource"]
         with self.app.api(
             configuration["url"],

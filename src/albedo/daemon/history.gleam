@@ -62,13 +62,7 @@ pub fn fork_identified(
             request.branch_id,
             conversation.Creation(
               ..request.creation,
-              resolved: json.object([
-                  #("workspace", json.string(info.cwd)),
-                  #("provider_profile", json.string(info.provider)),
-                  #("model", json.string(info.model)),
-                  #("effort", json.nullable(info.effort, json.string)),
-                ])
-                |> json.to_string,
+              resolved: conversation.resolved_creation(info),
             ),
           )
         },

@@ -144,25 +144,13 @@ fn evicted_prefix(
   history: List(types.Input),
   kept: List(types.Input),
 ) -> List(types.Input) {
-  let shared = common_suffix(list.reverse(history), list.reverse(kept), 0)
+  let shared = compaction.common_suffix(history, kept)
   let #(before, tail) = list.split(history, list.length(history) - shared)
   let #(partial, units) =
     list.split_while(tail, fn(input) { !compaction.is_user(input) })
   case units {
     [] -> []
     _ -> list.append(before, partial)
-  }
-}
-
-fn common_suffix(
-  newest_history: List(types.Input),
-  newest_kept: List(types.Input),
-  count: Int,
-) -> Int {
-  case newest_history, newest_kept {
-    [a, ..history], [b, ..kept] if a == b ->
-      common_suffix(history, kept, count + 1)
-    _, _ -> count
   }
 }
 

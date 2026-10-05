@@ -247,6 +247,14 @@ class AgentsTests(unittest.TestCase):
             (parent, "coder", 1, False),
         )
         self.assertEqual(child["name"], "coder")
+        resource = self.api(f"/sessions/{child['id']}")
+        self.assertEqual(
+            resource["creation"]["resolved"],
+            {
+                key: resource[key]
+                for key in ("workspace", "provider_profile", "model", "effort")
+            },
+        )
         self.assertNotIn(
             child["id"], [item["id"] for item in self.api("/sessions")["items"]]
         )

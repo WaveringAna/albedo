@@ -96,28 +96,20 @@ pub fn tool_progress_delta_fn(
   waiting timeout: Int,
 ) -> fn(Int, Int, Int, String, String) -> Bool {
   fn(step, attempt, output_index, name, fragment) {
-    case turn.raised(stop) {
-      True -> False
-      False ->
-        case
-          actor_call.try_call(
-            owner,
-            waiting: timeout,
-            sending: messages.tool_progress_delta(
-              run_id,
-              step,
-              attempt,
-              output_index,
-              name,
-              fragment,
-              _,
-            ),
-          )
-        {
-          Ok(keep_going) -> keep_going && !turn.raised(stop)
-          Error(_) -> False
-        }
-    }
+    progress_acknowledged(
+      owner,
+      stop,
+      timeout,
+      sending: messages.tool_progress_delta(
+        run_id,
+        step,
+        attempt,
+        output_index,
+        name,
+        fragment,
+        _,
+      ),
+    )
   }
 }
 
@@ -129,28 +121,36 @@ pub fn tool_progress_running_fn(
   waiting timeout: Int,
 ) -> fn(Int, Int, Int, String, String) -> Bool {
   fn(step, attempt, output_index, tool_call_id, name) {
-    case turn.raised(stop) {
-      True -> False
-      False ->
-        case
-          actor_call.try_call(
-            owner,
-            waiting: timeout,
-            sending: messages.tool_progress_running(
-              run_id,
-              step,
-              attempt,
-              output_index,
-              tool_call_id,
-              name,
-              _,
-            ),
-          )
-        {
-          Ok(keep_going) -> keep_going && !turn.raised(stop)
-          Error(_) -> False
-        }
-    }
+    progress_acknowledged(
+      owner,
+      stop,
+      timeout,
+      sending: messages.tool_progress_running(
+        run_id,
+        step,
+        attempt,
+        output_index,
+        tool_call_id,
+        name,
+        _,
+      ),
+    )
+  }
+}
+
+fn progress_acknowledged(
+  owner: Subject(message),
+  stop: turn.Latch,
+  timeout: Int,
+  sending message: fn(Subject(Bool)) -> message,
+) -> Bool {
+  case turn.raised(stop) {
+    True -> False
+    False ->
+      case actor_call.try_call(owner, waiting: timeout, sending: message) {
+        Ok(keep_going) -> keep_going && !turn.raised(stop)
+        Error(_) -> False
+      }
   }
 }
 
