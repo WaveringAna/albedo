@@ -191,12 +191,15 @@ fn bounded(submission: Submission) -> Bool {
 }
 
 /// Whether a finished run should start another for this queue: notes alone
-/// wait for the user's next message.
+/// wait for the user's next message. A job wake never queues behind a run
+/// (it is refused so the kernel retries it), so one waiting here was parked
+/// while the kernel was unavailable, and it must start its turn when the
+/// kernel arrives or its completion is lost until the user speaks.
 pub fn starts_turn(queued: List(Submission)) -> Bool {
   list.any(queued, fn(submission) {
     case submission.source {
-      Chat | Continue | Mail(..) -> True
-      JobWake | Note(_) -> False
+      Chat | Continue | Mail(..) | JobWake -> True
+      Note(_) -> False
     }
   })
 }

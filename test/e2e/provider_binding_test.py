@@ -220,8 +220,10 @@ class ProviderBindingTests(IntegrationScenario):
                         '<system-note origin="daemon restart">albedo restarted'
                     )
                 )
-                # The detached kernel outlives the crash: no reset notice.
-                self.assertNotIn("<system-note>The python kernel", note)
+                # The detached kernel outlives the crash: it reattached with
+                # its namespace, so the notice says that, not a reset.
+                self.assertIn("<system-note>The python kernel reattached", note)
+                self.assertNotIn("<system-note>The python kernel got reset", note)
                 markers = [
                     e
                     for e in restored

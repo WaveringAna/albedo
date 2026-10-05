@@ -117,6 +117,47 @@ class KernelDetachTests(unittest.TestCase):
             self.assertGreaterEqual(duration, 7)
             self.assertLess(duration, 10)
 
+    def last_prompt(self):
+        """The newest model request's user text: where a notice would ride."""
+        request = next(
+            record["request"]
+            for record in reversed(self.provider.requests)
+            if any(
+                item.get("role") == "user"
+                for item in record["request"].get("input", [])
+            )
+        )
+        return [
+            item["content"] for item in request["input"] if item.get("role") == "user"
+        ][-1]
+
+    def test_a_restart_tells_the_model_what_the_kernel_is_still_running(self):
+        started = self.cell(
+            "import asyncio, os\nj = run('sleep', '120')\n"
+            "await asyncio.sleep(0.3)\n(os.getpid(), j.id)"
+        )
+        kernel, job = (
+            part.strip(" '\"") for part in started["value"].strip("()").split(",")
+        )
+        self.app.restart()
+
+        # The next turn runs on the reattached kernel, and its request says
+        # the kernel carried on and names the job still running, so a live
+        # handle is not mistaken for one the restart killed.
+        self.cells.append("import os\nos.getpid()")
+        self.app.prompt(self.session, "run it").close()
+        self.app.idle(self.session)
+        prompt = self.last_prompt()
+        self.assertIn("<system-note>The python kernel reattached", prompt)
+        self.assertIn("Jobs still running: " + job, prompt)
+        self.assertIn("sleep 120", prompt)
+        self.assertEqual(self.cell("import os\nos.getpid()")["value"], str(int(kernel)))
+        # The notice rides the first request after the reattach, once.
+        self.cells.append("import os\nos.getpid()")
+        self.app.prompt(self.session, "run it").close()
+        self.app.idle(self.session)
+        self.assertNotIn("The python kernel reattached", self.last_prompt())
+
     def test_a_kernel_killed_while_the_daemon_was_down_has_its_jobs_ended(self):
         started = self.cell(
             "import asyncio, os\nj = run('sleep', '300')\nawait asyncio.sleep(0.5)\n(os.getpid(), j.process.pid)"

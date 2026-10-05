@@ -214,6 +214,25 @@ pub fn get(storage: store.Store, id: String) -> Result(Cell, String) {
   }
 }
 
+/// This session's started cells that never recorded an end: still running,
+/// or ended with their kernel. Newest first, as `(id, source)`.
+pub fn unfinished(
+  storage: store.Store,
+  session: String,
+) -> Result(List(#(String, String)), String) {
+  let decoder = {
+    use id <- decode.field(0, decode.string)
+    use source <- decode.field(1, decode.string)
+    decode.success(#(id, source))
+  }
+  store.read(
+    storage,
+    "SELECT id,source FROM cells WHERE session=? AND status='saved' AND started=1 ORDER BY rowid DESC",
+    [sqlight.text(session)],
+    decoder,
+  )
+}
+
 /// This session's cells, newest first, at most `limit` of them.
 pub fn recent(
   storage: store.Store,
@@ -227,6 +246,15 @@ pub fn recent(
     decode.field(0, decode.string, decode.success),
   ))
   list.try_map(ids, get(storage, _))
+}
+
+/// The first nonempty source line, cut to 120 graphemes: a cell's display.
+pub fn first_line(source: String) -> String {
+  source
+  |> string.split("\n")
+  |> list.find(fn(line) { string.trim(line) != "" })
+  |> result.unwrap("")
+  |> string.slice(0, 120)
 }
 
 @external(erlang, "albedo_native", "new_id")

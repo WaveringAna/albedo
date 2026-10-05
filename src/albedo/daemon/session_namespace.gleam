@@ -2,6 +2,7 @@
 
 import albedo/daemon/events as view
 import albedo/daemon/session_state
+import albedo/harness/extensions/python/cells as journal
 import albedo/harness/extensions/python/kernel as python
 import albedo/harness/location
 import albedo/harness/runtime
@@ -243,20 +244,159 @@ fn adopted(
 
 /// Take a kernel the runtime just opened. A session with history had a
 /// namespace the model still believes in, so its saved variables are revived
-/// and the gap named.
+/// and the gap named. Every origin but `Kept` records a model-facing notice
+/// alongside the stream note, so the model learns what carried over, what was
+/// lost, and what is still running.
 pub fn adopt(
   state: session_state.State(message),
   kernel: runtime.Session,
 ) -> session_state.State(message) {
   case runtime.origin(kernel) {
-    runtime.Resumed ->
-      session_state.State(..state, kernel: Some(kernel))
-      |> session_state.emit(view.note("daemon", resumed_text))
-    runtime.Upgraded(carried) ->
-      adopted(state, kernel, upgraded_notice(carried), upgraded_text(carried))
+    runtime.Resumed -> resumed(state, kernel)
+    runtime.Upgraded(carried) -> upgraded(state, kernel, carried)
     runtime.Kept -> session_state.State(..state, kernel: Some(kernel))
     runtime.Fresh -> revive(state, kernel)
   }
+}
+
+/// What is still running in a kernel the session just adopted: live jobs and
+/// started cells without a recorded end, each as `(id, display)`.
+type Running {
+  Running(jobs: List(#(String, String)), cells: List(#(String, String)))
+}
+
+fn short(text: String) -> String {
+  string.slice(string.trim(text), 0, 100)
+}
+
+/// Built from what the port owner observes and the cells journal, never from
+/// a new kernel frame: a reattached kernel may run an older bundle that must
+/// not be asked for anything it does not understand.
+fn still_running(
+  state: session_state.State(message),
+  kernel: runtime.Session,
+) -> Running {
+  let jobs =
+    runtime.kernel_observation(kernel)
+    |> result.map(fn(observed) {
+      observed.running_jobs
+      |> list.filter(fn(job) { !job.service })
+      |> list.map(fn(job) { #(job.id, short(job.command)) })
+    })
+    |> result.unwrap([])
+  let cells =
+    journal.unfinished(runtime.ledger(state.host), state.info.id)
+    |> result.map(fn(cells) {
+      list.map(cells, fn(cell) { #(cell.0, short(journal.first_line(cell.1))) })
+    })
+    |> result.unwrap([])
+  Running(jobs, cells)
+}
+
+fn listed(items: List(#(String, String))) -> String {
+  string.join(
+    list.map(items, fn(item) { item.0 <> " (" <> item.1 <> ")" }),
+    ", ",
+  )
+}
+
+fn clause(prefix: String, items: List(#(String, String))) -> String {
+  case items {
+    [] -> ""
+    _ -> prefix <> listed(items)
+  }
+}
+
+fn resumed_notice(running: Running) -> String {
+  "<system-note>The python kernel reattached; its variables and jobs carried on"
+  <> clause(". Jobs still running: ", running.jobs)
+  <> clause(". Background cells still running: ", running.cells)
+  <> ". Anything without a result yet is still running, not lost.</system-note>"
+}
+
+fn resumed_text(running: Running) -> String {
+  "python kernel reattached; its variables and jobs carried on"
+  <> case running.jobs, running.cells {
+    [], [] -> ""
+    jobs, cells ->
+      "; "
+      <> int.to_string(list.length(jobs))
+      <> " jobs and "
+      <> int.to_string(list.length(cells))
+      <> " cells still running"
+  }
+}
+
+fn resumed(
+  state: session_state.State(message),
+  kernel: runtime.Session,
+) -> session_state.State(message) {
+  let running = still_running(state, kernel)
+  // Only live work is news to the model: a daemon restart merely reattaches,
+  // and what still runs must not be mistaken for what the restart killed.
+  let notice = case running {
+    Running([], []) -> state.notice
+    _ -> Some(resumed_notice(running))
+  }
+  session_state.State(..state, kernel: Some(kernel), notice: notice)
+  |> session_state.emit(view.note("daemon", resumed_text(running)))
+}
+
+/// What an ended cell's journal records: the swap stopped its kernel, so it
+/// can never deliver its own result.
+const interrupted_text = "[cell ended when its kernel was replaced; effects unknown]"
+
+/// Journal the session's started cells that never recorded an end as
+/// interrupted: the old kernel is stopped, so they ended with it. The pair
+/// each becomes names it in the upgrade notice.
+fn end_unfinished(
+  state: session_state.State(message),
+) -> #(session_state.State(message), List(#(String, String))) {
+  let storage = runtime.ledger(state.host)
+  let unfinished =
+    journal.unfinished(storage, state.info.id) |> result.unwrap([])
+  let #(state, ended) =
+    list.fold(unfinished, #(state, []), fn(acc, cell) {
+      let #(state, ended) = acc
+      let #(id, source) = cell
+      let outcome =
+        python.Outcome(
+          id,
+          python.Interrupted,
+          interrupted_text,
+          "",
+          False,
+          [],
+          [],
+          None,
+        )
+      let state = case journal.finish(storage, id, Ok(outcome)) {
+        Ok(_) -> state
+        Error(reason) ->
+          session_state.emit(
+            state,
+            view.error(
+              "cell " <> id <> " could not be recorded interrupted: " <> reason,
+            ),
+          )
+      }
+      #(state, [#(id, journal.first_line(source)), ..ended])
+    })
+  #(state, list.reverse(ended))
+}
+
+fn upgraded(
+  state: session_state.State(message),
+  kernel: runtime.Session,
+  carried: python.Carried,
+) -> session_state.State(message) {
+  let #(state, ended) = end_unfinished(state)
+  adopted(
+    state,
+    kernel,
+    upgraded_notice(carried, ended),
+    upgraded_text(carried, ended),
+  )
 }
 
 /// What the swap replaced the kernel for, as the notice and note say it.
@@ -268,7 +408,10 @@ fn upgraded_to(reason: python.Stale) -> String {
   }
 }
 
-fn upgraded_notice(carried: python.Carried) -> String {
+fn upgraded_notice(
+  carried: python.Carried,
+  ended: List(#(String, String)),
+) -> String {
   let saved = carried.saved
   "<system-note>The python kernel was upgraded to "
   <> upgraded_to(carried.reason)
@@ -286,10 +429,21 @@ fn upgraded_notice(carried: python.Carried) -> String {
     [] -> "."
     missed -> ". Not carried: " <> missed_names(missed) <> "."
   }
-  <> " Imports and definitions from earlier cells are gone unless named here.</system-note>"
+  <> case carried.stopped_jobs {
+    [] -> ""
+    jobs -> " Jobs stopped by the swap: " <> string.join(jobs, ", ") <> "."
+  }
+  <> case ended {
+    [] -> ""
+    cells -> " Cells ended by the swap: " <> listed(cells) <> "."
+  }
+  <> " Retained output from before the upgrade is gone; the cells journal keeps every cell's source and recorded result. Imports and definitions from earlier cells are gone unless named here.</system-note>"
 }
 
-fn upgraded_text(carried: python.Carried) -> String {
+fn upgraded_text(
+  carried: python.Carried,
+  ended: List(#(String, String)),
+) -> String {
   "python kernel upgraded to "
   <> upgraded_to(carried.reason)
   <> "; restored "
@@ -298,6 +452,15 @@ fn upgraded_text(carried: python.Carried) -> String {
   <> case carried.saved.missed {
     [] -> ""
     missed -> ", " <> int.to_string(list.length(missed)) <> " not carried"
+  }
+  <> case carried.stopped_jobs, ended {
+    [], [] -> ""
+    jobs, cells ->
+      "; stopped "
+      <> int.to_string(list.length(jobs))
+      <> " jobs, ended "
+      <> int.to_string(list.length(cells))
+      <> " cells"
   }
 }
 
@@ -311,8 +474,6 @@ pub fn upgrade(
     None -> session_state.State(..state, kernel: None)
   }
 }
-
-const resumed_text = "python kernel reattached; its variables and jobs carried on"
 
 fn revive(
   state: session_state.State(message),

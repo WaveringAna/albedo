@@ -6,10 +6,8 @@ import albedo/harness/rpc
 import gleam/dynamic
 import gleam/dynamic/decode
 import gleam/json
-import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
-import gleam/string
 
 /// Session metadata is requested by plugins at boot, not injected into the kernel environment.
 pub fn session(cwd: String, request: String) -> String {
@@ -86,17 +84,8 @@ fn summary_json(cell: journal.Cell) -> json.Json {
     #("parent", json.nullable(cell.parent, json.string)),
     #("finished", json.bool(cell.outcome != None)),
     #("duration", json.nullable(duration(cell), json.float)),
-    #("first_line", json.string(first_line(cell))),
+    #("first_line", json.string(journal.first_line(cell.source))),
   ])
-}
-
-/// The first nonempty source line, cut to 120 graphemes.
-fn first_line(cell: journal.Cell) -> String {
-  cell.source
-  |> string.split("\n")
-  |> list.find(fn(line) { string.trim(line) != "" })
-  |> result.unwrap("")
-  |> string.slice(0, 120)
 }
 
 /// Wall seconds a finished cell ran, when its outcome recorded them.

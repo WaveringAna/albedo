@@ -97,7 +97,9 @@ a running cell without pretending the cells are process jobs in the public API.
 Completion is committed before `cells.completed` sends a wake. The transcript
 gets a one-line `cell finished (status=ok, ran 90.0s): <first code line>` from
 `cell`, while the model gets the full notice with the cell id separately. Unread completions share a wake and retry
-every two seconds while the session is busy; there is no model polling. The final expression is appended to retained output under `[result]`, so
+every two seconds while the session is busy; there is no model polling. A wake
+that parks while the kernel is being replaced starts its turn on the
+replacement, together with the upgrade notice. The final expression is appended to retained output under `[result]`, so
 `output.read(id)` can read it after a background completion. Reading finished
 output, source, status, or trace retires a pending wake.
 Reading partial output while the cell still runs does not retire its eventual
@@ -216,7 +218,16 @@ dedupe:
   was nothing to attach to. an attached kernel's `runtime.origin` is
   `Resumed`, and the session keeps its namespace without the disk restore. a
   recorded kernel whose module set no longer fits is kept and marked stale; one
-  in another workspace is stopped and replaced.
+  in another workspace is stopped and replaced. when jobs or background cells
+  are still running, the session's first turn on a `Resumed` kernel carries a
+  model note that the kernel reattached with its namespace, naming those jobs
+  (id and command) and cells (id and first line), so a live handle is not
+  mistaken for one the restart killed (with nothing running, only the UI note
+  appears). an origin is handed out once: later opens of the same kernel get
+  `Kept`, so no notice repeats and no live cell is journaled as ended. the
+  note is built from the port owner's observation and the
+  cells journal, never from a new kernel frame, so a reattached kernel on an
+  older bundle still gets it.
 
 explicit drops still end the kernel at once: reset, release by the idle
 sweep, `/cd`, session close, extension reloads (the replacement boots beside
@@ -258,9 +269,24 @@ Staged owners use their immutable kernel ID throughout publication, so replies
 and ownership updates continue to reach the same namespace.
 
 The adopted kernel has origin `Upgraded`. The next model input names the carried
-variables and definitions, and the transcript records the upgrade. A background
-upgrade that cannot proceed keeps a usable old kernel and tries at a later idle
-moment. A lost old kernel is reported as lost.
+variables and definitions, the jobs the swap stopped, and the cells it ended,
+and says retained output from before the upgrade is gone while the cells journal
+keeps every cell's source and recorded result; the transcript records the
+upgrade. A swap ends the old kernel, so cells it was still running can never
+deliver their own result: they are journaled `interrupted` (a forced
+`/kernel upgrade` or a protocol-skew swap can end them; the automatic swap
+waits, because a kernel running a synchronous cell answers Busy to the snapshot
+and `upgradable` counts running cells). A background upgrade that cannot
+proceed keeps a usable old kernel and tries at a later idle moment. A lost old
+kernel is reported as lost.
+
+The idle moment a stale kernel waits for is a real caller: a turn, a wake, a
+compaction. Nothing parks at a turn's end just because the queue is empty, and
+an arriving kernel nobody is waiting for is adopted when the held one is gone —
+its notice still reaches the model — rather than dropped silently. A pending
+cell-completion wake is such a caller: it parks while the kernel is
+unavailable, the swap runs under it, and its turn starts on the replacement
+carrying the upgrade notice, so the wake is never lost to the swap.
 
 Live jobs keep an older bundle or module set until they end. `POST
 /sessions/{id}/kernel/upgrade` is an explicit idle-session action that can stop

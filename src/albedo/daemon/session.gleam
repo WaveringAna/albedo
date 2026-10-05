@@ -2213,7 +2213,16 @@ fn kernel_opened(
     None, Ok(kernel) ->
       case state.kernel {
         None -> adopt(state, kernel)
-        Some(_) -> state
+        // The held kernel is gone, so this arrival is its replacement: adopt
+        // it, so its notice reaches the model, instead of dropping both the
+        // kernel and the story about what the swap ended.
+        Some(existing) ->
+          case runtime.alive(existing) {
+            False -> adopt(state, kernel)
+            // An arrival nobody asked for while a live kernel serves: the
+            // runtime still holds it for the session's next open.
+            True -> state
+          }
       }
     None, Error(_) -> state
     Some(#(attempts, parked)), Error(python.Lost) if attempts < 2 -> {
@@ -3011,14 +3020,29 @@ fn start_waiting(state: State) -> State {
 }
 
 fn start_waiting_in_workspace(state: State) -> State {
-  case turn.starts_turn(state.steering), kernel_or_park(state, StartQueued) {
-    False, _ -> state
-    True, Error(state) -> state
-    True, Ok(state) ->
-      case prepare_turn_pipeline(state, state.steering) {
-        Error(#(state, err)) -> failed_queued(state, submission_error(err))
-        Ok(#(state, kernel, client, history, run_id)) ->
-          start_worker(state, kernel, client, history, turn.Turn(None), run_id)
+  // `kernel_or_park` asks for a kernel as a side effect, so it only runs when
+  // its answer is kept: a Gleam `case` evaluates both subjects before
+  // matching, so parking behind a False `starts_turn` started a swap whose
+  // arriving kernel was then dropped with no notice, killing the old kernel
+  // and the wakes it still owed.
+  case turn.starts_turn(state.steering) {
+    False -> state
+    True ->
+      case kernel_or_park(state, StartQueued) {
+        Error(state) -> state
+        Ok(state) ->
+          case prepare_turn_pipeline(state, state.steering) {
+            Error(#(state, err)) -> failed_queued(state, submission_error(err))
+            Ok(#(state, kernel, client, history, run_id)) ->
+              start_worker(
+                state,
+                kernel,
+                client,
+                history,
+                turn.Turn(None),
+                run_id,
+              )
+          }
       }
   }
 }

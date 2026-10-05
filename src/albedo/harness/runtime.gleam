@@ -681,6 +681,14 @@ fn close_cached_at(state: State, id: String) -> Nil {
   }
 }
 
+/// A kernel's origin is news once: the first session to take it tells the
+/// model how it arrived (an attach after a daemon restart, a swap), and every
+/// later open of the same kernel gets it as `Kept`. A kernel reattached in the
+/// background at daemon start keeps its origin until its session asks.
+fn handed_out(session: Session) -> Session {
+  Session(..session, origin: Kept)
+}
+
 fn holding(state: State, id: String, session: Session) -> State {
   State(..state, sessions: dict.insert(state.sessions, id, session))
 }
@@ -1530,7 +1538,7 @@ fn kernel_upgraded(
         Error(_) -> previous
       }
       let state = case current {
-        Some(session) -> holding(state, id, session)
+        Some(session) -> holding(state, id, handed_out(session))
         None -> without_session(state, id)
       }
       let waiters =
@@ -1954,9 +1962,10 @@ fn booted(
     Error(_), Error(_) -> state
     Ok(waiters), _ -> {
       let state = State(..state, booting: dict.delete(state.booting, id))
-      let state = case result {
-        Ok(session) -> holding(state, id, session)
-        Error(_) -> state
+      let state = case result, waiters {
+        Ok(session), [] -> holding(state, id, session)
+        Ok(session), _ -> holding(state, id, handed_out(session))
+        Error(_), _ -> state
       }
       let state =
         finish_commands(
@@ -2480,8 +2489,8 @@ fn serve(state: State, message: Message) -> actor.Next(State, a) {
                 True ->
                   actor.continue(start_upgrade(state, id, session, answer))
                 False -> {
-                  answer(Ok(Session(..session, origin: Kept)))
-                  actor.continue(state)
+                  answer(Ok(session))
+                  actor.continue(holding(state, id, handed_out(session)))
                 }
               }
           }
