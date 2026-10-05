@@ -67,10 +67,13 @@ the upgraded schema. embedding hosts call
 - `conversation_columns.apply` adds nullable `transcript.row_class`, checked
   against `user`, `image_fit`, and `other`. Live writes set it in the same
   transaction as the payload; forks copy it with the retained prefix.
-  `transcript_classes.run` classifies only NULL rows in 128-row transactions.
-  An invalid payload fails the current batch and startup; completed batches
-  survive interruption. The backfill neither rewrites payloads nor adds a
-  migration marker. It runs after the image migration.
+  `transcript_classes.run` classifies only NULL rows in 128-row transactions;
+  completed batches survive interruption. An unreadable payload, here or in
+  `conversation`'s startup indexing, is healed by `conversation.heal_in`: its
+  bytes move to `transcript_quarantine` (one row per sequence ID, deleted with
+  its session), and the row becomes a user-role system note saying it was set
+  aside, classed `user`. Startup continues. Healing is the only payload rewrite;
+  the backfill adds no migration marker. It runs after the image migration.
 - `transcript_pending_class` indexes unclassified sequence IDs.
   `transcript_users` indexes `(session,seq)` for user and image-fit rows;
   `transcript_fits` indexes `(session,seq)` for image-fit rows alone. Completed

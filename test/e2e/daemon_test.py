@@ -1,5 +1,6 @@
 """Transcript paging and what the transcript keeps, through the real daemon."""
 
+from contextlib import closing
 from dataclasses import dataclass
 import http.client
 import http.server
@@ -7,6 +8,7 @@ from collections.abc import Callable
 import json
 import resource
 import socket
+import sqlite3
 import subprocess
 import threading
 import time
@@ -242,6 +244,54 @@ class DaemonTest(unittest.TestCase):
             tail = log.read_text(errors="replace")[before:]
             for marker in ("Noproc", "reached_max_restart_intensity", "callee exited"):
                 self.assertNotIn(marker, tail)
+
+    # exclusive: writes an unreadable transcript row and restarts the daemon
+    @exclusive
+    def test_an_unreadable_transcript_row_is_healed_at_startup(self):
+        # Startup indexes and classifies rows saved before those columns
+        # existed. One it could not decode stopped the boot, and every later
+        # boot at the same row. It now becomes a note, its bytes set aside.
+        provider = Provider(lambda _request: text("answer"))
+        self.addCleanup(provider.close)
+        unreadable = b"not a transcript item"
+        with Albedo(provider) as app:
+            healthy = app.session()
+            app.prompt(healthy, "hello").close()
+            app.idle(healthy)
+            broken = app.session()
+            with closing(sqlite3.connect(app.home / "albedo.sqlite")) as db:
+                seq = db.execute(
+                    "INSERT INTO transcript(session,payload) VALUES(?,?) RETURNING seq",
+                    (broken, unreadable),
+                ).fetchone()[0]
+                db.commit()
+            app.restart()
+            self.assertIn("answer", json.dumps(app.history(healthy)))
+            self.assertIn(
+                f"could not be read and was set aside (row {seq})",
+                json.dumps(app.history(broken)),
+            )
+            with closing(sqlite3.connect(app.home / "albedo.sqlite")) as db:
+                kept = db.execute(
+                    "SELECT seq,session,payload FROM transcript_quarantine"
+                ).fetchall()
+            self.assertEqual(kept, [(seq, broken, unreadable)])
+            app.restart()
+            self.assertIn("answer", json.dumps(app.history(healthy)))
+            # The set-aside bytes belong to their session and go with it.
+            resource = f"/sessions/{broken}?view=configuration"
+            with app.api(resource) as response:
+                validator = response.getheader("ETag")
+                response.read()
+            with app.api(
+                resource, method="DELETE", headers={"If-Match": validator}
+            ) as response:
+                self.assertEqual(json.load(response)["state"], "complete")
+            with closing(sqlite3.connect(app.home / "albedo.sqlite")) as db:
+                self.assertEqual(
+                    db.execute("SELECT COUNT(*) FROM transcript_quarantine").fetchone(),
+                    (0,),
+                )
 
     # exclusive: shuts down and restarts the daemon
     @exclusive

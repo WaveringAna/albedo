@@ -79,10 +79,11 @@ pub fn metadata_range_and_backfill_resume_test() -> Nil {
     conversation.commit(ledger, "session", inputs, conversation.Idle)
   let assert Ok(_) =
     store.write(ledger, "UPDATE transcript SET row_class=NULL", [])
-  // A corrupt row in the third batch leaves earlier transactions committed.
+  // A corrupt row in the third batch is healed into a user-role note and
+  // classified with it; its bytes are kept, and every batch completes.
   let assert Ok(_) =
     store.write(ledger, "UPDATE transcript SET payload=X'00' WHERE seq=260", [])
-  transcript_classes.run(ledger) |> should.be_error
+  let assert Ok(_) = transcript_classes.run(ledger)
   let assert Ok([pending]) =
     store.read(
       ledger,
@@ -90,14 +91,14 @@ pub fn metadata_range_and_backfill_resume_test() -> Nil {
       [],
       decode.field(0, decode.int, decode.success),
     )
-  pending |> should.equal(4)
-  let assert Ok(_) =
-    store.write(
-      ledger,
-      "UPDATE transcript SET payload=(SELECT payload FROM transcript WHERE seq=1) WHERE seq=260",
-      [],
-    )
-  let assert Ok(_) = transcript_classes.run(ledger)
+  pending |> should.equal(0)
+  let assert Ok(quarantined) =
+    store.read(ledger, "SELECT seq,payload FROM transcript_quarantine", [], {
+      use seq <- decode.field(0, decode.int)
+      use payload <- decode.field(1, decode.bit_array)
+      decode.success(#(seq, payload))
+    })
+  quarantined |> should.equal([#(260, <<0>>)])
   let assert Ok(snapshot) = conversation.snapshot(ledger, "session")
   let assert Ok(stats) = conversation.source_stats(ledger, snapshot, 128)
   stats |> should.equal(conversation.SourceStats(Some(260), True, 132))

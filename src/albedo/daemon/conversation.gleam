@@ -19,6 +19,7 @@ import albedo/openai_api/types
 import gleam/bool
 import gleam/dynamic/decode
 import gleam/int
+import gleam/io
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -416,6 +417,7 @@ pub fn initialise(store: store.Store) -> Result(Nil, String) {
           <> operations.schema
           <> "CREATE TABLE IF NOT EXISTS transcript_calls(session TEXT NOT NULL REFERENCES sessions(id),call_id TEXT NOT NULL,seq INTEGER NOT NULL REFERENCES transcript(seq),name TEXT NOT NULL,call_index INTEGER NOT NULL,arguments_bytes INTEGER NOT NULL,PRIMARY KEY(session,call_id,seq)); CREATE INDEX IF NOT EXISTS transcript_calls_position ON transcript_calls(session,seq);"
           <> "CREATE TABLE IF NOT EXISTS transcript_traces(session TEXT NOT NULL REFERENCES sessions(id),cell_id TEXT NOT NULL,payload TEXT NOT NULL,PRIMARY KEY(session,cell_id));"
+          <> "CREATE TABLE IF NOT EXISTS transcript_quarantine(seq INTEGER PRIMARY KEY,session TEXT NOT NULL REFERENCES sessions(id),payload BLOB NOT NULL,healed_at INTEGER NOT NULL);"
           <> creation_schema,
       ))
       use _ <- result.try(conversation_columns.apply(db))
@@ -528,6 +530,44 @@ fn index_preview_in(
   )
 }
 
+/// Replaces an unreadable saved row with a note saying so and moves its bytes
+/// to `transcript_quarantine`; returns the note.
+pub fn heal_in(
+  db: sqlight.Connection,
+  session: String,
+  position: Int,
+  payload: BitArray,
+) -> Result(types.Input, String) {
+  let note =
+    types.User(
+      "<system-note>A transcript item here could not be read and was set aside (row "
+      <> int.to_string(position)
+      <> ").</system-note>",
+    )
+  use _ <- result.try(
+    store.run(
+      db,
+      "INSERT OR IGNORE INTO transcript_quarantine(seq,session,payload,healed_at) VALUES(?,?,?,unixepoch())",
+      [sqlight.int(position), sqlight.text(session), sqlight.blob(payload)],
+    ),
+  )
+  use _ <- result.try(
+    store.run(db, "UPDATE transcript SET payload=?,row_class=? WHERE seq=?", [
+      sqlight.blob(pack(note)),
+      sqlight.text(transcript.row_class(note)),
+      sqlight.int(position),
+    ]),
+  )
+  io.println_error(
+    "transcript row "
+    <> int.to_string(position)
+    <> " of session "
+    <> session
+    <> " could not be read; its bytes moved to transcript_quarantine",
+  )
+  Ok(note)
+}
+
 /// Index saved rows in bounded store turns. Indexed rows are skipped, so
 /// an interrupted startup resumes its scan instead of loading the whole ledger.
 fn index_saved_entries(ledger: store.Store) -> Result(Nil, String) {
@@ -550,10 +590,10 @@ fn index_saved_entries(ledger: store.Store) -> Result(Nil, String) {
         )
         use _ <- result.try(
           list.try_each(rows, fn(row) {
-            use input <- result.try(
-              unpack(row.2, unread)
-              |> result.replace_error("invalid saved transcript item"),
-            )
+            use input <- result.try(case unpack(row.2, unread) {
+              Ok(input) -> Ok(input)
+              Error(Nil) -> heal_in(db, row.1, row.0, row.2)
+            })
             case row.3 {
               True -> index_preview_in(db, row.1, row.0, input)
               False -> index_entry_in(db, row.1, row.0, input)
@@ -793,6 +833,7 @@ fn delete_in(
       [
         "transcript_calls",
         "transcript_traces",
+        "transcript_quarantine",
         "transcript",
         "submission_events",
         "continuation_markers",

@@ -1,8 +1,8 @@
 //// Resumable classification of old payloads before session processes start.
 
+import albedo/daemon/conversation
 import albedo/daemon/store
 import gleam/dynamic/decode
-import gleam/int
 import gleam/list
 import gleam/result
 import sqlight
@@ -26,28 +26,29 @@ fn pages(ledger: store.Store) -> Result(Nil, String) {
         use rows <- result.try(
           store.rows(
             db,
-            "SELECT seq,payload FROM transcript WHERE row_class IS NULL ORDER BY seq LIMIT 128",
+            "SELECT seq,payload,session FROM transcript WHERE row_class IS NULL ORDER BY seq LIMIT 128",
             [],
             {
               use seq <- decode.field(0, decode.int)
               use payload <- decode.field(1, decode.bit_array)
-              decode.success(#(seq, payload))
+              use session <- decode.field(2, decode.string)
+              decode.success(#(seq, payload, session))
             },
           ),
         )
         use _ <- result.try(
           list.try_each(rows, fn(row) {
-            use class <- result.try(
-              classify(row.1)
-              |> result.replace_error(
-                "cannot classify corrupt transcript row #"
-                <> int.to_string(row.0),
-              ),
-            )
-            store.run(db, "UPDATE transcript SET row_class=? WHERE seq=?", [
-              sqlight.text(class),
-              sqlight.int(row.0),
-            ])
+            case classify(row.1) {
+              Ok(class) ->
+                store.run(db, "UPDATE transcript SET row_class=? WHERE seq=?", [
+                  sqlight.text(class),
+                  sqlight.int(row.0),
+                ])
+              // Healing writes the note's class with it.
+              Error(Nil) ->
+                conversation.heal_in(db, row.2, row.0, row.1)
+                |> result.replace(Nil)
+            }
           }),
         )
         Ok(list.length(rows))
