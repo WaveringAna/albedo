@@ -38,6 +38,7 @@ from typing import Any
 
 import atexit
 import contextlib
+import errno
 from dataclasses import dataclass, field
 import http.client
 import http.server
@@ -662,6 +663,23 @@ def wait_until(condition, seconds, message):
             return
         time.sleep(0.1)
     raise AssertionError(message)
+
+
+def release_fifo(path):
+    """Let a job blocked reading one byte from the fifo at `path` go on. True
+    once a reader had it open and got its byte; False while none has it open
+    yet, so callers retry: `wait_until(lambda: release_fifo(gate), ...)`."""
+    try:
+        descriptor = os.open(path, os.O_WRONLY | os.O_NONBLOCK)
+    except OSError as error:
+        if error.errno == errno.ENXIO:
+            return False
+        raise
+    try:
+        os.write(descriptor, b"x")
+    finally:
+        os.close(descriptor)
+    return True
 
 
 def alive(pid):

@@ -1,13 +1,12 @@
 """Unread background job results wake idle sessions once, even across idle reaping."""
 
-import errno
 import json
 import os
 import time
 import unittest
 import urllib.error
 
-from harness import Albedo, Provider, exclusive, python, text
+from harness import Albedo, Provider, exclusive, python, release_fifo, text
 
 # A daemon under this limit sweeps every half second, so the detached job
 # below outlives several sweeps.
@@ -33,20 +32,6 @@ def wait_for(predicate, timeout=40):
             return result
         time.sleep(0.1)
     raise AssertionError("background job did not wake session")
-
-
-def release_fifo(gate):
-    try:
-        descriptor = os.open(gate, os.O_WRONLY | os.O_NONBLOCK)
-    except OSError as error:
-        if error.errno == errno.ENXIO:
-            return False
-        raise
-    try:
-        os.write(descriptor, b"x")
-    finally:
-        os.close(descriptor)
-    return True
 
 
 class JobWakeCase(unittest.TestCase):

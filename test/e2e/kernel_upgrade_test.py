@@ -10,6 +10,7 @@ its snapshot fails, and its process group ends either way.
 """
 
 import json
+import os
 from pathlib import Path
 import shutil
 import sqlite3
@@ -109,6 +110,21 @@ class Swaps(unittest.TestCase):
     def stale(self):
         return self.kernel()["stale"]
 
+    def held_job(self):
+        """A gate and the cell code for a job that runs until the gate is
+        released: the test decides when the job ends, not a sleep that a slow
+        restart under load can outlast."""
+        gate = self.app.workspace / "job-gate"
+        os.mkfifo(gate)
+        self.addCleanup(harness.release_fifo, gate)
+        program = f"open({str(gate)!r}, 'rb').read(1)"
+        return gate, f"import sys\nj = run(sys.executable, '-c', {program!r})"
+
+    def end_job(self, gate):
+        harness.wait_until(
+            lambda: harness.release_fifo(gate), 10, "the held job never opened its gate"
+        )
+
     def wait_until_current(self):
         deadline = time.monotonic() + 30
         while self.stale() and time.monotonic() < deadline:
@@ -147,12 +163,14 @@ class KernelUpgradeTests(Swaps):
         self.assertFalse(self.stale())
 
     def test_a_live_job_holds_the_old_kernel_until_it_ends(self):
-        self.cell("import os\nsurvivor = 41\nj = run('sleep', '4')\nos.getpid()")
+        gate, job = self.held_job()
+        self.cell(f"import os\nsurvivor = 41\n{job}\nos.getpid()")
         self.edit_bundle()
         self.app.restart()
         held, _ = self.probe()
         self.assertIn("None", held["value"], "the old kernel must still run")
         self.assertTrue(self.stale())
+        self.end_job(gate)
         self.wait_until_current()
         swapped, _ = self.probe()
         self.assertIn("'new bundle'", swapped["value"])
@@ -210,7 +228,8 @@ class ModuleSkewTests(Swaps):
         self.assertFalse(self.stale())
 
     def test_a_live_job_holds_the_old_module_set_until_it_ends(self):
-        self.cell("import os\nsurvivor = 41\nj = run('sleep', '4')")
+        gate, job = self.held_job()
+        self.cell(f"import os\nsurvivor = 41\n{job}")
         self.app.restart(prepare=self.drop_skills)
         held, _ = self.probe()
         self.assertTrue(held["value"].startswith("(41, True,"), held)
@@ -218,6 +237,7 @@ class ModuleSkewTests(Swaps):
             "modules",
             [reason["code"] for reason in self.kernel()["staleness_reasons"]],
         )
+        self.end_job(gate)
         self.wait_until_current()
         swapped, _ = self.probe()
         self.assertTrue(swapped["value"].startswith("(41, False,"), swapped)

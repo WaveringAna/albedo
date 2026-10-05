@@ -12,7 +12,6 @@ None of this is observable from the transcript alone; the provider and the
 request rows are the witnesses.
 """
 
-import errno
 import json
 import os
 from datetime import datetime
@@ -20,7 +19,15 @@ import threading
 import time
 import unittest
 
-from harness import Albedo, Provider, exclusive, operation_id, python, text
+from harness import (
+    Albedo,
+    Provider,
+    exclusive,
+    operation_id,
+    python,
+    release_fifo,
+    text,
+)
 
 
 def milliseconds(timestamp):
@@ -68,23 +75,8 @@ CACHE_TTL = {
 }
 
 
-def try_release(gate):
-    """Let the job blocked on the fifo finish, when it has opened it."""
-    try:
-        descriptor = os.open(gate, os.O_WRONLY | os.O_NONBLOCK)
-    except OSError as error:
-        if error.errno == errno.ENXIO:
-            return False
-        raise
-    try:
-        os.write(descriptor, b"x")
-    finally:
-        os.close(descriptor)
-    return True
-
-
 def release(gate):
-    wait_for(lambda: try_release(gate))
+    wait_for(lambda: release_fifo(gate))
 
 
 def wait_for(predicate, timeout=30):
@@ -209,7 +201,7 @@ class WarmTest(unittest.TestCase):
             f"import sys\njob = run(sys.executable, '-c', {program!r}{flag})\njob.id"
         )
         # A failed test must not leave the job blocked.
-        self.addCleanup(try_release, gate)
+        self.addCleanup(release_fifo, gate)
         parent = self.app.session()
         self.app.prompt(parent, JOB_PROMPT).close()
         self.app.idle(parent)
