@@ -194,7 +194,7 @@ func TestTUISessionsByFolderOpenAndStartSessions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(cache, 0o700); err != nil {
+	if err = os.MkdirAll(cache, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	// The system temporary directory may be inside a repository. This
@@ -402,5 +402,32 @@ func TestTUIOffersSignInForATurnWaitingOnItsHost(t *testing.T) {
 	}
 	if view := d.View(); !strings.Contains(view, "Permission denied") {
 		t.Fatalf("the waiting turn does not say why:\n%s", view)
+	}
+}
+
+// A probe is readable before its target has SSH config or session history.
+func TestHostProbeObservesUnconfiguredTargets(t *testing.T) {
+	for _, target := range []string{"fresh-host", "ana@fresh-host"} {
+		t.Run(target, func(t *testing.T) {
+			known, err := daemon.ListHosts(t.Context(), conn(t))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, host := range known {
+				if host.Host == target {
+					t.Fatalf("fixture target %s is already known", target)
+				}
+			}
+			status, err := daemon.GetHost(t.Context(), conn(t), target)
+			if err != nil || status.Host != target || status.State != "unknown" {
+				t.Fatalf("unconfigured target before probe: %+v, %v", status, err)
+			}
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			defer cancel()
+			status, err = daemon.WarmHost(ctx, conn(t), target)
+			if err != nil || status.Host != target || status.State != "ready" || status.Home != suite.remoteHome {
+				t.Fatalf("unconfigured target after probe: %+v, %v", status, err)
+			}
+		})
 	}
 }

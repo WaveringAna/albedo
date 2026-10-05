@@ -174,8 +174,9 @@ The tree shows tracked or changed paths, excluding ignored build output.
 Browsing jj uses `--ignore-working-copy` and does not create a snapshot.
 
 `GET /hosts` lists recent and SSH-config targets with cached probe state.
-`POST /hosts/{host}/probe` starts or joins a probe. Clients poll the filtered
-host read until it completes; SSH sign-in remains an explicit operator action.
+`POST /hosts/{host}/probe` starts or joins a probe. Clients poll `GET /hosts?target=<host>`
+until it completes, including targets absent from SSH config and session history.
+SSH sign-in remains an explicit operator action.
 
 ## the picker
 

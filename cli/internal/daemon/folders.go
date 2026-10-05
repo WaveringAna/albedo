@@ -53,8 +53,8 @@ type FolderPreview struct {
 }
 
 type LanguageShare struct {
-	Name  string  `json:"name"`
 	Color *string `json:"color"`
+	Name  string  `json:"name"`
 	Share float64 `json:"share"`
 }
 
@@ -203,9 +203,9 @@ func hostValue(w protocol.Host) HostStatus {
 	}
 	return r
 }
-func hosts(ctx context.Context, conn *Connection) ([]protocol.Host, error) {
+func hosts(ctx context.Context, conn *Connection, target *string) ([]protocol.Host, error) {
 	result := []protocol.Host{}
-	params := protocol.ListHostsParams{Limit: new(int64(200))}
+	params := protocol.ListHostsParams{Limit: new(int64(200)), Target: target}
 	err := walkPages(func(next *string) (protocol.HostPage, *string, error) {
 		params.Next = next
 		var page protocol.HostPage
@@ -224,7 +224,7 @@ func hosts(ctx context.Context, conn *Connection) ([]protocol.Host, error) {
 }
 
 func ListHosts(ctx context.Context, conn *Connection) ([]KnownHost, error) {
-	rows, err := hosts(ctx, conn)
+	rows, err := hosts(ctx, conn, nil)
 	result := []KnownHost{}
 	for _, row := range rows {
 		result = append(result, KnownHost{Host: row.Target, Label: row.Target, State: row.State})
@@ -232,7 +232,7 @@ func ListHosts(ctx context.Context, conn *Connection) ([]KnownHost, error) {
 	return result, err
 }
 func GetHost(ctx context.Context, conn *Connection, host string) (HostStatus, error) {
-	rows, err := hosts(ctx, conn)
+	rows, err := hosts(ctx, conn, &host)
 	if err != nil {
 		return HostStatus{}, err
 	}
@@ -257,7 +257,7 @@ func WarmHost(ctx context.Context, conn *Connection, host string) (HostStatus, e
 	if err != nil {
 		return HostStatus{}, err
 	}
-	if err := decodeRequired(body, &w); err != nil {
+	if err = decodeRequired(body, &w); err != nil {
 		return HostStatus{}, invalidResponse(op, "", err)
 	}
 	if w.Target != host {
