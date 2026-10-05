@@ -130,6 +130,7 @@ func (m LoginModel) View() string {
 		stepLabels := map[LoginStep]string{
 			StepName: "provider name", StepBaseURL: "API base URL",
 			StepAPIKey: "API key", StepModel: "model ID",
+			StepProject: "Google Cloud project ID", StepLocation: "Vertex location",
 		}
 		line(stepLabels[m.Step] + ": " + m.TextInput.View())
 		var hints []hint

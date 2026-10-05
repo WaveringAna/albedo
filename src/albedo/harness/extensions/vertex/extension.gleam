@@ -1,8 +1,10 @@
 //// Google Vertex AI: Gemini models through Application Default Credentials.
-//// Fully environment-driven — `GOOGLE_VERTEX_PROJECT`, `GOOGLE_VERTEX_LOCATION`,
-//// and `GOOGLE_APPLICATION_CREDENTIALS` (or gcloud's default path) — so a
-//// profile needs only `"extension": "vertex"` and a Gemini model id.
+//// A profile's `project` and `location` name the Vertex project and region,
+//// falling back to `GOOGLE_VERTEX_PROJECT` and `GOOGLE_VERTEX_LOCATION`.
+//// Credentials come from `GOOGLE_APPLICATION_CREDENTIALS` (or gcloud's
+//// default path).
 
+import albedo/daemon/configuration
 import albedo/harness/extension
 import albedo/harness/extensions/vertex/auth
 import albedo/harness/extensions/vertex/stream
@@ -10,8 +12,14 @@ import albedo/harness/extensions/vertex/wire
 import albedo/openai_api
 import albedo/openai_api/types
 import gleam/bool
+import gleam/dynamic/decode
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/string
+
+type Config {
+  Config(project: Option(String), location: Option(String))
+}
 
 pub fn extension() -> extension.Extension {
   extension.Extension(
@@ -33,7 +41,12 @@ fn resolve(
 ) -> Option(Result(extension.Upstream, String)) {
   use <- bool.guard(context.provider != "vertex", None)
   Some({
-    use #(project, location) <- result.try(location_config())
+    use config <- result.try(configuration.settings(
+      context.home,
+      context.profile,
+      config_decoder(),
+    ))
+    use #(project, location) <- result.try(location_config(config))
     Ok(extension.Upstream(
       wire.endpoint(location),
       types.ChatCompletions,
@@ -68,11 +81,38 @@ fn explain(error: types.Error) -> Option(String) {
   }
 }
 
-fn location_config() -> Result(#(String, String), String) {
-  case env("GOOGLE_VERTEX_PROJECT"), env("GOOGLE_VERTEX_LOCATION") {
-    "", _ -> Error("Vertex needs GOOGLE_VERTEX_PROJECT set")
-    _, "" -> Error("Vertex needs GOOGLE_VERTEX_LOCATION set")
+fn config_decoder() -> decode.Decoder(Config) {
+  use project <- decode.optional_field(
+    "project",
+    None,
+    decode.optional(decode.string),
+  )
+  use location <- decode.optional_field(
+    "location",
+    None,
+    decode.optional(decode.string),
+  )
+  decode.success(Config(project, location))
+}
+
+/// The profile's project and location, else the environment's.
+fn location_config(config: Config) -> Result(#(String, String), String) {
+  case
+    setting(config.project, "GOOGLE_VERTEX_PROJECT"),
+    setting(config.location, "GOOGLE_VERTEX_LOCATION")
+  {
+    "", _ ->
+      Error("Vertex needs a project: run /login or set GOOGLE_VERTEX_PROJECT")
+    _, "" ->
+      Error("Vertex needs a location: run /login or set GOOGLE_VERTEX_LOCATION")
     project, location -> Ok(#(project, location))
+  }
+}
+
+fn setting(saved: Option(String), variable: String) -> String {
+  case option.map(saved, string.trim) {
+    Some(value) if value != "" -> value
+    _ -> env(variable)
   }
 }
 

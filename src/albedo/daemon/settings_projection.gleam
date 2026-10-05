@@ -24,6 +24,8 @@ type Profile {
     effort: Dynamic,
     image_edge: Dynamic,
     account_id: Dynamic,
+    project: Dynamic,
+    location: Dynamic,
     has_key: Bool,
   )
 }
@@ -212,6 +214,8 @@ fn profile(
     value(fields, "effort", null()),
     value(fields, "imageEdge", null()),
     value(fields, "accountId", null()),
+    value(fields, "project", null()),
+    value(fields, "location", null()),
     has_key,
   ))
 }
@@ -225,6 +229,8 @@ fn profile_value(profile: Profile) -> Dynamic {
     #("effort", profile.effort),
     #("image_edge", profile.image_edge),
     #("account_id", profile.account_id),
+    #("project", profile.project),
+    #("location", profile.location),
     #("has_key", dynamic.bool(profile.has_key)),
   ])
 }

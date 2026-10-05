@@ -361,8 +361,8 @@ The read representation exposes persisted preferences. These write-only
 selection fields prevent stale discovery from changing a different file.
 
 The provider group uses these exact profile fields: `extension`, `endpoint`,
-`protocol`, `model`, `effort`, `image_edge`, `account_id`, and response-only
-`has_key`. Protocol is `responses` or `chat_completions`. Nullable fields keep
+`protocol`, `model`, `effort`, `image_edge`, `account_id`, `project`, `location`, and
+response-only `has_key`. Protocol is `responses` or `chat_completions`. Nullable fields keep
 their documented absence; model and extension are required on creation.
 Deleting a profile removes its key. Removing the selected default requires
 an explicit replacement or `default_profile: null` in the same atomic patch.
@@ -381,6 +381,8 @@ For example, a provider-group patch selects a profile explicitly:
 			"effort": null,
 			"image_edge": null,
 			"account_id": null,
+			"project": null,
+			"location": null,
 			"api_key": "replacement-secret"
 		}
 	}

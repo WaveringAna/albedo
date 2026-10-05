@@ -116,6 +116,80 @@ func TestTUILoginAddsAManualProviderThroughTheDaemon(t *testing.T) {
 	}
 }
 
+// Vertex and Bedrock authenticate from the daemon host's own credentials, so
+// the wizard asks for a project and location (Vertex) or lets the endpoint and
+// key stay blank (Bedrock) and saves a profile with no key.
+func TestTUILoginSavesCloudProviderProfiles(t *testing.T) {
+	providerRoute(t, echoReply)
+	t.Setenv("ALBEDO_HOME", suite.home)
+	preserveLoginState(t, "vertex")
+	preserveLoginState(t, "bedrock")
+	d := newTUIDriver(t)
+	expect := func(want tui.LoginStep) {
+		t.Helper()
+		if d.App.Login.Step != want {
+			t.Fatalf("the wizard is on step %v, want %v\n%s", d.App.Login.Step, want, d.View())
+		}
+	}
+	start := func(id, name string) {
+		t.Helper()
+		d.App.Chat.TextArea.SetValue("/login")
+		d.Dispatch(d.Key(tea.KeyEnter))
+		expect(tui.StepChoose)
+		d.Dispatch(tui.PickerSelectMsg{ID: id})
+		expect(tui.StepName)
+		d.App.Login.TextInput.SetValue(name)
+		d.Key(tea.KeyEnter)
+	}
+	finish := func(model string) config.Settings {
+		t.Helper()
+		expect(tui.StepModels)
+		d.Dispatch(tui.PickerSelectMsg{ID: "manual"})
+		expect(tui.StepModel)
+		d.App.Login.TextInput.SetValue(model)
+		d.Dispatch(d.Key(tea.KeyEnter))
+		if d.App.State != tui.AppStateChat {
+			t.Fatalf("the app did not return to chat: state=%v\n%s", d.App.State, d.View())
+		}
+		profiles, err := daemon.ProviderProfiles(context.Background(), conn(t))
+		if err != nil {
+			t.Fatalf("saved config: %v", err)
+		}
+		return profiles.Providers[d.App.Profiles.Active]
+	}
+
+	start("add-vertex", "vertex")
+	expect(tui.StepProject)
+	d.App.Login.TextInput.SetValue("fixture-project")
+	d.Key(tea.KeyEnter)
+	expect(tui.StepLocation)
+	d.App.Login.TextInput.SetValue("europe-west4")
+	d.Dispatch(d.Key(tea.KeyEnter))
+	got := finish("gemini-fixture")
+	if got.Extension != "vertex" || got.Model != "gemini-fixture" || got.HasKey ||
+		deref(got.Project) != "fixture-project" || deref(got.Location) != "europe-west4" {
+		t.Fatalf("config.json kept %+v", got)
+	}
+
+	// Blank answers fall back to the daemon host's AWS environment.
+	start("add-bedrock", "bedrock")
+	expect(tui.StepBaseURL)
+	d.Key(tea.KeyEnter)
+	expect(tui.StepAPIKey)
+	d.Dispatch(d.Key(tea.KeyEnter))
+	got = finish("anthropic.claude-fixture")
+	if got.Extension != "bedrock" || got.BaseURL != "" || got.HasKey || got.Project != nil {
+		t.Fatalf("config.json kept %+v", got)
+	}
+}
+
+func deref(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
+}
+
 // preserveLoginState registers cleanup that deletes the temporary provider and
 // its API key before restoring the saved config.
 func preserveLoginState(t *testing.T, profile string) {

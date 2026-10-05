@@ -20,6 +20,12 @@ type customProvider struct {
 	FixedProtocol string
 	// FixedEndpoint skips the base url: the extension knows where it sends.
 	FixedEndpoint bool
+	// Scoped asks for a cloud project and location instead of a base url and
+	// api key: the extension signs in with credentials the daemon host holds.
+	Scoped bool
+	// Optional lets the base url and api key stay blank, so the extension
+	// falls back to the daemon host's own environment.
+	Optional bool
 }
 
 var customProviders = []customProvider{
@@ -40,6 +46,24 @@ var customProviders = []customProvider{
 		DefaultName:   "anthropic",
 		FixedProtocol: "chat_completions",
 		FixedEndpoint: true,
+	},
+	{
+		ID:            "add-bedrock",
+		Label:         "add or update an Amazon Bedrock provider",
+		Detail:        "aws credentials · Claude models",
+		Extension:     "bedrock",
+		DefaultName:   "bedrock",
+		FixedProtocol: "chat_completions",
+		Optional:      true,
+	},
+	{
+		ID:            "add-vertex",
+		Label:         "add or update a Google Vertex AI provider",
+		Detail:        "application default credentials · Gemini models",
+		Extension:     "vertex",
+		DefaultName:   "vertex",
+		FixedProtocol: "chat_completions",
+		Scoped:        true,
 	},
 	{
 		ID:         "add-openai",
@@ -67,6 +91,11 @@ func (m LoginModel) custom() (customProvider, bool) {
 	return customProviders[i], true
 }
 
+func (m LoginModel) optionalKey() bool {
+	p, _ := m.custom()
+	return p.Optional
+}
+
 func (m LoginModel) isFixedProtocol() bool {
 	p, ok := m.custom()
 	return ok && p.FixedProtocol != ""
@@ -75,13 +104,55 @@ func (m LoginModel) isFixedProtocol() bool {
 // askEndpoint asks for the base url, or straight for the api key when the
 // extension has a fixed endpoint.
 func (m *LoginModel) askEndpoint() tea.Cmd {
-	if p, ok := m.custom(); ok && p.FixedEndpoint {
-		m.Step = StepAPIKey
-		m.TextInput.Placeholder = ""
-		return m.promptInput("", true)
+	p, _ := m.custom()
+	switch {
+	case p.Scoped:
+		return m.askProject()
+	case p.FixedEndpoint:
+		return m.askAPIKey()
 	}
 	m.Step = StepBaseURL
+	m.TextInput.Placeholder = ""
+	if p.Optional {
+		m.TextInput.Placeholder = "blank: your AWS region"
+	}
 	return m.promptInput(m.Draft.BaseURL, false)
+}
+
+func (m *LoginModel) askAPIKey() tea.Cmd {
+	m.Step = StepAPIKey
+	m.TextInput.Placeholder = ""
+	if p, _ := m.custom(); p.Optional {
+		m.TextInput.Placeholder = "blank: your AWS credentials"
+	}
+	return m.promptInput("", true)
+}
+
+func (m *LoginModel) askProject() tea.Cmd {
+	m.Step = StepProject
+	m.TextInput.Placeholder = "blank: GOOGLE_VERTEX_PROJECT"
+	return m.promptInput(deref(m.Draft.Project), false)
+}
+
+func (m *LoginModel) askLocation() tea.Cmd {
+	m.Step = StepLocation
+	m.TextInput.Placeholder = "blank: GOOGLE_VERTEX_LOCATION"
+	return m.promptInput(deref(m.Draft.Location), false)
+}
+
+// optionalText is the pointer a profile stores for a field left blank or set.
+func optionalText(value string) *string {
+	if value == "" {
+		return nil
+	}
+	return &value
+}
+
+func deref(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
 }
 
 func (m *LoginModel) advanceToModels() tea.Cmd {

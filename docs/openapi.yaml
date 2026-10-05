@@ -229,6 +229,8 @@ paths:
                       effort: null
                       image_edge: null
                       account_id: null
+                      project: null
+                      location: null
                       api_key: synthetic-example-key
         description: UTF-8 JSON; duplicate keys and unknown fields are rejected.
   /storage:
@@ -4308,9 +4310,19 @@ components:
           anyOf:
           - $ref: '#/components/schemas/ID'
           - type: 'null'
+        project:
+          anyOf:
+          - type: string
+            maxLength: 256
+          - type: 'null'
+        location:
+          anyOf:
+          - type: string
+            maxLength: 256
+          - type: 'null'
         has_key:
           type: boolean
-      required: [extension, endpoint, protocol, model, effort, image_edge, account_id, has_key]
+      required: [extension, endpoint, protocol, model, effort, image_edge, account_id, project, location, has_key]
       additionalProperties: false
     ProviderProfilePatch:
       type: object
@@ -4342,6 +4354,16 @@ components:
         account_id:
           anyOf:
           - $ref: '#/components/schemas/ID'
+          - type: 'null'
+        project:
+          anyOf:
+          - type: string
+            maxLength: 256
+          - type: 'null'
+        location:
+          anyOf:
+          - type: string
+            maxLength: 256
           - type: 'null'
         api_key:
           anyOf:
@@ -4392,6 +4414,8 @@ components:
             effort: null
             image_edge: null
             account_id: null
+            project: null
+            location: null
             api_key: synthetic-example-key
     ValueSource:
       type: object

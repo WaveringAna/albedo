@@ -106,7 +106,7 @@ candidate(_, <<"providers">>, Patch, Docs, _, _) ->
         case Change of
             null -> {maps:remove(Name, Profiles0), maps:remove(Name, Keys0)};
             _ ->
-                fields(Change, [<<"extension">>, <<"endpoint">>, <<"protocol">>, <<"model">>, <<"effort">>, <<"image_edge">>, <<"account_id">>, <<"api_key">>]),
+                fields(Change, [<<"extension">>, <<"endpoint">>, <<"protocol">>, <<"model">>, <<"effort">>, <<"image_edge">>, <<"account_id">>, <<"project">>, <<"location">>, <<"api_key">>]),
                 Old = maps:get(Name, Profiles0, #{}),
                 Public = translate(maps:remove(<<"api_key">>, Change), provider_fields()),
                 Complete = maps:merge(Old, Public),
@@ -114,6 +114,7 @@ candidate(_, <<"providers">>, Patch, Docs, _, _) ->
                 {ok, Validated} = 'albedo@daemon@configuration':normalize_profile(Name, Standard),
                 Valid = maps:merge(maps:remove(<<"apiKey">>, Standard), maps:remove(<<"apiKey">>, Validated)),
                 nullable_text(maps:get(<<"effort">>, Valid, null), 100), nullable_text(maps:get(<<"accountId">>, Valid, null), 512),
+                nullable_text(maps:get(<<"project">>, Valid, null), 256), nullable_text(maps:get(<<"location">>, Valid, null), 256),
                 case maps:get(<<"imageEdge">>, Valid, null) of null -> ok; Edge -> counter(Edge, 1, 65536) end,
                 NewKeys = case maps:find(<<"api_key">>, Change) of
                     error -> case maps:find(<<"apiKey">>, Standard) of
@@ -185,7 +186,8 @@ candidate(_, <<"mcp">>, Patch, Docs, _, _) ->
      case Probe of true -> <<"passed">>; false -> <<"skipped">> end}.
 
 provider_fields() -> [{<<"extension">>, <<"extension">>}, {<<"endpoint">>, <<"baseUrl">>}, {<<"protocol">>, <<"protocol">>},
-    {<<"model">>, <<"model">>}, {<<"effort">>, <<"effort">>}, {<<"image_edge">>, <<"imageEdge">>}, {<<"account_id">>, <<"accountId">>}].
+    {<<"model">>, <<"model">>}, {<<"effort">>, <<"effort">>}, {<<"image_edge">>, <<"imageEdge">>}, {<<"account_id">>, <<"accountId">>},
+    {<<"project">>, <<"project">>}, {<<"location">>, <<"location">>}].
 translate(Map, Names) -> maps:from_list([{Stored, maps:get(Wire, Map)} || {Wire, Stored} <- Names, maps:is_key(Wire, Map)]).
 
 mcp_candidate(Patch, Prior, Secrets0) ->

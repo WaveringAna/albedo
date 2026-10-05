@@ -38,6 +38,8 @@ type Settings struct {
 	Effort      *string `json:"effort,omitempty"`
 	ImageEdge   *int    `json:"image_edge,omitempty"`
 	AccountID   *string `json:"account_id,omitempty"`
+	Project     *string `json:"project,omitempty"`
+	Location    *string `json:"location,omitempty"`
 	Extension   string  `json:"extension,omitempty"`
 	BaseURL     string  `json:"baseUrl,omitempty"`
 	APIKey      string  `json:"apiKey,omitempty"`
@@ -87,7 +89,7 @@ func (s Settings) Validate() (Settings, error) {
 	}
 
 	return Settings{
-		ProfileName: s.ProfileName, Effort: s.Effort, ImageEdge: s.ImageEdge, AccountID: s.AccountID,
+		ProfileName: s.ProfileName, Effort: s.Effort, ImageEdge: s.ImageEdge, AccountID: s.AccountID, Project: s.Project, Location: s.Location,
 		Extension: ext,
 		BaseURL:   endpoint,
 		APIKey:    s.APIKey,

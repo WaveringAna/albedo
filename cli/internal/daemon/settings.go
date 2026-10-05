@@ -49,7 +49,7 @@ func GetSettings(ctx context.Context, conn *Connection) (Settings, error) {
 	}
 	result := Settings{Profiles: config.Profiles{Active: value(wire.Providers.DefaultProfile), Providers: map[string]config.Settings{}, ETag: wire.GroupResources.Providers.ETag}, MCP: map[string]config.MCPServer{}, Credentials: Credentials{MCP: map[string]MCPSecretNames{}}, ETags: map[string]string{"providers": wire.GroupResources.Providers.ETag, "mcp": wire.GroupResources.MCP.ETag, "extensions": wire.GroupResources.Extensions.ETag, "capabilities": wire.GroupResources.Capabilities.ETag, "models": wire.GroupResources.Models.ETag, "ui": wire.GroupResources.UI.ETag}, Extensions: wire.Extensions.Defaults, ModelCaps: wire.Models.RaisedCaps}
 	for name, profile := range wire.Providers.Profiles {
-		result.Profiles.Providers[name] = config.Settings{ProfileName: name, Extension: profile.Extension, BaseURL: value(profile.Endpoint), Model: profile.Model, Protocol: profile.Protocol, HasKey: profile.HasKey, Effort: profile.Effort, ImageEdge: intPointer(profile.ImageEdge), AccountID: profile.AccountID}
+		result.Profiles.Providers[name] = config.Settings{ProfileName: name, Extension: profile.Extension, BaseURL: value(profile.Endpoint), Model: profile.Model, Protocol: profile.Protocol, HasKey: profile.HasKey, Effort: profile.Effort, ImageEdge: intPointer(profile.ImageEdge), AccountID: profile.AccountID, Project: profile.Project, Location: profile.Location}
 		if profile.HasKey {
 			result.Credentials.Providers = append(result.Credentials.Providers, name)
 		}
@@ -136,6 +136,7 @@ func saveProvider(ctx context.Context, conn *Connection, name string, profile co
 		"extension": profile.Extension, "endpoint": optionalText(profile.BaseURL),
 		"protocol": profile.Protocol, "model": profile.Model, "effort": profile.Effort,
 		"image_edge": profile.ImageEdge, "account_id": profile.AccountID,
+		"project": profile.Project, "location": profile.Location,
 	}
 	if profile.APIKey != "" {
 		profilePatch["api_key"] = profile.APIKey

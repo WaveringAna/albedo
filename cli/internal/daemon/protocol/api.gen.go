@@ -1613,13 +1613,15 @@ type ProviderProfile struct {
 	Endpoint  *string `json:"endpoint" nullable:"true"`
 
 	// Extension Opaque identity. Never infer a resource type or route from its contents.
-	Extension ID     `json:"extension"`
-	HasKey    bool   `json:"has_key"`
-	ImageEdge *int64 `json:"image_edge" nullable:"true"`
+	Extension ID      `json:"extension"`
+	HasKey    bool    `json:"has_key"`
+	ImageEdge *int64  `json:"image_edge" nullable:"true"`
+	Location  *string `json:"location" nullable:"true"`
 
 	// Model Opaque identity. Never infer a resource type or route from its contents.
-	Model    ID     `json:"model"`
-	Protocol string `json:"protocol"`
+	Model    ID      `json:"model"`
+	Project  *string `json:"project" nullable:"true"`
+	Protocol string  `json:"protocol"`
 }
 
 // ProviderProfilePatch Partial existing profile; extension and model required when creating a new map entry.
@@ -1630,11 +1632,13 @@ type ProviderProfilePatch struct {
 	Endpoint  *string `json:"endpoint,omitempty" nullable:"true"`
 
 	// Extension Opaque identity. Never infer a resource type or route from its contents.
-	Extension *ID    `json:"extension,omitempty"`
-	ImageEdge *int64 `json:"image_edge,omitempty" nullable:"true"`
+	Extension *ID     `json:"extension,omitempty"`
+	ImageEdge *int64  `json:"image_edge,omitempty" nullable:"true"`
+	Location  *string `json:"location,omitempty" nullable:"true"`
 
 	// Model Opaque identity. Never infer a resource type or route from its contents.
 	Model    *ID     `json:"model,omitempty"`
+	Project  *string `json:"project,omitempty" nullable:"true"`
 	Protocol *string `json:"protocol,omitempty"`
 }
 
@@ -1695,7 +1699,7 @@ type ProviderSettingsChange struct {
 
 // ProviderSettingsPatch Removing the selected profile requires replacing or clearing default_profile in this same patch.
 //
-// Examples: {"default_profile":"personal","profiles":{"personal":{"account_id":null,"api_key":"synthetic-example-key","effort":null,"endpoint":"https://provider.example/v1","extension":"openai","image_edge":null,"model":"example-model","protocol":"responses"}}}
+// Examples: {"default_profile":"personal","profiles":{"personal":{"account_id":null,"api_key":"synthetic-example-key","effort":null,"endpoint":"https://provider.example/v1","extension":"openai","image_edge":null,"location":null,"model":"example-model","project":null,"protocol":"responses"}}}
 type ProviderSettingsPatch struct {
 	DefaultProfile *ID                              `json:"default_profile,omitempty" nullable:"true"`
 	Profiles       map[string]*ProviderProfilePatch `json:"profiles,omitempty"`

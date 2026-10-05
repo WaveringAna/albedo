@@ -21,6 +21,8 @@ const (
 	StepName
 	StepBaseURL
 	StepAPIKey
+	StepProject
+	StepLocation
 	StepProtocol
 	StepModels
 	StepModel
@@ -345,6 +347,9 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 			return m, m.promptInput("", true)
 		case StepModels:
 			m.Generation = nextPageGeneration()
+			if p, _ := m.custom(); p.Scoped {
+				return m, m.askLocation()
+			}
 			if m.isFixedProtocol() {
 				m.Step = StepAPIKey
 				return m, m.promptInput(m.Draft.APIKey, true)
@@ -402,24 +407,26 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 		case StepBaseURL:
 			m.TextInput.SetCursor(0)
 			val := cmp.Or(strings.TrimSpace(m.TextInput.Value()), m.Draft.BaseURL)
-			endpoint, err := config.ValidateEndpoint(val)
-			if err != nil {
-				return m.fail(err.Error())
+			endpoint := ""
+			if p, _ := m.custom(); val != "" || !p.Optional {
+				var err error
+				if endpoint, err = config.ValidateEndpoint(val); err != nil {
+					return m.fail(err.Error())
+				}
 			}
 			if endpoint != m.Draft.BaseURL {
 				m.Draft.APIKey, m.Draft.HasKey = "", false
 			}
 			m.Draft.BaseURL = endpoint
 			m.Error = ""
-			m.Step = StepAPIKey
-			m.TextInput.Placeholder = ""
-			return m, m.promptInput("", true)
+			return m, m.askAPIKey()
 
 		case StepAPIKey:
 			m.TextInput.SetCursor(0)
 			switch val := cmp.Or(m.TextInput.Value(), m.Draft.APIKey); {
 			case val == "" && m.Draft.HasKey:
 				// Blank keeps the key the daemon holds.
+			case val == "" && m.optionalKey():
 			case val == "" || strings.ContainsFunc(val, func(r rune) bool { return r <= 0x20 || r == 0x7f }):
 				return m.fail("Enter an API key without spaces or control characters.")
 			default:
@@ -432,6 +439,18 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 			m.Step = StepProtocol
 			m.buildProtocolPicker()
 			return m, m.ProtocolPicker.Init()
+
+		case StepProject:
+			m.TextInput.SetCursor(0)
+			m.Draft.Project = optionalText(strings.TrimSpace(m.TextInput.Value()))
+			m.Error = ""
+			return m, m.askLocation()
+
+		case StepLocation:
+			m.TextInput.SetCursor(0)
+			m.Draft.Location = optionalText(strings.TrimSpace(m.TextInput.Value()))
+			m.Error = ""
+			return m, m.advanceToModels()
 
 		case StepOAuthFields:
 			return m, m.acceptLoginField(m.TextInput.Value())

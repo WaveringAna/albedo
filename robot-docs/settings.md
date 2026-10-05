@@ -22,7 +22,7 @@ Global extension defaults are validated against installed dependencies and capab
 
 ## Provider and MCP values
 
-The providers group contains `default_profile` and `profiles`. A profile has `extension`, `endpoint`, `protocol`, `model`, nullable `effort`, nullable `image_edge`, nullable `account_id`, and read-only `has_key`. Write-only `api_key` preserves the saved key when absent and removes it when null. `account_id` binds transport authentication to that saved account. The default profile must remain present or be replaced or cleared in the same patch.
+The providers group contains `default_profile` and `profiles`. A profile has `extension`, `endpoint`, `protocol`, `model`, nullable `effort`, nullable `image_edge`, nullable `account_id`, nullable `project` and `location` (cloud providers such as `vertex` keep their project and region here), and read-only `has_key`. Write-only `api_key` preserves the saved key when absent and removes it when null. `account_id` binds transport authentication to that saved account. The default profile must remain present or be replaced or cleared in the same patch.
 
 Provider names contain 1 to 64 ASCII characters. The first character is a letter or digit. Remaining characters may also be `.`, `_`, or `-`. Validation rejects whitespace, unsupported protocols, invalid endpoints, and bindings to another provider's accounts.
 
