@@ -6,8 +6,10 @@ import albedo/daemon/conversation
 import albedo/daemon/pastes
 import albedo/daemon/reaper
 import albedo/daemon/session
+import albedo/daemon/session_namespace
 import albedo/daemon/state_expiry
 import albedo/daemon/store
+import albedo/harness/runtime
 import gleam/int
 import gleam/io
 import gleam/list
@@ -18,6 +20,7 @@ pub type Sweep {
   Sweep(
     home: String,
     ledger: store.Store,
+    host: runtime.Runtime,
     workers: List(#(String, session.Session)),
     idle_ms: Int,
     unload_ms: Int,
@@ -37,7 +40,13 @@ pub fn run(sweep: Sweep) -> Nil {
       |> result.map(fn(report) { #(entry.0, entry.1, report) })
     })
   release_idle(reports, sweep)
-  unload_quiet(reports, sweep)
+  case conversation.activity(sweep.ledger) {
+    Ok(activity) -> {
+      release_unowned(activity, sweep)
+      unload_quiet(reports, activity, sweep)
+    }
+    Error(_) -> Nil
+  }
   case sweep.expire_states {
     True -> {
       expire(reports, sweep)
@@ -120,32 +129,48 @@ fn release_idle(
 /// session refuses while a client watches it or work is queued.
 fn unload_quiet(
   reports: List(#(String, session.Session, session.Report)),
+  activity: List(#(String, Int)),
   sweep: Sweep,
 ) -> Nil {
-  case conversation.activity(sweep.ledger) {
-    Error(_) -> Nil
-    Ok(activity) ->
-      list.each(reports, fn(entry) {
-        let #(id, worker, report) = entry
-        let last = list.key_find(activity, id) |> result.unwrap(0)
-        case
-          !report.running
-          && report.jobs == 0
-          && sweep.now_seconds * 1000 - last >= sweep.unload_ms
-        {
-          True -> {
-            let _ =
-              actor_call.try_call(
-                worker,
-                waiting: 40_000,
-                sending: session.Unload,
-              )
-            Nil
-          }
-          False -> Nil
-        }
-      })
-  }
+  list.each(reports, fn(entry) {
+    let #(id, worker, report) = entry
+    let last = list.key_find(activity, id) |> result.unwrap(0)
+    case
+      !report.running
+      && report.jobs == 0
+      && sweep.now_seconds * 1000 - last >= sweep.unload_ms
+    {
+      True -> {
+        let _ =
+          actor_call.try_call(worker, waiting: 40_000, sending: session.Unload)
+        Nil
+      }
+      False -> Nil
+    }
+  })
+}
+
+/// Save and stop kernels no session actor is loaded for, once their session's
+/// last turn is older than the idle limit and no job or cell runs in them.
+/// A restarted daemon reattaches every recorded kernel, and only actors are
+/// swept above, so without this those kernels stay up for good.
+fn release_unowned(activity: List(#(String, Int)), sweep: Sweep) -> Nil {
+  runtime.held_kernels(sweep.host)
+  |> list.each(fn(entry) {
+    let #(id, kernel) = entry
+    let last = list.key_find(activity, id) |> result.unwrap(0)
+    case
+      session.live(id) == None
+      && runtime.job_count(kernel) == 0
+      && sweep.now_seconds * 1000 - last >= sweep.idle_ms
+    {
+      True -> {
+        let _ = session_namespace.save_state(sweep.home, id, kernel)
+        runtime.forget_session(sweep.host, id)
+      }
+      False -> Nil
+    }
+  })
 }
 
 fn expire(

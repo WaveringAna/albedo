@@ -188,6 +188,12 @@ pub fn loaded_sessions(runtime: Runtime) -> List(String) {
   actor.call(runtime.subject, 5000, LoadedIDs)
 }
 
+/// Every kernel the runtime holds, by session, whether or not a session actor
+/// has claimed it.
+pub fn held_kernels(runtime: Runtime) -> List(#(String, Session)) {
+  actor.call(runtime.subject, 5000, HeldKernels)
+}
+
 pub type LoadedObservation {
   LoadedObservation(
     loaded_revision: Option(String),
@@ -554,6 +560,7 @@ type Message {
   ObserveCatalog(String, String, Subject(Result(CatalogObservation, String)))
   PeekPrompt(String, Subject(Option(#(String, List(types.Input)))))
   LoadedIDs(Subject(List(String)))
+  HeldKernels(Subject(List(#(String, Session))))
   Reset(String, Subject(Nil))
   Forget(String, Subject(Nil))
   Delete(String, Subject(Result(Nil, String)))
@@ -2667,6 +2674,10 @@ fn serve(state: State, message: Message) -> actor.Next(State, a) {
     }
     LoadedIDs(reply) -> {
       process.send(reply, dict.keys(state.compositions))
+      actor.continue(state)
+    }
+    HeldKernels(reply) -> {
+      process.send(reply, dict.to_list(state.sessions))
       actor.continue(state)
     }
     PeekPrompt(id, reply) -> {

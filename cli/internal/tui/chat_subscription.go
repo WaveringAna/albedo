@@ -158,9 +158,18 @@ func (m *ChatModel) hostHomeCmd() tea.Cmd {
 	}
 }
 
-func (m ChatModel) statusPollCmd() tea.Cmd {
-	id, generation := m.SessionID, m.Generation
-	return tea.Tick(750*time.Millisecond, func(time.Time) tea.Msg { return ChatStatusPollMsg{SessionID: id, Generation: generation} })
+// statusPollCmd schedules the next status read: often while anything is live,
+// rarely while the session rests. Only the newest scheduled poll fires, so a
+// status read started elsewhere never adds a second polling loop.
+func (m *ChatModel) statusPollCmd() tea.Cmd {
+	m.statusPoll++
+	m.statusPollResting = !m.animating() && m.Status.KernelLink != "booting" && m.Status.KernelLink != "reattaching"
+	every := 750 * time.Millisecond
+	if m.statusPollResting {
+		every = 5 * time.Second
+	}
+	id, generation, poll := m.SessionID, m.Generation, m.statusPoll
+	return tea.Tick(every, func(time.Time) tea.Msg { return ChatStatusPollMsg{SessionID: id, Generation: generation, Poll: poll} })
 }
 
 func (m ChatModel) Init() tea.Cmd {

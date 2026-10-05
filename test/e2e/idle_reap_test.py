@@ -1,10 +1,11 @@
 """Idle kernel reaping persists Python state and explains restoration to the model."""
 
+import sqlite3
 import subprocess
 import time
 import unittest
 
-from harness import latest_user
+from harness import alive, latest_user
 from harness import Albedo, Provider, exclusive, python, text
 from stream_support import StreamProbe
 
@@ -108,6 +109,36 @@ class IdleReapTests(unittest.TestCase):
         notes = notes_for(app, session, cursor)
         self.assertTrue(
             any("restored 2 variables from disk" in note for note in notes), notes
+        )
+
+    def test_reattached_kernel_without_a_loaded_session_is_released(self):
+        app = self.app
+        app.restart(prepare=lambda a: a.env.update(ALBEDO_IDLE_SECONDS="600"))
+        session = app.session()
+        self.turn(session, "remember this")
+        with sqlite3.connect(app.home / "albedo.sqlite") as database:
+            (kernel,) = database.execute(
+                "SELECT pid FROM kernel_links WHERE session=?", (session,)
+            ).fetchone()
+        saved = app.home / "kernels" / f"{session}.state"
+        self.assertFalse(saved.exists())
+        # A crash leaves the kernel waiting; the next daemon reattaches it
+        # without loading the session.
+        app.restart(
+            crash=True,
+            prepare=lambda a: a.env.update(ALBEDO_IDLE_SECONDS=str(IDLE_SECONDS)),
+        )
+        deadline = time.monotonic() + IDLE_SECONDS * 5
+        while time.monotonic() < deadline and alive(kernel):
+            time.sleep(0.1)
+        self.assertFalse(alive(kernel), "reattached kernel outlived its limit")
+        self.assertTrue(saved.exists())
+        self.turn(session, "recall them")
+        self.assertTrue(
+            any(
+                "recalled 7 [1, 2, 3]" in item.get("output", "")
+                for item in self.provider.requests[-1]["request"]["input"]
+            )
         )
 
     def test_blocked_sweep_admits_one_worker_and_continues_after_owner_death(self):

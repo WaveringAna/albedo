@@ -163,7 +163,10 @@ type ChatModel struct {
 	droppedSettledLines int
 	settledLinesBytes   int64
 	statusRevision      uint64
-	scrollOffset        int
+	statusPoll          uint64
+	// statusPollResting is set while the next status poll is the slow one.
+	statusPollResting bool
+	scrollOffset      int
 
 	scrollLimit int
 	dragDir     int
@@ -311,7 +314,7 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 	switch msg := msg.(type) {
 
 	case ChatStatusPollMsg:
-		if msg.SessionID != m.SessionID || msg.Generation != m.Generation || m.streamStopped {
+		if msg.SessionID != m.SessionID || msg.Generation != m.Generation || msg.Poll != m.statusPoll || m.streamStopped {
 			return m, nil
 		}
 		return m, m.statusCmd()
@@ -356,12 +359,18 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 		if msg.SessionID != m.SessionID || msg.Generation != m.Generation || m.streamStopped {
 			return m, nil
 		}
+		var wake tea.Cmd
 		// only a live event outdates a status reply in flight
 		if !msg.Event.Replayed {
 			m.statusRevision++
+			// a resting poll would learn of the new activity seconds late
+			if m.statusPollResting {
+				m.statusPollResting = false
+				wake = m.statusCmd()
+			}
 		}
 		if msg.Event.Type == daemon.EventInvalidate {
-			return m, m.waitForNextEvent()
+			return m, tea.Batch(m.waitForNextEvent(), wake)
 		}
 		m.handleStreamEvent(msg.Event)
 		m.refreshViewportContent()
@@ -383,7 +392,7 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 				}
 			}
 		}
-		reconcile = append(reconcile, m.waitForNextEvent(), m.startAnimation(), m.windowCmd(), fade)
+		reconcile = append(reconcile, m.waitForNextEvent(), m.startAnimation(), m.windowCmd(), fade, wake)
 		return m, tea.Batch(reconcile...)
 
 	case ChatWindowMsg:

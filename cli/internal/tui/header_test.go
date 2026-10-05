@@ -183,6 +183,29 @@ func TestBackgroundJobsRefreshWithoutStartingATurn(t *testing.T) {
 	}
 }
 
+func TestStatusPollingRestsWhileIdleAndKeepsOneLoop(t *testing.T) {
+	// The loop count and cadence are invisible over HTTP; an extra status read
+	// once forked a second 750ms loop that never ended.
+	m := newTestChatModel(t, &daemon.Session{ID: "s"})
+	idle := daemon.AgentStatus{Idle: true}
+	m, _ = m.Update(ChatStatusMsg{SessionID: m.SessionID, Generation: m.Generation,
+		Revision: m.statusRevision, Status: &idle})
+	stale := m.statusPoll
+	m, _ = m.Update(ChatStatusMsg{SessionID: m.SessionID, Generation: m.Generation,
+		Revision: m.statusRevision, Status: &idle})
+	if !m.statusPollResting {
+		t.Fatal("an idle session kept the fast status poll")
+	}
+	if _, cmd := m.Update(ChatStatusPollMsg{SessionID: m.SessionID, Generation: m.Generation, Poll: stale}); cmd != nil {
+		t.Fatal("a superseded poll read status again")
+	}
+	m, cmd := m.Update(ChatStreamEventMsg{SessionID: m.SessionID, Generation: m.Generation,
+		Event: daemon.StreamEvent{Type: daemon.EventNote}})
+	if m.statusPollResting || cmd == nil {
+		t.Fatal("live activity did not wake the resting status poll")
+	}
+}
+
 func TestYoungJobsStayOutOfTheBackgroundChrome(t *testing.T) {
 	// The threshold is render logic over a started_at the daemon reports; an
 	// e2e would have to wait out the grace to see either side of it.

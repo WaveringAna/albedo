@@ -328,6 +328,7 @@ fn serve(state: State, message: Message) -> actor.Next(State, a) {
             maintenance.Sweep(
               home: config.home,
               ledger: runtime.ledger(state.host),
+              host: state.host,
               workers: dict.values(state.sessions)
                 |> list.filter_map(fn(entry) {
                   option.map(entry.1, fn(worker) { #(entry.0.id, worker) })

@@ -102,6 +102,7 @@ type ChatCacheFadeMsg struct {
 type ChatStatusPollMsg struct {
 	SessionID  string
 	Generation int64
+	Poll       uint64
 }
 
 // ChatStreamResultMsg follows all accepted events from the same subscription.

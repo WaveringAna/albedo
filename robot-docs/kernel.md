@@ -30,7 +30,9 @@ field). The count can exceed the list when remote jobs have no summaries.
 The TUI uses these observations for its idle-job status, animation, and
 sidebar, and calls a job background only once it has run three seconds
 (`jobGrace`), so work a cell starts and awaits never flashes through the
-chrome; `/jobs` lists every live job regardless of age.
+chrome; `/jobs` lists every live job regardless of age. The chat reads these
+every 750 ms while anything is live (a turn, a job, a booting or reattaching
+kernel) and every 5 s otherwise; a live stream event wakes a resting poll.
 The Erlang port owner truncates commands through `text_scalars.take`, which
 scans only the retained prefix and copies it. Do not convert the entire command
 to a codepoint list to take a bounded preview; see [runtime](runtime.md#unicode-scalar-limits).
@@ -271,7 +273,10 @@ way.
 a kernel with nothing attached for its grace period reaps its job groups
 (plugin cleanup) and exits, unless a job or cell is still live. the grace is
 `ALBEDO_KERNEL_GRACE_SECONDS` read by the daemon (default 3600) and sent in
-every attach; before its first attach a kernel waits 60 s. a kernel also
+every attach; before its first attach a kernel waits 60 s. a kernel the
+daemon reattached at start is attached, so the grace never runs out for it:
+the maintenance sweep saves and stops one whose session has no loaded actor,
+no live job or cell, and no turn within `ALBEDO_IDLE_SECONDS`. a kernel also
 exits within a second of its run directory disappearing, which is how test
 homes clean up after themselves. the e2e harness sets a 30 s grace, the gleam
 test home 20 s.
