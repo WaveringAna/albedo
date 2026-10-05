@@ -14,7 +14,7 @@ Clients save provider profiles and MCP configuration with credentials through th
 
 ## openai-compatible api keys
 
-The enabled-by-default `openai` extension requires `models`. It handles existing named OpenAI-compatible profiles and both Responses and Chat Completions. Model discovery comes from the models.dev cache, not the configured API endpoint. Older `config.json` profiles without an `extension` field remain OpenAI profiles; newly saved profiles include `"extension": "openai"`.
+The enabled-by-default `openai` extension requires `models`. It handles existing named OpenAI-compatible profiles and both Responses and Chat Completions. The Responses stream decoder accepts servers that leave `output_index` off their events (llama.cpp's llama-server) by placing each event with its `item_id`, and treats a missing `content_index` as 0. Model discovery comes from the models.dev cache, not the configured API endpoint. Older `config.json` profiles without an `extension` field remain OpenAI profiles; newly saved profiles include `"extension": "openai"`.
 
 ## chatgpt codex oauth
 

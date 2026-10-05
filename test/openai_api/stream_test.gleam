@@ -422,6 +422,117 @@ pub fn responses_uses_streamed_done_items_when_terminal_output_is_empty_test() -
   assert arguments == "{\"code\":\"20 + 22\",\"timeout_ms\":1000}"
 }
 
+pub fn responses_places_events_by_item_id_when_the_server_omits_output_index_test() -> Nil {
+  let message =
+    json.object([
+      #("type", json.string("message")),
+      #("id", json.string("msg_a")),
+      #("role", json.string("assistant")),
+      #("status", json.string("completed")),
+      #(
+        "content",
+        json.array(
+          [
+            json.object([
+              #("type", json.string("output_text")),
+              #("text", json.string("Hi")),
+              #("annotations", json.array([], json.string)),
+            ]),
+          ],
+          fn(part) { part },
+        ),
+      ),
+    ])
+  let state = stream.new(types.Responses)
+  let added = item_event("response.output_item.added", "msg_a", [])
+  let assert Ok(#(state, [], None)) = send(state, "", added)
+  let delta =
+    event("response.output_text.delta", [
+      #("item_id", json.string("msg_a")),
+      #("delta", json.string("Hi")),
+    ])
+  let assert Ok(#(state, [types.TextDelta(0, 0, "Hi")], None)) =
+    send(state, "", delta)
+  let done = event("response.output_item.done", [#("item", message)])
+  let assert Ok(#(state, [], None)) = send(state, "", done)
+  let completed =
+    event("response.completed", [
+      #(
+        "response",
+        json.object([
+          #("id", json.string("resp_1")),
+          #("output", json.array([], json.string)),
+        ]),
+      ),
+    ])
+  let assert Ok(#(
+    _,
+    [types.Started("resp_1")],
+    Some(types.Turn(Some("resp_1"), [_], [], _, types.Complete, None, [])),
+  )) = send(state, "", completed)
+  Nil
+}
+
+pub fn responses_numbers_items_added_without_an_index_in_order_test() -> Nil {
+  let state = stream.new(types.Responses)
+  let assert Ok(#(state, [], None)) =
+    send(state, "", item_event("response.output_item.added", "msg_a", []))
+  let call = [
+    #("name", json.string("get_weather")),
+    #("call_id", json.string("c")),
+  ]
+  let assert Ok(#(state, [], None)) =
+    send(
+      state,
+      "",
+      item_event("response.output_item.added", "fc_b", [
+        #("type", json.string("function_call")),
+        ..call
+      ]),
+    )
+  let delta =
+    event("response.function_call_arguments.delta", [
+      #("item_id", json.string("fc_b")),
+      #("delta", json.string("{}")),
+    ])
+  let assert Ok(#(_, [types.ArgumentsDelta(1, "get_weather", "{}")], None)) =
+    send(state, "", delta)
+  Nil
+}
+
+pub fn responses_rejects_an_unplaceable_event_without_an_index_test() -> Nil {
+  let delta =
+    event("response.output_text.delta", [
+      #("item_id", json.string("never_added")),
+      #("delta", json.string("Hi")),
+    ])
+  let assert Error(types.InvalidEvent(_)) =
+    send(stream.new(types.Responses), "", delta)
+  let no_id =
+    event("response.output_text.delta", [#("delta", json.string("Hi"))])
+  let assert Error(types.InvalidEvent(_)) =
+    send(stream.new(types.Responses), "", no_id)
+  Nil
+}
+
+fn event(kind: String, fields: List(#(String, json.Json))) -> String {
+  json.object([#("type", json.string(kind)), ..fields]) |> json.to_string
+}
+
+/// An item event as llama.cpp's server sends it: the item names itself, and
+/// there is no output_index.
+fn item_event(
+  kind: String,
+  id: String,
+  item_fields: List(#(String, json.Json)),
+) -> String {
+  let item = case list.key_find(item_fields, "type") {
+    Ok(_) -> item_fields
+    Error(_) -> [#("type", json.string("message")), ..item_fields]
+  }
+  event(kind, [#("item", json.object([#("id", json.string(id)), ..item]))])
+}
+
 fn send(
   state: stream.State,
   name: String,

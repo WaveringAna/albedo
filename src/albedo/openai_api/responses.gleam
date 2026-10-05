@@ -18,6 +18,11 @@ pub opaque type State {
     /// Each streaming call's tool name, by output index, from when it was
     /// added; its argument deltas carry only the index.
     call_names: Dict(Int, String),
+    /// Output index by item id, for servers that leave `output_index` off
+    /// their events but name the item on each delta.
+    item_indices: Dict(String, Int),
+    /// The index an item added without an `output_index` takes.
+    next_index: Int,
   )
 }
 
@@ -35,7 +40,7 @@ type Response {
 }
 
 pub fn new() -> State {
-  State(None, dict.new(), False, dict.new())
+  State(None, dict.new(), False, dict.new(), dict.new(), 0)
 }
 
 pub fn feed(
@@ -117,13 +122,28 @@ fn text_delta(
   value: dynamic.Dynamic,
 ) -> Result(#(State, List(types.Event), Option(types.Turn)), types.Error) {
   let decoder = {
-    use output_index <- decode.field("output_index", decode.int)
-    use content_index <- decode.field("content_index", decode.int)
+    use output_index <- decode.optional_field(
+      "output_index",
+      None,
+      decode.optional(decode.int),
+    )
+    use item_id <- decode.optional_field(
+      "item_id",
+      None,
+      decode.optional(decode.string),
+    )
+    use content_index <- decode.optional_field("content_index", 0, decode.int)
     use delta <- decode.field("delta", decode.string)
-    decode.success(types.TextDelta(output_index, content_index, delta))
+    decode.success(#(output_index, item_id, content_index, delta))
   }
-  use event <- result.try(run(value, decoder, "response.output_text.delta"))
-  Ok(#(state, [event], None))
+  let context = "response.output_text.delta"
+  use #(output_index, item_id, content_index, delta) <- result.try(run(
+    value,
+    decoder,
+    context,
+  ))
+  use index <- result.try(resolve_index(state, output_index, item_id, context))
+  Ok(#(state, [types.TextDelta(index, content_index, delta)], None))
 }
 
 fn arguments_delta(
@@ -131,15 +151,22 @@ fn arguments_delta(
   value: dynamic.Dynamic,
 ) -> Result(#(State, List(types.Event), Option(types.Turn)), types.Error) {
   let decoder = {
-    use output_index <- decode.field("output_index", decode.int)
+    use output_index <- decode.optional_field(
+      "output_index",
+      None,
+      decode.optional(decode.int),
+    )
+    use item_id <- decode.optional_field(
+      "item_id",
+      None,
+      decode.optional(decode.string),
+    )
     use delta <- decode.field("delta", decode.string)
-    decode.success(#(output_index, delta))
+    decode.success(#(output_index, item_id, delta))
   }
-  use #(index, delta) <- result.try(run(
-    value,
-    decoder,
-    "response.function_call_arguments.delta",
-  ))
+  let context = "response.function_call_arguments.delta"
+  use #(output_index, item_id, delta) <- result.try(run(value, decoder, context))
+  use index <- result.try(resolve_index(state, output_index, item_id, context))
   let name = dict.get(state.call_names, index) |> result.unwrap("")
   Ok(#(state, [types.ArgumentsDelta(index, name, delta)], None))
 }
@@ -150,19 +177,39 @@ fn output_item_added(
   value: dynamic.Dynamic,
 ) -> Result(#(State, List(types.Event), Option(types.Turn)), types.Error) {
   let decoder = {
-    use index <- decode.field("output_index", decode.int)
-    use #(kind, name) <- decode.field("item", {
+    use output_index <- decode.optional_field(
+      "output_index",
+      None,
+      decode.optional(decode.int),
+    )
+    use #(kind, name, id) <- decode.field("item", {
       use kind <- decode.field("type", decode.string)
       use name <- decode.optional_field("name", "", decode.string)
-      decode.success(#(kind, name))
+      use id <- decode.optional_field(
+        "id",
+        None,
+        decode.optional(decode.string),
+      )
+      decode.success(#(kind, name, id))
     })
-    decode.success(#(index, kind, name))
+    decode.success(#(output_index, kind, name, id))
   }
-  use #(index, kind, name) <- result.try(run(
+  use #(output_index, kind, name, id) <- result.try(run(
     value,
     decoder,
     "response.output_item.added",
   ))
+  let index = option.unwrap(output_index, state.next_index)
+  let item_indices = case id {
+    Some(id) -> dict.insert(state.item_indices, id, index)
+    None -> state.item_indices
+  }
+  let state =
+    State(
+      ..state,
+      item_indices:,
+      next_index: int.max(state.next_index, index + 1),
+    )
   case kind, name {
     "function_call", name if name != "" -> {
       let call_names = dict.insert(state.call_names, index, name)
@@ -177,17 +224,49 @@ fn output_item_done(
   value: dynamic.Dynamic,
 ) -> Result(#(State, List(types.Event), Option(types.Turn)), types.Error) {
   let decoder = {
-    use index <- decode.field("output_index", decode.int)
+    use output_index <- decode.optional_field(
+      "output_index",
+      None,
+      decode.optional(decode.int),
+    )
     use item <- decode.field("item", decode.dynamic)
-    decode.success(#(index, item))
+    use item_id <- decode.subfield(
+      ["item"],
+      decode.optional_field(
+        "id",
+        None,
+        decode.optional(decode.string),
+        decode.success,
+      ),
+    )
+    decode.success(#(output_index, item_id, item))
   }
-  use #(index, item) <- result.try(run(
-    value,
-    decoder,
-    "response.output_item.done",
-  ))
+  let context = "response.output_item.done"
+  use #(output_index, item_id, item) <- result.try(run(value, decoder, context))
+  use index <- result.try(resolve_index(state, output_index, item_id, context))
   let streamed_output = dict.insert(state.streamed_output, index, item)
   Ok(#(State(..state, streamed_output: streamed_output), [], None))
+}
+
+/// The output index an event is about: the one it carries, else the one its
+/// item was added at. Some servers (llama.cpp's) send only the item id.
+fn resolve_index(
+  state: State,
+  output_index: Option(Int),
+  item_id: Option(String),
+  context: String,
+) -> Result(Int, types.Error) {
+  let by_id = case item_id {
+    Some(id) -> dict.get(state.item_indices, id) |> option.from_result
+    None -> None
+  }
+  case output_index, by_id {
+    Some(index), _ | None, Some(index) -> Ok(index)
+    None, None ->
+      Error(types.InvalidEvent(
+        context <> ": no output_index, and no known item_id to place it by",
+      ))
+  }
 }
 
 /// Summary parts arrive as separate paragraphs with no separator in their
