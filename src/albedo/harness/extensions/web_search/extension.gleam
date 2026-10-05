@@ -1,6 +1,6 @@
 //// One `web_search` for the model over every provider extension that can
-//// search: tried in the user's order from the `/web-search` page, each
-//// failure passing the query to the next.
+//// search: the user's preferred provider from the `/web-search` page
+//// searches, and only when it fails does the query fall back to the next.
 
 import albedo/harness/client_api
 import albedo/harness/command
@@ -103,8 +103,8 @@ fn handle(
   )
 }
 
-/// The first provider's answer that says anything; every failure when none
-/// answers.
+/// The preferred provider's answer, falling back down the list only when a
+/// provider fails or finds nothing; every failure when all of them do.
 fn search(
   providers: List(web_search.Provider),
   query: web_search.Query,

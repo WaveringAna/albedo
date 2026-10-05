@@ -1,5 +1,5 @@
-"""The model's web_search must reach the first provider in the user's order
-that answers, passing over the ones that fail, and the /web-search page must
+"""The model's web_search must use the user's preferred provider and fall
+back down the order only when one fails, and the /web-search page must
 reorder providers and turn them off for every later search.
 
 Exa is the one provider a test can stand in for: its endpoint is a setting,

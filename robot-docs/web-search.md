@@ -19,7 +19,7 @@ exa reads its key from `creds.json` as `{"exa": {"apiKey": "..."}}`; `{"exa": {"
 
 ## order
 
-the `web-search` extension collects every installed `SearchPlugin` when the daemon composes its extensions (`extensions.defaults`), so a provider is offered whether or not its extension is enabled; a signed-out one simply fails and is passed over. a search tries the providers top to bottom and returns the first answer that says anything; a failure or an empty answer moves to the next, and when all fail the call raises with every reason, `name: reason`, in order.
+the `web-search` extension collects every installed `SearchPlugin` when the daemon composes its extensions (`extensions.defaults`), so a provider is offered whether or not its extension is enabled; a signed-out one simply fails and is passed over. the order is a preference with fallback, not a race: the top provider searches alone, and the query falls back to the next one only when it fails or finds nothing (signed out, rate limited, an error, or an answer that never searched). providers below one that answered are never called. when every provider that is on fails, the call raises with every reason, `name: reason`, in order.
 
 the order is global, in `extensions.json`:
 

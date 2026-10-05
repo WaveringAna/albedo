@@ -132,7 +132,7 @@ fn resource(entry: order.Ranked, index: Int) -> json.Json {
 fn page(entries: List(#(order.Ranked, Int))) -> json.Json {
   client_api.page(client_api.Page(
     title: "web search",
-    summary: "tried top to bottom; the first that answers wins",
+    summary: "the top provider searches; each one below is a fallback for when those above fail",
     empty_state: "no extension offers web search",
     glance: None,
     actions: [
