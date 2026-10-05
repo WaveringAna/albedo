@@ -93,22 +93,37 @@ func TestPromptReportsAFailedTurnAndAnUnknownModel(t *testing.T) {
 // --timeout fails the command once it passes and stops the turn it started:
 // the session is idle long before the stalled provider would have answered.
 func TestPromptTimeoutStopsTheTurn(t *testing.T) {
-	release := make(chan struct{})
+	entered, release := make(chan struct{}), make(chan struct{})
 	t.Cleanup(func() { close(release) })
 	profile := providerRoute(t, func(request map[string]any) string {
-		select {
-		case <-release:
-		case <-time.After(10 * time.Second):
+		if lastUserText(request) == "stall" {
+			close(entered)
+			select {
+			case <-release:
+			case <-time.After(10 * time.Second):
+			}
 		}
 		return echoReply(request)
 	})
+	// The deadline tests turn cancellation, not session creation or kernel boot.
+	session := newSession(t, t.TempDir())
+	cli(t, "-p", "warm the timeout session", "--session", session)
+	waitIdle(t, session, profile, 1)
 
 	started := time.Now()
-	stdout, stderr, err := runCLI("-p", "stall", "--model", profile+"/fixture-model", "--timeout", "1s")
+	stdout, stderr, err := runCLI("-p", "stall", "--session", session, "--timeout", "1s")
 	if err == nil || stdout != "" || !strings.Contains(stderr, "timed out after 1s") {
 		t.Fatalf("timed-out prompt: err=%v stdout=%q stderr=%q", err, stdout, stderr)
 	}
+	select {
+	case <-entered:
+	default:
+		t.Fatal("the deadline expired before the stalled turn reached the provider")
+	}
 	_, id, _ := strings.Cut(strings.TrimSpace(stderr), "the session is ")
+	if id != session {
+		t.Fatalf("timeout reported session %q, want %q", id, session)
+	}
 	for {
 		status, err := daemon.NewChatClient(conn(t), id).GetStatus(context.Background())
 		if err != nil {
@@ -140,6 +155,7 @@ func TestPromptTimeoutWhileQueuedDoesNotInterruptAnotherTurn(t *testing.T) {
 		}
 		return echoReply(request)
 	})
+	t.Parallel()
 	id := newSession(t, t.TempDir())
 	client := daemon.NewChatClient(conn(t), id)
 	if _, err := client.Send(t.Context(), "other turn", nil); err != nil {
@@ -160,6 +176,12 @@ func TestPromptTimeoutWhileQueuedDoesNotInterruptAnotherTurn(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "queued submission cancelled") || strings.Contains(stderr, "stopped") {
 		t.Fatalf("incorrect cancellation report: %s", stderr)
+	}
+	_, identity, _ := strings.Cut(stderr, "operation ")
+	inputID, _, _ := strings.Cut(identity, " can be queried")
+	receipt, receiptErr := daemon.GetInput(t.Context(), conn(t), id, inputID)
+	if receiptErr != nil || receipt.Admission != "accepted" || receipt.Delivery == nil || *receipt.Delivery != "cancelled" || receipt.Turn != nil {
+		t.Fatalf("timed call did not cancel an admitted queued input: %+v, %v", receipt, receiptErr)
 	}
 	close(release)
 	releaseClosed = true
