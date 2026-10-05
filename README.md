@@ -79,7 +79,9 @@ albedo sessions read SESSION_ID 3      # the newest 3 turns (default 1); --json 
 albedo sessions send SESSION_ID "message"
 ```
 
-Session IDs may be shortened to any unique prefix. `sessions read` ends with a
+Session IDs may be shortened to any unique prefix of a top-level session's ID,
+as `albedo sessions` prints them. A full ID, including a child session's, is used
+directly without listing other sessions. `sessions read` ends with a
 `[running]` line while the session is still working, so another agent knows to
 read again; `sessions send` is the same command as `albedo send`.
 

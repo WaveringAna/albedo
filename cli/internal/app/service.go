@@ -5,7 +5,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -129,8 +131,18 @@ func matchSession(sessions []daemon.Session, id string) (daemon.Session, error) 
 	}
 }
 
-// resolveSession expands a shortened session ID against the daemon's sessions.
+// The UUIDv7 shape in the daemon's operation validator and OpenAPI schema.
+var fullSessionID = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+
+// resolveSession reads full IDs directly and expands prefixes against root sessions.
 func resolveSession(ctx context.Context, conn *daemon.Connection, id string) (string, error) {
+	if fullSessionID.MatchString(id) {
+		configuration, err := daemon.GetSessionConfiguration(ctx, conn, id)
+		if problem, ok := errors.AsType[*daemon.APIError](err); ok && problem.StatusCode == http.StatusNotFound {
+			return "", fmt.Errorf("no session matches %q; run albedo sessions to see the available sessions", id)
+		}
+		return configuration.Value.ID, err
+	}
 	sessions, err := daemon.ListSessions(ctx, conn)
 	if err != nil {
 		return "", err

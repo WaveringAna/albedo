@@ -280,3 +280,26 @@ func TestCLISessionDeletionRequiresConfirmation(t *testing.T) {
 		t.Fatal("confirmed session was not deleted")
 	}
 }
+
+// Full IDs address children even though the default session listing contains roots.
+func TestCLIReadAndSendReachAChildByItsFullID(t *testing.T) {
+	profile := providerRoute(t, echoReply)
+	t.Parallel()
+	parent := newSession(t, t.TempDir())
+	child, err := daemon.CreateSession(t.Context(), conn(t), daemon.CreateSessionRequest{
+		Kind: "child", ParentID: parent, Address: "cli-child", Name: "cli-child", Task: "child first turn",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitIdle(t, child.ID, profile, 1)
+	if slices.ContainsFunc(daemonSessions(t), func(session daemon.Session) bool { return session.ID == child.ID }) {
+		t.Fatal("child unexpectedly appears in the root listing")
+	}
+	cli(t, "send", child.ID, "child second turn")
+	waitIdle(t, child.ID, profile, 2)
+	if text := cli(t, "sessions", "read", child.ID, "2"); !strings.Contains(text, "[user] child first turn") || !strings.Contains(text, "[assistant] echo: <mail") || !strings.Contains(text, "echo: child second turn") {
+		t.Fatalf("full child ID did not reach its transcript:\n%s", text)
+	}
+	cli(t, "stop", child.ID)
+}

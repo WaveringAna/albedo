@@ -549,6 +549,10 @@ and all descendants. `search` matches display names and ID prefixes.
 `sort=activity|frequent` defaults to activity; frequent sorts by opens, activity,
 and ID. Pinned state remains available for client grouping.
 
+The CLI's prompt, read, send, and stop workflows resolve a full lowercase UUIDv7
+with `GET /sessions/{id}?view=configuration`, including child sessions. Only
+shortened IDs search the root-session collection and require an unambiguous match.
+
 Parent and family queries default to `scope=all`; other queries default to roots.
 An explicitly supplied `scope=roots` with a parent or family filter returns `400`.
 The result is a page of `SessionSummary` objects. A family query also returns
