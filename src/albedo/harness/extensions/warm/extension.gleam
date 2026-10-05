@@ -133,11 +133,16 @@ fn due(
 ) -> Option(#(extension.Session, extension.SentCall, Plan)) {
   case warmer.sent {
     None -> None
+    // The plan is local arithmetic; asking whether work is still running
+    // costs the session a kernel observation, so it is asked last.
     Some(#(handle, call)) ->
-      case wanted(warmer.db, warmer.session, handle), plan_for(call) {
-        True, Some(plan) if warmer.pings < plan.cap ->
-          Some(#(handle, call, plan))
-        _, _ -> None
+      case plan_for(call) {
+        Some(plan) if warmer.pings < plan.cap ->
+          case wanted(warmer.db, warmer.session, handle) {
+            True -> Some(#(handle, call, plan))
+            False -> None
+          }
+        _ -> None
       }
   }
 }
