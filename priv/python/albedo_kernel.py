@@ -1045,9 +1045,10 @@ async def serve_invoke(message: albedo_api.Invoke) -> None:
     object as a live reference; `value` and `handle` are one concept. Awaitables
     run to completion unless their class is a registered handle, the same rule
     the local evaluator applies, so a tool's remote shape matches its local one.
-    An awaited object's reply carries its final state, so the owner's poll() is
-    never racy, and every call's result object is retained briefly as a pending
-    target for method calls that raced ahead of the reply.
+    A job's reply carries its state, final when awaited, so the owner's poll() is
+    never racy and the owner can match the job's wake to its reference before
+    any mirror frame arrives. Every call's result object is retained briefly as
+    a pending target for method calls that raced ahead of the reply.
     """
     call_id = message["id"]
     OWNER_TASKS[call_id] = cast(asyncio.Task[object], asyncio.current_task())
@@ -1067,9 +1068,6 @@ async def serve_invoke(message: albedo_api.Invoke) -> None:
                 if base is None:
                     raise ValueError("await needs a live or pending reference target")
                 result = await cast(Awaitable[object], base)
-                state = (
-                    _mirror_state(result) if getattr(result, "capture", None) else None
-                )
             else:
                 name = message.get("name", "")
                 if base is None:
@@ -1099,6 +1097,8 @@ async def serve_invoke(message: albedo_api.Invoke) -> None:
                     result, tuple(HANDLES)
                 ):
                     result = await cast(Awaitable[object], result)
+            if isinstance(getattr(result, "capture", None), Capture):
+                state = _mirror_state(result)
     except asyncio.CancelledError as error:
         failure = error
         # The owner cancelled its wait; the remote effect may continue, and the

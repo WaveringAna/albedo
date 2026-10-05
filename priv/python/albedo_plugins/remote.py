@@ -33,6 +33,7 @@ import albedo_bundle
 from albedo_values import InvalidValue, decode
 import albedo_shell
 import albedo_ssh
+from albedo_plugins.run import notice
 
 CONNECT_TIMEOUT = 60  # seconds before an unreachable target gives up
 HANDSHAKE_TIMEOUT = 60  # seconds for the remote kernel to say ready
@@ -269,6 +270,7 @@ class RemoteRef:
         self._label = label
         self._settled: Any = _UNSET
         self._withdrawn: bool = False
+        self._awaited = False  # awaited here, so its result reaches this cell
 
     # --- mirrored job state: sync, like the local handle ---
 
@@ -314,6 +316,8 @@ class RemoteRef:
         return state.get("job") if state else None
 
     def _mirror(self) -> dict[str, Any] | None:
+        if (failure := self._failure()) is not None:
+            raise failure
         if self._handle is None:
             return None
         state = self._connection._mirrors.get(self._handle)
@@ -331,9 +335,25 @@ class RemoteRef:
                 pass  # the loop is closing; the notice dies with the kernel
         return state
 
+    def _failure(self) -> BaseException | None:
+        """The error of a call that failed before anything awaited it. A ref
+        nobody awaits (a long build left to wake the session) has no other way
+        to say it never started."""
+        task = self._task
+        if task is None or not task.done() or task.cancelled():
+            return None
+        return task.exception()
+
+    @property
+    def _claimed(self) -> bool:
+        """Its result reached this side, so the job's wake is not owed."""
+        return self._awaited or self._withdrawn
+
     # --- the value surface: identical output to the local tool ---
 
     def __repr__(self) -> str:
+        if (failure := self._failure()) is not None:
+            return f"<failed remote {self._label or 'call'}: {failure}>"
         if self._value is not None:
             return repr(self._value)
         if self._handle is not None:
@@ -403,6 +423,9 @@ class RemoteRef:
         )
 
     def __await__(self):
+        # Marked now, like a local job: the await crosses the connection only
+        # after the reply to the call, and a quick job is done before that.
+        self._awaited = True
         return self._settle().__await__()
 
     async def _settle(self) -> Any:
@@ -601,7 +624,10 @@ class RemoteConnection:
     async def _relay(self, frame: RemoteCall) -> None:
         """Answer one remote host-route call against this session's daemon."""
         try:
-            value = await host_call(frame["method"], frame["args"])
+            if frame["method"] == "jobs.completed":
+                value = await self._wake(frame["args"])
+            else:
+                value = await host_call(frame["method"], frame["args"])
             reply: dict[str, Any] = {"ok": True, "value": value}
         except HostErrorType as error:
             reply = {
@@ -616,6 +642,25 @@ class RemoteConnection:
                 "message": f"{type(error).__name__}: {error}",
             }
         await self._send({"type": "reply", "id": frame["id"], "value": reply})
+
+    async def _wake(self, args: Any) -> Any:
+        """Pass on a remote job's wake unless a reference here already awaited
+        or read the job, which the remote kernel may not have heard yet."""
+        facts = [
+            fact
+            for fact in args.get("jobs", [])
+            if not self._claimed_here(fact.get("id"))
+        ]
+        if not facts:
+            return None
+        return await host_call("jobs.completed", notice(facts))
+
+    def _claimed_here(self, job: object) -> bool:
+        return any(
+            reference._claimed
+            for handle, reference in self._refs.items()
+            if self._mirrors.get(handle, {}).get("job") == job
+        )
 
     async def _send(self, frame: dict[str, Any]) -> None:
         if self.closed or self._stdin is None:
@@ -1135,7 +1180,7 @@ class FallbackJob:
             "<system-note>a background command finished with its result unread on"
             f" {self._connection.host} (ssh command mode): {outcome}, {seconds},"
             f" command: {command}."
-            f" its handle is jobs[{self.id!r}] in python; jobs[{self.id!r}].tail() or"
+            " its handle is the job rem.run returned; its .tail() or"
             f" output.read({self.id!r}) reads its output."
             " no user sent this message; use the result if the session's work needs"
             " it, otherwise acknowledge briefly and stay idle.</system-note>"

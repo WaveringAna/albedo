@@ -10,7 +10,7 @@ session layer that neither loses nor repeats a message across a reconnect.
 
 Cells also see the common standard-library modules (`asyncio base64 collections datetime functools hashlib itertools json math os re shutil sys textwrap time`, and `Path`) without importing them; these live in the same session-private builtins, so they are not saved as user variables. `import albedo` and `from albedo import files` answer the injected bindings (`albedo_kernel.Bindings`).
 
-A cell may not block the kernel with `time.sleep` of a second or more: `albedo_shell` refuses it through the same audit hook that refuses raw subprocess calls, and says to start the work with `run()` and do other useful work while it runs, and when nothing else is left to give the user a status report first, then wait with `await asyncio.sleep(n)`. Job timeouts are seconds (`albedo_api.check_timeout`).
+A cell may not block the kernel with `time.sleep` of a second or more: `albedo_shell` refuses it through the same audit hook that refuses raw subprocess calls, and says to start the work with `run()` and do other useful work while it runs, and when nothing else is left to give the user a status report first, then wait with `await asyncio.sleep(n)`. Job timeouts are seconds, at most a day (`albedo_api.check_timeout`): a job outlives the cell that started it, so it is not held to the cell's hour.
 
 The kernel keeps injected helpers in cell globals and in a session-private copy
 of Python's builtins. An assignment such as `files = [...]` shadows the helper;

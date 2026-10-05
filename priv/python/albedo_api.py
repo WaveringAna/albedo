@@ -83,12 +83,16 @@ class Record(dict):
         return _ready(self)
 
 
+MAX_JOB_SECONDS = 86400  # a day: long builds fit, a deadline in ms does not
+
+
 def check_timeout(timeout: float) -> None:
-    """Raise unless a job timeout is within 0 < timeout <= 3600 seconds."""
-    if not 0 < timeout <= 3600:
+    """Raise unless a job timeout is within 0 < timeout <= MAX_JOB_SECONDS."""
+    if not 0 < timeout <= MAX_JOB_SECONDS:
         raise ValueError(
-            f"timeout is in seconds: 0 < timeout <= 3600 required, got {timeout:g}"
-            + (" (milliseconds?)" if timeout > 3600 else "")
+            f"timeout is in seconds: 0 < timeout <= {MAX_JOB_SECONDS} required,"
+            f" got {timeout:g}"
+            + (" (milliseconds?)" if timeout > MAX_JOB_SECONDS else "")
         )
 
 

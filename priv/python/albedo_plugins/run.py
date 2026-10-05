@@ -628,6 +628,19 @@ async def _announce() -> None:
             owed.pop(job.id, None)
 
 
+# A job on a remote.connect() host lives in that kernel's `jobs`, not the
+# model's, so its notice names the reference rem.run returned instead.
+REMOTE_READING = (
+    " a job on another host is read with .tail() on the reference rem.run"
+    " returned, or await rem.output.read(id) on that connection."
+)
+
+
+def _name(job: dict[str, object]) -> str:
+    """How a notice names a job: its `jobs` entry here, or a remote job's id."""
+    return repr(job["id"]) if job["host"] else f"jobs[{job['id']!r}]"
+
+
 def notice(facts: list[dict[str, object]]) -> dict[str, object]:
     """The wake turn's display text, model text, and the facts behind both."""
     advice = (
@@ -636,21 +649,29 @@ def notice(facts: list[dict[str, object]]) -> dict[str, object]:
     )
     if len(facts) == 1:
         [job] = facts
+        reading = (
+            " its handle is the reference rem.run returned; its .tail() or"
+            f" await rem.output.read({job['id']!r}) on that connection reads its output."
+            if job["host"]
+            else f" its handle is jobs[{job['id']!r}] in python; jobs[{job['id']!r}].tail() or"
+            f" output.read({job['id']!r}) reads its output."
+        )
         text = (
             "<system-note>a background job finished with its result unread"
             f"{job['where']}: {job['summary']}, command: {job['command']}."
-            f" its handle is jobs[{job['id']!r}] in python; jobs[{job['id']!r}].tail() or"
-            f" output.read({job['id']!r}) reads its output." + advice
+            + reading
+            + advice
         )
     else:
         listed = "; ".join(
-            f"jobs[{job['id']!r}]{job['where']}: {job['summary']}, command: {job['command']}"
+            f"{_name(job)}{job['where']}: {job['summary']}, command: {job['command']}"
             for job in facts
         )
+        remote = any(job["host"] for job in facts)
         text = (
             f"<system-note>{len(facts)} background jobs finished with their results"
             f" unread: {listed}. jobs[id].tail() or output.read(id) reads one's"
-            " output." + advice
+            " output." + (REMOTE_READING if remote else "") + advice
         )
     display = "\n".join(
         f"job finished{job['where']} ({job['summary']}): {job['command']}"
@@ -670,7 +691,8 @@ def run(
 ) -> Job:
     """Start one program, without a shell, and return its handle immediately:
     run("go", "test", "./...", cwd="cli"). It starts at once, at low priority.
-    The timeout counts wall time after the program starts.
+    The timeout, in seconds and at most a day, counts wall time after the
+    program starts.
 
     `env` adds to the kernel's environment. `stdin` is text or bytes to feed
     the program, a path to read, or another job, whose output streams in like

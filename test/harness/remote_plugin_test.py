@@ -57,7 +57,13 @@ def fake_ssh_path() -> str:
 FAKE_SSH = fake_ssh_path()
 
 
+notices = []  # every jobs.completed notice that reached the daemon
+
+
 async def daemon_host(method, args):
+    if method == "jobs.completed":
+        notices.append(args)
+        return None
     if method == "work.list":
         return [
             {
@@ -80,6 +86,7 @@ class RemotePluginTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         remote.configured.clear()
         remote.connections.clear()
+        notices.clear()
         self.home = tempfile.mkdtemp(prefix="albedo-remote-home-")
         self.workspace = tempfile.mkdtemp(prefix="albedo-remote-ws-")
         os.chdir(self.workspace)
@@ -298,6 +305,56 @@ class RemotePluginTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("tail", dir(job))  # dir() mixes local and mirrored names
         ending = await job.stop  # awaiting an uncalled method runs it
         self.assertTrue(ending.gone)
+
+    async def test_a_job_awaited_here_does_not_wake_the_session(self):
+        rem = await self.connect()
+        self.addCleanup(rem.close)
+        # The await crosses a round trip after the call's own reply; over a slow
+        # link a quick job is done by then, and its wake must not reach the
+        # idle session a backgrounded cell's waiting loop leaves behind.
+        send = rem._send
+
+        async def slow_link(frame):
+            if frame.get("await"):
+                await asyncio.sleep(0.5)
+            await send(frame)
+
+        with patch.object(rem, "_send", slow_link):
+            job = rem.run("true")
+            await job
+        self.assertEqual(job.exit_code, 0)
+        rem.run("echo", "left-unread")
+        for _ in range(100):
+            if notices:
+                break
+            await asyncio.sleep(0.05)
+        [notice] = notices
+        self.assertEqual(
+            [fact["command"] for fact in notice["jobs"]], ["echo left-unread"]
+        )
+        # That job lives in the remote kernel's jobs, not the model's.
+        self.assertIn("rem.output.read(", notice["text"])
+        self.assertNotIn("jobs[", notice["text"])
+
+    async def test_a_call_that_fails_unawaited_says_so_on_its_reference(self):
+        rem = await self.connect()
+        self.addCleanup(rem.close)
+        # Left to wake the session, a job that never started must not look
+        # pending forever.
+        job = rem.run("true", timeout=0)
+        for _ in range(100):
+            if "failed" in repr(job):
+                break
+            await asyncio.sleep(0.05)
+        self.assertIn("timeout is in seconds", repr(job))
+        with self.assertRaisesRegex(
+            remote.RemoteExecutionError, "timeout is in seconds"
+        ):
+            _ = job.id
+        with self.assertRaisesRegex(
+            remote.RemoteExecutionError, "timeout is in seconds"
+        ):
+            await job
 
     async def test_a_file_larger_than_a_command_line_writes_and_reads_back(self):
         rem = await self.connect()
