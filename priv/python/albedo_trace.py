@@ -58,14 +58,18 @@ class Trace:
         self.truncated: bool = False
         self.sealed: bool = False
 
-    def activity(self, kind: str, target: object) -> None:
+    def activity(self, kind: str, target: object, detail: str = "") -> None:
         if self.sealed:
             return
         if len(self.activities) >= 64:
             self.truncated = True
         else:
             target = str(target)[:1000]
-            self.activities[(kind, target)] = {"kind": kind, "target": target}
+            entry = {"kind": kind, "target": target}
+            if detail:
+                self.truncated |= len(detail) > 16000
+                entry["detail"] = detail[:16000]
+            self.activities[(kind, target)] = entry
 
     def renamed(self, source: str, destination: str) -> None:
         if self.sealed or source == destination:
@@ -170,12 +174,13 @@ def _no_capture() -> None:
 current: Callable[[], TracedCapture | None] = _no_capture
 
 
-def note(kind: str, target: str) -> None:
+def note(kind: str, target: str, detail: str = "") -> None:
     """Record what a harness tool did for the running cell, as it was asked
-    for: the command run() started, the pattern files.find searched."""
+    for: the command run() started, the pattern files.find searched. `detail`
+    is what the person watching sees of its result, such as a search's answer."""
     capture = current()
     if capture is not None:
-        capture.trace.activity(kind, target)
+        capture.trace.activity(kind, target, detail)
 
 
 def install(get_capture: Callable[[], TracedCapture | None]) -> None:

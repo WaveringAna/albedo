@@ -10,12 +10,16 @@ a provider is a `SearchPlugin(web_search.Provider(name, label, search))` on the 
 | --- | --- | --- |
 | `codex` | `codex` | the ChatGPT backend's Responses with the hosted `web_search` tool forced; sources are the answer's `url_citation`s, then what the search call turned up. `utm_source=openai` is stripped. |
 | `claude` | `claude` | Messages with the server tool `web_search_20250305` (`max_uses` 5) appended through `wire.encode_with`; sources are `citations_delta`s, then `web_search_tool_result` pages. |
-| `antigravity` | `antigravity` | Cloud Code `streamGenerateContent` with `googleSearch` grounding through `wire.encode_with`, at the model's lowest effort. grounding chunks are Google redirect urls; `albedo_http:locations` resolves each with one HEAD, all at once, 5s, keeping the redirect when it fails. |
+| `antigravity` | `antigravity` | Cloud Code `streamGenerateContent` with `googleSearch` grounding through `wire.encode_with`, at the model's lowest effort. its own inline `[label](http…)` links are cut to their labels (`search.unlink`; code like `f[T any](v T)` is left alone), since some point at pages it never grounded on; grounding chunks are Google redirect urls; `albedo_http:locations` resolves each with one HEAD, all at once, 5s, keeping the redirect when it fails. |
 | `exa` | `exa` | Exa's `/search` with highlights as snippets. no prose. |
 
 the subscription providers refuse an answer that never searched (no search call, no grounding): it would be the model's memory passed off as a search result. each one checks its sign-in before resolving a model, so a signed-out provider fails at once without reaching the network. `searchModel` in that extension's section of `extensions.json` picks the model; otherwise codex uses the account's first listed model, claude the newest listed model, and antigravity the first listed Gemini.
 
 exa reads its key from `creds.json` as `{"exa": {"apiKey": "..."}}`; `{"exa": {"endpoint": "..."}}` in `extensions.json` points it at another host (the e2e suite points it at a fake).
+
+## transcript
+
+each search notes a `web` activity in the cell's trace: the query as its `target`, and as its `detail` the answer and a list of linked sources as markdown, at most 16000 characters. the TUI names it in the burst's summary (`looked up “query”`) and shows the detail under it, cut to its first four rows with a `click to expand` row that opens the rest (`burst.go` `foldLookup`, `rowactions.go` `toggleLookup`). the model never sees the detail; it reads what the cell printed.
 
 ## order
 

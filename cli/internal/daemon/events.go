@@ -10,8 +10,10 @@ import (
 
 // ToolActivity records display-only execution evidence, not model-facing tool output.
 type ToolActivity struct {
-	Kind   string `json:"kind"` // "read" | "search" | "list" | "run"
+	Kind   string `json:"kind"` // "read" | "search" | "list" | "run" | "web"
 	Target string `json:"target"`
+	// Detail is the markdown a web search answered with; empty otherwise.
+	Detail string `json:"detail,omitempty"`
 }
 
 type FileChange struct {
@@ -46,12 +48,12 @@ func ParseToolTrace(data json.RawMessage) *ToolTrace {
 
 	for _, act := range trace.Activities {
 		switch act.Kind {
-		case "read", "search", "list", "run":
+		case "read", "search", "list", "run", "web":
 		default:
 			return nil
 		}
 		// Python bounds these strings by Unicode characters, not UTF-8 bytes.
-		if utf8.RuneCountInString(act.Target) > 1000 {
+		if utf8.RuneCountInString(act.Target) > 1000 || utf8.RuneCountInString(act.Detail) > 16000 {
 			return nil
 		}
 	}

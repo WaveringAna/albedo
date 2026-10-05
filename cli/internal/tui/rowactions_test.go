@@ -156,3 +156,42 @@ func TestClickingALongMessageShowsTheRestAndFoldsIt(t *testing.T) {
 		t.Fatalf("clicking again does not fold the message:\n%s", text)
 	}
 }
+
+// A web search's answer shows under its burst, cut to its first rows; the
+// click target shows the rest and folds it again, splicing what a rebuild
+// would draw.
+func TestClickingAWebSearchShowsItsWholeAnswer(t *testing.T) {
+	m := newTestChatModel(t, &daemon.Session{ID: "s"})
+	m.SetSize(100, 30)
+	var lines []string
+	for i := range 12 {
+		lines = append(lines, fmt.Sprintf("finding %02d", i))
+	}
+	search := daemon.ToolActivity{Kind: "web", Target: "latest gleam release", Detail: strings.Join(lines, "\n\n")}
+	m.appendSettledEntry(HistoryEntry{Kind: EntryUser, Text: "look it up", Timestamp: 1})
+	m.appendSettledEntry(traced([]daemon.ToolActivity{search}))
+	m.appendSettledEntry(HistoryEntry{Kind: EntryAssistant, Text: "done", Timestamp: 3})
+	m.refreshViewportContent()
+	shown := func() string { return ansi.Strip(strings.Join(m.frameLines, "\n")) }
+	if text := shown(); !strings.Contains(text, "looked up “latest gleam release”") || !strings.Contains(text, "finding 00") || strings.Contains(text, "finding 11") {
+		t.Fatalf("the search is not summarized and folded:\n%s", text)
+	}
+	spliced := func() {
+		t.Helper()
+		got := slices.Clone(m.settledLines)
+		if m.rebuildSettledLines(); !slices.Equal(got, m.settledLines) {
+			t.Fatal("the splice drew rows a rebuild does not")
+		}
+		m.refreshViewportContent()
+	}
+	m.actAt(rowWith(t, m.frameLines, "click to expand"))
+	spliced()
+	if text := shown(); !strings.Contains(text, "finding 11") || !strings.Contains(text, "show less") {
+		t.Fatalf("clicking does not show the whole answer:\n%s", text)
+	}
+	m.actAt(rowWith(t, m.frameLines, "show less"))
+	spliced()
+	if text := shown(); strings.Contains(text, "finding 11") || !strings.Contains(text, "click to expand") {
+		t.Fatalf("clicking again does not fold the answer:\n%s", text)
+	}
+}

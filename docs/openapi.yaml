@@ -6782,10 +6782,14 @@ components:
       properties:
         kind:
           type: string
-          enum: [read, search, list, run]
+          enum: [read, search, list, run, web]
         target:
           type: string
           maxLength: 1000
+        detail:
+          type: string
+          maxLength: 16000
+          description: What the person watching sees of the result, as markdown; a web search's answer and sources.
       required: [kind, target]
       additionalProperties: false
     FileDiff:

@@ -121,7 +121,7 @@ class WebSearchTests(unittest.TestCase):
         session = app.session()
         app.prompt(session, prompt).close()
         app.idle(session)
-        return last_output(app, session)
+        return session, last_output(app, session)
 
     def providers(self, app):
         with app.api(COLLECTION) as response:
@@ -134,7 +134,7 @@ class WebSearchTests(unittest.TestCase):
 
     def test_search_passes_over_signed_out_providers_to_exa(self):
         app = self.start([SEARCH])
-        output = self.ask(app, "search the web")
+        session, output = self.ask(app, "search the web")
         answer, sources = ast.literal_eval(output.splitlines()[0])
         self.assertEqual(answer, "")
         # One source per url, cut to the limit, highlights as the snippet.
@@ -151,6 +151,18 @@ class WebSearchTests(unittest.TestCase):
             ],
         )
         self.assertIn("[1] Gleam one (2026-08-01)", output)
+        # The transcript shows the search's result beside the cell.
+        (activity,) = [
+            activity
+            for entry in app.history(session)["items"]
+            if entry["kind"] == "tool_result"
+            for part in entry["content"]
+            if part["kind"] == "trace"
+            for activity in part["trace"]["activities"]
+            if activity["kind"] == "web"
+        ]
+        self.assertEqual(activity["target"], "latest gleam release")
+        self.assertIn("- [Gleam one](https://gleam.run/news/one)", activity["detail"])
         ((path, key, body),) = self.exa.requests
         self.assertEqual((path, key), ("/search", "exa-key"))
         self.assertEqual(
@@ -181,7 +193,7 @@ class WebSearchTests(unittest.TestCase):
         self.assertEqual(self.change(app, top, "up")["position"], 1)
 
         self.assertFalse(self.change(app, "exa", "toggle")["enabled"])
-        output = self.ask(app, "search the web")
+        _, output = self.ask(app, "search the web")
         self.assertIn("raised: every web search provider failed", output)
         for name in ("codex", "claude", "antigravity"):
             self.assertIn(name + ":", output)

@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"maps"
 	"regexp"
 	"slices"
 	"strings"
@@ -18,7 +19,8 @@ const (
 	verbCopy = "copy"
 	// verbOpen lists or hides the steps of a burst.
 	verbOpen = "open"
-	// verbMore shows or folds the rest of a long message of yours.
+	// verbMore shows or folds the rest of a long message of yours, or of a
+	// web search's answer.
 	verbMore = "more"
 )
 
@@ -58,7 +60,9 @@ func (m *ChatModel) actAt(row int) tea.Cmd {
 	case verbOpen:
 		m.toggleBurst(act.key, row)
 	case verbMore:
-		m.toggleFold(act.key, row)
+		if !m.toggleFold(act.key, row) {
+			m.toggleLookup(act.key, row)
+		}
 	}
 	return nil
 }
@@ -67,11 +71,12 @@ func (m *ChatModel) actAt(row int) tea.Cmd {
 // the last row of its block. Only that block renders again and is spliced into
 // the settled rows. The clicked row keeps its place on screen: expanding opens
 // the text below it, and folding brings the new fold row to where it was.
-func (m *ChatModel) toggleFold(key string, row int) {
+// It reports false when key names no message of yours.
+func (m *ChatModel) toggleFold(key string, row int) bool {
 	entries := m.History.Entries()
 	at := slices.IndexFunc(entries, func(e HistoryEntry) bool { return e.Kind == EntryUser && entryKey(e) == key })
 	if at < 0 {
-		return
+		return false
 	}
 	was := m.Renderer
 	was.Open = map[string]bool{key: m.Renderer.Open[key]}
@@ -85,13 +90,66 @@ func (m *ChatModel) toggleFold(key string, row int) {
 	if from < 0 || from+len(old) > len(m.settledLines) || m.settledLines[from+len(old)-1] != old[len(old)-1] {
 		m.rebuildSettledLines()
 		m.refreshViewportContent()
-		return
+		return true
 	}
 	screen := row - m.scrollOffset
 	if !m.Renderer.Open[key] {
 		row += len(fresh) - len(old)
 	}
 	row -= m.replaceSettled(from, len(old), fresh)
+	m.Follow, m.scrollOffset = false, max(0, row-screen)
+	m.Follow = m.scrollOffset >= m.refreshViewportContent()
+	return true
+}
+
+// toggleLookup shows or folds the rest of the web search answer whose fold
+// row is at row. Its burst renders again; the clicked row keeps its place on
+// screen, as toggleFold keeps a message's.
+func (m *ChatModel) toggleLookup(key string, row int) {
+	entries := m.History.Entries()
+	at := slices.IndexFunc(entries, func(e HistoryEntry) bool {
+		return slices.ContainsFunc(factsOf(e).looked, func(look lookup) bool { return look.key == key })
+	})
+	if at < 0 {
+		return
+	}
+	start := at
+	for start > 0 && Compact(entries[start-1], m.Flags) {
+		start--
+	}
+	end := at + 1
+	for end < len(entries) && Compact(entries[end], m.Flags) {
+		end++
+	}
+	before, burst := entries[:start], entries[start:end]
+	fold := func(lines []string) int {
+		return slices.IndexFunc(lines, func(line string) bool {
+			act, ok := actionOf(line)
+			return ok && act == rowAction{verbMore, key}
+		})
+	}
+	was := m.Renderer
+	was.Open = maps.Clone(m.Renderer.Open)
+	old := was.BurstBlock(before, burst, m.Flags)
+	if m.Renderer.Open == nil {
+		m.Renderer.Open = map[string]bool{}
+	}
+	m.Renderer.Open[key] = !m.Renderer.Open[key]
+	fresh := m.Renderer.BurstBlock(before, burst, m.Flags)
+	clicked, screen := fold(old), row-m.scrollOffset
+	if end < len(entries) {
+		from := row - m.settledOffset - clicked
+		if clicked < 0 || from < 0 || from+len(old) > len(m.settledLines) || m.settledLines[row-m.settledOffset] != old[clicked] {
+			m.rebuildSettledLines()
+			m.refreshViewportContent()
+			return
+		}
+		row -= m.replaceSettled(from, len(old), fresh)
+	}
+	m.burstEpoch++
+	if !m.Renderer.Open[key] {
+		row += fold(fresh) - clicked
+	}
 	m.Follow, m.scrollOffset = false, max(0, row-screen)
 	m.Follow = m.scrollOffset >= m.refreshViewportContent()
 }

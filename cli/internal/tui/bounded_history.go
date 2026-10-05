@@ -80,7 +80,7 @@ func (e *HistoryEntry) ComputeSize() int64 {
 	}
 	if e.ToolTrace != nil {
 		for _, act := range e.ToolTrace.Activities {
-			size += int64(len(act.Kind) + len(act.Target) + 16)
+			size += int64(len(act.Kind) + len(act.Target) + len(act.Detail) + 16)
 		}
 		for _, ch := range e.ToolTrace.Changes {
 			size += int64(len(ch.Path) + len(ch.Kind) + len(ch.Diff) + len(ch.Reason) + 32)

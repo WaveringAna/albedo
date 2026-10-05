@@ -2731,8 +2731,10 @@ type TokenObservation struct {
 
 // ToolActivity defines model for ToolActivity.
 type ToolActivity struct {
-	Kind   string `json:"kind"`
-	Target string `json:"target"`
+	// Detail What the person watching sees of the result, as markdown; a web search's answer and sources.
+	Detail *string `json:"detail,omitempty"`
+	Kind   string  `json:"kind"`
+	Target string  `json:"target"`
 }
 
 // ToolProgress Examples: {"call_id":"progress-1","intent":"unknown","name":"python","phase":"generating","preview":{"offset_scalars":0,"text":"print(\"hello\")"},"tool_call_id":null}

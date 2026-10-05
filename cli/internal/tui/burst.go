@@ -101,6 +101,7 @@ type entryFacts struct {
 	read      []string
 	edited    []string
 	searched  []string
+	looked    []lookup
 	ran       []string
 	py        []string
 	used      []string
@@ -111,6 +112,10 @@ type entryFacts struct {
 	untimed   bool
 	failed    bool
 }
+
+// lookup is one web search a call made: what it asked, what it found, and the
+// key its fold opens by.
+type lookup struct{ key, query, detail string }
 
 // factsOf reads one entry's contribution, using what append already computed
 // when it can.
@@ -142,6 +147,9 @@ func factsOf(entry HistoryEntry) entryFacts {
 				f.read = append(f.read, strings.TrimSuffix(activity.Target, "/")+"/")
 			case "search":
 				f.searched = append(f.searched, oneLine(activity.Target))
+			case "web":
+				key := fmt.Sprintf("%x-%x", entry.Timestamp, fnv1a(fnvOffset64, f.key+"\x00"+activity.Target))
+				f.looked = append(f.looked, lookup{key, activity.Target, activity.Detail})
 			case "run":
 				f.ran = append(f.ran, commandName(activity.Target))
 			}
@@ -171,6 +179,7 @@ type burst struct {
 	read      tally
 	edited    tally
 	searched  tally
+	looked    []lookup
 	ran       tally
 	py        tally
 	used      tally
@@ -193,6 +202,7 @@ func (b *burst) merge(f entryFacts, entry HistoryEntry) {
 	b.read.addAll(f.read)
 	b.edited.addAll(f.edited)
 	b.searched.addAll(f.searched)
+	b.looked = append(b.looked, f.looked...)
 	b.ran.addAll(f.ran)
 	b.py.addAll(f.py)
 	b.used.addAll(f.used)
@@ -265,6 +275,7 @@ func (r TranscriptRenderer) summary(b burst, width int, n namer) string {
 	for _, c := range []*clause{
 		{verb: "read", noun: "files", n: len(reads), items: pathGroups(reads)},
 		{verb: "searched", noun: "patterns", n: len(b.searched.keys), items: dedup(n.all(b.searched.keys))},
+		{verb: "looked up", noun: "searches", n: len(b.looked), items: queries(b.looked)},
 		{verb: "edited", noun: "files", n: len(edited), items: pathGroups(edited)},
 		{verb: "ran", noun: "commands", n: len(b.ran.keys), items: b.ran.counted()},
 		{verb: "python", noun: "cells", n: len(b.py.keys), items: b.py.counted()},
@@ -297,8 +308,41 @@ func (r TranscriptRenderer) summary(b burst, width int, n namer) string {
 	return fit(r.Styles.Faint.Render(line()), tail, width)
 }
 
+// queries names each search by its query, quoted, on one line.
+func queries(looked []lookup) []string {
+	names := make([]string, len(looked))
+	for i, look := range looked {
+		names[i] = "“" + oneLine(look.query) + "”"
+	}
+	return dedup(names)
+}
+
+// A web search's answer shows its first lookupRows rows under the burst and a
+// click target for the rest.
+const lookupRows = 4
+
+// foldLookup is a search's answer under its burst: the first rows, then a
+// row that opens the rest until its key is in Open.
+func (r TranscriptRenderer) foldLookup(look lookup, width int) []string {
+	if look.detail == "" {
+		return nil
+	}
+	rows := r.faintMarkdownRows(look.detail, width-2)
+	for i := range rows {
+		rows[i] = markChrome + "  " + rows[i]
+	}
+	if len(rows) <= lookupRows+userFoldSlack {
+		return rows
+	}
+	if r.Open[look.key] {
+		return append(rows, r.foldRow(look.key, "  "+toggleOpen+"show less"))
+	}
+	label := fmt.Sprintf("  %s%d more lines · click to expand", toggleClosed, len(rows)-lookupRows)
+	return append(rows[:lookupRows:lookupRows], r.foldRow(look.key, label))
+}
+
 // countedFirst ranks which list turns into a count first.
-var countedFirst = map[string]int{"read": 0, "searched": 1, "used": 2, "ran": 3, "python": 4, "edited": 5}
+var countedFirst = map[string]int{"read": 0, "searched": 1, "used": 2, "ran": 3, "python": 4, "looked up": 5, "edited": 6}
 
 // shorten hides one more item, and reports whether any was left to hide.
 func shorten(clauses []*clause) bool {
@@ -355,6 +399,9 @@ func (r TranscriptRenderer) RenderBurst(entries []HistoryEntry, flags DisplayFla
 		for _, entry := range b.failed {
 			rows = append(rows, markChrome+r.Styles.Error.Render(toolRow(entry, true, "", width)))
 		}
+	}
+	for _, look := range b.looked {
+		rows = append(rows, r.foldLookup(look, width)...)
 	}
 	if flags.Diffs {
 		for _, change := range b.changes {

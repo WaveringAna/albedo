@@ -67,10 +67,54 @@ pub fn run(
     list.map2(found, pages, fn(source, page) {
       web_search.Source(..source, url: page)
     })
+  // Gemini writes its own links into the prose, and some point at pages it
+  // never grounded on; the sources are the pages it did.
   Ok(web_search.Answer(
-    heard.text |> list.reverse |> string.concat |> string.trim,
+    heard.text |> list.reverse |> string.concat |> unlink |> string.trim,
     web_search.distinct(found, query.limit),
   ))
+}
+
+/// `text` with each markdown link `[label](http…)` cut to its label; code
+/// such as `f[T any](v T)` keeps its brackets.
+pub fn unlink(text: String) -> String {
+  case string.split_once(text, "](") {
+    Error(_) -> text
+    Ok(#(before, after)) ->
+      case
+        string.starts_with(after, "http"),
+        past_url(after, 0),
+        split_last(before, "[")
+      {
+        True, Ok(rest), Ok(#(lead, label)) -> lead <> label <> unlink(rest)
+        _, _, _ -> before <> "](" <> unlink(after)
+      }
+  }
+}
+
+/// What follows the `)` that closes a link's url, counting the parentheses
+/// the url itself opens: `a_(b)) more` -> ` more`.
+fn past_url(text: String, depth: Int) -> Result(String, Nil) {
+  case string.pop_grapheme(text) {
+    Error(_) -> Error(Nil)
+    Ok(#(")", rest)) if depth == 0 -> Ok(rest)
+    Ok(#(")", rest)) -> past_url(rest, depth - 1)
+    Ok(#("(", rest)) -> past_url(rest, depth + 1)
+    Ok(#("\n", _)) -> Error(Nil)
+    Ok(#(_, rest)) -> past_url(rest, depth)
+  }
+}
+
+/// `text` split around the last `separator` in it.
+fn split_last(
+  text: String,
+  separator: String,
+) -> Result(#(String, String), Nil) {
+  case string.split(text, separator) |> list.reverse {
+    [last, second, ..rest] ->
+      Ok(#([second, ..rest] |> list.reverse |> string.join(separator), last))
+    _ -> Error(Nil)
+  }
 }
 
 @external(erlang, "albedo_http", "locations")
