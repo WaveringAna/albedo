@@ -147,13 +147,15 @@ func (m ChatModel) renderFooter() string {
 	width := m.chatWidth()
 	right, compact := m.contextStat()
 	commands := hint{"/", "commands"}
+	sessions := hint{"←", "sessions"}
 	candidates := []struct {
 		right string
 		left  []hint
 	}{
-		{left: []hint{commands, {"shift+↑↓", "your messages"}, {"ctrl+j", "diffs"}, {"ctrl+o", "agents"}}, right: right},
-		{left: []hint{commands, {"ctrl+j", "diffs"}, {"ctrl+o", "agents"}}, right: right},
-		{left: []hint{commands, {"ctrl+o", "agents"}}, right: compact},
+		{left: []hint{sessions, commands, {"shift+↑↓", "your messages"}, {"ctrl+j", "diffs"}, {"ctrl+o", "agents"}}, right: right},
+		{left: []hint{sessions, commands, {"ctrl+j", "diffs"}, {"ctrl+o", "agents"}}, right: right},
+		{left: []hint{sessions, commands, {"ctrl+o", "agents"}}, right: compact},
+		{left: []hint{sessions, commands}, right: compact},
 		{left: []hint{commands, {"ctrl+j", "diffs"}}, right: compact},
 		{left: []hint{commands}, right: compact},
 		{left: []hint{{"/", ""}}, right: compact},
