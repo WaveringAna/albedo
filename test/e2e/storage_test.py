@@ -16,7 +16,7 @@ from pathlib import Path
 import time
 import unittest
 
-from harness import Albedo, ROOT, exclusive
+from harness import Albedo, ROOT, exclusive, wait_until
 
 MAINTENANCE = ROOT / "cli/internal/storage/maintenance.py"
 
@@ -406,6 +406,18 @@ class StorageTests(unittest.TestCase):
                 db.commit()
             kernels = app.home / "kernels"
             kernels.mkdir(exist_ok=True)
+            old = time.time() - 31 * 24 * 60 * 60
+            # The daemon reclaims unknown state files a day old on its first
+            # sweep after a start, then only daily. Let a restart's first
+            # sweep run, seen through a sentinel it removes, so the orphan the
+            # report must list is not reclaimed underneath it.
+            sentinel = kernels / "sweep-sentinel.state"
+            sentinel.write_bytes(b"sentinel")
+            os.utime(sentinel, (old, old))
+            app.restart()
+            wait_until(
+                lambda: not sentinel.exists(), 30, "the first expiry sweep never ran"
+            )
             orphan = kernels / "report-orphan.state"
             live = kernels / f"{session}.state"
             orphan.write_bytes(b"orphan")
@@ -421,7 +433,6 @@ class StorageTests(unittest.TestCase):
             recent_backup.write_bytes(b"recent")
             unrelated_backup = backup.parent / "personal.sqlite"
             unrelated_backup.write_bytes(b"personal")
-            old = time.time() - 31 * 24 * 60 * 60
             for path in (orphan, live):
                 os.utime(path, (old, old))
             offline = json.loads(app.cli("storage", "--offline", "--json"))
