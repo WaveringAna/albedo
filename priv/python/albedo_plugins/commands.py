@@ -37,7 +37,7 @@ class CommandSummary(TypedDict):
     userTurn: bool
 
 
-def _wire_value(value: object, name: str) -> str:
+def _wire_value(value: object) -> str:
     return value if isinstance(value, str) else str(value)
 
 
@@ -55,10 +55,10 @@ def _bind(
     supplied: dict[str, str] = {}
     for name, value in zip(declared, args):
         if value is not None:
-            supplied[name] = _wire_value(value, name)
+            supplied[name] = _wire_value(value)
     for name, value in kwargs.items():
         if value is not None:
-            supplied[name] = _wire_value(value, name)
+            supplied[name] = _wire_value(value)
     return supplied
 
 
@@ -154,7 +154,7 @@ class Commands:
             wire = {
                 "name": summary["name"],
                 "args": {
-                    key: _wire_value(value, key)
+                    key: _wire_value(value)
                     for key, value in arguments.items()
                     if value is not None
                 },

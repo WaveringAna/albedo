@@ -330,41 +330,6 @@ pub fn get(store: Store, id: Int) -> Result(Vent, Error) {
   |> result.try(one)
 }
 
-/// Moves one vent's status; nothing else about a filed vent changes.
-pub fn set_status(
-  store: Store,
-  id: Int,
-  status: Status,
-) -> Result(Vent, Error) {
-  storage.query(store, fn(db) {
-    rows(
-      db,
-      "UPDATE paperclips SET status=?,revision=revision+1,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=? RETURNING "
-        <> columns,
-      [sqlight.text(status_name(status)), sqlight.int(id)],
-    )
-  })
-  |> result.try(one)
-}
-
-/// Records the user's answer on the vent and acknowledges it: the reply is
-/// durable even when the session that filed the vent can no longer be told.
-pub fn answer(store: Store, id: Int, reply: String) -> Result(Vent, Error) {
-  case string.byte_size(reply) > 16_384 {
-    True -> Error(Invalid("vent text is too long"))
-    False ->
-      storage.query(store, fn(db) {
-        rows(
-          db,
-          "UPDATE paperclips SET status='acknowledged',reply=?,revision=revision+1,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=? RETURNING "
-            <> columns,
-          [sqlight.text(reply), sqlight.int(id)],
-        )
-      })
-      |> result.try(one)
-  }
-}
-
 /// Closes a vent a model fixed, recording what fixed it and which session
 /// said so. Only a vent still awaiting triage can be resolved this way; the
 /// user's own decisions stand.
@@ -394,15 +359,6 @@ pub fn resolve(
         <> columns,
       [sqlight.text(string.trim(note)), sqlight.text(session), sqlight.int(id)],
     )
-  })
-  |> result.try(one)
-}
-
-pub fn delete(store: Store, id: Int) -> Result(Vent, Error) {
-  storage.query(store, fn(db) {
-    rows(db, "DELETE FROM paperclips WHERE id=? RETURNING " <> columns, [
-      sqlight.int(id),
-    ])
   })
   |> result.try(one)
 }

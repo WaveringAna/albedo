@@ -273,18 +273,6 @@ pub fn final_stage(run: Run, outcome: Result(a, e)) -> conversation.Stage {
   }
 }
 
-/// The phase name clients see in the status route.
-pub fn phase(activity: Activity) -> String {
-  case activity {
-    Resting -> "resting"
-    Interrupted -> "interrupted"
-    Running(Run(work: Compaction(..), ..)) -> "compacting"
-    Running(Run(work: Background(_), ..)) -> "background"
-    Running(Run(work: Turn(None), ..)) -> "preparing"
-    Running(Run(work: Turn(Some(stage)), ..)) -> conversation.stage_name(stage)
-  }
-}
-
 /// Covered user operations carried by these durable inputs.
 pub fn operations(submissions: List(Submission)) -> List(String) {
   list.filter_map(submissions, fn(submission) {

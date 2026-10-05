@@ -82,14 +82,6 @@ pub fn register_progress(
   publish: fn(String) -> Nil,
 ) -> Nil
 
-pub fn gone(session: String) -> Nil {
-  forget_running(session)
-  invalidate(["/sessions/" <> session], [session], True)
-}
-
-@external(erlang, "albedo_bus", "forget")
-fn forget_running(session: String) -> Nil
-
 pub fn mailed(
   id: String,
   sender: Option(String),

@@ -26,22 +26,22 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 
-pub fn cursor(cursor: session.Cursor) -> json.Json {
+fn cursor(cursor: session.Cursor) -> json.Json {
   json.object([
     #("generation", json.string(cursor.generation)),
     #("sequence", json.int(cursor.sequence)),
   ])
 }
 
-pub fn status(status: session_activity.Status) -> json.Json {
+fn status(status: session_activity.Status) -> json.Json {
   events.status(status)
 }
 
-pub fn activity(activity: session_activity.Projection) -> json.Json {
+fn activity(activity: session_activity.Projection) -> json.Json {
   events.activity(activity)
 }
 
-pub fn progress(snapshot: tool_progress.Snapshot) -> json.Json {
+fn progress(snapshot: tool_progress.Snapshot) -> json.Json {
   events.progress(snapshot)
 }
 
@@ -374,7 +374,7 @@ pub fn quota(sample: quota.Sample) -> json.Json {
   ])
 }
 
-pub fn preview(text: String, count: Int) -> json.Json {
+fn preview(text: String, count: Int) -> json.Json {
   json.object([
     #("text", json.string(http_api.scalar_prefix(text, 256))),
     #("transcript_count", json.int(count)),

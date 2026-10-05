@@ -9,7 +9,6 @@ pub const portable_fields = [
   "reasoning_details",
 ]
 
-/// The chat-shaped replay message every adapter shares: one wire form for
 import albedo/openai_api/types
 import gleam/dynamic/decode
 import gleam/json.{type Json}

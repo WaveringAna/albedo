@@ -145,17 +145,6 @@ pub fn get(db: store.Store, session: String) -> Result(Option(Member), String) {
   |> result.map(fn(found) { list.first(found) |> option.from_result })
 }
 
-/// Every session that has a parent. Session lists leave these out: a child is
-/// reached through its parent's agents view.
-pub fn descendants(db: store.Store) -> Result(List(String), String) {
-  store.read(
-    db,
-    "SELECT session FROM session_family",
-    [],
-    decode.field(0, decode.string, decode.success),
-  )
-}
-
 pub fn children(
   db: store.Store,
   parent: String,

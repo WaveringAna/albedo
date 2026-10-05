@@ -485,7 +485,7 @@ fn run_request(
 ) -> String {
   case decode_run(["name", "args", "arguments"], args) {
     Error(message) -> rpc.refuse("commands", message)
-    Ok(#(name, supplied, raw, _)) ->
+    Ok(#(name, supplied, raw)) ->
       case
         call(
           commands,
@@ -508,10 +508,10 @@ fn run_request(
 /// Decode one run request strictly: unknown fields fail, non-string argument
 /// values fail, and `arguments` (raw text) and `args` (declared names) are
 /// mutually exclusive at `call`.
-pub fn decode_run(
+fn decode_run(
   allowed: List(String),
   args: decode.Dynamic,
-) -> Result(#(String, Dict(String, String), String, String), String) {
+) -> Result(#(String, Dict(String, String), String), String) {
   let decoder = {
     use fields <- decode.then(decode.dict(decode.string, decode.dynamic))
     use name <- decode.field("name", decode.string)
@@ -521,13 +521,12 @@ pub fn decode_run(
       decode.dict(decode.string, decode.string),
     )
     use raw <- decode.optional_field("arguments", "", decode.string)
-    use client <- decode.optional_field("clientId", "", decode.string)
     use _ <- decode.then(case unknown_fields(fields, allowed) {
       [] -> decode.success(Nil)
       names ->
         decode.failure(Nil, "unknown fields: " <> string.join(names, ", "))
     })
-    decode.success(#(name, supplied, raw, client))
+    decode.success(#(name, supplied, raw))
   }
   decode.run(args, decoder)
   |> result.map_error(fn(errors) {
