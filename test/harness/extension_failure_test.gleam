@@ -229,6 +229,7 @@ pub fn a_crashing_observer_leaves_the_session_working_test() -> Nil {
       "broken-extension-test",
       fn(_, _) { Error("no upstream") },
       fn(_) { Nil },
+      fn() { False },
     ),
     extension.Stirred,
   )

@@ -1,23 +1,26 @@
-"""The prompt-cache warmer: an idle session whose children still run re-sends
-its last request with a tiny output budget before the provider cache would
-expire.
+"""The prompt-cache warmer: an idle session whose children or background jobs
+still run re-sends its last request with a tiny output budget before the
+provider cache would expire.
 
 Catches: pings that rebuild the request instead of repeating the one the turn
 sent (which would compact or summarize), ping request rows that do not carry
 the turn's prefix identity, pings that commit or publish anything, warming
 that never stops at its budget, warming that continues after the waking work
-finished, and a submit that cannot get through while a ping holds the session.
+finished, warming kept up for a job that was started as a service, and a submit
+that cannot get through while a ping holds the session.
 None of this is observable from the transcript alone; the provider and the
 request rows are the witnesses.
 """
 
+import errno
 import json
+import os
 from datetime import datetime
 import threading
 import time
 import unittest
 
-from harness import Albedo, Provider, exclusive, operation_id, text
+from harness import Albedo, Provider, exclusive, operation_id, python, text
 
 
 def milliseconds(timestamp):
@@ -39,6 +42,7 @@ CHILD_USAGE = {
 }
 
 TASK = "hold the fort until released"
+JOB_PROMPT = "wait for the job"
 
 
 # A local cache-table override matching the fixture host: the shortest refresh
@@ -64,6 +68,25 @@ CACHE_TTL = {
 }
 
 
+def try_release(gate):
+    """Let the job blocked on the fifo finish, when it has opened it."""
+    try:
+        descriptor = os.open(gate, os.O_WRONLY | os.O_NONBLOCK)
+    except OSError as error:
+        if error.errno == errno.ENXIO:
+            return False
+        raise
+    try:
+        os.write(descriptor, b"x")
+    finally:
+        os.close(descriptor)
+    return True
+
+
+def release(gate):
+    wait_for(lambda: try_release(gate))
+
+
 def wait_for(predicate, timeout=30):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -79,6 +102,7 @@ class WarmTest(unittest.TestCase):
         # The child's turn blocks here until the test releases it, so the
         # parent sits idle on work that will wake it.
         self.gate = threading.Event()
+        self.job_code = ""
         self.provider = Provider(self.reply)
         providers = {
             "orchestrator": {
@@ -111,9 +135,12 @@ class WarmTest(unittest.TestCase):
         self.addCleanup(self.gate.set)
 
     def reply(self, request):
-        if TASK in json.dumps(request):
+        sent = json.dumps(request)
+        if TASK in sent:
             self.gate.wait(timeout=90)
             return text("scout finished", usage=CHILD_USAGE)
+        if JOB_PROMPT in sent and "function_call_output" not in sent:
+            return python(self.job_code)
         return text("orchestrator reply", usage=PARENT_USAGE)
 
     def api(self, path, body=None, method=None):
@@ -171,6 +198,23 @@ class WarmTest(unittest.TestCase):
         self.app.idle(parent)
         return parent, child
 
+    def job(self, service):
+        """A parent whose turn started a job that runs until released, and
+        then went idle waiting on it."""
+        gate = self.app.workspace / "job-release"
+        os.mkfifo(gate)
+        program = f"open({str(gate)!r}, 'rb').read(1)"
+        flag = ", service=True" if service else ""
+        self.job_code = (
+            f"import sys\njob = run(sys.executable, '-c', {program!r}{flag})\njob.id"
+        )
+        # A failed test must not leave the job blocked.
+        self.addCleanup(try_release, gate)
+        parent = self.app.session()
+        self.app.prompt(parent, JOB_PROMPT).close()
+        self.app.idle(parent)
+        return parent, gate
+
     def assert_no_pings(self, parent, child):
         time.sleep(QUIET_SECONDS)
         self.assertEqual(len(self.requests("/parent/")), 1)
@@ -178,9 +222,21 @@ class WarmTest(unittest.TestCase):
 
     # exclusive: writes daemon-wide cache TTL and warmer settings
     @exclusive
-    def test_the_warmer_is_off_unless_enabled(self):
+    def test_the_warmer_is_on_unless_disabled(self):
         settings = json.loads((self.app.home / "extensions.json").read_text())
         del settings["enabled"]["warm"]
+        (self.app.home / "extensions.json").write_text(json.dumps(settings))
+        parent, child = self.swarm()
+        wait_for(lambda: self.pings(self.requests("/parent/")) or None)
+        self.gate.set()
+        self.app.idle(child)
+        self.app.idle(parent)
+
+    # exclusive: writes daemon-wide cache TTL and warmer settings
+    @exclusive
+    def test_the_warmer_is_off_when_disabled_globally(self):
+        settings = json.loads((self.app.home / "extensions.json").read_text())
+        settings["enabled"]["warm"] = False
         (self.app.home / "extensions.json").write_text(json.dumps(settings))
         self.assert_no_pings(*self.swarm())
 
@@ -360,3 +416,37 @@ class WarmTest(unittest.TestCase):
             self.assertIn(
                 ping, [{**repeated, "max_output_tokens": 16} for repeated in turns]
             )
+
+    # exclusive: writes daemon-wide cache TTL and warmer settings
+    @exclusive
+    def test_a_running_job_keeps_the_cache_warm_until_it_finishes(self):
+        parent, gate = self.job(service=False)
+        pings = wait_for(lambda: self.pings(self.requests("/parent/")) or None)
+        turn = [
+            request
+            for request in self.requests("/parent/")
+            if "max_output_tokens" not in request
+        ][-1]
+        self.assertEqual(pings[0], {**turn, "max_output_tokens": 16})
+
+        # The job's end wakes the parent with an ordinary turn, and warming
+        # ends with the work that kept it up.
+        release(gate)
+        wait_for(
+            lambda: any(
+                "background job finished" in json.dumps(request)
+                for request in self.requests("/parent/")
+            )
+        )
+        self.app.idle(parent)
+        settled = len(self.pings(self.requests("/parent/")))
+        time.sleep(QUIET_SECONDS)
+        self.assertEqual(len(self.pings(self.requests("/parent/"))), settled)
+
+    # exclusive: writes daemon-wide cache TTL and warmer settings
+    @exclusive
+    def test_a_service_job_does_not_keep_the_cache_warm(self):
+        parent, gate = self.job(service=True)
+        time.sleep(QUIET_SECONDS)
+        self.assertEqual(len(self.requests("/parent/")), 2)
+        self.assertEqual([row["kind"] for row in self.rows(parent)], ["turn", "turn"])

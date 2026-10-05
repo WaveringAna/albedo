@@ -172,6 +172,8 @@ pub type Message {
   Resume
   ReadCapture(Subject(Result(Capture, String)))
   ReadSummary(Subject(Summary))
+  /// See `extension.Session.awaiting_jobs`.
+  ReadAwaitingJobs(Subject(Bool))
   ChangeConfiguration(
     session_configuration.Version,
     session_configuration.Patch,
@@ -1038,6 +1040,7 @@ fn handle(
   case message {
     ReadCapture(reply) -> answer(state, reply, capture_state(state))
     ReadSummary(reply) -> answer(state, reply, summary_state(state))
+    ReadAwaitingJobs(reply) -> answer(state, reply, awaiting_jobs(state))
     ChangeConfiguration(expected, patch, reply) -> {
       let #(state, changed) = session_configure.change(state, expected, patch)
       case changed {
@@ -2944,7 +2947,21 @@ fn background_handle(id: String, self: Session) -> extension.Session {
       }
     },
     fn(reason) { process.send(self, RefreshRequested(reason)) },
+    fn() {
+      actor_call.try_call(self, 5000, ReadAwaitingJobs)
+      |> result.unwrap(False)
+    },
   )
+}
+
+/// Whether a live job that is not a service runs in the kernel. Jobs the
+/// kernel cannot list, such as a remote one with no summary, do not count.
+fn awaiting_jobs(state: State) -> Bool {
+  case session_namespace.observe_kernel(state) {
+    Ok(session_namespace.KernelObservation(running_jobs: Some(jobs), ..)) ->
+      list.any(jobs, fn(job) { !job.service })
+    _ -> False
+  }
 }
 
 fn start_queued(state: State) -> State {

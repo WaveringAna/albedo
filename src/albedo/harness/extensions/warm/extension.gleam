@@ -1,5 +1,5 @@
 //// The prompt-cache warmer. A session that sits idle waiting on work that
-//// will wake it (its children still running) re-sends the request its last
+//// will wake it (its children or background jobs still running) re-sends the request its last
 //// turn actually sent, with only the output budget lowered, just before the
 //// provider's cache would expire: the next real turn reads its context from
 //// cache instead of rewriting it.
@@ -30,7 +30,7 @@ import gleam/result
 pub fn extension() -> extension.Extension {
   extension.Extension(
     "warm",
-    "Keeps an idle session's prompt cache warm while its children run",
+    "Keeps an idle session's prompt cache warm while its children or background jobs run",
     [],
     [extension.ManagedPlugin(prepare)],
     extension.no_initialise,
@@ -52,14 +52,16 @@ type Warmer {
 
 type Message {
   Observed(extension.Session, extension.SessionEvent)
-  Tick(generation: Int)
+  /// A ping is due. `latest_ms` is the last moment it still beats the cache's
+  /// expiry with half its margin to spare.
+  Tick(generation: Int, latest_ms: Int)
 }
 
-/// How to keep a prefix warm: how often to ping, how many consecutive pings
-/// still pay for themselves, and whether the TTL clock counts from the
-/// send's start or its finish.
+/// How to keep a prefix warm: the cache's lifetime, how often to ping, how
+/// many consecutive pings still pay for themselves, and whether the TTL clock
+/// counts from the send's start or its finish.
 type Plan {
-  Plan(interval_ms: Int, cap: Int, from_start: Bool)
+  Plan(ttl_ms: Int, interval_ms: Int, cap: Int, from_start: Bool)
 }
 
 /// The warmer runs unlinked: closing it must not take the runtime down, and
@@ -111,8 +113,14 @@ fn step(inbox: Subject(Message), warmer: Warmer, message: Message) -> Warmer {
       }
       warmer
     }
-    Tick(generation) if generation == warmer.generation -> ping(inbox, warmer)
-    Tick(_) -> warmer
+    // A tick that fires late (a sleeping machine, a blocked scheduler) finds
+    // the cache probably gone, so a ping would pay for a rewrite.
+    Tick(generation, latest_ms) if generation == warmer.generation ->
+      case requests.now() > latest_ms {
+        True -> warmer
+        False -> ping(inbox, warmer)
+      }
+    Tick(_, _) -> warmer
   }
 }
 
@@ -126,7 +134,7 @@ fn due(
   case warmer.sent {
     None -> None
     Some(#(handle, call)) ->
-      case wanted(warmer.db, warmer.session), plan_for(call) {
+      case wanted(warmer.db, warmer.session, handle), plan_for(call) {
         True, Some(plan) if warmer.pings < plan.cap ->
           Some(#(handle, call, plan))
         _, _ -> None
@@ -178,8 +186,10 @@ fn schedule(
     True -> started_ms
     False -> finished_ms
   }
-  let delay = int.max(0, anchor + plan.interval_ms - requests.now())
-  let _ = process.send_after(inbox, delay, Tick(warmer.generation))
+  let at = anchor + plan.interval_ms
+  let latest = at + { plan.ttl_ms - plan.interval_ms } / 2
+  let delay = int.max(0, at - requests.now())
+  let _ = process.send_after(inbox, delay, Tick(warmer.generation, latest))
   Nil
 }
 
@@ -192,9 +202,14 @@ fn ping_budget(protocol: types.Protocol) -> Int {
   }
 }
 
-/// Whether work that will wake this idle session is still running: one small
-/// test, so persistent agents can add their own reason later.
-fn wanted(db: store.Store, session: String) -> Bool {
+/// Whether work that will wake this idle session is still running: a child,
+/// or a background job not started as a service. One small test, so
+/// persistent agents can add their own reason later.
+fn wanted(db: store.Store, session: String, handle: extension.Session) -> Bool {
+  children_running(db, session) || handle.awaiting_jobs()
+}
+
+fn children_running(db: store.Store, session: String) -> Bool {
   case family.children(db, session) {
     Ok(children) ->
       list.any(children, fn(child) {
@@ -243,7 +258,13 @@ fn plan(
         False ->
           case cap(write, read) {
             0 -> None
-            pings -> Some(Plan(interval_ms(ttl_seconds), pings, from_start))
+            pings ->
+              Some(Plan(
+                ttl_seconds * 1000,
+                interval_ms(ttl_seconds),
+                pings,
+                from_start,
+              ))
           }
       }
   }

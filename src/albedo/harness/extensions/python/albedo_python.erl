@@ -582,7 +582,7 @@ nil_null(_, V) -> V.
 owned(Owned) ->
     M = try json:decode(Owned) catch _:_ -> #{} end,
     Spec = fun(Fields) -> maps:map(fun(_, null) -> nil; (_, V) -> V end,
-                                   maps:with([<<"pid">>, <<"pgid">>, <<"leader">>, <<"command">>], Fields)) end,
+                                   maps:with([<<"pid">>, <<"pgid">>, <<"leader">>, <<"command">>, <<"service">>], Fields)) end,
     Target = case maps:get(<<"pid">>, M, null) of
         Pid when is_integer(Pid), Pid > 1 -> target_of(Spec(M));
         _ -> none
@@ -827,7 +827,8 @@ proc_spec(Pid, M) ->
     #{pid => Pid,
       pgid => maps:get(<<"pgid">>, M, nil),
       leader => maps:get(<<"leader">>, M, nil),
-      command => maps:get(<<"command">>, M, <<>>)}.
+      command => maps:get(<<"command">>, M, <<>>),
+      service => maps:get(<<"service">>, M, false) =:= true}.
 
 target_spec(Label, #{pid := Pid, pgid := Pgid, leader := Leader}) ->
     Base = #{label => iolist_to_binary(Label), pid => Pid, pgid => Pgid},
@@ -926,5 +927,6 @@ job_summaries(Jobs) ->
           P when is_integer(P), P > 0 -> {some, P};
           _ -> none
       end,
-      'albedo@text_scalars':take(maps:get(command, Group, <<>>), 4096)}
+      'albedo@text_scalars':take(maps:get(command, Group, <<>>), 4096),
+      maps:get(service, Group, false)}
      || {Id, Group} <- lists:sublist(lists:sort(maps:to_list(Jobs)), 100)].

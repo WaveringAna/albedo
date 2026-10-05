@@ -78,7 +78,6 @@ pub fn defaults() -> Config {
       view.extension(),
       proxy.extension(),
       webhooks.extension(),
-      // Off unless enabled: a ping spends tokens on the session's account.
       warm.extension(),
     ],
     [
@@ -86,7 +85,7 @@ pub fn defaults() -> Config {
       "links", "instructions", "commands", "skills", "paperclips", "models",
       "openai", "codex", "antigravity", "alibaba", "bedrock", "claude", "vertex",
       "rolling", "snapcompact-memory", "lcm-memory", "notes", "remote",
-      "browser",
+      "browser", "warm",
     ],
   )
 }

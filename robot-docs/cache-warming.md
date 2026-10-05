@@ -2,11 +2,11 @@
 
 an idle session waiting on work that will wake it still owns the most expensive thing it has: a warm prompt cache. the `warm` extension re-sends the session's last request, with only the output budget lowered, just before the provider's cache would expire, so the next real turn reads its context from cache instead of rewriting it.
 
-first case: an orchestrator whose children are still running. it sits idle while its cache decays. warming keeps it, and the same eligibility test is one small function (`wanted` in `src/albedo/harness/extensions/warm/extension.gleam`), so persistent agents can add their own reason later.
+two cases: an orchestrator whose children are still running, and a session waiting on a background job. either sits idle while its cache decays. warming keeps it, and the eligibility test is one small function (`wanted` in `src/albedo/harness/extensions/warm/extension.gleam`), so persistent agents can add their own reason later.
 
 ## enabling it
 
-`warm` is installed and disabled: a ping spends tokens on the session's account. enable it globally in `/extensions` or with `{"enabled": {"warm": true}}` in `$ALBEDO_HOME/extensions.json`, or for one session in its `/extensions`. disabling it closes that session's warmer, and any pending ping goes with it.
+`warm` is enabled by default. a ping spends tokens on the session's account, but only while work that will wake the session is running and the arithmetic below says the pings pay for themselves, so a session with nothing pending never pings. turn it off globally in `/extensions` or with `{"enabled": {"warm": false}}` in `$ALBEDO_HOME/extensions.json`, or for one session in its `/extensions`. disabling it closes that session's warmer, and any pending ping goes with it.
 
 ## how it is built
 
@@ -22,11 +22,11 @@ the warmer is an ordinary `ManagedPlugin` (robot-docs/extensions.md): preparing 
 a ping goes out while:
 
 - the session is idle — no turn, compaction or other background call in flight.
-- at least one of its children is running (`bus.is_running`, the same answer `agents.self.children()` gives).
+- at least one of its children is running (`bus.is_running`, the same answer `agents.self.children()` gives), or a background job is (`extension.Session.awaiting_jobs`). a job started with `run(..., service=True)` — a dev server, a file watcher — does not count: nothing waits for it to finish, so it would only spend pings. jobs the kernel cannot list, such as a remote one with no summary, do not count either.
 - the last request's cached prefix is worth a round trip: at least `minCachedTokens` (default 1024) cached tokens on the turn it repeats — reads plus writes, so a first write-only turn counts.
 - a clock can be beat. with cache marks (Claude), the shortest `ttlSeconds` among them. with none — the OpenAI protocols cache on their own — the cache table's entry: `refresh`/`fixed` policy, its first tier's `seconds`. `evict`/`unknown`, or no entry, means no warming (robot-docs/cache-ttl.md).
 
-warming starts when the turn that will be repeated ends, and again after every ping. a child that starts running while the session is already idle does not wake warming until the session's next turn.
+warming starts when the turn that will be repeated ends, and again after every ping. a child or job that starts running while the session is already idle does not wake warming until the session's next turn.
 
 ## what a ping sends
 
@@ -37,6 +37,8 @@ exactly the request the turn actually sent: same instructions, tools, inputs, op
 ping at `min(0.9 × ttl, ttl − 10)` seconds after the previous send — from the send's start when the entry's clock is `request` (Anthropic counts lifetime from request start), else from its finish.
 
 a warm cache bills the next turn about `read × cached` input, a cold one about `write × cached` — `write` the matching tier's write multiplier (default 1.0), `read` the entry's read multiplier (default 0.1) — and each ping costs another `read × cached`. `n` pings pay for themselves while `(n + 1) × read ≤ write`, so at most `floor(write / read) − 1` consecutive pings per idle stretch, then it stops and lets the cache go cold: ski rental, with the break-even at Claude's 5-minute tier at 1.25 / 0.1 − 1 = 11 pings, one every 270 s, keeping the cache for about 54 minutes. a write priced under twice the read means no warming. a new turn resets the budget.
+
+a tick that fires late (a sleeping machine, a blocked scheduler) past half the margin left before expiry sends nothing: the cache is probably gone, and a ping would pay for a rewrite.
 
 warming also stops when:
 

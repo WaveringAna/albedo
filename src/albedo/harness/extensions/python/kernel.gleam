@@ -266,8 +266,10 @@ fn saved_decoder() -> decode.Decoder(Result(Saved, Error)) {
 @external(erlang, "albedo_python", "os_pid")
 pub fn os_pid(kernel: Kernel) -> Result(Int, Nil)
 
+/// A live background job. A `service` job was started to keep running, so
+/// nothing waits on its end.
 pub type Job {
-  Job(id: String, pid: Option(Int), command: String)
+  Job(id: String, pid: Option(Int), command: String, service: Bool)
 }
 
 pub fn job_json(job: Job) -> json.Json {

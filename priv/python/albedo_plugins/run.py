@@ -256,7 +256,9 @@ class Job:
         env: dict[str, str] | None = None,
         stdin: Data | Job | None = None,
         traced: bool = True,
+        service: bool = False,
     ) -> None:
+        self.service = service  # expected to run on; its end is not what we wait for
         self.source: Job | None = (
             stdin if isinstance(stdin, Job) else None
         )  # whose output is our stdin
@@ -353,6 +355,7 @@ class Job:
                     "pgid": self.group.pgid,
                     "leader": self.group.leader,
                     "command": self.pipeline[:4096],
+                    "service": self.service,
                 }
             )
         return self.group
@@ -655,6 +658,7 @@ def run(
     env: dict[str, object] | None = None,
     stdin: Data | Job | None = None,
     timeout: float = 300,
+    service: bool = False,
 ) -> Job:
     """Start one program, without a shell, and return its handle immediately:
     run("go", "test", "./...", cwd="cli"). It starts at once, at low priority.
@@ -674,6 +678,10 @@ def run(
     polling or trailing a handle is optional: leave it in a variable, end the
     cell, and the wake names the job when it lands. Awaiting the job, reading
     its result, or stopping it first means no wake.
+
+    Pass service=True for a program that is meant to keep running (a dev
+    server, a file watcher): you are not waiting for it to finish, so it
+    does not keep your prompt cache warm while you are idle.
     """
     if not 0 < timeout <= 3600:
         raise ValueError("0 < timeout <= 3600 required")
@@ -699,7 +707,9 @@ def run(
                     "a whole command line as the program", script=argv[0]
                 )
             raise FileNotFoundError(f"{argv[0]}: no such program on PATH")
-    return start(argv, timeout, cwd=directory, env=environment, stdin=stdin)
+    return start(
+        argv, timeout, cwd=directory, env=environment, stdin=stdin, service=service
+    )
 
 
 def start(
@@ -710,11 +720,14 @@ def start(
     env: dict[str, str] | None = None,
     stdin: Data | Job | None = None,
     traced: bool = True,
+    service: bool = False,
 ) -> Job:
     """A job for argv as given, for run() and for plugins' own supervised work."""
     if len(active) >= ACTIVE_LIMIT:
         raise RuntimeError(f"{ACTIVE_LIMIT} jobs are active; await or stop one first")
-    return Job(argv, timeout, cwd=cwd, env=env, stdin=stdin, traced=traced)
+    return Job(
+        argv, timeout, cwd=cwd, env=env, stdin=stdin, traced=traced, service=service
+    )
 
 
 async def close() -> None:
