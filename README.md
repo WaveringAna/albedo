@@ -22,7 +22,7 @@ When installed globally outside the checkout, set `ALBEDO_ROOT` to the absolute 
 ```sh
 ALBEDO_ROOT=/path/to/albedo albedo
 ```
-`ALBEDO_ROOT` is only needed when the installed binary needs to launch the daemon from outside the repo tree; the local binary (`./cli/bin/albedo`) discovers the repo root automatically from its file path. you can also embed the root at build/install time if preferred:
+or embed the root at install time:
 ```sh
 go -C cli install -ldflags "-X main.buildRoot=$(pwd)" ./cmd/albedo
 ```
@@ -37,27 +37,13 @@ python3 test/manual/nix_package_smoke.py "$PWD/result/bin/albedo"
 ALBEDO_NO_BROWSER=1 ALBEDO_TEST_BINARY="$PWD/result/bin/albedo" python3 test/daemon/integration.py
 ```
 
-Build the components separately with `nix build .#albedo-client` or
-`nix build .#albedo-server`. The client provides `bin/albedo` without a server
-runtime dependency. The server provides `bin/albedo-daemon` with its runtime
-and native helpers. `.#daemon` remains an alias for `.#albedo-server`.
-
-To use the separate packages together:
+The client and server also build separately:
 
 ```sh
 nix build .#albedo-client --out-link result-client
 nix build .#albedo-server --out-link result-server
 ALBEDO_DAEMON="$PWD/result-server/bin/albedo-daemon" ./result-client/bin/albedo
 ```
-
-`default.nix` returns the combined package when called with
-`pkgs.callPackage ./default.nix { inherit usage-core; }`, where `usage-core`
-is the pinned source input from `flake.nix`. Its `client` and `server`
-attributes expose the separate packages.
-no checkout or gleam compiler is needed at runtime. `ALBEDO_DAEMON` can override
-the packaged daemon with an absolute executable path. when the running daemon
-is from another build, the packaged cli asks in a terminal whether to restart it,
-and elsewhere keeps it and prints a warning.
 
 optional: `view`, which lets the model see its changes and code as highlighted
 images for a final review pass. needs cargo.
@@ -79,18 +65,8 @@ albedo sessions read SESSION_ID 3      # the newest 3 turns (default 1); --json 
 albedo sessions send SESSION_ID "message"
 ```
 
-Session IDs may be shortened to any unique prefix of a top-level session's ID,
-as `albedo sessions` prints them. A full ID, including a child session's, is used
-directly without listing other sessions. `sessions read` ends with a
-`[running]` line while the session is still working, so another agent knows to
-read again; `sessions send` is the same command as `albedo send`.
-
-Run `albedo --help` or `albedo COMMAND --help` for command options.
-Unknown flags and extra arguments are errors. The root flags `--session`,
-`--model`, and `--timeout` require `--prompt` and cannot accompany a subcommand.
-Prompts have no time limit unless you supply a positive duration with `--timeout`.
-Use `--prompt=--help` for a prompt that starts with a flag, or `--` before
-positional text such as `albedo send -- SESSION_ID "--literal message"`.
+Session IDs can be shortened to any unique prefix. Run `albedo --help` or
+`albedo COMMAND --help` for command options.
 
 To inspect disk usage without starting the daemon, run `albedo storage --json`
 or `albedo storage --sessions`. To clean up local files, stop the daemon first:
@@ -116,13 +92,8 @@ ruff check                      # lint Python
 ty check                        # type-check the kernel, plugins, and tests
 ```
 
-The commit hook formats staged Gleam and Python files, checks Python lint, and
-runs ty across the Python kernel and tests. Re-stage any formatting changes.
-It requires `gleam` on PATH; pre-commit installs pinned Ruff and ty versions in
-its own environments. Treefmt formats Python and applies Ruff lint fixes.
-Nix supplies the development tools; hook versions are pinned separately.
-`./test.sh` runs Ruff lint, Ruff formatting checks, and ty before the build and
-test suites. Python check settings live in `pyproject.toml`.
+The commit hook formats staged files and runs the Python checks; it needs
+`gleam` on PATH.
 
 tests
 
@@ -130,11 +101,10 @@ tests
 ./test.sh               # gleam, native go cli, and daemon suites
 go -C cli test ./...    # native go cli tests
 go -C cli vet ./...     # native go cli vet
-gleam test              # gleam suite plus the python harnesses that hold no build lock
+gleam test              # gleam suite
 ```
 
-`test/manual` contains opt-in package and provider checks. They require a
-packaged binary or operator-supplied credentials and are outside the normal gate.
+`test/manual` holds opt-in checks that need a packaged binary or real credentials.
 
 todo
 - [] flesh out plugin system more
