@@ -170,14 +170,14 @@ pub fn submission_error(error: SubmissionError) -> String {
 
 pub type Message {
   Resume
-  ReadCapture(Subject(Result(Capture, String)))
+  ReadCapture(Subject(Result(Unobserved, String)))
   ReadSummary(Subject(Summary))
   /// See `extension.Session.awaiting_jobs`.
   ReadAwaitingJobs(Subject(Bool))
   ChangeConfiguration(
     session_configuration.Version,
     session_configuration.Patch,
-    Subject(Result(Capture, String)),
+    Subject(Result(Unobserved, String)),
   )
   InterruptCaptured(Option(String), Int, Subject(Result(Interruption, String)))
   Abort(String)
@@ -210,7 +210,10 @@ pub type Message {
     Result(runtime.KernelUpgrade, String),
     Subject(Result(runtime.KernelUpgrade, String)),
   )
-  Read(Option(Cursor), Subject(Result(Page, String)))
+  Read(
+    Option(Cursor),
+    Subject(Result(#(Cursor, List(json.Json), Option(Unobserved)), String)),
+  )
   Watch(process.Pid, fn() -> Nil)
   Consumed(process.Pid, Cursor, Bool)
   Publish(String, view.Event, Subject(Bool))
@@ -470,6 +473,7 @@ pub fn capture(session: Session) -> Result(Capture, String) {
   actor_call.try_call(session, 5000, ReadCapture)
   |> result.replace_error("session capture unavailable")
   |> result.flatten
+  |> result.try(fn(observe) { observe() })
 }
 
 /// Reload desired composition and wait for the runtime's actual result.
@@ -493,6 +497,7 @@ pub fn change_configuration(
   patch: session_configuration.Patch,
 ) -> Result(Capture, String) {
   actor.call(session, 30_000, ChangeConfiguration(expected, patch, _))
+  |> result.try(fn(observe) { observe() })
 }
 
 /// Register a wake callback for one streaming client. The callback runs in the
@@ -515,7 +520,14 @@ pub fn consumed(
 /// Events after the fully consumed actor cursor. A reset returns a captured
 /// session state; the HTTP owner reads history through its durable boundary.
 pub fn read(session: Session, after: Option(Cursor)) -> Result(Page, String) {
-  actor.call(session, 5000, Read(after, _))
+  use #(cursor, events, unobserved) <- result.try(
+    actor.call(session, 5000, Read(after, _)),
+  )
+  case unobserved {
+    None -> Ok(Page(cursor, events, None))
+    Some(observe) ->
+      observe() |> result.map(fn(capture) { Page(cursor, [], Some(capture)) })
+  }
 }
 
 /// Capture the latest prepared request without triggering model work.
@@ -926,7 +938,15 @@ fn summary_state(state: State) -> Summary {
   )
 }
 
-fn capture_state(state: State) -> Result(Capture, String) {
+/// A capture finished by its caller with the session's composition. The
+/// runtime observes composition on worker slots that kernel boots share, so
+/// it can queue for seconds; the caller waits for it, never the actor.
+type Unobserved =
+  fn() -> Result(Capture, String)
+
+/// Everything the actor knows of itself, taken in one turn. Binds no `state`
+/// in the closure, so the transcript stays in the actor.
+fn capture_state(state: State) -> Result(Unobserved, String) {
   use durable <- result.try(conversation.capture(
     runtime.ledger(state.host),
     state.info.id,
@@ -934,34 +954,33 @@ fn capture_state(state: State) -> Result(Capture, String) {
   let summary = summary_state(state)
   use active_output <- result.try(active_output.capture(state.active_output))
   use kernel <- result.try(session_namespace.observe_kernel(state))
-  use composition <- result.try(runtime.observe_composition(
-    state.host,
-    state.home,
-    state.info.id,
-  ))
-  Ok(Capture(
-    durable.info,
-    summary.cursor,
-    summary.status,
-    durable.pending_inputs,
-    durable.input_order,
-    summary.current_progress,
-    durable.history_high_water,
-    summary.usage,
-    kernel,
-    summary.activity,
-    durable.created_at,
-    durable.activity_at,
-    durable.revision,
-    durable.family,
-    durable.continuation_high_water,
-    durable.automatic_name,
-    durable.configuration,
-    composition,
-    durable.workspace_change,
-    durable.preview,
-    active_output,
-  ))
+  let #(host, home, id) = #(state.host, state.home, state.info.id)
+  Ok(fn() {
+    use composition <- result.try(runtime.observe_composition(host, home, id))
+    Ok(Capture(
+      durable.info,
+      summary.cursor,
+      summary.status,
+      durable.pending_inputs,
+      durable.input_order,
+      summary.current_progress,
+      durable.history_high_water,
+      summary.usage,
+      kernel,
+      summary.activity,
+      durable.created_at,
+      durable.activity_at,
+      durable.revision,
+      durable.family,
+      durable.continuation_high_water,
+      durable.automatic_name,
+      durable.configuration,
+      composition,
+      durable.workspace_change,
+      durable.preview,
+      active_output,
+    ))
+  })
 }
 
 fn publish_active(state: State, event: view.Event) -> State {
@@ -1341,10 +1360,10 @@ fn handle(
         _ -> Error(Nil)
       }
       let page = case replay {
-        Ok(events) -> Ok(Page(cursor, events, None))
+        Ok(events) -> Ok(#(cursor, events, None))
         Error(_) ->
           capture_state(state)
-          |> result.map(fn(capture) { Page(cursor, [], Some(capture)) })
+          |> result.map(fn(observe) { #(cursor, [], Some(observe)) })
       }
       answer(state, reply, page)
     }

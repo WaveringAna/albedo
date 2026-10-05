@@ -40,7 +40,7 @@ The catalog separates fresh discovery from loaded commands. Inspection does not 
 
 Session selection edits carry `catalog_revision` and candidate IDs. Global capability edits carry `catalog_session_id`, `catalog_revision`, and choices; the daemon resolves preference keys. The actor checks fresh discovery under the settings lock before committing. Stale observations fail without changing configuration. Model and composition changes require an idle session.
 
-The session owner commits editable fields, preferences, and selection together on SQLite. Its response contains the saved configuration resource and a session capture from the same actor operation. Saving selection does not claim composition reloaded. Explicit reload reads persisted desired selection, preserves the namespace when routes can be rebound, and reports preparation or replacement failures.
+The session owner commits editable fields, preferences, and selection together on SQLite. Its response contains the saved configuration resource and a session capture taken in the same actor operation; the capture's composition is then observed by the request, so the actor never waits on the runtime's observation queue. Saving selection does not claim composition reloaded. Explicit reload reads persisted desired selection, preserves the namespace when routes can be rebound, and reports preparation or replacement failures.
 
 Workspace edits are standalone patches with the observed family revision. The native owner captures descendants and commits desired destinations together. Busy or parked descendants retain durable intent until cleanup and application succeed. New turns cannot start against a different active workspace.
 
