@@ -5,16 +5,20 @@
 import albedo/harness/extension
 import albedo/harness/extensions/antigravity/catalog
 import albedo/harness/extensions/antigravity/errors
+import albedo/harness/extensions/antigravity/search as antigravity_search
 import albedo/harness/extensions/antigravity/stream
 import albedo/harness/extensions/antigravity/wire
 import albedo/harness/oauth
 import albedo/harness/rotation
+import albedo/harness/settings
+import albedo/harness/web_search
 import albedo/openai_api
 import albedo/openai_api/types
 import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
 import gleam/int
 import gleam/json
+import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
@@ -34,6 +38,11 @@ pub fn extension() -> extension.Extension {
       extension.ModelProviderPlugin(extension.ModelProvider(
         "antigravity",
         resolve,
+      )),
+      extension.SearchPlugin(web_search.Provider(
+        "antigravity",
+        "Gemini",
+        search,
       )),
     ],
     extension.no_initialise,
@@ -107,6 +116,32 @@ fn resolve(
     context.profile,
     catalog.model(context.home, context.model, context.effort),
     user_agent(context.home),
+  )
+}
+
+/// `query` searched by the session's Google account, with the model the
+/// `searchModel` setting names, else the first listed Gemini model, at its
+/// lowest effort.
+fn search(query: web_search.Query) -> Result(web_search.Answer, String) {
+  let home = settings.home()
+  // Signed out fails here, before listing models can reach the network.
+  use access <- result.try(connect(home, query.session, ""))
+  use model <- result.try(case web_search.configured_model("antigravity") {
+    Some(model) -> Ok(model)
+    None ->
+      catalog.catalog().list("antigravity", None)
+      |> list.find(string.starts_with(_, "gemini"))
+      |> result.replace_error("Antigravity lists no Gemini model")
+  })
+  antigravity_search.run(
+    wire.Context(
+      access.token,
+      access.project,
+      query.session,
+      catalog.model(home, model, Some("low")),
+      user_agent(home),
+    ),
+    query,
   )
 }
 

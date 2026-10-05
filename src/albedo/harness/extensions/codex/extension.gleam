@@ -2,16 +2,19 @@
 
 import albedo/harness/extension
 import albedo/harness/extensions/codex/catalog
+import albedo/harness/extensions/codex/search as codex_search
 import albedo/harness/extensions/models/extension as models
 import albedo/harness/oauth
 import albedo/harness/rotation
 import albedo/harness/settings
+import albedo/harness/web_search
 import albedo/openai_api
 import albedo/openai_api/types
 import gleam/bool
 import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
 import gleam/json
+import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
@@ -39,6 +42,7 @@ pub fn extension() -> extension.Extension {
         list_models,
         Some(reload_models),
       )),
+      extension.SearchPlugin(web_search.Provider("codex", "ChatGPT", search)),
     ],
     extension.no_initialise,
   )
@@ -78,6 +82,30 @@ fn reload_models() -> Result(Nil, String) {
   let home = settings.home()
   use a <- result.try(account(home, "", ""))
   catalog.reload(home, a.token, a.account_id)
+}
+
+/// `query` searched by the session's ChatGPT account, with the model the
+/// `searchModel` setting names, else the account's first listed model.
+fn search(query: web_search.Query) -> Result(web_search.Answer, String) {
+  let home = settings.home()
+  use access <- result.try(account(home, query.session, ""))
+  use model <- result.try(search_model(home, access))
+  // The Codex policy refuses a request without a session id.
+  let session = case query.session {
+    "" -> "web-search"
+    session -> session
+  }
+  codex_search.run(client_for(access, session), model, query)
+}
+
+fn search_model(home: String, access: Access) -> Result(String, String) {
+  use <- option.lazy_unwrap(
+    web_search.configured_model("codex") |> option.map(Ok),
+  )
+  let _ = catalog.refresh(home, access.token, access.account_id)
+  catalog.listed(home)
+  |> list.first
+  |> result.replace_error("ChatGPT lists no models for this account")
 }
 
 /// The Codex CLI browser flow. OpenAI allowlists the exact localhost:1455

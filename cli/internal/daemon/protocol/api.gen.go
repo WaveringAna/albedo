@@ -2870,6 +2870,43 @@ type Visit struct {
 // Warnings defines model for Warnings.
 type Warnings = []SafeReason
 
+// WebSearchProvider defines model for WebSearchProvider.
+type WebSearchProvider struct {
+	Enabled bool   `json:"enabled"`
+	Label   string `json:"label"`
+
+	// Name Opaque identity. Never infer a resource type or route from its contents.
+	Name     ID    `json:"name"`
+	Position int64 `json:"position"`
+}
+
+// WebSearchProviderChange defines model for WebSearchProviderChange.
+type WebSearchProviderChange struct {
+	Resource WebSearchProviderResource `json:"resource"`
+}
+
+// WebSearchProviderChangeRequest defines model for WebSearchProviderChangeRequest.
+type WebSearchProviderChangeRequest struct {
+	Change string `json:"change"`
+}
+
+// WebSearchProviderPage defines model for WebSearchProviderPage.
+type WebSearchProviderPage struct {
+	Items []WebSearchProviderResource `json:"items"`
+	Next  any                         `json:"next" nullable:"true"`
+	Page  PageDescriptor              `json:"page"`
+}
+
+// WebSearchProviderResource defines model for WebSearchProviderResource.
+type WebSearchProviderResource struct {
+	// ETag Strong opaque validator for the complete canonical representation.
+	ETag ETag `json:"etag"`
+
+	// URL Daemon-relative URL, including any representation query. No foreign origin or fragment.
+	URL   ResourceURL       `json:"url"`
+	Value WebSearchProvider `json:"value"`
+}
+
 // WorkChange Examples: {"notification":{"code":null,"detail":null,"state":"not_requested"},"resource":{"etag":"\"work-revision-1\"","url":"/extensions/work/items/work-1?workspace=%2Fworkspace%2Fproject","value":{"created_at":"2026-10-02T14:00:00Z","id":"work-1","notes":"","parent_id":null,"revision":"work-revision-1","run_id":null,"session_id":null,"status":"open","title":"Fix the parser","updated_at":"2026-10-02T14:00:00Z","workspace":"/workspace/project"}}}
 type WorkChange struct {
 	Notification Notification `json:"notification"`
@@ -3390,6 +3427,9 @@ type CreateScheduleJSONRequestBody = ScheduleCreate
 // PatchScheduleApplicationMergePatchPlusJSONRequestBody defines body for PatchSchedule for application/merge-patch+json ContentType.
 type PatchScheduleApplicationMergePatchPlusJSONRequestBody = SchedulePatch
 
+// ChangeWebSearchProviderJSONRequestBody defines body for ChangeWebSearchProvider for application/json ContentType.
+type ChangeWebSearchProviderJSONRequestBody = WebSearchProviderChangeRequest
+
 // CreateHookJSONRequestBody defines body for CreateHook for application/json ContentType.
 type CreateHookJSONRequestBody = HookCreate
 
@@ -3771,6 +3811,31 @@ type ClientInterface interface {
 	//
 	// Corresponds with PATCH /extensions/schedule/jobs/{job_id} (the `PatchSchedule` operationId).
 	PatchScheduleWithApplicationMergePatchPlusJSONBody(ctx context.Context, jobID ID, params *PatchScheduleParams, body PatchScheduleApplicationMergePatchPlusJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ListWebSearchProviders List web search providers in the order a search tries them
+	//
+	// Requires enabled extension web-search. The global order lives in extensions.json.
+	//
+	// Corresponds with GET /extensions/web-search/providers (the `ListWebSearchProviders` operationId).
+	ListWebSearchProviders(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ChangeWebSearchProviderWithBody Move a web search provider up or down, or turn it on or off
+	//
+	// A move past either end leaves the order as it was.
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with POST /extensions/web-search/providers/{name} (the `ChangeWebSearchProvider` operationId).
+	ChangeWebSearchProviderWithBody(ctx context.Context, name ID, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ChangeWebSearchProvider Move a web search provider up or down, or turn it on or off
+	//
+	// A move past either end leaves the order as it was.
+	//
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with POST /extensions/web-search/providers/{name} (the `ChangeWebSearchProvider` operationId).
+	ChangeWebSearchProvider(ctx context.Context, name ID, body ChangeWebSearchProviderJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// GetDelivery Read an accepted delivery payload
 	//
@@ -4830,6 +4895,61 @@ func (c *Client) PatchScheduleWithBody(ctx context.Context, jobID ID, params *Pa
 // Corresponds with PATCH /extensions/schedule/jobs/{job_id} (the `PatchSchedule` operationId).
 func (c *Client) PatchScheduleWithApplicationMergePatchPlusJSONBody(ctx context.Context, jobID ID, params *PatchScheduleParams, body PatchScheduleApplicationMergePatchPlusJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewPatchScheduleRequestWithApplicationMergePatchPlusJSONBody(c.Server, jobID, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// ListWebSearchProviders List web search providers in the order a search tries them
+//
+// Requires enabled extension web-search. The global order lives in extensions.json.
+//
+// Corresponds with GET /extensions/web-search/providers (the `ListWebSearchProviders` operationId).
+func (c *Client) ListWebSearchProviders(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewListWebSearchProvidersRequest(c.Server)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// ChangeWebSearchProviderWithBody Move a web search provider up or down, or turn it on or off
+//
+// A move past either end leaves the order as it was.
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with POST /extensions/web-search/providers/{name} (the `ChangeWebSearchProvider` operationId).
+func (c *Client) ChangeWebSearchProviderWithBody(ctx context.Context, name ID, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewChangeWebSearchProviderRequestWithBody(c.Server, name, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// ChangeWebSearchProvider Move a web search provider up or down, or turn it on or off
+//
+// A move past either end leaves the order as it was.
+//
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with POST /extensions/web-search/providers/{name} (the `ChangeWebSearchProvider` operationId).
+func (c *Client) ChangeWebSearchProvider(ctx context.Context, name ID, body ChangeWebSearchProviderJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewChangeWebSearchProviderRequest(c.Server, name, body)
 	if err != nil {
 		return nil, err
 	}
@@ -7081,6 +7201,80 @@ func NewPatchScheduleRequestWithBody(server string, jobID ID, params *PatchSched
 		req.Header.Set("If-Match", headerParam0)
 
 	}
+
+	return req, nil
+}
+
+// NewListWebSearchProvidersRequest constructs an http.Request for the ListWebSearchProviders method
+func NewListWebSearchProvidersRequest(server string) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/extensions/web-search/providers")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewChangeWebSearchProviderRequest calls the generic ChangeWebSearchProvider builder with application/json body
+func NewChangeWebSearchProviderRequest(server string, name ID, body ChangeWebSearchProviderJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewChangeWebSearchProviderRequestWithBody(server, name, "application/json", bodyReader)
+}
+
+// NewChangeWebSearchProviderRequestWithBody constructs an http.Request for the ChangeWebSearchProvider method, with any body, and a specified content type
+func NewChangeWebSearchProviderRequestWithBody(server string, name ID, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "name", name, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/extensions/web-search/providers/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
 
 	return req, nil
 }

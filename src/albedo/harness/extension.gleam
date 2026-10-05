@@ -12,6 +12,7 @@ import albedo/harness/oauth
 import albedo/harness/page
 import albedo/harness/protect
 import albedo/harness/settings
+import albedo/harness/web_search
 import albedo/openai_api/types
 import gleam/bool
 import gleam/dict.{type Dict}
@@ -309,6 +310,8 @@ pub type Plugin {
   /// installed extension's runs, enabled or not: its rows still belong to the
   /// session.
   CleanPlugin(clean: Cleaner)
+  /// A web search this extension answers with its own sign-in.
+  SearchPlugin(provider: web_search.Provider)
 }
 
 pub type Migration {
@@ -1419,6 +1422,7 @@ pub fn summaries(
             ClientPlugin(_) -> "client"
             MigrationPlugin(_) -> "migration"
             CleanPlugin(_) -> "clean"
+            SearchPlugin(_) -> "search"
           }
         }),
         None,
@@ -1732,6 +1736,16 @@ pub fn service(
   plugin_payload(selected, name, fn(plugin) {
     case plugin {
       ServicePlugin(service) -> Ok(service)
+      _ -> Error(Nil)
+    }
+  })
+}
+
+/// Every web search the extensions answer, in registry order.
+pub fn searches(installed: List(Extension)) -> List(web_search.Provider) {
+  plugin_values(installed, fn(_, plugin) {
+    case plugin {
+      SearchPlugin(provider) -> Ok(provider)
       _ -> Error(Nil)
     }
   })

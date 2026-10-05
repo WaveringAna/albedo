@@ -94,6 +94,24 @@ pub fn stream(
     _, Responses -> "/responses"
     _, ChatCompletions -> "/chat/completions"
   }
+  exchange(
+    Exchange(
+      string.remove_suffix(client.base_url, "/") <> path,
+      headers(client, request.model),
+      body,
+      client.timeout_ms,
+      client.max_event_bytes,
+      // ChatGPT's Codex endpoint currently streams valid SSE with a generic
+      // content type. Its framing, not that header, is authoritative.
+      require_event_stream: client.policy == types.OpenAI,
+    ),
+    reducer.reducer(client.protocol),
+    on_event,
+  )
+}
+
+/// The headers a streaming request for `model` carries through `client`.
+pub fn headers(client: Client, model: String) -> List(#(String, String)) {
   let headers = [
     #("content-type", "application/json"),
     #("accept", "text/event-stream"),
@@ -105,30 +123,16 @@ pub fn stream(
       #("originator", "albedo"),
       #("user-agent", "albedo"),
       #("openai-beta", "responses=experimental"),
-      #("x-codex-routing-hint", "model=" <> request.model),
+      #("x-codex-routing-hint", "model=" <> model),
       #("session_id", session_id),
       #("x-client-request-id", session_id),
       ..headers
     ]
   }
-  let headers = case client.api_key {
+  case client.api_key {
     "" -> headers
     key -> [#("authorization", "Bearer " <> key), ..headers]
   }
-  exchange(
-    Exchange(
-      string.remove_suffix(client.base_url, "/") <> path,
-      headers,
-      body,
-      client.timeout_ms,
-      client.max_event_bytes,
-      // ChatGPT's Codex endpoint currently streams valid SSE with a generic
-      // content type. Its framing, not that header, is authoritative.
-      require_event_stream: client.policy == types.OpenAI,
-    ),
-    reducer.reducer(client.protocol),
-    on_event,
-  )
 }
 
 /// One streaming POST whose SSE payloads a reducer turns into events and a

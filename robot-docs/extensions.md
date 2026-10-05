@@ -3,7 +3,7 @@
 Persisted preferences are owned by the daemon and changed through the [settings API](settings.md). The CLI refreshes them on use and never writes settings files.
 
 
-an extension is a named bundle of plugins. it can contribute any number of context, tool, command, managed, models, provider, login, service, migration, compaction, notes, clean, or fold plugins. `python`, `run`, `work`, `mail`, `agents`, `schedule`, `paperclips`, `files`, `memory`, `links`, `instructions`, `commands`, `skills`, `models`, `openai`, `codex`, `antigravity`, `alibaba`, `bedrock`, `claude`, `vertex`, `rolling`, `snapcompact-memory`, `lcm-memory`, `notes`, `remote`, `browser`, and [`warm`](cache-warming.md) are enabled by default; `mcp`, `view`, [`proxy`](proxy.md), `webhooks`, and the `snapcompact` and `lcm` compaction strategies are installed and disabled until enabled. plugin contributions compose inside them.
+an extension is a named bundle of plugins. it can contribute any number of context, tool, command, managed, models, provider, login, service, migration, compaction, notes, clean, fold, or [search](web-search.md) plugins. `python`, `run`, `work`, `mail`, `agents`, `schedule`, `paperclips`, `files`, `memory`, `links`, `instructions`, `commands`, `skills`, `models`, `openai`, `codex`, `antigravity`, `alibaba`, `bedrock`, `claude`, `vertex`, `rolling`, `snapcompact-memory`, `lcm-memory`, `notes`, `remote`, `browser`, [`warm`](cache-warming.md), `exa`, and [`web-search`](web-search.md) are enabled by default; `mcp`, `view`, [`proxy`](proxy.md), `webhooks`, and the `snapcompact` and `lcm` compaction strategies are installed and disabled until enabled. plugin contributions compose inside them.
 
 ## select extensions
 
@@ -83,6 +83,8 @@ Refusals before body consumption close the connection.
 `extension.Daemon` gives the service `home`, `upstream(profile, model, session)` to resolve a saved profile outside any session, catalog `models`, and the daemon's `sessions`. Set `ALBEDO_PORT` in the daemon's environment to pin its port so a service has a stable base url; the default is a free port chosen at start. Built-in dependencies keep these layers explicit: `codex -> openai -> models`. See [models](models.md) and [model authentication](auth.md).
 
 `CompactionPlugin` supplies a history strategy; `FoldPlugin` supplies stored folds any strategy reads through `context.prior`; see [compaction](compaction.md). one enabled compaction strategy owns the request-history view in a built-in session. a strategy receives chronological history and must preserve tool call/result associations; it must not replace the durable transcript.
+
+`SearchPlugin(web_search.Provider)` is a web search the extension answers with its own sign-in. the `web-search` extension offers the model one `web_search` over all of them, in the user's order; see [web search](web-search.md).
 
 ## sqlite migrations
 

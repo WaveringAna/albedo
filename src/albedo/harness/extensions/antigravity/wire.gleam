@@ -51,6 +51,16 @@ pub fn encode(
   context: Context,
   request: Request,
 ) -> Result(openai_api.Exchange, Error) {
+  encode_with(context, request, [])
+}
+
+/// `encode`, with `hosted` tools, such as Google Search grounding, after the
+/// request's own function declarations.
+pub fn encode_with(
+  context: Context,
+  request: Request,
+  hosted: List(Json),
+) -> Result(openai_api.Exchange, Error) {
   let model = context.model
   use history <- result.try(
     list.try_fold(request.input, History([], dict.new()), fn(h, i) {
@@ -86,33 +96,32 @@ pub fn encode(
         #("parts", json.preprocessed_array([text_part(text)])),
       ])
     })
+  let declared = case request.tools {
+    [] -> []
+    tools -> [
+      json.object([
+        #(
+          "functionDeclarations",
+          json.array(tools, fn(tool) {
+            json.object([
+              #("name", json.string(tool.name)),
+              #("description", json.string(tool.description)),
+              #("parameters", schema.normalize(tool.parameters)),
+            ])
+          }),
+        ),
+      ]),
+    ]
+  }
+  let fields = case list.append(declared, hosted) {
+    [] -> fields
+    tools -> [#("tools", json.preprocessed_array(tools)), ..fields]
+  }
   let fields = case request.tools, catalog.family(model) {
     [], catalog.Gemini -> fields
-    tools, _ -> [
+    _, _ -> [
       #("toolConfig", tool_config(model, request.options.tool_choice)),
-      ..case tools {
-        [] -> fields
-        tools -> [
-          #(
-            "tools",
-            json.preprocessed_array([
-              json.object([
-                #(
-                  "functionDeclarations",
-                  json.array(tools, fn(tool) {
-                    json.object([
-                      #("name", json.string(tool.name)),
-                      #("description", json.string(tool.description)),
-                      #("parameters", schema.normalize(tool.parameters)),
-                    ])
-                  }),
-                ),
-              ]),
-            ]),
-          ),
-          ..fields
-        ]
-      }
+      ..fields
     ]
   }
   let envelope =

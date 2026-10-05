@@ -7,6 +7,7 @@ import albedo/harness/extensions/browser/extension as browser
 import albedo/harness/extensions/claude/extension as claude
 import albedo/harness/extensions/codex/extension as codex
 import albedo/harness/extensions/commands/extension as commands
+import albedo/harness/extensions/exa/extension as exa
 import albedo/harness/extensions/files/extension as files
 import albedo/harness/extensions/instructions/extension as instructions
 import albedo/harness/extensions/lcm/extension as lcm
@@ -30,14 +31,23 @@ import albedo/harness/extensions/snapcompact/extension as snapcompact
 import albedo/harness/extensions/vertex/extension as vertex
 import albedo/harness/extensions/view/extension as view
 import albedo/harness/extensions/warm/extension as warm
+import albedo/harness/extensions/web_search/extension as web_search
 import albedo/harness/extensions/webhooks/extension as webhooks
 import albedo/harness/extensions/work/extension as work
+import gleam/list
 
 pub type Config {
   Config(extensions: List(extension.Extension), default_enabled: List(String))
 }
 
 pub fn defaults() -> Config {
+  let config = installed()
+  // Web search runs on what the other extensions can search with.
+  let search = web_search.extension(extension.searches(config.extensions))
+  Config(..config, extensions: list.append(config.extensions, [search]))
+}
+
+fn installed() -> Config {
   Config(
     [
       python.extension(),
@@ -80,13 +90,14 @@ pub fn defaults() -> Config {
       proxy.extension(),
       webhooks.extension(),
       warm.extension(),
+      exa.extension(),
     ],
     [
       "python", "run", "work", "mail", "agents", "schedule", "files", "memory",
       "links", "instructions", "commands", "skills", "paperclips", "models",
       "openai", "codex", "antigravity", "alibaba", "bedrock", "claude", "vertex",
       "rolling", "snapcompact-memory", "lcm-memory", "notes", "remote",
-      "browser", "warm",
+      "browser", "warm", "exa", "web-search",
     ],
   )
 }

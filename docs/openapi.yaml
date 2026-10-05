@@ -29,6 +29,7 @@ tags:
 - name: auth
 - name: work
 - name: paperclips
+- name: web-search
 - name: schedule
 - name: links
 - name: webhooks
@@ -2614,6 +2615,71 @@ paths:
         schema:
           $ref: '#/components/schemas/ID'
       - $ref: '#/components/parameters/IfMatch'
+  /extensions/web-search/providers:
+    get:
+      operationId: listWebSearchProviders
+      summary: List web search providers in the order a search tries them
+      tags:
+      - web-search
+      responses:
+        '200':
+          description: Successful result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebSearchProviderPage'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '405':
+          $ref: '#/components/responses/Problem405'
+        '503':
+          $ref: '#/components/responses/Problem503'
+      description: Requires enabled extension web-search. The global order lives in extensions.json.
+  /extensions/web-search/providers/{name}:
+    post:
+      operationId: changeWebSearchProvider
+      summary: Move a web search provider up or down, or turn it on or off
+      tags:
+      - web-search
+      responses:
+        '200':
+          description: Successful result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebSearchProviderChange'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '404':
+          $ref: '#/components/responses/Problem404'
+        '405':
+          $ref: '#/components/responses/Problem405'
+        '413':
+          $ref: '#/components/responses/Problem413'
+        '415':
+          $ref: '#/components/responses/Problem415'
+        '503':
+          $ref: '#/components/responses/Problem503'
+      description: A move past either end leaves the order as it was.
+      parameters:
+      - name: name
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WebSearchProviderChangeRequest'
+        description: UTF-8 JSON; duplicate keys and unknown fields are rejected.
   /extensions/schedule/jobs:
     get:
       operationId: listSchedule
@@ -10164,6 +10230,61 @@ components:
         glance:
           $ref: '#/components/schemas/Glance'
       required: [items, next]
+      additionalProperties: false
+    WebSearchProvider:
+      type: object
+      properties:
+        name:
+          $ref: '#/components/schemas/ID'
+        label:
+          type: string
+          maxLength: 256
+        position:
+          type: integer
+          minimum: 1
+        enabled:
+          type: boolean
+      required: [name, label, position, enabled]
+      additionalProperties: false
+    WebSearchProviderResource:
+      type: object
+      properties:
+        url:
+          $ref: '#/components/schemas/ResourceURL'
+        etag:
+          $ref: '#/components/schemas/ETag'
+        value:
+          $ref: '#/components/schemas/WebSearchProvider'
+      required: [url, etag, value]
+      additionalProperties: false
+    WebSearchProviderPage:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/WebSearchProviderResource'
+          maxItems: 200
+        next:
+          type: 'null'
+        page:
+          $ref: '#/components/schemas/PageDescriptor'
+      required: [items, next, page]
+      additionalProperties: false
+    WebSearchProviderChangeRequest:
+      type: object
+      properties:
+        change:
+          type: string
+          enum: [up, down, toggle]
+      required: [change]
+      additionalProperties: false
+    WebSearchProviderChange:
+      type: object
+      properties:
+        resource:
+          $ref: '#/components/schemas/WebSearchProviderResource'
+      required: [resource]
       additionalProperties: false
     ScheduleResource:
       type: object

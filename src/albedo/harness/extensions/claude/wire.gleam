@@ -64,6 +64,17 @@ pub fn encode(
   auth: Auth,
   request: types.Request,
 ) -> Result(openai_api.Exchange, types.Error) {
+  encode_with(home, auth, request, [])
+}
+
+/// `encode`, with `hosted` server tools, such as web search, after the
+/// request's own.
+pub fn encode_with(
+  home: String,
+  auth: Auth,
+  request: types.Request,
+  hosted: List(Json),
+) -> Result(openai_api.Exchange, types.Error) {
   let #(_, secret) = auth_header(auth)
   use <- bool.guard(
     secret == ""
@@ -151,15 +162,15 @@ pub fn encode(
         ),
       ],
     ])
-  let fields = case request.tools {
-    [] -> fields
-    tools -> [
+  let fields = case request.tools, hosted {
+    [], [] -> fields
+    tools, _ -> [
       #(
         "tools",
-        json.array(
+        json.preprocessed_array(list.append(
           mark_last(tools, fn(tool, last) { tool_block(tool, last) }),
-          fn(block) { block },
-        ),
+          hosted,
+        )),
       ),
       ..fields
     ]

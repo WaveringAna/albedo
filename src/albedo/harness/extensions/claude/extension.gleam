@@ -4,12 +4,14 @@
 import albedo/daemon/configuration
 import albedo/harness/extension
 import albedo/harness/extensions/claude/catalog
+import albedo/harness/extensions/claude/search as claude_search
 import albedo/harness/extensions/claude/stream
 import albedo/harness/extensions/claude/wire
 import albedo/harness/extensions/models/extension as models
 import albedo/harness/oauth
 import albedo/harness/rotation
 import albedo/harness/settings
+import albedo/harness/web_search
 import albedo/openai_api
 import albedo/openai_api/types
 import gleam/bool
@@ -42,6 +44,7 @@ pub fn extension() -> extension.Extension {
         "anthropic",
         resolve,
       )),
+      extension.SearchPlugin(web_search.Provider("claude", "Claude", search)),
     ],
     extension.no_initialise,
   )
@@ -139,6 +142,32 @@ fn resolve(
 /// must fit in 2000px. A working session passes 20 quickly, so that is the
 /// bound an image is held to from the start. A request carries at most 100.
 const images = types.ImageLimits(max_edge: 2000, max_images: Some(100))
+
+/// `query` searched by the session's Claude account, with the model the
+/// `searchModel` setting names, else the newest listed model.
+fn search(query: web_search.Query) -> Result(web_search.Answer, String) {
+  let home = settings.home()
+  // Signed out fails here, before listing models can reach the network.
+  use auth <- result.try(
+    authenticate(extension.ModelContext(
+      home,
+      query.session,
+      "",
+      "claude",
+      "",
+      types.ChatCompletions,
+      None,
+    )),
+  )
+  use model <- result.try(case web_search.configured_model("claude") {
+    Some(model) -> Ok(model)
+    None ->
+      list_models("anthropic", None)
+      |> list.first
+      |> result.replace_error("Anthropic lists no models for this account")
+  })
+  claude_search.run(home, auth, model, query)
+}
 
 /// A profile's `apiKey` bills the Anthropic Console; without one, the signed-in
 /// Claude subscription serves the session.

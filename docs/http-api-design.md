@@ -1386,6 +1386,19 @@ The CLI accepts `/paperclips acknowledge <id>`, `/paperclips reply <id> <text>`,
 Removal asks for confirmation; a stale ETag returns a conflict without retrying
 the mutation.
 
+### Web search
+
+| Path | Methods |
+| --- | --- |
+| `/extensions/web-search/providers` | GET |
+| `/extensions/web-search/providers/{name}` | POST |
+
+The order in which the model's web search tries providers. It is global and
+lives in `extensions.json`. Items carry name, label, 1-based position, and
+whether the provider is tried. POST takes `{"change": "up" | "down" |
+"toggle"}`; a move past either end leaves the order unchanged. An unknown
+name is 404.
+
 ### Schedule
 
 | Path | Methods |
