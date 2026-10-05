@@ -954,6 +954,9 @@ type Host struct {
 	Os         *string     `json:"os" nullable:"true"`
 	State      string      `json:"state"`
 
+	// Step Current probe progress. Null when connecting or when no probe is running.
+	Step *string `json:"step,omitempty" nullable:"true"`
+
 	// Target Opaque identity. Never infer a resource type or route from its contents.
 	Target ID `json:"target"`
 }

@@ -28,3 +28,7 @@ __pycache__/
 
 # pulled by scripts/prompts.ts
 scripts/prompts.txt
+
+# Go test executables are build artifacts.
+/cli/**/*.test
+/cli/*.test

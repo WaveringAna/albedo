@@ -67,6 +67,7 @@ pub type State(message) {
 /// reaches a terminal without waiting for a polling interval.
 pub fn emit(state: State(message), event: view.Event) -> State(message) {
   case event {
+    // Internal worker signals never receive public SSE sequence numbers.
     view.Checkpoint | view.ProviderStarted -> state
     view.Text(run_id, message_id, text) ->
       list.fold(chunks(text), announce(state), fn(state, text) {

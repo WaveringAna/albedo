@@ -16,6 +16,9 @@ it. starting a new turn does not require `/compact` to change the old phase.
 
 ## Stream failures and recovery
 
+Internal checkpoint and provider-started signals are suppressed before stream
+encoding and do not allocate SSE sequence numbers.
+
 Session streams require the `text/event-stream` content type. Each batch carries
 a nonempty `generation`, a nonnegative integer `cursor`, and an `events` array.
 The generation identifies one lifetime of the session actor. Reconnect requests

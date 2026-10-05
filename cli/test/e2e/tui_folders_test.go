@@ -434,3 +434,106 @@ func TestHostProbeObservesUnconfiguredTargets(t *testing.T) {
 		})
 	}
 }
+
+// A real probe's progress must cross the Host API and the picker adapter.
+func TestHostStagingProgressReachesThePickerAndClearsWhenSettled(t *testing.T) {
+	providerRoute(t, echoReply)
+	session := daemonSession(t, newSession(t, t.TempDir()))
+	for _, target := range []string{"stage-ready", "stage-failure"} {
+		t.Run(target, func(t *testing.T) {
+			gate := filepath.Join(suite.remoteHome, target)
+			release := func(stage string) {
+				t.Helper()
+				if err := os.WriteFile(gate+".release-"+stage, nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			t.Cleanup(func() { release("connect"); release("stage") })
+			ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+			defer cancel()
+			finished := make(chan daemon.HostStatus, 1)
+			go func() {
+				status, err := daemon.WarmHost(ctx, conn(t), target)
+				if err != nil {
+					status.Detail = err.Error()
+				}
+				finished <- status
+			}()
+			observe := func(state, step string) daemon.HostStatus {
+				t.Helper()
+				for {
+					status, err := daemon.GetHost(ctx, conn(t), target)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if status.State == state && status.Step == step {
+						return status
+					}
+					select {
+					case <-ctx.Done():
+						t.Fatalf("host never reached %s/%s: %+v", state, step, status)
+					case <-time.After(20 * time.Millisecond):
+					}
+				}
+			}
+			observe("probing", "")
+			release("connect")
+			observe("probing", "staging")
+
+			if target == "stage-ready" {
+				d := driveTUI(t, &session)
+				d.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+				d.Dispatch(tui.ChatExecuteCommandMsg{Name: "/cd"})
+				defer d.App.FolderPicker.Close()
+				answers := make(chan tea.Msg, 128)
+				var run func(tea.Cmd)
+				run = func(command tea.Cmd) {
+					if command == nil {
+						return
+					}
+					go func() {
+						message := command()
+						if batch, ok := message.(tea.BatchMsg); ok {
+							for _, child := range batch {
+								run(child)
+							}
+							return
+						}
+						select {
+						case answers <- message:
+						case <-ctx.Done():
+						}
+					}()
+				}
+				for _, letter := range target + ":" {
+					run(d.Update(tea.KeyPressMsg{Code: letter, Text: string(letter)}))
+				}
+				for !strings.Contains(d.View(), "copying the kernel to "+target) {
+					select {
+					case message := <-answers:
+						run(d.Update(message))
+					case <-ctx.Done():
+						t.Fatalf("staging never reached the picker:\n%s", d.View())
+					}
+				}
+			}
+			release("stage")
+			state := "ready"
+			if target == "stage-failure" {
+				state = "unreachable"
+			}
+			settled := observe(state, "")
+			if state == "unreachable" && !strings.Contains(settled.Detail, "fixture staging failed") {
+				t.Fatalf("staging failure was lost: %+v", settled)
+			}
+			select {
+			case status := <-finished:
+				if status.State != state || status.Step != "" {
+					t.Fatalf("probe completion retained progress: %+v", status)
+				}
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+		})
+	}
+}

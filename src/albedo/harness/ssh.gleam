@@ -89,6 +89,7 @@ pub type Observation {
     detail: Option(String),
     host: Option(Host),
     control: Option(String),
+    step: Option(String),
   )
 }
 
@@ -99,13 +100,13 @@ pub fn observe(target: String, start: Bool) -> Observation {
     Error(probing) -> #(Error(Warming), probing)
   }
   case answer {
-    Ok(host) -> Observation(target, "ready", None, Some(host), None)
+    Ok(host) -> Observation(target, "ready", None, Some(host), None, None)
     Error(NeedsAuth(detail, control)) ->
-      Observation(target, "needs_auth", Some(detail), None, Some(control))
+      Observation(target, "needs_auth", Some(detail), None, Some(control), None)
     Error(Unreachable(detail)) ->
-      Observation(target, "unreachable", Some(detail), None, None)
+      Observation(target, "unreachable", Some(detail), None, None, None)
     Error(Unsupported(detail)) ->
-      Observation(target, "unsupported", Some(detail), None, None)
+      Observation(target, "unsupported", Some(detail), None, None, None)
     Error(Warming) ->
       Observation(
         target,
@@ -116,6 +117,14 @@ pub fn observe(target: String, start: Bool) -> Observation {
         None,
         None,
         None,
+        case probing {
+          True ->
+            case step(target) {
+              "staging" -> Some("staging")
+              _ -> None
+            }
+          False -> None
+        },
       )
   }
 }

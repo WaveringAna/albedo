@@ -207,7 +207,10 @@ folder (`cli/internal/tui/folder_picker.go`, `parseQuery`):
 - highlighting a remote row (a recent remote folder, a host, a folder in a
   remote listing), or typing a remote listing, warms its host once per
   picker: `POST /hosts/{host}/probe`, then `GET /hosts?target={host}` every 750 ms
-  until the probe settles. the row shows it quietly: faint while warming,
+  until the probe settles. Host resources expose `step: "staging"` while SSH
+  copies the kernel bundle, and `null` otherwise. The picker shows "copying
+  the kernel" during staging and "connecting" during other probe work.
+  The row shows it quietly: faint while warming,
   plain once ready, the probe's detail in the error style when unreachable
   or unsupported, `sign in · ctrl+l` when it needs a person. ctrl+l runs the
   same `ssh -M -fN` handoff a refused turn offers (kernel.md, "signing

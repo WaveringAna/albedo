@@ -25,6 +25,7 @@ pub fn host(observation: ssh.Observation) -> json.Json {
   json.object([
     #("target", json.string(observation.target)),
     #("state", json.string(observation.state)),
+    #("step", json.nullable(observation.step, json.string)),
     #("detail", json.nullable(observation.detail, reason(observation.state, _))),
     #("observed_at", json.null()),
     #(

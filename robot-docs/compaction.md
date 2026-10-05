@@ -87,6 +87,10 @@ After a switch from `lcm` to `rolling`, rolling reads the stored LCM summary nod
 
 ## snapcompact
 
+Enable or disable snapcompact through extension selection. Its settings do not
+include an `enabled` switch; an old `enabled` key is ignored. Switching strategies
+keeps the stored archive available through `snapcompact-memory`.
+
 `snapcompact` archives evicted history as rendered bitmap frames that a vision model reads directly, instead of a model-written summary. The frames are X11 8x13 pixel-font text drawn by the local `albedo-render` binary and cached in `snapcompact_frames` by geometry and content. The request contains the frames, then the verbatim tail. Each model's geometry (glyph advance, row pitch, frame width, rows per frame) is clamped to the upstream's image edge, so a frame is rendered narrower or shorter to fit instead of being scaled or refused; the archive is stored as text, so a model switch simply renders frames for the new geometry.
 
 The saved archive is the normalized text of everything before the cut, with Responses reasoning items left out and function calls rendered like chat-completions ones, stored in `snapcompact_archive` with a user-message cut like rolling's. Frames are re-derived from that text for each request, so after a model switch the same archive renders in the new model's frame shape. Recompaction appends newly evicted history to the saved text. Unchanged leading frames keep their cache keys, so the request prefix stays stable.

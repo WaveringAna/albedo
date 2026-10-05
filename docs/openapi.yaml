@@ -9,7 +9,7 @@ info:
     together; there are no legacy route aliases. Unknown request fields and duplicate JSON keys are errors.
     Unknown response fields may be ignored by clients. No operation starts or replaces a daemon. JSON
     and SSE frames are at most 1 MiB unless an extension explicitly overrides that limit. Ordinary request
-    bodies are at most 64 KiB, input bodies 9,200,000 bytes and proxy bodies 32,000,000 bytes. UTF-8 and
+    bodies are at most 64 KiB, input bodies 72,200,000 bytes and proxy bodies 32,000,000 bytes. UTF-8 and
     encoded-byte limits are described with x-max-utf8-bytes/x-max-encoded-bytes; standard schema validation
     alone does not assert them. Examples use synthetic secrets only.
 jsonSchemaDialect: https://json-schema.org/draft/2020-12/schema
@@ -8207,6 +8207,12 @@ components:
     Host:
       type: object
       properties:
+        step:
+          description: Current probe progress. Null when connecting or when no probe is running.
+          anyOf:
+          - type: string
+            enum: [staging]
+          - type: 'null'
         target:
           $ref: '#/components/schemas/ID'
         state:

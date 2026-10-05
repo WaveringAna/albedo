@@ -194,7 +194,7 @@ func MoveSession(ctx context.Context, conn *Connection, id, workspace string, co
 	return patchSession(ctx, conn, id, condition.ETag, map[string]any{"workspace": workspace, "family_revision": condition.FamilyRevision})
 }
 func hostValue(w protocol.Host) HostStatus {
-	r := HostStatus{Host: w.Target, State: w.State, OS: value(w.Os), Arch: value(w.Architecture), Home: value(w.Home)}
+	r := HostStatus{Host: w.Target, State: w.State, Step: value(w.Step), OS: value(w.Os), Arch: value(w.Architecture), Home: value(w.Home)}
 	if w.Detail != nil {
 		r.Detail = w.Detail.Detail
 	}

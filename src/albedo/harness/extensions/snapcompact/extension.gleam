@@ -114,7 +114,6 @@ pub type Config {
     tail_percent: Int,
     archive_percent: Int,
     max_frames: Option(Int),
-    enabled: Bool,
   )
 }
 
@@ -141,7 +140,6 @@ fn default_config() -> Config {
     default_tail_percent,
     default_archive_percent,
     None,
-    True,
   )
 }
 
@@ -171,8 +169,7 @@ fn config_decoder() -> decode.Decoder(Config) {
     None,
     decode.optional(decode.int),
   )
-  use enabled <- decode.optional_field("enabled", True, decode.bool)
-  decode.success(Config(capacity, trigger, tail, archive, frames, enabled))
+  decode.success(Config(capacity, trigger, tail, archive, frames))
 }
 
 fn validated(loaded: Result(Config, String)) -> Result(Config, String) {
@@ -296,21 +293,6 @@ fn compaction_plugins() -> List(extension.Plugin) {
   }
 }
 
-/// Snapcompact under fixed settings, for embedders and tests.
-pub fn configured_extension(config: Config) -> extension.Extension {
-  extension.Extension(
-    "snapcompact",
-    description,
-    [],
-    [
-      clean_plugin(),
-      extension.CompactionPlugin(strategy_with(fn() { Ok(config) })),
-    ],
-    initialise,
-  )
-}
-
-/// The strategy under the settings `resolve` answers per compaction.
 /// The strategy under the settings `resolve` answers per compaction.
 fn strategy_with(
   resolve: fn() -> Result(Config, String),

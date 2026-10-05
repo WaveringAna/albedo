@@ -328,6 +328,21 @@ done
 target=$1
 shift
 case "$target" in
+  stage-ready|stage-failure)
+    [ $# -eq 0 ] && exit 0
+    gate="` + suite.remoteHome + `/$target"
+    case "$*" in
+      *"tar -C"*)
+        touch "$gate.staging"
+        while [ ! -f "$gate.release-stage" ]; do sleep 0.02; done
+        if [ "$target" = stage-failure ]; then cat >/dev/null; echo "fixture staging failed" >&2; exit 1; fi
+        ;;
+      *"uname -s"*)
+        touch "$gate.connecting"
+        while [ ! -f "$gate.release-connect" ]; do sleep 0.02; done
+        printf 'Linux\nx86_64\n` + suite.remoteHome + `\n1\n3.11.17\nmissing\n'
+        exit 0 ;;
+    esac ;;
   nohost) echo "ssh: connect to host nohost port 22: Connection refused" >&2; exit 255 ;;
   lockedhost) echo "lockedhost: Permission denied (publickey)." >&2; exit 255 ;;
 esac

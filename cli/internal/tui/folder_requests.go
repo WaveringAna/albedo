@@ -164,7 +164,8 @@ func (m *FolderPicker) probed(msg hostStatusMsg) tea.Cmd {
 			delete(m.probes, msg.Host)
 		}
 		return nil
-	case msg.Status.State == "warming":
+	case msg.Status.State == "warming" || msg.Status.State == "probing":
+		msg.Status.State = "warming"
 		m.probes[msg.Host] = msg.Status // it may say what the probe is doing
 		return pollHost(msg.Host, m.sessionsGeneration)
 	}

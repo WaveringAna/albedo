@@ -146,7 +146,7 @@ The kernel seals each trace after execution cleanup, including failed and interr
 
 Top-level traces emit before `done`. Nested `cells.run` traces emit before waiting for the host's `cells.finish` acknowledgement and remain separate from the parent trace. The daemon persists these events when the enclosing top-level execution completes, after which `cells.trace` can read the results independently of kernel buffers. This lifecycle applies to newly started kernels and does not change output retention, image delivery, or background task execution.
 
-interfaces: [`PythonApi`](../priv/python/albedo_api.py), [`work`](../src/albedo/harness/work.gleam), [`compaction strategy`](../src/albedo/harness/compaction.gleam).
+interfaces: [`PythonApi`](../priv/python/albedo_api.py), [`work`](../src/albedo/harness/extensions/work/extension.gleam), [`compaction strategy`](../src/albedo/harness/compaction.gleam).
 
 The kernel runs detached behind a bridge, with a durable session layer under these messages; see [kernel](kernel.md). Kernel control messages are checked by `priv/python/albedo_protocol.py` before delivery to the event loop. Invalid JSON, oversized frames, unknown message types, and invalid fields enter the kernel shutdown path, including plugin cleanup and child-process cleanup. Host replies are checked before their pending futures are removed or completed. Extra fields on known messages are accepted. Missing methods, expired references, and tool exceptions remain call errors.
 

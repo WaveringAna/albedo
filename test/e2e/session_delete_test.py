@@ -12,7 +12,7 @@ import unittest
 import urllib.parse
 import urllib.error
 
-from harness import Albedo, Provider, operation_id, text
+from harness import Albedo, Provider, exclusive, operation_id, text
 
 # Paperclip provenance and retained input outcomes outlive the session.
 KEPT = {"paperclips", "input_turns"}
@@ -198,6 +198,35 @@ class SessionDeleteTests(unittest.TestCase):
 
     def test_snapcompact_archive_goes_with_the_session(self):
         self.assert_delete_clears("snapcompact", "snapcompact_archive")
+
+    @exclusive
+    def test_snapcompact_selection_keeps_archive_across_switch_and_restart(self):
+        self.app.write_extensions({"snapcompact": {"enabled": False}})
+        self.app.restart()
+        session = self.compacted_session("snapcompact")
+
+        def selected():
+            with self.app.api(f"/sessions/{session}?tail=0") as response:
+                return json.load(response)["selection"]["effective"]["extensions"]
+
+        def archive():
+            with self.database() as db:
+                return db.execute(
+                    "SELECT * FROM snapcompact_archive WHERE session=?", (session,)
+                ).fetchall()
+
+        self.assertTrue(selected()["snapcompact"])
+        self.assertFalse(selected()["rolling"])
+        saved = archive()
+        self.assertTrue(saved)
+        self.compact(session, "rolling")
+        self.assertTrue(selected()["rolling"])
+        self.assertFalse(selected()["snapcompact"])
+        self.assertEqual(archive(), saved)
+        self.app.restart()
+        self.assertTrue(selected()["rolling"])
+        self.assertFalse(selected()["snapcompact"])
+        self.assertEqual(archive(), saved)
 
 
 if __name__ == "__main__":

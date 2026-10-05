@@ -17,7 +17,7 @@ import albedo_kernel as kernel  # noqa: E402
 from albedo_api import PythonApi  # noqa: E402
 
 # Plumbing the kernel or the remote relay calls; not part of the model's API.
-INTERNAL = {"run.Job.claim", "remote.Remote.connect_many"}
+INTERNAL = {"run.Job.claim"}
 
 
 def model_text() -> str:
