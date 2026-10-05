@@ -1,4 +1,5 @@
-// Controlled peers exercise delivery and failure behavior the real daemon cannot force deterministically.
+// Loaded commands and pages must remain usable when later discovery fails.
+// A controlled peer fails catalog reads while keeping declared routes available.
 package daemon
 
 import (

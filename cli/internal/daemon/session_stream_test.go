@@ -1,4 +1,5 @@
-// Controlled peers exercise delivery and failure behavior the real daemon cannot force deterministically.
+// Malformed replay batches must leave callbacks and cursors untouched.
+// A controlled peer can inject these faults and unknown events into one stream.
 package daemon
 
 import (

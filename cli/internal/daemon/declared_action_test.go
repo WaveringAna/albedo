@@ -1,4 +1,5 @@
-// Controlled peers exercise delivery and failure behavior the real daemon cannot force deterministically.
+// Advertised actions must honor bindings, routes, validators, and success statuses.
+// A controlled peer supplies declarations the real daemon does not publish.
 package daemon
 
 import (

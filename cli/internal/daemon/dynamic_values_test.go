@@ -1,4 +1,5 @@
-// Controlled peers exercise delivery and failure behavior the real daemon cannot force deterministically.
+// Dynamic choices and tool arguments must preserve integers beyond float precision.
+// A controlled peer advertises exact numeric values across these client surfaces.
 package daemon
 
 import (

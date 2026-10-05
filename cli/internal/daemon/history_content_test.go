@@ -1,4 +1,5 @@
-// Controlled peers exercise delivery and failure behavior the real daemon cannot force deterministically.
+// A controlled peer supplies invalid offsets and false completeness claims.
+// The real daemon cannot deterministically violate its own paging contract.
 package daemon
 
 import (

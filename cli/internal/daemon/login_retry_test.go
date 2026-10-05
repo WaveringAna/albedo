@@ -1,4 +1,5 @@
-// Controlled peers exercise delivery and failure behavior the real daemon cannot force deterministically.
+// Authentication recovery must retry the captured flow and secret fields.
+// A controlled peer changes discovery between attempts to expose rebinding.
 package daemon
 
 import (

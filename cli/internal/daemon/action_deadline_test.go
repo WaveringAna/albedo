@@ -1,4 +1,5 @@
-// Controlled peers exercise delivery and failure behavior the real daemon cannot force deterministically.
+// Polling a completed action must retain the original deadline and cancellation.
+// A controlled peer gates delivery so these boundaries can be exercised reliably.
 package daemon
 
 import (

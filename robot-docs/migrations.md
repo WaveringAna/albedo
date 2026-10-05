@@ -1,5 +1,27 @@
 # existing storage migrations
 
+## migration test inventory
+
+Keep these tests while the corresponding old format remains supported. A
+fresh-install scenario cannot exercise an upgrade from that format. Retire a
+test only together with its migration or compatibility reader and an explicit
+decision to stop supporting that upgrade path.
+
+| Supported data | Implementation owner | Coverage |
+| --- | --- | --- |
+| Older core and extension schemas, inline images, and session preferences | Core migrations, extension-contributed migrations, and preference import | [startup scenarios](../test/e2e/migrations_test.py), [migration ordering](../test/harness/migration_test.gleam) |
+| Older transcript metadata, titles, and timestamps | Conversation columns and transcript classification | [conversation tests](../test/daemon/conversation_test.gleam), [metadata backfill](../test/daemon/transcript_sources_test.gleam) |
+| Inline image records and TEXT image payloads | Image-store and cell-image migrations | [image-store tests](../test/daemon/image_store_test.gleam), [cell image readers](../test/harness/tool_image_test.gleam) |
+| Legacy item-count compaction state | Rolling's lazy compatibility reader | [rolling tests](../test/harness/rolling_test.gleam) |
+| Older Python namespace snapshots | Kernel snapshot reader | [kernel state scenarios](../test/e2e/kernel_state_test.py) |
+| Flat provider configuration and relocated credentials | Provider configuration and credential migration | [settings scenarios](../test/e2e/settings_test.py), [startup integration](../test/e2e/integration_test.py), [credential migration](../test/e2e/credentials_test.py) |
+| Older layouts inspected offline | Client storage diagnostic reader | [storage compatibility scenarios](../test/e2e/storage_test.py) |
+
+These are groups within feature suites, not a separate test lane. The normal
+gate runs them. Compatibility with another running daemon build and provider
+response shapes has its own contracts; those tests are not retired merely
+because a storage migration is removed.
+
 core implementations live under `src/albedo/daemon/migrations/`;
 extension implementations live under their own `migrations/` directories and
 contribute `MigrationPlugin` values. the host applies them, without importing

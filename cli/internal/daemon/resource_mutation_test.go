@@ -1,4 +1,5 @@
-// Controlled peers exercise delivery and failure behavior the real daemon cannot force deterministically.
+// Conditional mutations must retain the observed ETag and never retry conflicts.
+// A controlled peer records delivery and returns conflicts deterministically.
 package daemon
 
 import (

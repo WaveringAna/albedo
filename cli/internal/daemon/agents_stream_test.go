@@ -1,4 +1,5 @@
-// Controlled peers exercise delivery and failure behavior the real daemon cannot force deterministically.
+// Collection streams must validate whole batches before changing the client view.
+// A controlled peer supplies malformed rows and overflowing activity batches.
 package daemon
 
 import (
