@@ -8,7 +8,7 @@ signed in here) keeps its previous list: the reload still succeeds and names
 it rather than reporting it refreshed. Claude's picker shows whatever the
 Anthropic Models API listed, newest first, with the API's own limits and
 efforts, so a model released after albedo shipped is offered without an
-update. Every list is served on loopback or seeded on disk, so no live network
+update. A generic openai profile lists what its own endpoint's /models serves. Every list is served on loopback or seeded on disk, so no live network
 is reached. The class writes the shared home's list caches and models
 settings, so it is exclusive and removes the caches again.
 """
@@ -44,6 +44,8 @@ MODELS_CATALOG = {
 }
 
 ALIBABA_MODELS = {"data": [{"id": "qwen-fresh"}, {"id": "qwen-tts-fresh"}]}
+
+GATEWAY_MODELS = {"data": [{"id": "local-b"}, {"id": "local-a"}]}
 
 # As the Anthropic Models API answered, newest first; neither id is one
 # albedo or models.dev knows.
@@ -142,6 +144,14 @@ class ModelCatalogReloadTests(unittest.TestCase):
         self.assertEqual(
             [item["id"] for item in self.listed("claude")],
             ["claude-fixture-6", "claude-fixture-small"],
+        )
+
+    def test_generic_openai_endpoint_lists_its_own_models(self):
+        gateway = Provider(lambda _request: text("ok"), catalog=GATEWAY_MODELS)
+        self.addCleanup(gateway.close)
+        self.assertEqual(
+            [item["id"] for item in self.listed("openai", gateway.url + "/")],
+            ["local-a", "local-b"],
         )
 
     def test_claude_picker_offers_the_api_list_with_its_facts(self):

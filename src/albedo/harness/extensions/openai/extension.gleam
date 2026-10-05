@@ -2,6 +2,7 @@
 
 import albedo/daemon/configuration
 import albedo/harness/extension
+import albedo/harness/settings
 import albedo/openai_api
 import albedo/openai_api/types
 import gleam/bool
@@ -20,10 +21,29 @@ pub fn extension() -> extension.Extension {
     "openai",
     "API-key authentication for OpenAI-compatible Responses and Chat Completions providers",
     ["models"],
-    [extension.ModelProviderPlugin(extension.ModelProvider("openai", resolve))],
+    [
+      extension.ModelsPlugin(extension.ModelCatalog(
+        fn(_, _) { None },
+        list_models,
+        None,
+      )),
+      extension.ModelProviderPlugin(extension.ModelProvider("openai", resolve)),
+    ],
     extension.no_initialise,
   )
 }
+
+/// The ids the profile's own endpoint lists at `/models`. Empty when it cannot
+/// be reached, which leaves the models.dev list in place.
+fn list_models(provider: String, endpoint: Option(String)) -> List(String) {
+  case provider, endpoint {
+    "openai", Some(url) -> models(settings.home(), url) |> result.unwrap([])
+    _, _ -> []
+  }
+}
+
+@external(erlang, "albedo_openai", "models")
+fn models(home: String, endpoint: String) -> Result(List(String), String)
 
 fn resolve(
   context: extension.ModelContext,
