@@ -47,7 +47,7 @@ suite() {
 
 suite "gleam test" gleam test
 for test in test/harness/*_test.py; do
-  suite "$test" python3 "$test"
+  suite "$test" python3 test/python_test_runner.py "$test"
 done
 suite "go test" go -C cli test ./internal/... ./cmd/...
 # the Go e2e suite builds its own CLI and boots a hermetic daemon, so it must

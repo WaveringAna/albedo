@@ -9,7 +9,6 @@ slowest never start last.
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 import fcntl
-import importlib.util
 import io
 import json
 import os
@@ -24,18 +23,10 @@ import scratch
 
 SUITE_DIR = Path(__file__).parent
 sys.path.insert(0, str(SUITE_DIR))
+sys.path.insert(0, str(SUITE_DIR.parent))
+from python_test_runner import suite_for  # noqa: E402
+
 DURATIONS = scratch.ROOT / "e2e-durations.json"
-
-
-def suite_for(path, test_name=None):
-    spec = importlib.util.spec_from_file_location(path.stem, path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    loader = unittest.defaultTestLoader
-    if test_name:
-        return loader.loadTestsFromName(test_name, module)
-    return loader.loadTestsFromModule(module)
 
 
 def cases(suite):
@@ -79,6 +70,8 @@ def execute_alone(test):
 
 
 def run_suite(suite, jobs, exclusive_jobs):
+    if suite.countTestCases() == 0:
+        raise ValueError("no E2E tests collected")
     try:
         durations = json.loads(DURATIONS.read_text())
     except (OSError, ValueError):
@@ -161,6 +154,8 @@ def main():
         suite = unittest.TestSuite(
             suite_for(path) for path in sorted(SUITE_DIR.glob("*_test.py"))
         )
+    if suite.countTestCases() == 0:
+        parser.error("no E2E tests collected")
     # Concurrent E2E runs compete for the daemons and kernels on this laptop.
     with open(scratch.ROOT / "e2e.lock", "w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)

@@ -7,8 +7,12 @@
 -export([main/0]).
 
 main() ->
-    Modules = [module(Path) || Path <- filelib:wildcard("**/*.{erl,gleam}", "test"),
+    %% albedo_test.gleam is the executable entrypoint, not a test suite.
+    Modules = [module(Path) || Path <- filelib:wildcard("**/*_test.{erl,gleam}", "test"),
+                              Path =/= "albedo_test.gleam",
                               not lists:prefix("manual/", Path)],
+    case Modules of [] -> error(no_test_modules); _ -> ok end,
+    lists:foreach(fun require_tests/1, Modules),
     Options = [
         verbose,
         no_tty,
@@ -18,6 +22,18 @@ main() ->
     Result = eunit:test({inparallel, Modules}, Options),
     albedo_test_home:cleanup(),
     erlang:halt(case Result of ok -> 0; _ -> 1 end).
+
+require_tests(Module) ->
+    {module, Module} = code:ensure_loaded(Module),
+    HasTests = lists:any(fun({Name, Arity}) ->
+        Arity =:= 0 andalso
+        (lists:suffix("_test", atom_to_list(Name)) orelse
+         lists:suffix("_test_", atom_to_list(Name)))
+    end, Module:module_info(exports)),
+    case HasTests of
+        true -> ok;
+        false -> error({no_tests_in_module, Module})
+    end.
 
 module(Path) ->
     Name =
