@@ -363,6 +363,22 @@ class StorageTests(unittest.TestCase):
     def test_online_report_uses_daemon_storage_without_client_disk_or_python(self):
         with Albedo() as app:
             session = app.session()
+            # The daemon reclaims unknown state files a day old on its first
+            # sweep after a start, then only daily. Let a restart's first
+            # sweep run, seen through a sentinel it removes, so the orphan the
+            # report must list is not reclaimed underneath it. Restart before
+            # the rows below are written: they are not a transcript a daemon
+            # would boot on.
+            kernels = app.home / "kernels"
+            kernels.mkdir(exist_ok=True)
+            old = time.time() - 31 * 24 * 60 * 60
+            sentinel = kernels / "sweep-sentinel.state"
+            sentinel.write_bytes(b"sentinel")
+            os.utime(sentinel, (old, old))
+            app.restart()
+            wait_until(
+                lambda: not sentinel.exists(), 30, "the first expiry sweep never ran"
+            )
             image_reference = b'{"image_hash":"storage-report-image"}'
             source = "é🐈"
             trace = b"trace"
@@ -404,20 +420,6 @@ class StorageTests(unittest.TestCase):
                 db.execute("INSERT INTO report_reclaim VALUES(zeroblob(262144))")
                 db.execute("DELETE FROM report_reclaim")
                 db.commit()
-            kernels = app.home / "kernels"
-            kernels.mkdir(exist_ok=True)
-            old = time.time() - 31 * 24 * 60 * 60
-            # The daemon reclaims unknown state files a day old on its first
-            # sweep after a start, then only daily. Let a restart's first
-            # sweep run, seen through a sentinel it removes, so the orphan the
-            # report must list is not reclaimed underneath it.
-            sentinel = kernels / "sweep-sentinel.state"
-            sentinel.write_bytes(b"sentinel")
-            os.utime(sentinel, (old, old))
-            app.restart()
-            wait_until(
-                lambda: not sentinel.exists(), 30, "the first expiry sweep never ran"
-            )
             orphan = kernels / "report-orphan.state"
             live = kernels / f"{session}.state"
             orphan.write_bytes(b"orphan")
