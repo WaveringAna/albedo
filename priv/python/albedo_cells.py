@@ -4,7 +4,7 @@ import ast
 import albedo_api
 import albedo_bundle
 import albedo_state
-from albedo_values import Unencodable, encode
+from albedo_values import Unencodable, decode, encode
 from albedo_capture import Capture, PREVIEW, MAX_IMAGE_BYTES
 import albedo_link
 from albedo_protocol import parse_incoming
@@ -981,17 +981,34 @@ def _invoke_reply(
     return {"type": "invoked", "id": call_id, "ok": True, "value": wire}
 
 
-def _owner_args(value: object) -> object:
-    """Resolve `{"__ref__": id}` markers in owner arguments back to live objects."""
+async def _owner_args(value: object) -> object:
+    """Resolve owner argument markers back to what the call expects.
+
+    `{"__ref__": id}` names a live reference and `{"pending": id}` a call whose
+    result this argument uses, resolved in order like a pending target, so an
+    argument raced ahead of its own reply still lands. `{"__bytes__": b64}` is
+    byte data, the same marker a reply value uses, decoded by albedo_values.
+    """
     if isinstance(value, dict):
         if set(value) == {"__ref__"} and isinstance(value.get("__ref__"), str):
             obj = LIVE.get(value["__ref__"])
             if obj is None:
                 raise LookupError(f"live reference {value['__ref__']!r} is gone")
             return obj
-        return {key: _owner_args(item) for key, item in value.items()}
+        if set(value) == {"pending"} and isinstance(value.get("pending"), str):
+            pending = value["pending"]
+            future = PENDING_OBJECTS.get(pending)
+            if future is None:
+                raise LookupError(f"pending call {pending!r} is gone")
+            ok, resolved = await cast(Awaitable[tuple[bool, object]], future)
+            if not ok:
+                raise cast(BaseException, resolved)
+            return resolved
+        if set(value) == {"__bytes__"} and isinstance(value.get("__bytes__"), str):
+            return decode(value)
+        return {key: await _owner_args(item) for key, item in value.items()}
     if isinstance(value, list):
-        return [_owner_args(item) for item in value]
+        return [await _owner_args(item) for item in value]
     return value
 
 
@@ -1045,6 +1062,10 @@ async def serve_invoke(message: albedo_api.Invoke) -> None:
     object as a live reference; `value` and `handle` are one concept. Awaitables
     run to completion unless their class is a registered handle, the same rule
     the local evaluator applies, so a tool's remote shape matches its local one.
+    An explicit await of a live reference awaits it only when the object is
+    awaitable (a job); otherwise the object is the answer, as a reference, so
+    awaiting a call whose result is a plain live object (a spawned Browser)
+    settles into that reference instead of raising.
     A job's reply carries its state, final when awaited, so the owner's poll() is
     never racy and the owner can match the job's wake to its reference before
     any mirror frame arrives. Every call's result object is retained briefly as
@@ -1067,7 +1088,13 @@ async def serve_invoke(message: albedo_api.Invoke) -> None:
             if message.get("await") is True:
                 if base is None:
                     raise ValueError("await needs a live or pending reference target")
-                result = await cast(Awaitable[object], base)
+                if inspect.isawaitable(base):
+                    result = await cast(Awaitable[object], base)
+                else:
+                    # A settled object that cannot be awaited (a spawned
+                    # Browser) is the result itself; the reply retains it as
+                    # the same live reference, so nothing is orphaned.
+                    result = base
             else:
                 name = message.get("name", "")
                 if base is None:
@@ -1083,11 +1110,11 @@ async def serve_invoke(message: albedo_api.Invoke) -> None:
                     for part in parts:
                         call = getattr(call, part)
                 args = [
-                    _owner_args(item)
+                    await _owner_args(item)
                     for item in cast(Sequence[object], message.get("args", ()))
                 ]
                 kwargs = {
-                    key: _owner_args(item)
+                    key: await _owner_args(item)
                     for key, item in message.get("kwargs", {}).items()
                 }
                 if not callable(call):

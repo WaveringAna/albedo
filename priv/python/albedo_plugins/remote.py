@@ -881,12 +881,18 @@ class RemoteConnection:
         return stdout
 
     async def write(
-        self, path: str, content: str, *, timeout: float = COMMAND_TIMEOUT
+        self,
+        path: str,
+        content: str | bytes | bytearray | memoryview,
+        *,
+        timeout: float = COMMAND_TIMEOUT,
     ) -> None:
-        """Replace a remote file. The text travels on stdin, never in the
-        command line, which a host caps (128 KiB per argument on Linux)."""
+        """Replace a remote file, text or binary. The content travels on
+        stdin, never in the command line, which a host caps (128 KiB per
+        argument on Linux)."""
         remote = _remote_path(self, path)
-        await self._ssh(f"cat > {shlex.quote(remote)}", timeout, content.encode())
+        data = content.encode() if isinstance(content, str) else bytes(content)
+        await self._ssh(f"cat > {shlex.quote(remote)}", timeout, data)
 
     # --- degraded mode ---
 

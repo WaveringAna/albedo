@@ -6,6 +6,7 @@ remote reader to catch abandoned handshake and call futures on reader exits.
 
 import asyncio
 import contextlib
+import hashlib
 import io
 import json
 import struct
@@ -365,6 +366,59 @@ class RemotePluginTest(unittest.IsolatedAsyncioTestCase):
         await rem.write("big.lock", content)
         self.assertEqual(Path(self.workspace, "big.lock").read_text(), content)
         self.assertEqual(await rem.read("big.lock"), content)
+
+    async def test_binary_stdin_and_bytes_writes_cross_intact(self):
+        rem = await self.connect()
+        self.addCleanup(rem.close)
+        # Vent 9: bytes arguments crossed as {"__bytes__": b64} markers that
+        # the remote kernel passed through as dicts, so run(..., stdin=b"...")
+        # refused its own stdin and rem.write(path, b"...") called .encode()
+        # on bytes. Every byte value, so the round trip cannot pass by luck.
+        payload = bytes(range(256)) * 64
+        job = rem.run(
+            sys.executable,
+            "-c",
+            "import hashlib, sys; d = sys.stdin.buffer.read();"
+            "print(len(d), hashlib.sha256(d).hexdigest());"
+            "open('sink.bin', 'wb').write(d)",
+            stdin=payload,
+        )
+        await job
+        self.assertEqual(job.exit_code, 0)
+        count, digest = job.tail().split()
+        self.assertEqual(int(count), len(payload))
+        self.assertEqual(digest, hashlib.sha256(payload).hexdigest())
+        self.assertEqual(Path(self.workspace, "sink.bin").read_bytes(), payload)
+        blob = b"\x00\xff\xfe" + bytes(range(256))
+        await rem.write("blob.bin", blob)
+        self.assertEqual(Path(self.workspace, "blob.bin").read_bytes(), blob)
+
+    async def test_awaiting_a_non_awaitable_remote_object_keeps_its_reference(self):
+        rem = await self.connect()
+        self.addCleanup(rem.close)
+        # Vent 9: awaiting a call whose result is a live, non-awaitable object
+        # (rem.browser.spawn() is the real case; a spawned Browser) made the
+        # remote kernel `await` the settled object and raise TypeError, with
+        # no handle back, so every retry leaked another process. The remote
+        # jobs dict is the same shape: non-crossable, non-awaitable, retained.
+        job = rem.run("echo", "vent-nine")
+        live = await rem.jobs.copy()
+        self.assertIn("remote reference", repr(live))
+        found = await live.get(job.id)  # a method call on the live object
+        self.assertEqual(found.exit_code, 0)
+
+    async def test_an_unsettled_reference_argument_resolves_in_order(self):
+        rem = await self.connect()
+        self.addCleanup(rem.close)
+        # Vent 9, the argument form: a reference still in flight crossed as
+        # {"pending": id}, which the remote kernel passed through as a dict,
+        # so run(..., stdin=<remote job>) saw stdin it refuses. It must
+        # resolve to the producer's own object, like a pending target.
+        producer = rem.run(sys.executable, "-c", "print('pending-arg-fed', flush=True)")
+        consumer = rem.run("cat", stdin=producer)
+        await consumer
+        self.assertEqual(consumer.exit_code, 0)
+        self.assertEqual(consumer.tail().strip(), "pending-arg-fed")
 
     async def test_session_tools_relay_to_this_daemon(self):
         rem = await self.connect()

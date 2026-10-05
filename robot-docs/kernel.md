@@ -371,6 +371,20 @@ with backoff and `resume_kernels` treat an ssh drop as a bridge that exited.
   and waiting, blocked with the probe's words as its receipt's
   `blockingReason`, retried every 15 s like any blocked input
   (operations.md).
+- **the model's remote calls** (`albedo_plugins/remote.py` on the owner
+  side, `serve_invoke` in the remote kernel): one call per frame, answered by
+  one reference. a result that can cross is inlined; anything else is kept
+  live (`LIVE`, 64 entries, identity-stable handles) so methods call the real
+  object there. awaiting a reference sends one `await` frame: the remote side
+  awaits the object only when it is awaitable (a job); a settled
+  non-awaitable object -- a spawned browser handle -- is the answer itself,
+  back as the same reference, so an await can never strand a live process
+  with no handle. arguments cross with the same markers as targets and
+  values: `{"__ref__": id}` for a live reference, `{"pending": id}` for a
+  call still in flight (resolved in order), `{"__bytes__": b64}` for byte
+  data, decoded remotely by `albedo_values`, so `rem.run(..., stdin=b"...")`
+  and byte-sized results work. `rem.write` takes text or bytes; either travels
+  on the stdin of one ssh command, never in the command line.
 - **the model** gets a context line (python extension, `place.gleam`):
   "your python kernel and run jobs execute on chernobog (Linux aarch64)…",
   with the remote home.
