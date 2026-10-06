@@ -6,12 +6,13 @@
 %%   erl -sname probe -setcookie "$(cat ~/.albedo/inspect.cookie)" -noshell \
 %%     -eval "io:put_chars(rpc:call('albedo_<ospid>@$(hostname -s)', albedo_inspect, report, [])), halt()."
 %%
-%% The daemon prints its node name at startup ("inspect: node ...").
+%% The daemon prints its node name at startup ("inspect: node ..."), and
+%% test/manual/inspect.py finds it and runs report, cpu or any expression.
 %%
 %% ALBEDO_INSPECT_EVERY=N also appends a report to $ALBEDO_HOME/inspect.log
 %% every N seconds. Unset, start/1 does nothing and nothing here runs.
 -module(albedo_inspect).
--export([start/1, label/2, report/0, report/1, anatomy/1, peak/1, sharing/0]).
+-export([start/1, label/2, report/0, report/1, anatomy/1, peak/1, sharing/0, cpu/1]).
 
 -define(MB(B), io_lib:format("~.1f MB", [(B) / 1048576])).
 -define(WORD, erlang:system_info(wordsize)).
@@ -227,6 +228,36 @@ sample(Until, Totals, Procs) ->
 frame({M, F, A, Info}) ->
     Arity = if is_list(A) -> length(A); true -> A end,
     io_lib:format("~s:~s/~b ~s", [M, F, Arity, case proplists:get_value(line, Info) of undefined -> ""; N -> integer_to_list(N) end]).
+
+%% Where the VM's work went over Seconds: scheduler utilisation, reductions in
+%% total (dead and short-lived processes included) and the 20 processes that
+%% did the most, each with what it is running now.
+cpu(Seconds) ->
+    Before = reductions(),
+    {Total0, _} = erlang:statistics(reductions),
+    Utilisation = scheduler:utilization(Seconds),
+    {Total1, _} = erlang:statistics(reductions),
+    Spent = [{R - maps:get(Pid, Before, 0), Pid} || Pid := R <- reductions()],
+    Top = lists:sublist(lists:reverse(lists:sort(Spent)), 20),
+    iolist_to_binary([
+        io_lib:format("over ~bs~n", [Seconds]),
+        [io_lib:format("  scheduler utilisation ~s~n", [Text]) || {total, _, Text} <- Utilisation],
+        io_lib:format("  reductions ~b (~b/s)~n", [Total1 - Total0, (Total1 - Total0) div max(Seconds, 1)]),
+        "processes by reductions (now running)\n",
+        [io_lib:format("  ~10b  ~s  ~s~n", [R, name(Pid, label(Pid)), running(Pid)]) || {R, Pid} <- Top, R > 0]
+    ]).
+
+reductions() ->
+    maps:from_list([{Pid, R} || Pid <- erlang:processes(), {reductions, R} <- [erlang:process_info(Pid, reductions)]]).
+
+label(Pid) ->
+    case proc_lib:get_label(Pid) of undefined -> []; L -> L end.
+
+running(Pid) ->
+    case erlang:process_info(Pid, current_function) of
+        {current_function, {M, F, A}} -> io_lib:format("~s:~s/~b", [M, F, A]);
+        _ -> "gone"
+    end.
 
 %% Isolation versus sharing across labelled albedo processes.
 %% shared: one off-heap binary (same storage) referenced by several processes.
