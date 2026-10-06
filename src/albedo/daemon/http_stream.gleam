@@ -18,7 +18,7 @@ pub opaque type Writer {
 /// Whether the stream for this request is zstd-coded. The handler decides,
 /// since it sends the headers.
 pub fn coded(req: request.Request(a)) -> Bool {
-  http_coding.stream_coded(req)
+  http_coding.accepts(req)
 }
 
 /// The stream process's writer; it must create its own coding.

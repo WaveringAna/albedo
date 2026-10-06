@@ -320,11 +320,7 @@ fn admitted(
         _, [#(_, encoding)] ->
           case string.lowercase(string.trim(encoding)) {
             "identity" -> Ok(False)
-            "zstd" ->
-              case http_coding.available() {
-                True -> Ok(True)
-                False -> Error(Nil)
-              }
+            "zstd" -> Ok(True)
             _ -> Error(Nil)
           }
         _, _ -> Error(Nil)
@@ -792,10 +788,7 @@ fn protocol_server(
               "workspace_browsing",
               "host_probes",
               "provider_auth",
-              ..case http_coding.available() {
-                True -> ["zstd_requests"]
-                False -> []
-              }
+              "zstd_requests",
             ],
             fn(name) {
               #(

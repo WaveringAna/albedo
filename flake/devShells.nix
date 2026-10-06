@@ -3,6 +3,7 @@ _: {
     config,
     lib,
     pkgs,
+    beamPackages,
     ...
   }: {
     devShells.default = pkgs.mkShell {
@@ -11,8 +12,6 @@ _: {
           go
           gopls
           gleam
-          beamPackages.erlang
-          (beamPackages.rebar3WithPlugins {plugins = [beamPackages.pc];})
           python311
           pre-commit
           ruff
@@ -20,7 +19,11 @@ _: {
           cargo
           rustc
         ])
-        ++ [config.packages.glinter]
+        ++ [
+          beamPackages.erlang
+          (beamPackages.rebar3WithPlugins {plugins = [beamPackages.pc];})
+          config.packages.glinter
+        ]
         ++ lib.attrValues config.treefmt.build.programs;
     };
   };

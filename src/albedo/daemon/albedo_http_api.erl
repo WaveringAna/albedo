@@ -1,5 +1,5 @@
 -module(albedo_http_api).
--export([zstd_available/0, zstd_streams/0, accepts_zstd/1, zstd_compress/1, zstd_stream/0, zstd_flush/2, zstd_end/1, zstd_decompress/2,
+-export([accepts_zstd/1, zstd_compress/1, zstd_stream/0, zstd_flush/2, zstd_end/1, zstd_decompress/2,
          stream_socket/1, scalar_prefix/2, content_slice/3, page_token/3, page_state/3, parse/1, accept/2, encode/1, timestamp/1, etag/1, instance_id/0, read_chunked/2]).
 
 parse(Bytes) ->
@@ -152,11 +152,6 @@ utf8_end(Text, End, Size) ->
         _ -> End
     end.
 
-%% zstd ships with OTP 28; flushing a stream mid-frame needs OTP 29.
-zstd_available() -> code:ensure_loaded(zstd) =:= {module, zstd}.
-
-zstd_streams() -> zstd_available() andalso erlang:function_exported(zstd, flush, 1).
-
 %% Whether an Accept-Encoding header admits zstd, by name or wildcard.
 accepts_zstd(Header) ->
     try
@@ -170,7 +165,7 @@ accepts_zstd(Header) ->
             {[], [_|_]} -> lists:max(Any);
             {[], []} -> 0
         end,
-        Quality > 0 andalso zstd_available()
+        Quality > 0
     catch _:_ -> false end.
 
 zstd_compress(Data) -> zstd:compress(Data, #{compressionLevel => 1}).

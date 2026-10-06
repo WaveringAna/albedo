@@ -195,8 +195,8 @@ zstd is the one content coding. A JSON or text response of at least 1 KiB is
 compressed when `Accept-Encoding` admits `zstd`, and so is a session or
 collection event stream, flushed after every frame. Limits and `ETag` values
 describe the decoded representation, and these responses add
-`Vary: Accept-Encoding`. Image resources are never coded. A daemon whose
-runtime lacks zstd answers in identity; stream compression needs OTP 29.
+`Vary: Accept-Encoding`. Image resources are never coded. The daemon needs
+OTP 29, whose `zstd` can flush a stream between frames.
 When `GET /server` lists the `zstd_requests` capability, a request body may use
 `Content-Encoding: zstd`. It must be one frame that declares its decoded size,
 which must fit the route's limit; anything else is `400`. The CLI compresses

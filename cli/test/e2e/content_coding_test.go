@@ -84,13 +84,6 @@ func TestZstdCodingAndRawImages(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(attached.HTTPClient().CloseIdleConnections)
-	server, err := daemon.ProbeServer(t.Context(), attached)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if server.Capabilities["zstd_requests"] < 1 {
-		t.Skip("this daemon's runtime has no zstd")
-	}
 	recorder := &uploadRecorder{upstream: attached.HTTPClient().Transport}
 	attached.HTTPClient().Transport = recorder
 
@@ -151,15 +144,14 @@ func TestZstdCodingAndRawImages(t *testing.T) {
 	}
 
 	stream := rawGet(t, "/sessions/"+id, map[string]string{"Accept": "text/event-stream", "Accept-Encoding": "zstd"})
-	var frames io.Reader = stream.Body
-	if stream.Header.Get("Content-Encoding") == "zstd" {
-		decoder, err := zstd.NewReader(stream.Body, zstd.WithDecoderConcurrency(1))
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer decoder.Close()
-		frames = decoder
+	if stream.Header.Get("Content-Encoding") != "zstd" {
+		t.Fatal("the session stream was not zstd-coded")
 	}
+	frames, err := zstd.NewReader(stream.Body, zstd.WithDecoderConcurrency(1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer frames.Close()
 	first := make(chan string, 1)
 	go func() {
 		line, _ := bufio.NewReaderSize(frames, 1<<20).ReadString('\n')
@@ -179,13 +171,6 @@ func TestZstdCodingAndRawImages(t *testing.T) {
 // limit; anything else is refused before the operation runs.
 func TestZstdRequestBodiesAreBounded(t *testing.T) {
 	t.Parallel()
-	server, err := daemon.ProbeServer(t.Context(), conn(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if server.Capabilities["zstd_requests"] < 1 {
-		t.Skip("this daemon's runtime has no zstd")
-	}
 	unsized, _ := zstd.NewWriter(nil)
 	var streamed bytes.Buffer
 	unsized.Reset(&streamed)

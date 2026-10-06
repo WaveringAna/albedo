@@ -1,6 +1,7 @@
-//// zstd content coding for daemon HTTP bodies. A response is compressed when
-//// its request's Accept-Encoding admits zstd; a request body may arrive
-//// compressed once the client has seen the `zstd_requests` capability.
+//// zstd content coding for daemon HTTP bodies, on OTP 29's `zstd`. A
+//// response is compressed when its request's Accept-Encoding admits zstd; a
+//// request body may arrive compressed once the client has seen the
+//// `zstd_requests` capability.
 
 import gleam/bytes_tree.{type BytesTree}
 import gleam/http/request.{type Request}
@@ -12,14 +13,8 @@ import mist
 /// Smaller bodies would not shrink by more than a frame header costs.
 const minimum_bytes = 1024
 
-@external(erlang, "albedo_http_api", "zstd_available")
-pub fn available() -> Bool
-
 @external(erlang, "albedo_http_api", "accepts_zstd")
 fn accepts_zstd(header: String) -> Bool
-
-@external(erlang, "albedo_http_api", "zstd_streams")
-fn streams() -> Bool
 
 @external(erlang, "albedo_http_api", "zstd_compress")
 fn compress(data: BytesTree) -> BytesTree
@@ -29,7 +24,8 @@ fn compress(data: BytesTree) -> BytesTree
 @external(erlang, "albedo_http_api", "zstd_decompress")
 pub fn decompress(data: BitArray, limit: Int) -> Result(BitArray, Nil)
 
-fn accepted(req: Request(a)) -> Bool {
+/// Whether the request's Accept-Encoding admits zstd.
+pub fn accepts(req: Request(a)) -> Bool {
   request.get_header(req, "accept-encoding")
   |> result.map(accepts_zstd)
   |> result.unwrap(False)
@@ -55,7 +51,7 @@ pub fn encode(
       case
         bytes_tree.byte_size(body) >= minimum_bytes
         && response.get_header(reply, "content-encoding") == Error(Nil)
-        && accepted(req)
+        && accepts(req)
       {
         True ->
           reply
@@ -92,11 +88,6 @@ fn flush(context: Context, data: BitArray) -> BytesTree
 
 @external(erlang, "albedo_http_api", "zstd_end")
 fn finish(context: Context) -> BytesTree
-
-/// Whether an event stream for this request is zstd-coded.
-pub fn stream_coded(req: Request(a)) -> Bool {
-  streams() && accepted(req)
-}
 
 /// Starts a stream's coding. A zstd context works only in the process that
 /// created it, so the stream process itself must call this.
