@@ -17,6 +17,7 @@
   usage-core,
 }: let
   inherit (beamPackages) erlang;
+  clipboardTools = lib.optionals stdenv.hostPlatform.isLinux [wl-clipboard xclip];
   # esqlite loads the pc plugin during its Rebar3 build, which cannot fetch
   # plugins from Hex inside the Nix sandbox.
   rebar3 = beamPackages.rebar3WithPlugins {plugins = [beamPackages.pc];};
@@ -168,7 +169,7 @@
     ALBEDO_NO_BROWSER = "1";
     postInstall = ''
       wrapProgram $out/bin/albedo \
-        --prefix PATH : ${lib.makeBinPath [wl-clipboard xclip]}
+        --prefix PATH : ${lib.makeBinPath clipboardTools}
     '';
     meta = {
       description = "Charm terminal client for the albedo coding agent";
