@@ -16,7 +16,7 @@ import albedo/harness/instruction_files
 import albedo/harness/oauth
 import albedo/harness/project_files
 import albedo/harness/protect
-import albedo/harness/rpc
+import albedo/harness/runtime/kernels
 import albedo/harness/runtime/state as runtime_state
 import albedo/harness/settings
 import albedo/openai_api/types
@@ -425,46 +425,6 @@ pub fn start_with_config(
   |> result.map(fn(started) { started.data })
 }
 
-/// End the kernel, or let it go when the daemon is shutting down.
-fn release_kernel(
-  state: runtime_state.State,
-  id: String,
-  context: String,
-) -> Nil {
-  case state.detaching, dict.get(state.sessions, id) {
-    True, Ok(session) -> python.detach(session.kernel)
-    False, Ok(session) -> drop_kernel(context, session)
-    _, Error(_) -> Nil
-  }
-}
-
-/// End the kernel process only: the prepared composition, and any managed
-/// resources it holds, stay ready for the next open.
-fn drop_kernel(context: String, session: runtime_state.Session) -> Nil {
-  case python.stop(session.kernel) {
-    Ok(_) -> Nil
-    Error(report) -> io.println_error(context <> ": " <> report)
-  }
-}
-
-fn drop_kernel_at(
-  state: runtime_state.State,
-  id: String,
-  context: String,
-) -> Nil {
-  case dict.get(state.sessions, id) {
-    Ok(session) -> drop_kernel(context, session)
-    Error(_) -> Nil
-  }
-}
-
-fn close_cached_at(state: runtime_state.State, id: String) -> Nil {
-  case dict.get(state.compositions, id) {
-    Ok(cached) -> extension.close(cached.composition)
-    Error(_) -> Nil
-  }
-}
-
 pub fn ledger(runtime: runtime_state.Runtime) -> work.Store {
   runtime.work
 }
@@ -483,20 +443,12 @@ pub fn cleaners(runtime: runtime_state.Runtime) -> List(extension.Cleaner) {
   extension.cleaners(installed(runtime))
 }
 
-fn checked_id(id: String) -> Result(String, python.Error) {
-  case string.trim(id) == "" || string.byte_size(id) > 256 {
-    True ->
-      Error(python.Invalid("session id must be nonempty and <= 256 bytes"))
-    False -> Ok(id)
-  }
-}
-
 pub fn open_session(
   runtime: runtime_state.Runtime,
   id: String,
   cwd: String,
 ) -> Result(runtime_state.Session, python.Error) {
-  use id <- result.try(checked_id(id))
+  use id <- result.try(kernels.checked_id(id))
   let reply = process.new_subject()
   open_session_async(runtime, id, cwd, process.send(reply, _))
   process.receive(reply, 180_000)
@@ -514,7 +466,7 @@ pub fn open_session_async(
   cwd: String,
   answer: fn(Result(runtime_state.Session, python.Error)) -> Nil,
 ) -> Nil {
-  case checked_id(id) {
+  case kernels.checked_id(id) {
     Ok(id) -> process.send(runtime.subject, runtime_state.Open(id, cwd, answer))
     Error(invalid) -> answer(Error(invalid))
   }
@@ -923,17 +875,6 @@ fn context_blocks(blocks: List(#(String, String))) -> List(types.Input) {
   })
 }
 
-fn kernel_routes(
-  owner: work.Store,
-  id: String,
-  composition: extension.Composition,
-) -> fn(String) -> String {
-  // Partial application captures its expressions, not just their results.
-  // Keep only this session's routes: the callback is copied for every RPC.
-  let routes = extension.routes(composition)
-  rpc.handle(routes, owner, id, _)
-}
-
 fn command_value(
   id: String,
   cwd: String,
@@ -1023,66 +964,6 @@ fn peek(
   }
 }
 
-/// Boot a kernel over one composition. A failed boot keeps the composition:
-/// it is valid, and the next open retries only the kernel.
-fn open_kernel(
-  owner: work.Store,
-  id: String,
-  cached: runtime_state.Cached,
-) -> Result(runtime_state.Session, python.Error) {
-  python.open(
-    owner,
-    id,
-    cached.cwd,
-    kernel_routes(owner, id, cached.composition),
-    extension.python_modules(cached.composition),
-  )
-  |> result.map(fn(opened) {
-    let origin = case opened.1 {
-      True -> runtime_state.Resumed
-      False -> runtime_state.Fresh
-    }
-    session_over(owner, id, cached, opened.0, origin)
-  })
-}
-
-fn session_over(
-  owner: work.Store,
-  id: String,
-  cached: runtime_state.Cached,
-  kernel: python.Kernel,
-  origin: runtime_state.Origin,
-) -> runtime_state.Session {
-  runtime_state.Session(
-    id,
-    cached.cwd,
-    kernel,
-    owner,
-    cached.composition,
-    cached.instructions,
-    cached.context,
-    origin,
-  )
-}
-
-/// The session's recorded kernel attached again, or None when it is gone.
-fn resume_kernel(
-  owner: work.Store,
-  id: String,
-  cached: runtime_state.Cached,
-) -> Option(runtime_state.Session) {
-  python.resume(
-    owner,
-    id,
-    cached.cwd,
-    kernel_routes(owner, id, cached.composition),
-    extension.python_modules(cached.composition),
-  )
-  |> option.map(fn(kernel) {
-    session_over(owner, id, cached, kernel, runtime_state.Resumed)
-  })
-}
-
 /// Swap a stale kernel for a current one off the actor, the way a boot runs:
 /// whoever opens the session meanwhile waits for it. A swap that cannot
 /// happen now (a cell still running, a namespace that would not save) hands
@@ -1109,14 +990,14 @@ fn start_upgrade(
               owner,
               id,
               cached.cwd,
-              kernel_routes(owner, id, cached.composition),
+              kernels.kernel_routes(owner, id, cached.composition),
               extension.python_modules(cached.composition),
               session.kernel,
             )
           })
         let result = case upgraded {
           Ok(Ok(#(kernel, carried))) ->
-            Ok(session_over(
+            Ok(kernels.session_over(
               owner,
               id,
               cached,
@@ -1148,7 +1029,7 @@ fn start_upgrade(
           False -> {
             case result {
               Ok(session) ->
-                drop_kernel("upgrade for a stopped runtime", session)
+                kernels.drop_kernel("upgrade for a stopped runtime", session)
               Error(_) -> Nil
             }
           }
@@ -1261,7 +1142,7 @@ fn upgrade_value(
   use current <- result.try(case previous {
     Some(session) -> Ok(session)
     None ->
-      resume_kernel(owner, id, cached)
+      kernels.resume_kernel(owner, id, cached)
       |> option.to_result("recorded kernel could not be attached")
   })
   case python.observation(current.kernel) {
@@ -1293,13 +1174,13 @@ fn upgrade_value(
               owner,
               id,
               cached.cwd,
-              kernel_routes(owner, id, cached.composition),
+              kernels.kernel_routes(owner, id, cached.composition),
               extension.python_modules(cached.composition),
               current.kernel,
             )
           let #(session, failure, restored_warnings, stopped) = case outcome {
             Ok(#(kernel, carried)) -> #(
-              Some(session_over(
+              Some(kernels.session_over(
                 owner,
                 id,
                 cached,
@@ -1563,7 +1444,7 @@ fn boot_next(state: runtime_state.State) -> runtime_state.State {
         runtime_state.BootKernel(id, generation, cached) ->
           process.spawn_unlinked(fn() {
             let outcome = case
-              protect.attempt(fn() { open_kernel(owner, id, cached) })
+              protect.attempt(fn() { kernels.open_kernel(owner, id, cached) })
             {
               Ok(result) -> result
               Error(crash) ->
@@ -1578,7 +1459,7 @@ fn boot_next(state: runtime_state.State) -> runtime_state.State {
               False -> {
                 case outcome {
                   Ok(session) ->
-                    drop_kernel("boot for a stopped runtime", session)
+                    kernels.drop_kernel("boot for a stopped runtime", session)
                   Error(_) -> Nil
                 }
               }
@@ -1587,7 +1468,7 @@ fn boot_next(state: runtime_state.State) -> runtime_state.State {
         runtime_state.AttachKernel(id, generation, cached, reply) ->
           process.spawn_unlinked(fn() {
             let outcome =
-              protect.attempt(fn() { resume_kernel(owner, id, cached) })
+              protect.attempt(fn() { kernels.resume_kernel(owner, id, cached) })
               |> result.map_error(fn(crash) {
                 python.Unavailable("kernel reattach failed: " <> crash)
               })
@@ -1600,7 +1481,10 @@ fn boot_next(state: runtime_state.State) -> runtime_state.State {
               False -> {
                 case outcome {
                   Ok(Some(session)) ->
-                    drop_kernel("reattach for a stopped runtime", session)
+                    kernels.drop_kernel(
+                      "reattach for a stopped runtime",
+                      session,
+                    )
                   _ -> Nil
                 }
               }
@@ -1690,7 +1574,7 @@ fn composed(
           |> booted(id, generation, Error(python.Invalid(reason)))
         }
         Ok(cached) -> {
-          close_cached_at(state, id)
+          kernels.close_cached_at(state, id)
           let state =
             runtime_state.State(
               ..state,
@@ -1763,7 +1647,8 @@ fn discard_upgrade(
     Error(_) -> previous
   }
   case session {
-    Some(session) -> drop_kernel("upgrade for a forgotten session", session)
+    Some(session) ->
+      kernels.drop_kernel("upgrade for a forgotten session", session)
     None -> Nil
   }
 }
@@ -1790,14 +1675,14 @@ fn publish_reload(
         Error(_) -> {
           case previous {
             Some(session) ->
-              drop_kernel("reload for a stopped runtime", session)
+              kernels.drop_kernel("reload for a stopped runtime", session)
             None -> Nil
           }
         }
         Ok(#(fresh, replacement)) -> {
           case replacement {
             Some(session) ->
-              drop_kernel("reload for a stopped runtime", session)
+              kernels.drop_kernel("reload for a stopped runtime", session)
             None -> Nil
           }
           extension.close(fresh.composition)
@@ -1823,7 +1708,7 @@ fn booted(
   }
   case waiting, result {
     Error(_), Ok(session) -> {
-      drop_kernel("boot for a forgotten session", session)
+      kernels.drop_kernel("boot for a forgotten session", session)
       state
     }
     Error(_), Error(_) -> state
@@ -2063,7 +1948,7 @@ fn recompose_selected(
       inventory.ledger,
       id,
       workspace,
-      kernel_routes(inventory.ledger, id, cached.composition),
+      kernels.kernel_routes(inventory.ledger, id, cached.composition),
       extension.python_modules(cached.composition),
     )
   case staged {
@@ -2073,7 +1958,13 @@ fn recompose_selected(
     }
     Ok(#(kernel, record)) -> {
       let replacement =
-        session_over(inventory.ledger, id, cached, kernel, runtime_state.Fresh)
+        kernels.session_over(
+          inventory.ledger,
+          id,
+          cached,
+          kernel,
+          runtime_state.Fresh,
+        )
       let published = {
         use observed <- result.try(
           python.observation(replacement.kernel)
@@ -2167,10 +2058,14 @@ fn start_desired_reload(
                       True ->
                         python.rebind(
                           session.kernel,
-                          kernel_routes(inventory.ledger, id, fresh.composition),
+                          kernels.kernel_routes(
+                            inventory.ledger,
+                            id,
+                            fresh.composition,
+                          ),
                         )
                         |> result.map(fn(_) {
-                          Some(session_over(
+                          Some(kernels.session_over(
                             inventory.ledger,
                             id,
                             fresh,
@@ -2187,7 +2082,7 @@ fn start_desired_reload(
                               inventory.ledger,
                               id,
                               cwd,
-                              kernel_routes(
+                              kernels.kernel_routes(
                                 inventory.ledger,
                                 id,
                                 fresh.composition,
@@ -2197,7 +2092,7 @@ fn start_desired_reload(
                             )
                             |> result.map_error(fn(failure) { failure.reason })
                             |> result.map(fn(upgraded) {
-                              Some(session_over(
+                              Some(kernels.session_over(
                                 inventory.ledger,
                                 id,
                                 fresh,
@@ -2257,13 +2152,16 @@ fn reloaded(
         Error(_) ->
           case previous {
             Some(session) ->
-              drop_kernel("failed reload for a forgotten session", session)
+              kernels.drop_kernel(
+                "failed reload for a forgotten session",
+                session,
+              )
             None -> Nil
           }
         Ok(#(fresh, replacement)) -> {
           case replacement {
             Some(session) ->
-              drop_kernel("reload for a forgotten session", session)
+              kernels.drop_kernel("reload for a forgotten session", session)
             None -> Nil
           }
           extension.close(fresh.composition)
@@ -2293,7 +2191,7 @@ fn reloaded(
           |> runtime_state.replay(id)
         }
         Ok(#(fresh, replacement)) -> {
-          close_cached_at(state, id)
+          kernels.close_cached_at(state, id)
           // The reload's own discovery supersedes any retained observation.
           let state =
             runtime_state.State(
@@ -2648,14 +2546,14 @@ fn serve(
     runtime_state.Peek(id, cwd, reply) ->
       actor.continue(peek(state, id, cwd, reply))
     runtime_state.Reset(id, reply) -> {
-      drop_kernel_at(state, id, "session reset")
+      kernels.drop_kernel_at(state, id, "session reset")
       process.send(reply, Nil)
       actor.continue(runtime_state.without_session(abandon(state, id), id))
     }
     runtime_state.Forget(id, reply) -> {
       let state = abandon(state, id)
-      release_kernel(state, id, "session forgotten")
-      close_cached_at(state, id)
+      kernels.release_kernel(state, id, "session forgotten")
+      kernels.close_cached_at(state, id)
       process.send(reply, Nil)
       actor.continue(
         runtime_state.State(
@@ -2684,7 +2582,7 @@ fn serve(
           actor.continue(state)
         }
         Ok(_) -> {
-          close_cached_at(state, id)
+          kernels.close_cached_at(state, id)
           process.send(reply, Ok(Nil))
           actor.continue(
             runtime_state.State(
@@ -2702,7 +2600,7 @@ fn serve(
           abandon(state, id)
         })
       dict.each(state.sessions, fn(id, _) {
-        release_kernel(state, id, "runtime stop")
+        kernels.release_kernel(state, id, "runtime stop")
       })
       dict.each(state.compositions, fn(_, cached) {
         extension.close(cached.composition)
@@ -2816,7 +2714,7 @@ fn reattached(
     _ -> {
       case outcome {
         Ok(Some(session)) ->
-          drop_kernel("reattach for a forgotten session", session)
+          kernels.drop_kernel("reattach for a forgotten session", session)
         _ -> Nil
       }
       state
