@@ -36,7 +36,7 @@ def namespace() -> dict[str, object]:
     loop = asyncio.new_event_loop()
 
     async def host(method, args):
-        return [] if method == "commands.list" else {}
+        return [] if method in {"commands.list", "mcp.list"} else {}
 
     api = PythonApi(
         loop,
@@ -60,6 +60,7 @@ def namespace() -> dict[str, object]:
         "files",
         "skills",
         "commands",
+        "mcp",
         "remote",
         "view",
         "browser",

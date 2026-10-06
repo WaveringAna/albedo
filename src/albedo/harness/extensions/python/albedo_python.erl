@@ -1021,7 +1021,8 @@ grace() ->
 clean_environment() ->
     %% Strip daemon internal tokens (e.g. ALBEDO_TOKEN, ALBEDO_API_KEY) and
     %% provider keys, keeping the user's shell/tool environment intact.
-    SafeAlbedo = ["ALBEDO_HOME", "ALBEDO_SSH", "ALBEDO_CELL_BACKGROUND_SECONDS"],
+    SafeAlbedo = ["ALBEDO_HOME", "ALBEDO_SSH", "ALBEDO_CELL_BACKGROUND_SECONDS",
+                  "ALBEDO_KERNEL_MEMORY_BYTES"],
     SecretSuffixes = ["_API_KEY", "_TOKEN"],
     IsBlocked = fun(Name) ->
         case lists:prefix("ALBEDO_", Name) of

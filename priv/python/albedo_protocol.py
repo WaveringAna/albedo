@@ -35,7 +35,8 @@ class Reply(TypedDict):
 class Interrupt(TypedDict):
     type: Literal["interrupt"]
     id: str
-    reason: NotRequired[Literal["deadline", "cancelled"]]
+    # `memory` is the kernel's own, from its memory guard; the owner sends the others.
+    reason: NotRequired[Literal["deadline", "cancelled", "memory"]]
 
 
 class Shutdown(TypedDict):
@@ -236,8 +237,12 @@ def parse_incoming(value: object) -> Incoming:
             _field(reply, "message", str, "reply.value")
     elif kind == "interrupt":
         _field(message, "reason", str, kind, optional=True)
-        if "reason" in message and message["reason"] not in ("deadline", "cancelled"):
-            raise ValueError("interrupt.reason: expected deadline or cancelled")
+        if "reason" in message and message["reason"] not in (
+            "deadline",
+            "cancelled",
+            "memory",
+        ):
+            raise ValueError("interrupt.reason: expected deadline, cancelled or memory")
     elif kind == "invoke":
         for field, expected in (
             ("name", str),

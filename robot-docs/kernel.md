@@ -64,7 +64,39 @@ raises for a larger `limit` rather than shortening it, since a caller that
 asked for everything and got a silent prefix builds files from it; the rest
 is paged with `offset`. A single print longer than what could be retained
 is not encoded whole when it is ASCII: the buffers see both ends and the
-middle only counts.
+middle only counts (unless a spill file takes it, below).
+
+### spilled output
+
+A cell's output that passes the 64 KiB preview is also written whole to a
+file, up to `SPILL_LIMIT` (16 MiB), the first write past the preview opening
+it with everything before. The file is unbuffered, so a backgrounded cell's
+output reads live. The result's `output` ends with a note naming the file,
+`seen`, and whether all of it is there (`Capture.spill_note`); the python tool
+description says to read it with `files.read`. Only cells spill: a job's
+output stays on its handle. The directory sits beside the run directories,
+`$ALBEDO_HOME/output` for a local kernel and `~/.albedo-remote/output` for a
+remote one (a kernel over stdio uses `albedo-output` in the temp dir), so the
+file belongs to the host the cell ran on; a kernel prunes files older than
+`SPILL_KEEP` (14 days, the state expiry) when it boots. A file that will not
+open leaves the result as before, `truncated` with no note.
+
+## memory cap
+
+The kernel's physical footprint (`albedo_memory.footprint`: the resident set
+from `/proc/self/statm`, or Darwin's `ri_phys_footprint` through libproc, the
+figure vmmap and Activity Monitor show) is capped at `ALBEDO_KERNEL_MEMORY_BYTES`,
+256 MiB by default, which the daemon passes through to local kernels. A
+thread samples it every 100 ms while cells run and interrupts, with reason
+`memory`, every running cell whose threshold the footprint passed; the cell
+ends `interrupted` with a note naming what is held and the cap, and the
+namespace stays. A cell's threshold is the cap, or 8 MiB over the footprint it
+started at when the kernel was already past the cap (a large variable left
+behind), so `del big; gc.collect()` runs instead of being interrupted at once.
+It is a sampled guard, not an allocator limit: one allocation larger than the
+cap succeeds and is caught by the next sample, and a cell that catches
+`KeyboardInterrupt` is told once. Jobs are separate processes and are not
+counted.
 
 Finished results are kept by cell id (the newest 16) for execute replays.
 Their base64 image text is capped at 8 MiB across all of them, newest first;

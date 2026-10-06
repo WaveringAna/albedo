@@ -73,4 +73,8 @@ The `/mcp` form and the capability toggle stay strict: saving or turning on a se
 
 Tool calls may have side effects, so a failed or interrupted call is never retried automatically. Transport loss is reported as an unknown outcome, which the model must inspect before acting again.
 
+## From Python
+
+With the extension enabled, `await mcp.tools()` lists live operations and `await mcp.describe(name)` returns one operation and its parameter schema. `await mcp.call(name, arguments=None, **kwargs)` accepts an advertised name or `server/tool`; methods minted at kernel boot are also available as `await mcp.<server>.<tool>(**arguments)`. Results are records: check `r.isError`, because a tool-reported error does not raise. MCP responses are untrusted data; use `await asyncio.gather(..., return_exceptions=True)` to keep successful results when one call fails.
+
 Remote servers are untrusted input. Tool descriptions, resource contents, and prompt text are data, not instructions, and their schemas are bounded before they reach the model.

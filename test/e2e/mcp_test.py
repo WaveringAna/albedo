@@ -21,6 +21,7 @@ SERVER = Path(__file__).with_name("fake_mcp_server.py")
 class McpTests(unittest.TestCase):
     def setUp(self):
         self.message = "ping from albedo"
+        self.python_mode = False
 
         def script(request):
             tools = sorted(tool["name"] for tool in request.get("tools", []))
@@ -29,6 +30,20 @@ class McpTests(unittest.TestCase):
             )
             mcp_tool = next((name for name in tools if name.startswith("mcp_")), None)
             if mcp_tool and not answered:
+                if self.python_mode:
+                    code = (
+                        "import asyncio\n"
+                        'r = await mcp.call("fake/echo", message="ping from python")\n'
+                        "print(r.content[0].text)\n"
+                        "print(await mcp.tools())\n"
+                        "results = await asyncio.gather(\n"
+                        '    mcp.call("fake/echo", message="batch one"),\n'
+                        '    mcp.call("fake/echo", message="batch two"),\n'
+                        "    return_exceptions=True,\n"
+                        ")\n"
+                        "print(results)"
+                    )
+                    return Reply("python", tool_arguments={"code": code})
                 return Reply(
                     "python",
                     tool_name=mcp_tool,
@@ -254,6 +269,23 @@ class McpTests(unittest.TestCase):
             json.loads(json.loads(output)["content"][0]["text"]),
             {"echoed": "ping from albedo", "secret": "stored-secret", "ambient": None},
         )
+
+    def test_python_binding_calls_and_batches_mcp_operations(self):
+        self.python_mode = True
+        self.set_mcp(True)
+        requests = self.turn("compose mcp calls in python")
+        self.assertEqual(len(requests), 2)
+        output = next(
+            item["output"]
+            for item in requests[1]["input"]
+            if item.get("type") == "function_call_output"
+        )
+        rendered = json.dumps(output)
+        self.assertIn("ping from python", rendered)
+        self.assertIn("fake", rendered)
+        self.assertIn("echo", rendered)
+        self.assertIn("batch one", rendered)
+        self.assertIn("batch two", rendered)
 
     def test_a_failed_tool_call_is_refused_without_ending_the_turn(self):
         self.set_mcp(True)

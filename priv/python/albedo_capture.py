@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import base64
+import os
+import re
 import struct
+import time
+from typing import BinaryIO
 
 import albedo_api
 import albedo_trace
@@ -13,6 +17,33 @@ RETAIN = albedo_api.RETAIN
 MAX_IMAGES = 4
 # Base64 growth and the output preview must fit the 8 MiB result frame.
 MAX_IMAGE_BYTES = 5 * 1024 * 1024
+# A cell whose output passes the preview also gets it whole in a file, up to
+# this much; the kernel sets the directory and prunes files past SPILL_KEEP.
+SPILL_LIMIT = 16 * 1024 * 1024
+SPILL_KEEP = 14 * 24 * 3600  # seconds, the python state expiry
+SPILL_DIR: str | None = None
+
+
+def prune_spills(directory: str) -> None:
+    """Make `directory` the spill directory, without the files past SPILL_KEEP."""
+    global SPILL_DIR
+    SPILL_DIR = directory
+    try:
+        os.makedirs(directory, exist_ok=True)
+        with os.scandir(directory) as entries:
+            stale = [
+                entry.path
+                for entry in entries
+                if entry.is_file() and time.time() - entry.stat().st_mtime > SPILL_KEEP
+            ]
+    except OSError:
+        SPILL_DIR = None
+        return
+    for path in stale:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
 
 
 class Capture:
@@ -33,10 +64,18 @@ class Capture:
         self.trace: albedo_trace.Trace = albedo_trace.Trace()
         self.interruption: str = "cancelled"
         self.images: list[bytes] = []
+        # The file holding the whole output once it passed the preview, and
+        # how much of it is there; `spill` stays set after the file closes.
+        self.spill: str | None = None
+        self.spilled: int = 0
+        self._spill_file: BinaryIO | None = None
+
+    def spills(self) -> bool:
+        return self.kind == "cell" and SPILL_DIR is not None
 
     def write(self, text: str) -> None:
         room = RETAIN - len(self.data)
-        if text.isascii() and len(text) > room + PREVIEW:
+        if text.isascii() and len(text) > room + PREVIEW and not self.spills():
             # One byte per character: keep both ends without encoding the middle.
             self.write_bytes(text[:room].encode())
             self.seen += len(text) - room - PREVIEW
@@ -50,18 +89,64 @@ class Capture:
         room = RETAIN - len(self.data)
         if size <= room:
             self.data += data
-            return
-        if self._tail is None:
-            # First overflow: `data` holds the whole stream so far, and from
-            # now on never grows again, so drop its growth slack.
-            self._tail = self.data[-PREVIEW:]
-            self.data += data[:room]
-            self.data = self.data[:]
-        if size >= PREVIEW:
-            self._tail = bytearray(data[-PREVIEW:])
         else:
-            self._tail += data
-            del self._tail[:-PREVIEW]
+            if self._tail is None:
+                # First overflow: `data` holds the whole stream so far, and from
+                # now on never grows again, so drop its growth slack.
+                self._tail = self.data[-PREVIEW:]
+                self.data += data[:room]
+                self.data = self.data[:]
+            if size >= PREVIEW:
+                self._tail = bytearray(data[-PREVIEW:])
+            else:
+                self._tail += data
+                del self._tail[:-PREVIEW]
+        if self.seen > PREVIEW and self.spills():
+            self._spill(data, size)
+
+    def _spill(self, data: bytes | bytearray | memoryview, size: int) -> None:
+        """Append `data` to the spill file, opening it with everything before
+        it on the first write past the preview. Unbuffered, so a backgrounded
+        cell's file reads live. A file that will not open leaves `spill` unset."""
+        if self._spill_file is None:
+            if self.spill is not None or self.spilled or SPILL_DIR is None:
+                return  # closed, full, refused, or failed
+            path = os.path.join(SPILL_DIR, re.sub(r"[^\w.-]", "_", self.id) + ".txt")
+            try:
+                self._spill_file = open(path, "wb", buffering=0)
+                # Before this write the stream fit in `data` whole.
+                self.spilled = self._spill_file.write(self.data[: self.seen - size])
+            except OSError:
+                self._spill_file = None
+                return
+            self.spill = path
+        try:
+            self.spilled += self._spill_file.write(data[: SPILL_LIMIT - self.spilled])
+        except OSError:
+            self.end_spill()
+            self.spill = None  # a file missing its end is not offered
+            return
+        if self.spilled >= SPILL_LIMIT:
+            self.end_spill()
+
+    def end_spill(self) -> None:
+        if self._spill_file is not None:
+            self._spill_file.close()
+            self._spill_file = None
+
+    def spill_note(self) -> str:
+        """What the result says about output past the preview, or nothing."""
+        if self.spill is None:
+            return ""
+        kept = (
+            f"its first {SPILL_LIMIT >> 20} MiB are"
+            if self.spilled >= SPILL_LIMIT
+            else "all of it is"
+        )
+        return (
+            f"\n[output was {self.seen} bytes; {kept} in {self.spill}:"
+            f" files.read(path, start_line=...) reads it, await files.find(pattern, path) searches it]\n"
+        )
 
     def tail(self, limit: int = PREVIEW) -> bytes:
         """The last `limit` bytes written, at most PREVIEW."""

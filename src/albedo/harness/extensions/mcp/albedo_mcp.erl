@@ -408,6 +408,9 @@ bounded(_, _) -> <<>>.
 definitions(#{operations := Operations}) ->
     iolist_to_binary(json:encode([#{
         <<"name">> => maps:get(advertised, O),
+        <<"server">> => maps:get(server, O),
+        <<"kind">> => atom_to_binary(maps:get(kind, O), utf8),
+        <<"tool">> => maps:get(raw, O),
         <<"description">> => maps:get(description, O),
         <<"parameters">> => maps:get(schema, O)
     } || O <- Operations])).

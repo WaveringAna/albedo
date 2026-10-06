@@ -5,8 +5,10 @@ import albedo_api
 import albedo_bundle
 import albedo_state
 from albedo_values import Unencodable, decode, encode
+import albedo_capture
 from albedo_capture import Capture, PREVIEW, MAX_IMAGE_BYTES
 import albedo_link
+import albedo_memory
 from albedo_protocol import parse_incoming
 import albedo_proc
 import albedo_shell
@@ -31,6 +33,7 @@ import select
 import shutil
 import signal
 import sys
+import tempfile
 import threading
 import time
 import traceback
@@ -75,6 +78,7 @@ BACKGROUND_SECONDS = max(
 )
 CELL_TASKS: dict[str, asyncio.Task[dict[str, object]]] = {}
 CELL_CAPTURES: dict[str, Capture] = {}
+CELL_STARTS: dict[str, int] = {}  # the kernel's footprint as each running cell began
 BACKGROUND_RESULTS: dict[str, dict[str, object]] = {}
 READ_CELLS: set[str] = set()
 CELL_ANNOUNCER: asyncio.Task[None] | None = None
@@ -215,6 +219,25 @@ def watch() -> None:
         busy = bool(CELL_TASKS) or not QUEUE.empty() or LINK.jobs.live() > 0
         if not busy and LINK.idle_for() > LINK.grace:
             die()
+
+
+def guard_memory() -> None:
+    """Interrupts every running cell once the kernel's footprint passes its
+    threshold (albedo_memory), so a runaway cell ends instead of the kernel.
+    A thread, like the deadline timer: a synchronous cell holds the loop."""
+    while True:
+        time.sleep(albedo_memory.INTERVAL)
+        if not CELL_STARTS:
+            continue
+        used = albedo_memory.footprint()
+        if used is None:
+            return
+        for id, start in list(CELL_STARTS.items()):
+            capture = CELL_CAPTURES.get(id)
+            if capture is None or capture.interruption == "memory":
+                continue  # already told; it is unwinding
+            if used > albedo_memory.threshold(start):
+                receive({"type": "interrupt", "id": id, "reason": "memory"})
 
 
 def hello() -> dict[str, object]:
@@ -1243,6 +1266,13 @@ async def execute_cell(
         status = "interrupted"
         if capture.interruption == "deadline":
             capture.write("\n[cell deadline exceeded; execution interrupted]\n")
+        elif capture.interruption == "memory":
+            used = albedo_memory.footprint() or 0
+            capture.write(
+                f"\n[kernel memory passed its cap: {albedo_memory.mebibytes(used)} held,"
+                f" cap {albedo_memory.mebibytes(albedo_memory.LIMIT)}; execution interrupted."
+                " The namespace is kept: del large variables, gc.collect(), or work in smaller pieces.]\n"
+            )
     except BaseException as error:
         status = "error"
         failed_id = cast(str, getattr(error, "_albedo_cell_id", capture.id))
@@ -1261,7 +1291,7 @@ async def execute_cell(
         "id": capture.id,
         "status": status,
         "duration": round(LOOP.time() - began, 3),
-        "output": capture.preview(status),
+        "output": capture.preview(status) + capture.spill_note(),
         "value": value,
         "truncated": capture.seen > PREVIEW,
         "images": capture.encoded_images(),
@@ -1276,7 +1306,7 @@ async def finish_background(
     capture = ARCHIVES[message["id"]]
     if done["value"]:
         capture.write("\n[result]\n" + str(done["value"]) + "\n")
-        done["output"] = capture.preview(str(done["status"]))
+        done["output"] = capture.preview(str(done["status"])) + capture.spill_note()
         done["truncated"] = capture.seen > PREVIEW
     # Commit before the wake, so cells.info/read see the terminal outcome.
     if message.get("durable", False):
@@ -1315,8 +1345,10 @@ def retain_cell_result(id: str, done: dict[str, object]) -> None:
     EXECUTING.discard(id)
     CELL_TASKS.pop(id, None)
     CELL_CAPTURES.pop(id, None)
+    CELL_STARTS.pop(id, None)
     capture = ARCHIVES.get(id)
     if capture is not None:
+        capture.end_spill()
         capture.images.clear()
         remember(capture)
     send({"type": "cells", "live": len(CELL_TASKS)})
@@ -1384,6 +1416,7 @@ async def serve():
         task = LOOP.create_task(execute_cell(message, capture))
         CELL_TASKS[capture.id] = task
         CELL_CAPTURES[capture.id] = capture
+        CELL_STARTS[capture.id] = albedo_memory.footprint() or 0
         send({"type": "cells", "live": len(CELL_TASKS)})
         interrupted = INTERRUPTS.pop(capture.id, None)
         if interrupted is not None:
@@ -1413,6 +1446,7 @@ def background_reply(capture: Capture) -> dict[str, object]:
         "status": "backgrounded",
         "duration": BACKGROUND_SECONDS,
         "output": capture.preview("ok")
+        + capture.spill_note()
         + (
             f"\n[cell {capture.id} is still running in the background. "
             "the session will wake automatically when it finishes; do NOT poll "
@@ -1492,6 +1526,12 @@ def main():
     if os.getpgrp() != os.getpid():
         os.setsid()
     modules = open_link(sys.argv)
+    # Beside the run directories: $ALBEDO_HOME/output, ~/.albedo-remote/output.
+    albedo_capture.prune_spills(
+        os.path.join(os.path.dirname(os.path.dirname(RUN_DIR)), "output")
+        if RUN_DIR is not None
+        else os.path.join(tempfile.gettempdir(), "albedo-output")
+    )
     _ = os.dup2(os.open(os.devnull, os.O_RDONLY), 0)
     read_fd, write_fd = os.pipe()
     _ = os.dup2(write_fd, 1)
@@ -1506,6 +1546,7 @@ def main():
     threading.Thread(target=reader, daemon=True).start()
     if RUN_DIR is not None:
         threading.Thread(target=watch, daemon=True).start()
+    threading.Thread(target=guard_memory, daemon=True).start()
     _ = signal.signal(signal.SIGINT, interrupt)
     albedo_shell.install()  # refusals precede observational audit hooks
     albedo_trace.install(CELL.get)
