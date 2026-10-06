@@ -158,6 +158,20 @@ class KernelDetachTests(unittest.TestCase):
         self.app.idle(self.session)
         self.assertNotIn("The python kernel reattached", self.last_prompt())
 
+    def test_a_job_ending_after_a_restart_wakes_its_idle_session(self):
+        started = self.cell("j = run('sleep', '4')\nj.id")
+        job = started["value"].strip("'\"")
+        requests = len(self.provider.requests)
+        # The restart leaves the session idle and unloaded; only its kernel
+        # comes back, and the job's end must still reach the model.
+        self.app.restart()
+        deadline = time.monotonic() + 30
+        while len(self.provider.requests) == requests and time.monotonic() < deadline:
+            time.sleep(0.1)
+        self.assertGreater(len(self.provider.requests), requests, "no wake")
+        self.app.idle(self.session)
+        self.assertIn(job, self.last_prompt())
+
     def test_a_kernel_killed_while_the_daemon_was_down_has_its_jobs_ended(self):
         started = self.cell(
             "import asyncio, os\nj = run('sleep', '300')\nawait asyncio.sleep(0.5)\n(os.getpid(), j.process.pid)"

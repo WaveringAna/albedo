@@ -213,7 +213,11 @@ dedupe:
   stopping the runtime let kernels go instead of ending them.
 - daemon start: `runtime.resume_kernels` reattaches every recorded kernel in
   the background, one at a time through the boot slots, so late results and
-  job wakes arrive without waiting for the session. a session that asks for
+  job wakes arrive without waiting for the session. no actor is loaded for an
+  idle session yet, so a wake finds no registered closure: `albedo_wakes`
+  then calls the loader the registry installs (`on_missing`), which starts the
+  session as a `Lookup` would, and delivers to it; only a session that cannot
+  start answers `unavailable`, which the kernel does not retry. a session that asks for
   its kernel meanwhile waits for that attach, and gets a fresh boot if there
   was nothing to attach to. an attached kernel's `runtime.origin` is
   `Resumed`, and the session keeps its namespace without the disk restore. a

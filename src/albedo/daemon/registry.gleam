@@ -1,5 +1,6 @@
 //// The supervised session registry owns lifecycle, admission, schedules, and maintenance.
 
+import albedo/actor_call
 import albedo/clock
 
 import albedo/daemon/agents
@@ -535,6 +536,14 @@ pub fn start(
         // Agents start and stop other sessions from kernel host routes.
         agents.register(fn(op) { actor.call(self, 60_000, AgentOp(op, _)) })
         mail.on_waiting(fn() { process.send(self, MailWaiting) })
+        // A kernel reattached after a restart wakes its idle session, whose
+        // actor nothing has loaded yet.
+        wakes_on_missing(fn(id) {
+          case actor_call.try_call(self, 30_000, Lookup(id, _)) {
+            Ok(Ok(_)) -> True
+            _ -> False
+          }
+        })
       }
       _ -> Nil
     }
@@ -664,6 +673,9 @@ fn dispatch_schedule(
     }
   }
 }
+
+@external(erlang, "albedo_wakes", "on_missing")
+fn wakes_on_missing(load: fn(String) -> Bool) -> Nil
 
 fn report_start_error(id: String, error: actor.StartError) -> Nil {
   let reason = case error {
