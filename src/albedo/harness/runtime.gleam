@@ -556,12 +556,10 @@ fn serve(
             True, True ->
               case runtime_state.upgradable(session) {
                 True ->
-                  actor.continue(upgrade.start_upgrade(
-                    state,
-                    id,
-                    session,
-                    answer,
-                  ))
+                  actor.continue(
+                    upgrade.start_upgrade(state, id, session, answer)
+                    |> boot.boot_next,
+                  )
                 False -> {
                   answer(Ok(session))
                   actor.continue(runtime_state.holding(
@@ -644,7 +642,9 @@ fn serve(
         reload.reload(state, id, cwd, change, reply) |> boot.boot_next,
       )
     runtime_state.ReloadDesired(id, cwd, reply) ->
-      actor.continue(reload.start_desired_reload(state, id, cwd, reply))
+      actor.continue(
+        reload.start_desired_reload(state, id, cwd, reply) |> boot.boot_next,
+      )
     runtime_state.Reloaded(id, generation, previous, outcome, reply) ->
       actor.continue(
         reload.reloaded(state, id, generation, previous, outcome, reply)

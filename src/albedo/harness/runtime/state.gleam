@@ -165,6 +165,19 @@ pub type BootRequest {
     previous: Option(Session),
     reply: Subject(Result(Option(Session), String)),
   )
+  /// Recompose from the saved desired selection, keeping the live kernel
+  /// where its modules allow; `active_strategy` is the compaction the
+  /// running composition has, which the new one must not silently drop.
+  RecomposeDesired(
+    id: String,
+    generation: Reference,
+    cwd: String,
+    previous: Option(Session),
+    active_strategy: Option(String),
+    reply: Subject(Result(Option(Session), String)),
+  )
+  /// Swap the stale kernel an open found; the opener waits in `booting`.
+  SwapStale(id: String, generation: Reference, cached: Cached, session: Session)
 }
 
 pub type Booting {

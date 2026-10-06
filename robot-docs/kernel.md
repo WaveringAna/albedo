@@ -229,6 +229,20 @@ dedupe:
   and `jobs` only update ownership and observations, which converge; a `done`
   nobody waits for rewrites the same outcome; traces save by cell id.
 
+## the runtime scheduler
+
+`harness/runtime/boot.gleam` owns every worker the runtime actor starts.
+Booting, attaching, swapping a stale kernel at open, an explicit upgrade,
+recomposing for a reload (proposed or desired), and a composition read all
+queue as a `BootRequest` and run through `boot_next`, which admits them into
+`boot_slots` workers, one class never starving the other. A handler that
+queues a request ends in `|> boot.boot_next` in `serve`; nothing spawns a
+kernel worker outside `start`. Each worker computes off the actor, then
+`deliver`s its message or, when the runtime stopped meanwhile, releases what
+it made (`work`). `runtime/state` names the generation lifecycle a request
+belongs to: `admit` opens one, `current_waiters` says whether a result is
+still for it, `generation_over` ends it and replays what waited.
+
 ## drops
 
 - the connection drops (the relay's socket closes, or the bridge dies): the port owner reattaches with backoff (50 ms doubling to

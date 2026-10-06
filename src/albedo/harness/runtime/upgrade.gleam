@@ -1,6 +1,6 @@
-//// Swapping a session's stale kernel for a current one: started off the actor
-//// like a boot, carrying what the old namespace could, and settled when the
-//// worker reports which kernel the session ends up with.
+//// Swapping a session's stale kernel for a current one: queued for the
+//// scheduler like a boot, carrying what the old namespace could, and settled
+//// when the worker reports which kernel the session ends up with.
 
 import albedo/harness/extensions/python/kernel as python
 import albedo/harness/extensions/python/link
@@ -45,47 +45,7 @@ pub fn start_upgrade(
       state
     }
     Ok(cached) -> {
-      let self = state.self
-      let owner = state.work
       let generation = reference.new()
-      process.spawn_unlinked(fn() {
-        let upgraded =
-          protect.attempt(fn() {
-            kernels.upgrade(owner, id, cached, session.kernel)
-          })
-        let result = case upgraded {
-          Ok(Ok(#(session, _))) -> Ok(session)
-          Ok(Error(error)) -> {
-            io.println_error(
-              "kernel upgrade waits: " <> string.inspect(error.reason),
-            )
-            case python.alive(session.kernel) {
-              True ->
-                Ok(runtime_state.Session(..session, origin: runtime_state.Kept))
-              False -> Error(error.reason)
-            }
-          }
-          Error(crash) -> {
-            io.println_error("kernel upgrade failed: " <> crash)
-            case python.alive(session.kernel) {
-              True ->
-                Ok(runtime_state.Session(..session, origin: runtime_state.Kept))
-              False -> Error(python.Unavailable(crash))
-            }
-          }
-        }
-        case runtime_state.owner_alive(self) {
-          True ->
-            process.send(self, runtime_state.Booted(id, generation, result))
-          False -> {
-            case result {
-              Ok(session) ->
-                kernels.drop_kernel("upgrade for a stopped runtime", session)
-              Error(_) -> Nil
-            }
-          }
-        }
-      })
       runtime_state.State(
         ..runtime_state.without_session(state, id),
         booting: dict.insert(
@@ -93,7 +53,40 @@ pub fn start_upgrade(
           id,
           runtime_state.Booting(generation, [answer]),
         ),
+        waiting: list.append(state.waiting, [
+          runtime_state.SwapStale(id, generation, cached, session),
+        ]),
       )
+    }
+  }
+}
+
+/// The swap itself, run by a scheduler worker: the session over its new
+/// kernel, or over the old one when the swap must wait and it still lives.
+pub fn swap_stale(
+  owner: work.Store,
+  id: String,
+  cached: runtime_state.Cached,
+  session: runtime_state.Session,
+) -> Result(runtime_state.Session, python.Error) {
+  let kept = runtime_state.Session(..session, origin: runtime_state.Kept)
+  case
+    protect.attempt(fn() { kernels.upgrade(owner, id, cached, session.kernel) })
+  {
+    Ok(Ok(#(session, _))) -> Ok(session)
+    Ok(Error(error)) -> {
+      io.println_error("kernel upgrade waits: " <> string.inspect(error.reason))
+      case python.alive(session.kernel) {
+        True -> Ok(kept)
+        False -> Error(error.reason)
+      }
+    }
+    Error(crash) -> {
+      io.println_error("kernel upgrade failed: " <> crash)
+      case python.alive(session.kernel) {
+        True -> Ok(kept)
+        False -> Error(python.Unavailable(crash))
+      }
     }
   }
 }

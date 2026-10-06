@@ -2,7 +2,6 @@
 //// upgrades, and observations into a bounded set of workers, and reattaches
 //// recorded kernels after a daemon restart.
 
-import albedo/daemon/session_catalog
 import albedo/harness/extension
 import albedo/harness/extensions/python/kernel as python
 import albedo/harness/protect
@@ -47,241 +46,256 @@ pub fn boot_next(state: runtime_state.State) -> runtime_state.State {
               _ -> 0
             },
         )
-      let self = state.self
-      let owner = state.work
-      case request {
-        runtime_state.Observe(id, home, reply, retries) -> {
-          let inventory = observation.composition_inventory(state)
-          // A read captures only this session's bases, never the runtime cache.
-          let retained =
-            list.filter_map(
-              [
-                dict.get(state.desired, id) |> option.from_result,
-                dict.get(state.compositions, id)
-                  |> option.from_result
-                  |> option.then(fn(value) { value.basis }),
-              ],
-              option.to_result(_, Nil),
-            )
-          let cached = dict.get(state.compositions, id) |> option.from_result
-          process.spawn_unlinked(fn() {
-            let discovered =
-              protect.attempt(fn() {
-                case reply {
-                  runtime_state.CompositionReply(_) ->
-                    observation.retained_desired(inventory, retained, home, id)
-                  runtime_state.CatalogReply(_) ->
-                    observation.desired(inventory, retained, home, id)
-                }
-              })
-              |> result.flatten
-            let observed = case reply {
-              runtime_state.CompositionReply(_) ->
-                runtime_state.CompositionResult({
-                  use value <- result.try(discovered)
-                  protect.attempt(fn() {
-                    observation.observe_composition_value(
-                      inventory,
-                      cached,
-                      value.snapshot,
-                      id,
-                    )
-                  })
-                  |> result.flatten
-                })
-              runtime_state.CatalogReply(_) ->
-                runtime_state.CatalogResult({
-                  use _ <- result.try(case discovered {
-                    Error("session not found") -> Error("session not found")
-                    _ -> Ok(Nil)
-                  })
-                  Ok(runtime_state.CatalogObservation(
-                    result.map(discovered, fn(value) { value.snapshot }),
-                    option.then(cached, fn(value) { value.loaded_revision }),
-                    option.map(cached, fn(value) {
-                      extension.command_entries(value.composition)
-                    })
-                      |> option.unwrap([]),
-                    option.map(cached, fn(value) {
-                      extension.client_commands(value.composition)
-                    })
-                      |> option.unwrap([]),
-                  ))
-                })
-            }
-            // Recheck after plugin observation, not just after file discovery.
-            let discovered =
-              protect.attempt(fn() {
-                use value <- result.try(discovered)
-                use unchanged <- result.try(case reply {
-                  runtime_state.CompositionReply(_) ->
-                    session_catalog.saved_key(home, inventory, id)
-                    |> result.map(fn(saved) { saved == value.saved })
-                  runtime_state.CatalogReply(_) ->
-                    session_catalog.inputs(home, inventory, id)
-                    |> result.map(fn(after) { after.key == value.inputs })
-                })
-                case unchanged {
-                  True -> Ok(value)
-                  False ->
-                    Error("composition inputs changed during observation")
-                }
-              })
-              |> result.flatten
-            process.send(
-              self,
-              runtime_state.Observed(
-                id,
-                home,
-                retries,
-                cached,
-                discovered,
-                reply,
-                observed,
-              ),
-            )
+      start(state, request)
+      boot_next(state)
+    }
+    [] -> state
+  }
+}
+
+/// Runs `compute` off the actor, then `deliver`s its value to the actor, or
+/// hands it to `orphaned` when the runtime stopped meanwhile.
+fn work(
+  self: Subject(runtime_state.Message),
+  compute: fn() -> a,
+  deliver: fn(a) -> Nil,
+  orphaned: fn(a) -> Nil,
+) -> Nil {
+  process.spawn_unlinked(fn() {
+    let value = compute()
+    case runtime_state.owner_alive(self) {
+      True -> deliver(value)
+      False -> orphaned(value)
+    }
+  })
+  Nil
+}
+
+/// One admitted request's worker. Each captures what it needs from the
+/// state here; none holds the state itself.
+fn start(
+  state: runtime_state.State,
+  request: runtime_state.BootRequest,
+) -> Nil {
+  let self = state.self
+  let owner = state.work
+  let inventory = observation.composition_inventory(state)
+  case request {
+    runtime_state.Observe(id, home, reply, retries) -> {
+      let retained = observation.bases_for(state, id)
+      let cached = dict.get(state.compositions, id) |> option.from_result
+      work(
+        self,
+        fn() {
+          observation.observe(inventory, retained, cached, home, id, reply)
+        },
+        fn(read) {
+          let #(discovered, observed) = read
+          process.send(
+            self,
+            runtime_state.Observed(
+              id,
+              home,
+              retries,
+              cached,
+              discovered,
+              reply,
+              observed,
+            ),
+          )
+        },
+        fn(_) { Nil },
+      )
+    }
+    runtime_state.Compose(id, cwd, generation) -> {
+      let retained = observation.retained_basis(state)
+      work(
+        self,
+        fn() {
+          protect.attempt(fn() {
+            preparation.build_cached(inventory, id, cwd, None, [], retained)
           })
-        }
-        runtime_state.Compose(id, cwd, generation) -> {
-          let inventory = observation.composition_inventory(state)
-          let retained = observation.retained_basis(state)
-          process.spawn_unlinked(fn() {
-            let prepared =
-              protect.attempt(fn() {
-                preparation.build_cached(inventory, id, cwd, None, [], retained)
-              })
-              |> result.flatten
-            case runtime_state.owner_alive(self) {
-              True ->
-                process.send(
-                  self,
-                  runtime_state.Composed(id, generation, prepared),
-                )
-              False -> {
-                case prepared {
-                  Ok(cached) -> extension.close(cached.composition)
-                  Error(_) -> Nil
-                }
-              }
-            }
+          |> result.flatten
+        },
+        fn(prepared) {
+          process.send(self, runtime_state.Composed(id, generation, prepared))
+        },
+        fn(prepared) {
+          case prepared {
+            Ok(cached) -> extension.close(cached.composition)
+            Error(_) -> Nil
+          }
+        },
+      )
+    }
+    runtime_state.BootKernel(id, generation, cached) ->
+      work(
+        self,
+        fn() {
+          case
+            protect.attempt(fn() { kernels.open_kernel(owner, id, cached) })
+          {
+            Ok(result) -> result
+            Error(crash) ->
+              Error(python.Unavailable("kernel boot failed: " <> crash))
+          }
+        },
+        fn(outcome) {
+          process.send(self, runtime_state.Booted(id, generation, outcome))
+        },
+        drop_if_booted("boot for a stopped runtime"),
+      )
+    runtime_state.SwapStale(id, generation, cached, session) ->
+      work(
+        self,
+        fn() { upgrade.swap_stale(owner, id, cached, session) },
+        fn(outcome) {
+          process.send(self, runtime_state.Booted(id, generation, outcome))
+        },
+        drop_if_booted("upgrade for a stopped runtime"),
+      )
+    runtime_state.AttachKernel(id, generation, cached, reply) ->
+      work(
+        self,
+        fn() {
+          protect.attempt(fn() { kernels.resume_kernel(owner, id, cached) })
+          |> result.map_error(fn(crash) {
+            python.Unavailable("kernel reattach failed: " <> crash)
           })
-        }
-        runtime_state.BootKernel(id, generation, cached) ->
-          process.spawn_unlinked(fn() {
-            let outcome = case
-              protect.attempt(fn() { kernels.open_kernel(owner, id, cached) })
-            {
-              Ok(result) -> result
-              Error(crash) ->
-                Error(python.Unavailable("kernel boot failed: " <> crash))
-            }
-            case runtime_state.owner_alive(self) {
-              True ->
-                process.send(
-                  self,
-                  runtime_state.Booted(id, generation, outcome),
-                )
-              False -> {
-                case outcome {
-                  Ok(session) ->
-                    kernels.drop_kernel("boot for a stopped runtime", session)
-                  Error(_) -> Nil
-                }
-              }
-            }
+        },
+        fn(outcome) {
+          process.send(
+            self,
+            runtime_state.Reattached(id, generation, cached, outcome),
+          )
+          process.send(reply, Nil)
+        },
+        fn(outcome) {
+          case outcome {
+            Ok(Some(session)) ->
+              kernels.drop_kernel("reattach for a stopped runtime", session)
+            _ -> Nil
+          }
+          process.send(reply, Nil)
+        },
+      )
+    runtime_state.UpgradeKernel(id, generation, cached, previous, answer) ->
+      work(
+        self,
+        fn() {
+          protect.attempt(fn() {
+            upgrade.upgrade_value(owner, id, cached, previous)
           })
-        runtime_state.AttachKernel(id, generation, cached, reply) ->
-          process.spawn_unlinked(fn() {
-            let outcome =
-              protect.attempt(fn() { kernels.resume_kernel(owner, id, cached) })
-              |> result.map_error(fn(crash) {
-                python.Unavailable("kernel reattach failed: " <> crash)
-              })
-            case runtime_state.owner_alive(self) {
-              True ->
-                process.send(
-                  self,
-                  runtime_state.Reattached(id, generation, cached, outcome),
-                )
-              False -> {
-                case outcome {
-                  Ok(Some(session)) ->
-                    kernels.drop_kernel(
-                      "reattach for a stopped runtime",
-                      session,
-                    )
-                  _ -> Nil
-                }
-              }
-            }
-            process.send(reply, Nil)
-          })
-        runtime_state.UpgradeKernel(id, generation, cached, previous, answer) ->
-          process.spawn_unlinked(fn() {
-            let outcome =
-              protect.attempt(fn() {
-                upgrade.upgrade_value(owner, id, cached, previous)
-              })
-              |> result.flatten
-            case runtime_state.owner_alive(self) {
-              True ->
-                process.send(
-                  self,
-                  runtime_state.UpgradedKernel(
-                    id,
-                    generation,
-                    previous,
-                    outcome,
-                    answer,
-                  ),
-                )
-              False -> {
-                upgrade.discard_upgrade(previous, outcome)
-                answer(Error("runtime owner stopped during kernel upgrade"))
-              }
-            }
-          })
-        runtime_state.RecomposeSelected(
-          id,
-          generation,
-          cwd,
-          selected,
-          demanded,
-          persist,
-          previous,
-          reply,
-        ) -> {
-          let inventory = observation.composition_inventory(state)
-          let retained = observation.retained_basis(state)
-          process.spawn_unlinked(fn() {
-            let outcome =
-              protect.attempt(fn() {
-                reload.recompose_selected(
-                  inventory,
-                  retained,
-                  id,
-                  cwd,
-                  selected,
-                  demanded,
-                  persist,
-                  previous,
-                )
-              })
-              |> result.flatten
-            reload.publish_reload(
-              self,
+          |> result.flatten
+        },
+        fn(outcome) {
+          process.send(
+            self,
+            runtime_state.UpgradedKernel(
               id,
               generation,
               previous,
               outcome,
-              reply,
+              answer,
+            ),
+          )
+        },
+        fn(outcome) {
+          upgrade.discard_upgrade(previous, outcome)
+          answer(Error("runtime owner stopped during kernel upgrade"))
+        },
+      )
+    runtime_state.RecomposeSelected(
+      id,
+      generation,
+      cwd,
+      selected,
+      demanded,
+      persist,
+      previous,
+      reply,
+    ) -> {
+      let retained = observation.retained_basis(state)
+      work(
+        self,
+        fn() {
+          protect.attempt(fn() {
+            reload.recompose_selected(
+              inventory,
+              retained,
+              id,
+              cwd,
+              selected,
+              demanded,
+              persist,
+              previous,
             )
           })
-        }
-      }
-      boot_next(state)
+          |> result.flatten
+        },
+        deliver_reload(self, id, generation, previous, reply),
+        reload.orphaned(previous, _, reply),
+      )
     }
-    [] -> state
+    runtime_state.RecomposeDesired(
+      id,
+      generation,
+      cwd,
+      previous,
+      active_strategy,
+      reply,
+    ) -> {
+      let retained = observation.retained_basis(state)
+      work(
+        self,
+        fn() {
+          protect.attempt(fn() {
+            reload.recompose_desired(
+              inventory,
+              retained,
+              id,
+              cwd,
+              previous,
+              active_strategy,
+            )
+          })
+          |> result.map_error(fn(crash) {
+            "could not reload extensions: " <> crash
+          })
+          |> result.flatten
+        },
+        deliver_reload(self, id, generation, previous, reply),
+        reload.orphaned(previous, _, reply),
+      )
+    }
+  }
+}
+
+fn deliver_reload(
+  self: Subject(runtime_state.Message),
+  id: String,
+  generation: Reference,
+  previous: Option(runtime_state.Session),
+  reply: Subject(Result(Option(runtime_state.Session), String)),
+) -> fn(Result(#(runtime_state.Cached, Option(runtime_state.Session)), String)) ->
+  Nil {
+  fn(outcome) {
+    process.send(
+      self,
+      runtime_state.Reloaded(id, generation, previous, outcome, reply),
+    )
+  }
+}
+
+/// A kernel that booted for a runtime that stopped has no one to hold it.
+fn drop_if_booted(
+  context: String,
+) -> fn(Result(runtime_state.Session, python.Error)) -> Nil {
+  fn(outcome) {
+    case outcome {
+      Ok(session) -> kernels.drop_kernel(context, session)
+      Error(_) -> Nil
+    }
   }
 }
 

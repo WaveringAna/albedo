@@ -8,7 +8,6 @@ import albedo/harness/extensions/python/kernel as python
 import albedo/harness/extensions/python/link
 import albedo/harness/protect
 import albedo/harness/runtime/kernels
-import albedo/harness/runtime/observation
 import albedo/harness/runtime/preparation
 import albedo/harness/runtime/state as runtime_state
 import albedo/shared
@@ -20,10 +19,9 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 
-pub fn publish_reload(
-  subject: Subject(runtime_state.Message),
-  id: String,
-  generation: Reference,
+/// A recompose whose runtime stopped meanwhile: release whatever kernel the
+/// session would have had and tell the caller.
+pub fn orphaned(
   previous: Option(runtime_state.Session),
   outcome: Result(
     #(runtime_state.Cached, Option(runtime_state.Session)),
@@ -31,33 +29,24 @@ pub fn publish_reload(
   ),
   reply: Subject(Result(Option(runtime_state.Session), String)),
 ) -> Nil {
-  case runtime_state.owner_alive(subject) {
-    True ->
-      process.send(
-        subject,
-        runtime_state.Reloaded(id, generation, previous, outcome, reply),
-      )
-    False -> {
-      case outcome {
-        Error(_) -> {
-          case previous {
-            Some(session) ->
-              kernels.drop_kernel("reload for a stopped runtime", session)
-            None -> Nil
-          }
-        }
-        Ok(#(fresh, replacement)) -> {
-          case replacement {
-            Some(session) ->
-              kernels.drop_kernel("reload for a stopped runtime", session)
-            None -> Nil
-          }
-          extension.close(fresh.composition)
-        }
+  case outcome {
+    Error(_) -> {
+      case previous {
+        Some(session) ->
+          kernels.drop_kernel("reload for a stopped runtime", session)
+        None -> Nil
       }
-      process.send(reply, Error("runtime owner stopped during reload"))
+    }
+    Ok(#(fresh, replacement)) -> {
+      case replacement {
+        Some(session) ->
+          kernels.drop_kernel("reload for a stopped runtime", session)
+        None -> Nil
+      }
+      extension.close(fresh.composition)
     }
   }
+  process.send(reply, Error("runtime owner stopped during reload"))
 }
 
 /// Why the daemon will not run this extension at all, if it quarantined it.
@@ -267,99 +256,114 @@ pub fn start_desired_reload(
       extension.compaction(extension.extensions(cached.composition))
     })
     |> option.map(fn(strategy) { strategy.name })
-  let inventory = observation.composition_inventory(state)
-  let self = state.self
-  let retained = observation.retained_basis(state)
-  process.spawn_unlinked(fn() {
-    let outcome =
-      protect.attempt(fn() {
-        use selected <- result.try(extension.enabled(
-          inventory.ledger,
-          inventory.installed,
-          inventory.defaults,
-          id,
-        ))
-        use _ <- result.try(
-          case active_strategy, extension.compaction(selected) {
-            Some(name), None ->
-              Error("select another compaction strategy to replace " <> name)
-            _, _ -> Ok(Nil)
-          },
-        )
-        use fresh <- result.try(preparation.build_cached(
-          inventory,
-          id,
-          cwd,
-          Some(selected),
-          list.map(selected, fn(item) { item.name }),
-          retained,
-        ))
-        let rebound =
-          protect.attempt(fn() {
-            case previous {
-              None -> Ok(None)
-              Some(session) ->
-                case python.alive(session.kernel) {
-                  False -> Ok(None)
-                  True ->
-                    case
-                      session.cwd == cwd
-                      && extension.python_modules(session.composition)
-                      == extension.python_modules(fresh.composition)
-                    {
-                      True ->
-                        python.rebind(
-                          session.kernel,
-                          kernels.kernel_routes(
-                            inventory.ledger,
-                            id,
-                            fresh.composition,
-                          ),
-                        )
-                        |> result.map(fn(_) {
-                          Some(kernels.session_over(
-                            inventory.ledger,
-                            id,
-                            fresh,
-                            session.kernel,
-                            runtime_state.Kept,
-                          ))
-                        })
-                      False -> {
-                        python.mark_stale(session.kernel, python.Modules)
-                        case runtime_state.upgradable(session) {
-                          False -> Error(python.Busy)
-                          True ->
-                            kernels.upgrade(
-                              inventory.ledger,
-                              id,
-                              fresh,
-                              session.kernel,
-                            )
-                            |> result.map_error(fn(failure) { failure.reason })
-                            |> result.map(fn(upgraded) { Some(upgraded.0) })
-                        }
-                      }
-                    }
-                }
-            }
-          })
-          |> result.map_error(fn(crash) { python.Unavailable(crash) })
-          |> result.flatten
-        case rebound {
-          Ok(session) -> Ok(#(fresh, session))
-          Error(error) -> {
-            extension.close(fresh.composition)
-            Error("could not reload extensions: " <> string.inspect(error))
-          }
-        }
-      })
-      |> result.map_error(fn(crash) { "could not reload extensions: " <> crash })
-      |> result.flatten
-    publish_reload(self, id, generation, previous, outcome, reply)
+  let state =
+    runtime_state.without_session(state, id)
+    |> runtime_state.admit(id, generation)
+  runtime_state.State(
+    ..state,
+    waiting: list.append(state.waiting, [
+      runtime_state.RecomposeDesired(
+        id,
+        generation,
+        cwd,
+        previous,
+        active_strategy,
+        reply,
+      ),
+    ]),
+  )
+}
+
+/// Builds the composition the saved selection asks for and keeps, rebinds,
+/// swaps, or drops the live kernel to match it; run by a scheduler worker.
+pub fn recompose_desired(
+  inventory: session_catalog.Inventory,
+  retained: List(runtime_state.Desired),
+  id: String,
+  cwd: String,
+  previous: Option(runtime_state.Session),
+  active_strategy: Option(String),
+) -> Result(#(runtime_state.Cached, Option(runtime_state.Session)), String) {
+  use selected <- result.try(extension.enabled(
+    inventory.ledger,
+    inventory.installed,
+    inventory.defaults,
+    id,
+  ))
+  use _ <- result.try(case active_strategy, extension.compaction(selected) {
+    Some(name), None ->
+      Error("select another compaction strategy to replace " <> name)
+    _, _ -> Ok(Nil)
   })
-  runtime_state.without_session(state, id)
-  |> runtime_state.admit(id, generation)
+  use fresh <- result.try(preparation.build_cached(
+    inventory,
+    id,
+    cwd,
+    Some(selected),
+    list.map(selected, fn(item) { item.name }),
+    retained,
+  ))
+  let rebound =
+    protect.attempt(fn() { rebound(inventory, id, cwd, previous, fresh) })
+    |> result.map_error(fn(crash) { python.Unavailable(crash) })
+    |> result.flatten
+  case rebound {
+    Ok(session) -> Ok(#(fresh, session))
+    Error(error) -> {
+      extension.close(fresh.composition)
+      Error("could not reload extensions: " <> string.inspect(error))
+    }
+  }
+}
+
+/// The live kernel over the fresh composition: rebound when its modules are
+/// unchanged, swapped when they changed and it can go, and `None` when there
+/// is no live kernel, so the next open boots one.
+fn rebound(
+  inventory: session_catalog.Inventory,
+  id: String,
+  cwd: String,
+  previous: Option(runtime_state.Session),
+  fresh: runtime_state.Cached,
+) -> Result(Option(runtime_state.Session), python.Error) {
+  case previous {
+    None -> Ok(None)
+    Some(session) ->
+      case python.alive(session.kernel) {
+        False -> Ok(None)
+        True ->
+          case
+            session.cwd == cwd
+            && extension.python_modules(session.composition)
+            == extension.python_modules(fresh.composition)
+          {
+            True ->
+              python.rebind(
+                session.kernel,
+                kernels.kernel_routes(inventory.ledger, id, fresh.composition),
+              )
+              |> result.map(fn(_) {
+                Some(kernels.session_over(
+                  inventory.ledger,
+                  id,
+                  fresh,
+                  session.kernel,
+                  runtime_state.Kept,
+                ))
+              })
+            False -> {
+              python.mark_stale(session.kernel, python.Modules)
+              case runtime_state.upgradable(session) {
+                False -> Error(python.Busy)
+                True ->
+                  kernels.upgrade(inventory.ledger, id, fresh, session.kernel)
+                  |> result.map_error(fn(failure) { failure.reason })
+                  |> result.map(fn(upgraded) { Some(upgraded.0) })
+              }
+            }
+          }
+      }
+  }
 }
 
 pub fn reloaded(

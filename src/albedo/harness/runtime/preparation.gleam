@@ -430,9 +430,12 @@ pub fn abandon(state: runtime_state.State, id: String) -> runtime_state.State {
       runtime_state.AttachKernel(_, _, _, reply) -> process.send(reply, Nil)
       runtime_state.UpgradeKernel(_, _, _, _, answer) ->
         answer(Error("the session closed during kernel upgrade"))
-      runtime_state.RecomposeSelected(_, _, _, _, _, _, _, reply) ->
+      runtime_state.RecomposeSelected(reply: reply, ..)
+      | runtime_state.RecomposeDesired(reply: reply, ..) ->
         process.send(reply, Error("the session closed during reload"))
-      _ -> Nil
+      // Its opener waits in the generation and is answered with it below.
+      runtime_state.SwapStale(..) -> Nil
+      runtime_state.Compose(..) | runtime_state.BootKernel(..) -> Nil
     }
   })
   dict.get(state.deferred, id)

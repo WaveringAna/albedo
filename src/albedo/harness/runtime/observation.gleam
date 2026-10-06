@@ -4,6 +4,7 @@
 
 import albedo/daemon/session_catalog
 import albedo/harness/extension
+import albedo/harness/protect
 import albedo/harness/runtime/state as runtime_state
 import albedo/harness/settings
 import albedo/shared
@@ -22,6 +23,93 @@ pub fn composition_inventory(
     installed.quarantined,
     installed.default_enabled,
   )
+}
+
+/// The bases an observation of one session may reuse: its own desired
+/// discovery and the basis its loaded composition was prepared on, never
+/// another session's or the runtime cache.
+pub fn bases_for(
+  state: runtime_state.State,
+  id: String,
+) -> List(runtime_state.Desired) {
+  list.filter_map(
+    [
+      dict.get(state.desired, id) |> option.from_result,
+      dict.get(state.compositions, id)
+        |> option.from_result
+        |> option.then(fn(cached) { cached.basis }),
+    ],
+    option.to_result(_, Nil),
+  )
+}
+
+/// One observation worker's reading: what it discovered, rechecked after
+/// plugin observation so inputs that changed under it are reported as such,
+/// and the answer for `reply`'s kind.
+pub fn observe(
+  inventory: session_catalog.Inventory,
+  retained: List(runtime_state.Desired),
+  cached: Option(runtime_state.Cached),
+  home: String,
+  id: String,
+  reply: runtime_state.ObservationReply,
+) -> #(Result(runtime_state.Desired, String), runtime_state.ObservationResult) {
+  let discovered =
+    protect.attempt(fn() {
+      case reply {
+        runtime_state.CompositionReply(_) ->
+          retained_desired(inventory, retained, home, id)
+        runtime_state.CatalogReply(_) -> desired(inventory, retained, home, id)
+      }
+    })
+    |> result.flatten
+  let observed = case reply {
+    runtime_state.CompositionReply(_) ->
+      runtime_state.CompositionResult({
+        use value <- result.try(discovered)
+        protect.attempt(fn() {
+          observe_composition_value(inventory, cached, value.snapshot, id)
+        })
+        |> result.flatten
+      })
+    runtime_state.CatalogReply(_) ->
+      runtime_state.CatalogResult({
+        use _ <- result.try(case discovered {
+          Error("session not found") -> Error("session not found")
+          _ -> Ok(Nil)
+        })
+        Ok(runtime_state.CatalogObservation(
+          result.map(discovered, fn(value) { value.snapshot }),
+          option.then(cached, fn(value) { value.loaded_revision }),
+          option.map(cached, fn(value) {
+            extension.command_entries(value.composition)
+          })
+            |> option.unwrap([]),
+          option.map(cached, fn(value) {
+            extension.client_commands(value.composition)
+          })
+            |> option.unwrap([]),
+        ))
+      })
+  }
+  let discovered =
+    protect.attempt(fn() {
+      use value <- result.try(discovered)
+      use unchanged <- result.try(case reply {
+        runtime_state.CompositionReply(_) ->
+          session_catalog.saved_key(home, inventory, id)
+          |> result.map(fn(saved) { saved == value.saved })
+        runtime_state.CatalogReply(_) ->
+          session_catalog.inputs(home, inventory, id)
+          |> result.map(fn(after) { after.key == value.inputs })
+      })
+      case unchanged {
+        True -> Ok(value)
+        False -> Error("composition inputs changed during observation")
+      }
+    })
+    |> result.flatten
+  #(discovered, observed)
 }
 
 /// Trusted embeddings may prepare kernels without a daemon session row. They
