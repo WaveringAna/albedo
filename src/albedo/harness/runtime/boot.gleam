@@ -349,21 +349,15 @@ pub fn reattached(
   outcome: Result(Option(runtime_state.Session), python.Error),
 ) -> runtime_state.State {
   case runtime_state.current_waiters(state, id, generation) {
-    Ok(waiters) -> {
-      let state = preparation.finish_commands(state, id, Ok(cached))
-      case outcome, waiters {
-        Ok(Some(session)), _ ->
-          preparation.booted(state, id, generation, Ok(session))
-        _, [] -> runtime_state.generation_over(state, id)
-        _, _ ->
-          runtime_state.State(
-            ..state,
-            waiting: list.append(state.waiting, [
-              runtime_state.BootKernel(id, generation, cached),
-            ]),
-          )
-      }
-    }
+    Ok(waiters) ->
+      preparation.finish_commands(state, id, Ok(cached))
+      |> preparation.settled(
+        id,
+        generation,
+        cached,
+        option.from_result(outcome) |> option.flatten,
+        waiters,
+      )
     _ -> {
       case outcome {
         Ok(Some(session)) ->

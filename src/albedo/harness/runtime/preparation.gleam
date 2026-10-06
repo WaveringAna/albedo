@@ -376,6 +376,30 @@ pub fn booted(
   }
 }
 
+/// The composition is in place and `session` is what came with it. A kernel
+/// is handed out like a boot; without one, a waiting opener gets a boot and
+/// nobody waiting ends the generation.
+pub fn settled(
+  state: runtime_state.State,
+  id: String,
+  generation: Reference,
+  cached: runtime_state.Cached,
+  session: Option(runtime_state.Session),
+  waiters: List(fn(Result(runtime_state.Session, python.Error)) -> Nil),
+) -> runtime_state.State {
+  case session, waiters {
+    Some(session), _ -> booted(state, id, generation, Ok(session))
+    None, [] -> runtime_state.generation_over(state, id)
+    None, _ ->
+      runtime_state.State(
+        ..state,
+        waiting: list.append(state.waiting, [
+          runtime_state.BootKernel(id, generation, cached),
+        ]),
+      )
+  }
+}
+
 /// Drop a session's pending boot, telling whoever waited.
 pub fn abandon(state: runtime_state.State, id: String) -> runtime_state.State {
   let state =

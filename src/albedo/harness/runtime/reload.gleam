@@ -427,18 +427,14 @@ pub fn reloaded(
             )
             |> preparation.finish_commands(id, Ok(fresh))
           process.send(reply, Ok(replacement))
-          case replacement, waiters {
-            Some(session), _ ->
-              preparation.booted(state, id, generation, Ok(session))
-            None, [] -> runtime_state.generation_over(state, id)
-            None, _ ->
-              runtime_state.State(
-                ..state,
-                waiting: list.append(state.waiting, [
-                  runtime_state.BootKernel(id, generation, fresh),
-                ]),
-              )
-          }
+          preparation.settled(
+            state,
+            id,
+            generation,
+            fresh,
+            replacement,
+            waiters,
+          )
         }
       }
   }
