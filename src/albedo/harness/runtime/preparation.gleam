@@ -251,7 +251,7 @@ pub fn peek(
         True -> state
         False -> {
           let generation = reference.new()
-          runtime_state.admit(state, id, generation)
+          runtime_state.admit(state, id, generation, [])
           |> prepare(id, cwd, generation, runtime_state.CommandsOrOpen)
         }
       }

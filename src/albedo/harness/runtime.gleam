@@ -586,15 +586,7 @@ fn serve(
           )
         Error(_), Error(_) -> {
           let generation = reference.new()
-          let state =
-            runtime_state.State(
-              ..state,
-              booting: dict.insert(
-                state.booting,
-                id,
-                runtime_state.Booting(generation, [answer]),
-              ),
-            )
+          let state = runtime_state.admit(state, id, generation, [answer])
           let state = case dict.get(state.compositions, id) {
             Ok(cached) if cached.cwd == cwd ->
               runtime_state.State(
@@ -931,9 +923,10 @@ fn serve(
     }
     runtime_state.Reattach(id, cwd, reply) ->
       actor.continue(boot.reattach(state, id, cwd, reply) |> boot.boot_next)
-    runtime_state.Reattached(id, generation, cached, result) ->
+    runtime_state.Reattached(id, generation, cached, result, reply) ->
       actor.continue(
-        boot.reattached(state, id, generation, cached, result) |> boot.boot_next,
+        boot.reattached(state, id, generation, cached, result, reply)
+        |> boot.boot_next,
       )
   }
 }

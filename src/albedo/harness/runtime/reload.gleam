@@ -149,7 +149,7 @@ fn reopen(
   let generation = reference.new()
   let state =
     runtime_state.without_session(state, id)
-    |> runtime_state.admit(id, generation)
+    |> runtime_state.admit(id, generation, [])
   runtime_state.State(
     ..state,
     waiting: list.append(state.waiting, [
@@ -186,15 +186,7 @@ pub fn recompose_selected(
     option.values([demanded]),
     retained,
   ))
-  let staged =
-    python.stage(
-      inventory.ledger,
-      id,
-      workspace,
-      kernels.kernel_routes(inventory.ledger, id, cached.composition),
-      composition.python_modules(cached.composition),
-    )
-  case staged {
+  case kernels.stage(inventory.ledger, id, cached) {
     Error(error) -> {
       composition.close(cached.composition)
       Error("could not prepare replacement: " <> string.inspect(error))
@@ -260,7 +252,7 @@ pub fn start_desired_reload(
     |> option.map(fn(strategy) { strategy.name })
   let state =
     runtime_state.without_session(state, id)
-    |> runtime_state.admit(id, generation)
+    |> runtime_state.admit(id, generation, [])
   runtime_state.State(
     ..state,
     waiting: list.append(state.waiting, [

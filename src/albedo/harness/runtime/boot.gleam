@@ -53,18 +53,19 @@ pub fn boot_next(state: runtime_state.State) -> runtime_state.State {
   }
 }
 
-/// Runs `compute` off the actor, then `deliver`s its value to the actor, or
-/// hands it to `orphaned` when the runtime stopped meanwhile.
+/// Runs `compute` off the actor and sends the actor the message `deliver`
+/// makes of its value, or hands the value to `orphaned` when the runtime
+/// stopped meanwhile.
 fn work(
   self: Subject(runtime_state.Message),
   compute: fn() -> a,
-  deliver: fn(a) -> Nil,
+  deliver: fn(a) -> runtime_state.Message,
   orphaned: fn(a) -> Nil,
 ) -> Nil {
   process.spawn_unlinked(fn() {
     let value = compute()
     case runtime_state.owner_alive(self) {
-      True -> deliver(value)
+      True -> process.send(self, deliver(value))
       False -> orphaned(value)
     }
   })
@@ -90,18 +91,14 @@ fn start(
           observation.observe(inventory, retained, cached, home, id, reply)
         },
         fn(read) {
-          let #(discovered, observed) = read
-          process.send(
-            self,
-            runtime_state.Observed(
-              id,
-              home,
-              retries,
-              cached,
-              discovered,
-              reply,
-              observed,
-            ),
+          runtime_state.Observed(
+            id,
+            home,
+            retries,
+            cached,
+            read.0,
+            reply,
+            read.1,
           )
         },
         fn(_) { Nil },
@@ -112,14 +109,11 @@ fn start(
       work(
         self,
         fn() {
-          protect.attempt(fn() {
+          protect.guarded(fn() {
             preparation.build_cached(inventory, id, cwd, None, [], retained)
           })
-          |> result.flatten
         },
-        fn(prepared) {
-          process.send(self, runtime_state.Composed(id, generation, prepared))
-        },
+        runtime_state.Composed(id, generation, _),
         fn(prepared) {
           case prepared {
             Ok(cached) -> composition.close(cached.composition)
@@ -140,18 +134,14 @@ fn start(
               Error(python.Unavailable("kernel boot failed: " <> crash))
           }
         },
-        fn(outcome) {
-          process.send(self, runtime_state.Booted(id, generation, outcome))
-        },
+        runtime_state.Booted(id, generation, _),
         drop_if_booted("boot for a stopped runtime"),
       )
     runtime_state.SwapStale(id, generation, cached, session) ->
       work(
         self,
         fn() { upgrade.swap_stale(owner, id, cached, session) },
-        fn(outcome) {
-          process.send(self, runtime_state.Booted(id, generation, outcome))
-        },
+        runtime_state.Booted(id, generation, _),
         drop_if_booted("upgrade for a stopped runtime"),
       )
     runtime_state.AttachKernel(id, generation, cached, reply) ->
@@ -163,13 +153,7 @@ fn start(
             python.Unavailable("kernel reattach failed: " <> crash)
           })
         },
-        fn(outcome) {
-          process.send(
-            self,
-            runtime_state.Reattached(id, generation, cached, outcome),
-          )
-          process.send(reply, Nil)
-        },
+        runtime_state.Reattached(id, generation, cached, _, reply),
         fn(outcome) {
           case outcome {
             Ok(Some(session)) ->
@@ -183,23 +167,11 @@ fn start(
       work(
         self,
         fn() {
-          protect.attempt(fn() {
+          protect.guarded(fn() {
             upgrade.upgrade_value(owner, id, cached, previous)
           })
-          |> result.flatten
         },
-        fn(outcome) {
-          process.send(
-            self,
-            runtime_state.UpgradedKernel(
-              id,
-              generation,
-              previous,
-              outcome,
-              answer,
-            ),
-          )
-        },
+        runtime_state.UpgradedKernel(id, generation, previous, _, answer),
         fn(outcome) {
           upgrade.discard_upgrade(previous, outcome)
           answer(Error("runtime owner stopped during kernel upgrade"))
@@ -219,7 +191,7 @@ fn start(
       work(
         self,
         fn() {
-          protect.attempt(fn() {
+          protect.guarded(fn() {
             reload.recompose_selected(
               inventory,
               retained,
@@ -231,9 +203,8 @@ fn start(
               previous,
             )
           })
-          |> result.flatten
         },
-        deliver_reload(self, id, generation, previous, reply),
+        runtime_state.Reloaded(id, generation, previous, _, reply),
         reload.orphaned(previous, _, reply),
       )
     }
@@ -249,7 +220,7 @@ fn start(
       work(
         self,
         fn() {
-          protect.attempt(fn() {
+          protect.guarded(fn() {
             reload.recompose_desired(
               inventory,
               retained,
@@ -259,31 +230,14 @@ fn start(
               active_strategy,
             )
           })
-          |> result.map_error(fn(crash) {
-            "could not reload extensions: " <> crash
+          |> result.map_error(fn(reason) {
+            "could not reload extensions: " <> reason
           })
-          |> result.flatten
         },
-        deliver_reload(self, id, generation, previous, reply),
+        runtime_state.Reloaded(id, generation, previous, _, reply),
         reload.orphaned(previous, _, reply),
       )
     }
-  }
-}
-
-fn deliver_reload(
-  self: Subject(runtime_state.Message),
-  id: String,
-  generation: Reference,
-  previous: Option(runtime_state.Session),
-  reply: Subject(Result(Option(runtime_state.Session), String)),
-) -> fn(Result(#(runtime_state.Cached, Option(runtime_state.Session)), String)) ->
-  Nil {
-  fn(outcome) {
-    process.send(
-      self,
-      runtime_state.Reloaded(id, generation, previous, outcome, reply),
-    )
   }
 }
 
@@ -331,7 +285,7 @@ fn reattach_prepared(
     }
     False -> {
       let generation = reference.new()
-      let state = runtime_state.admit(state, id, generation)
+      let state = runtime_state.admit(state, id, generation, [])
       case dict.get(state.compositions, id) {
         Ok(cached) if cached.cwd == cwd ->
           runtime_state.State(
@@ -361,8 +315,9 @@ pub fn reattached(
   generation: Reference,
   cached: runtime_state.Cached,
   outcome: Result(Option(runtime_state.Session), python.Error),
+  reply: Subject(Nil),
 ) -> runtime_state.State {
-  case runtime_state.current_waiters(state, id, generation) {
+  let state = case runtime_state.current_waiters(state, id, generation) {
     Ok(waiters) ->
       preparation.finish_commands(state, id, Ok(cached))
       |> preparation.settled(
@@ -381,4 +336,7 @@ pub fn reattached(
       state
     }
   }
+  // Answered once the attach is in the state, so a caller's next read sees it.
+  process.send(reply, Nil)
+  state
 }

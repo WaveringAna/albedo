@@ -297,7 +297,13 @@ pub type Message {
   Detach(Subject(Nil))
   /// Attach to a session's recorded kernel without booting one.
   Reattach(String, String, Subject(Nil))
-  Reattached(String, Reference, Cached, Result(Option(Session), python.Error))
+  Reattached(
+    String,
+    Reference,
+    Cached,
+    Result(Option(Session), python.Error),
+    Subject(Nil),
+  )
 }
 
 /// A kernel's origin is news once: the first session to take it tells the
@@ -340,11 +346,16 @@ pub fn active(state: State) -> Int {
 }
 
 /// Opens a generation for the session: its kernel work is on the way, and
-/// `waiters` collect whoever asks for the kernel meanwhile.
-pub fn admit(state: State, id: String, generation: Reference) -> State {
+/// `waiters`, plus whoever asks for the kernel meanwhile, hear how it ends.
+pub fn admit(
+  state: State,
+  id: String,
+  generation: Reference,
+  waiters: List(fn(Result(Session, python.Error)) -> Nil),
+) -> State {
   State(
     ..state,
-    booting: dict.insert(state.booting, id, Booting(generation, [])),
+    booting: dict.insert(state.booting, id, Booting(generation, waiters)),
   )
 }
 

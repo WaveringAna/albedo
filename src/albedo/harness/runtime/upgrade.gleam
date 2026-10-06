@@ -29,10 +29,10 @@ pub fn await_upgrade(
   }
 }
 
-/// Swap a stale kernel for a current one off the actor, the way a boot runs:
-/// whoever opens the session meanwhile waits for it. A swap that cannot
-/// happen now (a cell still running, a namespace that would not save) hands
-/// the old kernel back, still stale, to try again at the next open.
+/// Queue the swap of a stale kernel for a current one, like a boot: whoever
+/// opens the session meanwhile waits for it. A swap that cannot happen now
+/// (a cell still running, a namespace that would not save) hands the old
+/// kernel back, still stale, to try again at the next open.
 pub fn start_upgrade(
   state: runtime_state.State,
   id: String,
@@ -46,13 +46,11 @@ pub fn start_upgrade(
     }
     Ok(cached) -> {
       let generation = reference.new()
+      let state =
+        runtime_state.without_session(state, id)
+        |> runtime_state.admit(id, generation, [answer])
       runtime_state.State(
-        ..runtime_state.without_session(state, id),
-        booting: dict.insert(
-          state.booting,
-          id,
-          runtime_state.Booting(generation, [answer]),
-        ),
+        ..state,
         waiting: list.append(state.waiting, [
           runtime_state.SwapStale(id, generation, cached, session),
         ]),
@@ -69,25 +67,29 @@ pub fn swap_stale(
   cached: runtime_state.Cached,
   session: runtime_state.Session,
 ) -> Result(runtime_state.Session, python.Error) {
-  let kept = runtime_state.Session(..session, origin: runtime_state.Kept)
   case
     protect.attempt(fn() { kernels.upgrade(owner, id, cached, session.kernel) })
   {
     Ok(Ok(#(session, _))) -> Ok(session)
     Ok(Error(error)) -> {
       io.println_error("kernel upgrade waits: " <> string.inspect(error.reason))
-      case python.alive(session.kernel) {
-        True -> Ok(kept)
-        False -> Error(error.reason)
-      }
+      kept_unless_gone(session, error.reason)
     }
     Error(crash) -> {
       io.println_error("kernel upgrade failed: " <> crash)
-      case python.alive(session.kernel) {
-        True -> Ok(kept)
-        False -> Error(python.Unavailable(crash))
-      }
+      kept_unless_gone(session, python.Unavailable(crash))
     }
+  }
+}
+
+/// The old kernel, still stale, when it survived the failed swap.
+fn kept_unless_gone(
+  session: runtime_state.Session,
+  error: python.Error,
+) -> Result(runtime_state.Session, python.Error) {
+  case python.alive(session.kernel) {
+    True -> Ok(runtime_state.Session(..session, origin: runtime_state.Kept))
+    False -> Error(error)
   }
 }
 
@@ -140,7 +142,7 @@ pub fn start_kernel_upgrade(
           let generation = reference.new()
           let state =
             runtime_state.without_session(state, id)
-            |> runtime_state.admit(id, generation)
+            |> runtime_state.admit(id, generation, [])
           case cached {
             Some(cached) if cached.cwd == cwd ->
               runtime_state.State(

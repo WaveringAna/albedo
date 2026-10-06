@@ -3,6 +3,7 @@
 
 import albedo/harness/extension/composition
 import albedo/harness/extensions/python/kernel as python
+import albedo/harness/extensions/python/link
 import albedo/harness/extensions/work/ledger as work
 import albedo/harness/rpc
 import albedo/harness/runtime/state as runtime_state
@@ -110,6 +111,22 @@ pub fn session_over(
     cached.instructions,
     cached.context,
     origin,
+  )
+}
+
+/// A replacement kernel staged beside the session's published one, over
+/// `cached`; `link.publish` on the record makes it the session's.
+pub fn stage(
+  owner: work.Store,
+  id: String,
+  cached: runtime_state.Cached,
+) -> Result(#(python.Kernel, link.Record), python.Error) {
+  python.stage(
+    owner,
+    id,
+    cached.cwd,
+    kernel_routes(owner, id, cached.composition),
+    composition.python_modules(cached.composition),
   )
 }
 
