@@ -93,7 +93,13 @@ pub fn reload(
         change,
       )
   }
-  let current = runtime_state.enabled(state.work, installed, id)
+  let current =
+    selection.enabled(
+      state.work,
+      installed.extensions,
+      installed.default_enabled,
+      id,
+    )
   // Extensions carry function fields, so the running set compares by name.
   let names = fn(selected: List(extension.Extension)) {
     list.map(selected, fn(extension) { extension.name })

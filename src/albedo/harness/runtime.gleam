@@ -1069,7 +1069,21 @@ fn model_info(
 
 /// The extensions enabled with no session override: what services run with.
 pub fn global(runtime: Runtime) -> Result(List(extension.Extension), String) {
-  runtime_state.enabled(runtime.work, shared.read(runtime.installed), "")
+  enabled_for(runtime, "")
+}
+
+/// The extensions a session runs: its saved selection over the installed set.
+fn enabled_for(
+  runtime: Runtime,
+  session: String,
+) -> Result(List(extension.Extension), String) {
+  let installed = shared.read(runtime.installed)
+  selection.enabled(
+    runtime.work,
+    installed.extensions,
+    installed.default_enabled,
+    session,
+  )
 }
 
 /// Immutable declarations are safe to inspect under a settings owner lock;
@@ -1091,7 +1105,7 @@ pub fn reload_catalogs(
   runtime: Runtime,
   id: String,
 ) -> Result(List(#(String, Result(Nil, String))), String) {
-  runtime_state.enabled(runtime.work, shared.read(runtime.installed), id)
+  enabled_for(runtime, id)
   |> result.map(extension.reload_catalogs)
 }
 
@@ -1168,11 +1182,7 @@ pub fn upstream(
       configuration.named(home, profile)
       |> result.map(fn(profile) { profile.image_edge })
   })
-  use selected <- result.try(runtime_state.enabled(
-    runtime.work,
-    shared.read(runtime.installed),
-    session,
-  ))
+  use selected <- result.try(enabled_for(runtime, session))
   use upstream <- result.map(extension.upstream(
     selected,
     extension.ModelContext(

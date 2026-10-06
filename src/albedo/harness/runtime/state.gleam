@@ -400,15 +400,6 @@ pub fn replay(state: State, id: String) -> State {
   State(..state, deferred: dict.delete(state.deferred, id))
 }
 
-/// The extensions a session runs: its saved selection over the installed set.
-pub fn enabled(
-  work: work.Store,
-  installed: Installed,
-  id: String,
-) -> Result(List(extension.Extension), String) {
-  selection.enabled(work, installed.extensions, installed.default_enabled, id)
-}
-
 @external(erlang, "albedo_inspect", "label")
 pub fn label(kind: String, id: String) -> Nil
 
