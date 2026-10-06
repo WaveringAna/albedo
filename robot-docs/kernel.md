@@ -59,7 +59,10 @@ everything. Job and remote output enter as bytes (`write_bytes`), never
 decoded and re-encoded, so a UTF-8 character split across two pipe reads
 survives and a late `job.pipe()` replays the exact bytes while `seen` still
 fits in the retained start. Text readers (`output.read`, `tail()`, previews)
-decode a window on demand. A single print longer than what could be retained
+decode a window on demand. `output.read` returns at most 64 KiB per call and
+raises for a larger `limit` rather than shortening it, since a caller that
+asked for everything and got a silent prefix builds files from it; the rest
+is paged with `offset`. A single print longer than what could be retained
 is not encoded whole when it is ASCII: the buffers see both ends and the
 middle only counts.
 

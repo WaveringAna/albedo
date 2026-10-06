@@ -399,8 +399,13 @@ def watch_output(id: str, notify: Callable[[], None]) -> None:
 
 class Output:
     def read(self, id: str, offset: int = 0, limit: int = 4000) -> albedo_api.Text:
-        """Read retained output by cell or job id: up to 1 MiB each, for the 16
-        most recent cells and 64 most recent jobs."""
+        """Read retained output by cell or job id, at most 64 KiB per call.
+        The 16 most recent cells and 64 most recent jobs keep up to 1 MiB
+        each; page through it with offset."""
+        if limit > PREVIEW:
+            raise ValueError(
+                f"limit is at most {PREVIEW} per read; page through the rest with offset="
+            )
         capture = retained(id)
         notify = READ_WATCHERS.get(id)
         if isinstance(notify, weakref.WeakMethod):
