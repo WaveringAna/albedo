@@ -411,6 +411,9 @@ class RemotePluginTest(unittest.IsolatedAsyncioTestCase):
         blob = b"\x00\xff\xfe" + bytes(range(256))
         await rem.write("blob.bin", blob)
         self.assertEqual(Path(self.workspace, "blob.bin").read_bytes(), blob)
+        # A binary read decoded with errors="replace", so a PNG came back as
+        # U+FFFD text and the model fell back to base64 through a capped read.
+        self.assertEqual(await rem.read("blob.bin"), blob)
 
     async def test_awaiting_a_non_awaitable_remote_object_keeps_its_reference(self):
         rem = await self.connect()

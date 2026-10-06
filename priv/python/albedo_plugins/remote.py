@@ -854,11 +854,15 @@ class RemoteConnection:
 
     # --- ssh conveniences, both modes ---
 
-    async def read(self, path: str, *, timeout: float = COMMAND_TIMEOUT) -> str:
-        """A remote file's text over the control connection, not the kernel."""
+    async def read(self, path: str, *, timeout: float = COMMAND_TIMEOUT) -> str | bytes:
+        """A remote file over the control connection, not the kernel: its
+        text, or its bytes when it is not UTF-8."""
         remote = _remote_path(self, path)
         data = await self._ssh(f"cat {shlex.quote(remote)}", timeout)
-        return data.decode(errors="replace")
+        try:
+            return data.decode()
+        except UnicodeDecodeError:
+            return data
 
     async def show_image(
         self,
