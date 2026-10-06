@@ -164,10 +164,10 @@ drain(Port, Acc, Deadline) ->
     receive
         {Port, {data, Data}} -> drain(Port, [Data | Acc], Deadline);
         {Port, {exit_status, 0}} ->
-            catch erlang:port_close(Port),
+            close_port(Port),
             {ok, iolist_to_binary(lists:reverse(Acc))};
         {Port, {exit_status, Status}} ->
-            catch erlang:port_close(Port),
+            close_port(Port),
             Text = integer_to_binary(Status),
             {error, <<"the usage CLI exited with status ", Text/binary>>}
     after remaining(Deadline) ->
@@ -183,7 +183,7 @@ drain_capped(Port, Acc, Size, Deadline) ->
             {Kept, Size2} = cap(Size, Data),
             drain_capped(Port, [Kept | Acc], Size2, Deadline);
         {Port, {exit_status, Status}} ->
-            catch erlang:port_close(Port),
+            close_port(Port),
             {ok, {Status, iolist_to_binary(lists:reverse(Acc))}}
     after remaining(Deadline) ->
         kill(Port),
@@ -199,7 +199,7 @@ kill(Port) ->
         {os_pid, OsPid} when is_integer(OsPid) -> OsPid;
         _ -> false
     end,
-    catch erlang:port_close(Port),
+    close_port(Port),
     case Pid of
         false -> ok;
         _ ->
@@ -213,9 +213,12 @@ kill(Port) ->
             receive
                 {Killer, {exit_status, _}} -> ok
             after 1000 ->
-                catch erlang:port_close(Killer)
+                close_port(Killer)
             end
     end.
+
+close_port(Port) ->
+    try port_close(Port) catch _:_ -> true end.
 
 cap(Size, _Data) when Size >= ?STDOUT_CAP ->
     {<<>>, Size};

@@ -53,7 +53,7 @@ catalog_does_not_block(Runtime, Home, Id) ->
         end,
         {Responsive, Completed}
     after
-        catch erlang:resume_process(Owner)
+        resume(Owner)
     end.
 
 %% The catalog began against a prepared composition that is removed while its
@@ -76,8 +76,12 @@ catalog_forget_while_blocked(Runtime, Home, Id) ->
         after 10000 -> error(catalog_did_not_complete)
         end
     after
-        catch erlang:resume_process(Owner)
+        resume(Owner)
     end.
+
+%% A body that already resumed Owner leaves nothing to resume.
+resume(Owner) ->
+    try erlang:resume_process(Owner) catch error:badarg -> false end.
 
 await_store_query(Owner, Deadline) ->
     case process_info(Owner, message_queue_len) of

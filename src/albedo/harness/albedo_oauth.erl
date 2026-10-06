@@ -41,9 +41,9 @@ owner() ->
     case whereis(?OWNER) of
         undefined ->
             Pid = spawn(fun() -> owner_loop(#{}) end),
-            case catch register(?OWNER, Pid) of
-                true -> Pid;
-                _ -> exit(Pid, kill), whereis(?OWNER)
+            try register(?OWNER, Pid) of
+                true -> Pid
+            catch error:badarg -> exit(Pid, kill), whereis(?OWNER)
             end;
         Pid -> Pid
     end.
@@ -117,9 +117,9 @@ update(Flows, Id, {State, _} = Status) ->
             case terminal(Record) of
                 true -> Flows;
                 false ->
-                    case catch persist_flow(Home, Id, NextRecord) of
-                        Stored when is_map(Stored) -> Flows#{Id := Flow#{record => Stored}};
-                        _ -> exit(maps:get(pid, Flow), kill), Flows
+                    case persisted(Home, Id, NextRecord) of
+                        {ok, Stored} -> Flows#{Id := Flow#{record => Stored}};
+                        error -> exit(maps:get(pid, Flow), kill), Flows
                     end
             end;
         _ -> Flows
@@ -341,6 +341,10 @@ persist_flow(Home, Id, Flow) -> locked(Home, fun() ->
     end
 end).
 
+%% persist_flow's record, or error when the login file is unavailable.
+persisted(Home, Id, Flow) ->
+    try {ok, persist_flow(Home, Id, Flow)} catch _:_ -> error end.
+
 terminal(Flow) -> lists:member(maps:get(<<"state">>, Flow),
     [<<"complete">>, <<"failed">>, <<"cancelled">>, <<"expired">>]).
 
@@ -423,9 +427,9 @@ create_identified(Home, Id, Provider, Login0, Intent, Flows) ->
                     end;
                 {Id, failed, _} -> finish(Flow#{<<"state">> => <<"failed">>, <<"failure">> => <<"Could not open the provider callback listener.">>})
             after 4000 -> exit(Pid, kill), finish(Flow#{<<"state">> => <<"failed">>, <<"failure">> => <<"Provider sign-in did not start.">>}) end,
-            Published = case catch persist_flow(Home, Id, Started) of
-                Stored when is_map(Stored) -> Stored;
-                _ -> exit(Pid, kill), throw({http, 503, <<"auth_unavailable">>, <<"Provider sign-in storage is unavailable.">>})
+            Published = case persisted(Home, Id, Started) of
+                {ok, Stored} -> Stored;
+                error -> exit(Pid, kill), throw({http, 503, <<"auth_unavailable">>, <<"Provider sign-in storage is unavailable.">>})
             end,
             Next = Flows#{Id => #{home => Home, pid => Pid, record => Published}},
             {{ok, {true, encode_login(Home, Published, [Login])}}, Next}
@@ -493,7 +497,7 @@ stopped(Flows, Pid) -> maps:map(fun
         case terminal(Record) of
             true -> F;
             false -> Next = failed_record(Record, <<"Provider sign-in stopped.">>),
-                case catch persist_flow(Home, Id, Next) of Stored when is_map(Stored) -> F#{record => Stored}; _ -> F end
+                case persisted(Home, Id, Next) of {ok, Stored} -> F#{record => Stored}; error -> F end
         end;
     (_, F) -> F
 end, Flows).

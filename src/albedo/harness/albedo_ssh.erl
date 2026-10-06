@@ -63,7 +63,7 @@ exec(Argv, Command, AuthSock, Input, TimeoutMs) ->
                            {args, [binary_to_list(A) || A <- Options ++ [Command]]},
                            {env, Env}]) of
                 Port ->
-                    _ = (catch port_command(Port, Input)),
+                    _ = try port_command(Port, Input) catch _:_ -> ok end,
                     case collect(Port, [], erlang:monotonic_time(millisecond) + TimeoutMs) of
                         {ok, Out} -> {ok, Out};
                         {error, Why} -> {error, unicode:characters_to_binary(Why)}
@@ -137,16 +137,19 @@ start(Target, From, S = #{running := Running}) ->
     end.
 
 ttl(Json) ->
-    case catch json:decode(Json) of
+    case decode(Json) of
         #{<<"state">> := <<"ready">>} -> ?READY_MS;
         _ -> ?FAILED_MS
     end.
+
+decode(Json) ->
+    try json:decode(Json) catch error:_ -> invalid end.
 
 %% The probe's answer is its last line; a step line before it is passed on
 %% to the server as it arrives.
 run(Target, Server) ->
     Stepped = fun(Line) ->
-        case catch json:decode(Line) of
+        case decode(Line) of
             #{<<"step">> := Step} when is_binary(Step) -> Server ! {stepped, Target, Step};
             _ -> ok
         end

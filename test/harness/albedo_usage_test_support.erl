@@ -50,7 +50,7 @@ stop(Ref) ->
     os:unsetenv("ALBEDO_USAGE_CORE"),
     os:unsetenv("ALBEDO_USAGE_TEST_CANARY"),
     _ = file:del_dir_r(maps:get(dir, Ref)),
-    catch unregister(?LOCK),
+    _ = try unregister(?LOCK) catch error:badarg -> false end,
     nil.
 
 await_lock() ->
@@ -126,7 +126,7 @@ signal(Pid) ->
     receive
         {Port, {exit_status, Status}} -> Status
     after 1000 ->
-        catch erlang:port_close(Port),
+        _ = try port_close(Port) catch _:_ -> ok end,
         0
     end.
 

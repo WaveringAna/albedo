@@ -149,7 +149,7 @@ ready(Home,Port,Token) ->
 %% cpu_sup is stopped first, which tells its port program to quit: otherwise
 %% the program reports the VM's disappearance into the log.
 shutdown() ->
-    _ = catch supervisor:terminate_child(os_mon_sup, cpu_sup),
+    _ = try supervisor:terminate_child(os_mon_sup, cpu_sup) catch exit:_ -> ok end,
     _ = [logger_std_h:filesync(Id)
          || #{id := Id, module := logger_std_h} <- logger:get_handler_config()],
     erlang:halt(0).

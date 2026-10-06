@@ -45,10 +45,10 @@ parse_image_line(<<"image ", Rest/binary>>) ->
             Path = iolist_to_binary(lists:join(<<" ">>, lists:reverse(RevPath))),
             case binary:split(Dims, <<"x">>) of
                 [W, H] ->
-                    case catch {binary_to_integer(W), binary_to_integer(H)} of
-                        {WI, HI} when is_integer(WI), is_integer(HI), WI > 0, HI > 0 ->
-                            {ok, Path, WI, HI};
+                    try {binary_to_integer(W), binary_to_integer(H)} of
+                        {WI, HI} when WI > 0, HI > 0 -> {ok, Path, WI, HI};
                         _ -> error
+                    catch error:badarg -> error
                     end;
                 _ -> error
             end;
@@ -91,6 +91,6 @@ drain(Port, Acc) ->
             {error, iolist_to_binary(["renderer failed: " | lists:reverse(Acc)])};
         {Port, eof} -> drain(Port, Acc)
     after ?RENDER_TIMEOUT_MS ->
-        catch erlang:port_close(Port),
+        _ = try port_close(Port) catch _:_ -> ok end,
         {error, <<"the renderer timed out">>}
     end.

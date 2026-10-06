@@ -844,7 +844,7 @@ run_helper(Exe, Args, Env, Wait, Input) ->
                   [binary, exit_status, use_stdio,
                    {args, [binary_to_list(A) || A <- Args]}, {env, Env}]) of
         Port ->
-            _ = Input =:= [] orelse (catch port_command(Port, Input)),
+            _ = Input =:= [] orelse send_port(Port, Input),
             collect(Port, <<>>, erlang:monotonic_time(millisecond) + Wait)
     catch _:Reason -> {error, detail(Reason)}
     end.
