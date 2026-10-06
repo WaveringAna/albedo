@@ -13,6 +13,7 @@ Run commands from the repository root inside `nix develop`.
 | Interval implementation | `python3 test/manual/verify_intervals.py /directory/containing/interval_set.py` | Runs five unittest scenarios, including randomized interval algebra. Exits unsuccessfully when the candidate violates the contract. |
 | Provider benchmark | `gleam run -m manual/benchmark` | Requires `ALBEDO_BENCH_URL`, `ALBEDO_BENCH_MODEL`, and `ALBEDO_BENCH_KEY`. Optional `ALBEDO_BENCH_PROTOCOL` selects a protocol. Prints request timings and memory measurements. |
 | Stream benchmark | `gleam run -m manual/stream_benchmark` | Offline. Frames and reduces synthetic Responses and Chat Completions streams and encodes a 1 MB request, printing time per run and throughput. Compare before and after a change to `openai_api`. |
+| Copy probe | `gleam run -m manual/copy_probe` | Offline. Boots a runtime and one default session and prints what a spawn over the runtime handle, the installed list, the session, and each managed plugin copies, in KiB. Compare before and after moving a catalog between processes. |
 | Live coding | `gleam run -m manual/coding` | Requires the benchmark URL, model, and key, plus `ALBEDO_LIVE_WORKSPACE` and `ALBEDO_LIVE_DATABASE`. Optional `ALBEDO_LIVE_PROTOCOL` selects a protocol. Runs a real model-driven coding scenario. |
 
 `albedo_openai_bench.erl` supports the provider benchmark and live coding tool.

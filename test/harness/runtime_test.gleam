@@ -23,6 +23,37 @@ fn temporary_workspace() -> String
 @external(erlang, "albedo_runtime_test_support", "cleanup_workspace")
 fn cleanup_workspace(path: String) -> Nil
 
+@external(erlang, "albedo_copy_test_support", "captured_words")
+fn captured_words(term: a) -> Int
+
+/// Every http request and every turn's worker copies the runtime handle and
+/// a session's selection into a fresh process, so neither may carry the
+/// installed extensions: the handle shares them, a selection points at them.
+pub fn runtime_handle_and_selection_carry_no_installed_copy_test() -> Nil {
+  let workspace = temporary_workspace()
+  let assert Ok(host) = runtime.start(":memory:")
+  session_fixture.initialise(host)
+  session_fixture.create(host, "handle", workspace)
+  let assert Ok(_) = runtime.open_session(host, "handle", workspace)
+  let baseline = captured_words(Nil)
+  let installed = runtime.installed(host)
+  let assert Ok(enabled) = runtime.global(host)
+  // Measured while the runtime lives: its stop releases the shared value,
+  // which lands a copy on every heap still holding it.
+  let handle_words = captured_words(host)
+  let installed_words = captured_words(installed)
+  let enabled_words = captured_words(enabled)
+  runtime.stop(host)
+  cleanup_workspace(workspace)
+  should.be_true(list.length(installed) > 10)
+  should.be_true(list.length(enabled) > 10)
+  // The handle: a subject, a store, and a shared reference.
+  should.be_true(handle_words < baseline + 256)
+  installed_words |> should.equal(baseline)
+  // A session's selection: one cons cell per enabled extension.
+  should.be_true(enabled_words < baseline + 256)
+}
+
 pub fn kernel_host_ownership_does_not_grow_with_the_swarm_test() -> Nil {
   let workspace = temporary_workspace()
   let assert Ok(host) = runtime.start_with_extensions(":memory:", [])

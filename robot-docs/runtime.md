@@ -19,6 +19,19 @@ Erlang through `'albedo@text_scalars':take(Text, Limit)`. The kernel job summary
 retains at most 4096 scalars; truncating it must not allocate a list for the
 entire command.
 
+## shared values
+
+`albedo/shared.gleam` owns values every process reads without copying.
+`publish` stores one in a persistent term and answers a `Shared(a)` handle;
+`read` returns the literal, which a spawn or send does not copy (a sublist of
+it copies cons cells only). Publishing and `release` each scan every process:
+publish once per lifetime, release in the owner's `stop`. Reading a released
+handle panics. `runtime.Runtime` holds its installed extensions this way, so
+a runtime copied into an HTTP request or a turn's worker costs a few words;
+`test/harness/runtime_test.gleam` fails when the handle or a selection over
+the installed list carries a copy. A literal references module code, so the
+daemon does not hot-load a module while a shared value from it exists.
+
 ## native boundaries
 
 Keep process state, ports, monitors, ETF, and native binary matching in their

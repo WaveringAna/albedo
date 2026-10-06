@@ -20,6 +20,7 @@ import albedo/harness/protect
 import albedo/harness/rpc
 import albedo/harness/settings
 import albedo/openai_api/types
+import albedo/shared.{type Shared}
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Subject}
 import gleam/erlang/reference.{type Reference}
@@ -35,12 +36,22 @@ import gleam/string
 const base_instructions =
   "You are a coding agent operating inside albedo, a coding agent harness; working in the session workspace. Use the tools enabled for this session. Run tests and report real results.\n"
 
+/// A handle every process can hold and copy: the installed extensions, with
+/// every plugin closure, sit behind one shared value.
 pub opaque type Runtime {
   Runtime(
     subject: Subject(Message),
     work: work.Store,
+    installed: Shared(Installed),
+  )
+}
+
+/// Fixed for the runtime's lifetime once `start_with_config` has installed.
+type Installed {
+  Installed(
     extensions: List(extension.Extension),
     default_enabled: List(String),
+    /// Installed extensions the daemon will not run, with their reasons.
     quarantined: List(extension.Quarantined),
   )
 }
@@ -255,11 +266,12 @@ pub fn observe_loaded(
 }
 
 fn composition_inventory(state: State) -> session_catalog.Inventory {
+  let installed = shared.read(state.installed)
   session_catalog.Inventory(
     state.work,
-    state.extensions,
-    state.quarantined,
-    state.default_enabled,
+    installed.extensions,
+    installed.quarantined,
+    installed.default_enabled,
   )
 }
 
@@ -481,10 +493,7 @@ type State {
     sessions: Dict(String, Session),
     compositions: Dict(String, Cached),
     desired: Dict(String, Desired),
-    extensions: List(extension.Extension),
-    /// Installed extensions the daemon will not run, with their reasons.
-    quarantined: List(extension.Quarantined),
-    default_enabled: List(String),
+    installed: Shared(Installed),
     self: Subject(Message),
     /// Kernels booting now, each with everyone waiting for it.
     booting: Dict(String, Booting),
@@ -618,15 +627,15 @@ pub fn start_with_config(
         "extension " <> failure.name <> " is quarantined: " <> failure.reason,
       )
     })
+    let installed =
+      shared.publish(Installed(installed, default_enabled, quarantined))
     Ok(
       actor.initialised(State(
         work: ledger,
         sessions: dict.new(),
         compositions: dict.new(),
         desired: dict.new(),
-        extensions: installed,
-        quarantined: quarantined,
-        default_enabled: default_enabled,
+        installed: installed,
         self: subject,
         booting: dict.new(),
         waiting: [],
@@ -636,13 +645,7 @@ pub fn start_with_config(
         detaching: False,
         deferred: dict.new(),
       ))
-      |> actor.returning(Runtime(
-        subject,
-        ledger,
-        installed,
-        default_enabled,
-        quarantined,
-      )),
+      |> actor.returning(Runtime(subject, ledger, installed)),
     )
   })
   |> actor.on_message(handle)
@@ -708,12 +711,12 @@ pub fn migrate(
   runtime: Runtime,
   backup: String,
 ) -> Result(List(#(String, Int)), String) {
-  extension.migrate(runtime.extensions, runtime.work, backup)
+  extension.migrate(installed(runtime), runtime.work, backup)
 }
 
 /// Every installed extension's cleanup for a deleted session.
 pub fn cleaners(runtime: Runtime) -> List(extension.Cleaner) {
-  extension.cleaners(runtime.extensions)
+  extension.cleaners(installed(runtime))
 }
 
 fn checked_id(id: String) -> Result(String, python.Error) {
@@ -861,6 +864,7 @@ pub fn peek_commands(
 
 pub fn stop(runtime: Runtime) -> Nil {
   actor.call(runtime.subject, 10_000, Stop)
+  shared.release(runtime.installed)
 }
 
 /// From now on, closing a session or stopping the runtime lets its kernel go
@@ -2079,7 +2083,9 @@ fn abandon(state: State, id: String) -> State {
 
 /// Why the daemon will not run this extension at all, if it quarantined it.
 fn quarantine(state: State, name: String) -> Option(String) {
-  list.find(state.quarantined, fn(failure) { failure.name == name })
+  list.find(shared.read(state.installed).quarantined, fn(failure) {
+    failure.name == name
+  })
   |> option.from_result
   |> option.map(fn(failure) {
     "extension " <> name <> " is quarantined: " <> failure.reason
@@ -2105,19 +2111,19 @@ fn reload(
   change: extension.Change,
   reply: Subject(Result(Option(Session), String)),
 ) -> State {
+  let installed = shared.read(state.installed)
   let proposed = case quarantine(state, extension.change_name(change)) {
     Some(error) -> Error(error)
     None ->
       extension.propose(
         state.work,
-        state.extensions,
-        state.default_enabled,
+        installed.extensions,
+        installed.default_enabled,
         id,
         change,
       )
   }
-  let current =
-    extension.enabled(state.work, state.extensions, state.default_enabled, id)
+  let current = enabled(state.work, installed, id)
   // Extensions carry function fields, so the running set compares by name.
   let names = fn(selected: List(extension.Extension)) {
     list.map(selected, fn(extension) { extension.name })
@@ -2127,10 +2133,16 @@ fn reload(
     _, _ -> False
   }
   let ledger = state.work
-  let installed = state.extensions
   let persist = fn(selected) {
     use previous <- result.try(current)
-    extension.record_selected(ledger, id, change, previous, selected, installed)
+    extension.record_selected(
+      ledger,
+      id,
+      change,
+      previous,
+      selected,
+      installed.extensions,
+    )
   }
   case proposed, unchanged {
     // Nothing this session runs changes: record the choice and keep the
@@ -2712,6 +2724,7 @@ fn serve(state: State, message: Message) -> actor.Next(State, a) {
       actor.continue(state)
     }
     Summaries(id, reply) -> {
+      let installed = shared.read(state.installed)
       let composition = case
         dict.get(state.sessions, id),
         dict.get(state.compositions, id)
@@ -2724,9 +2737,9 @@ fn serve(state: State, message: Message) -> actor.Next(State, a) {
         reply,
         extension.summaries(
           state.work,
-          state.extensions,
-          state.quarantined,
-          state.default_enabled,
+          installed.extensions,
+          installed.quarantined,
+          installed.default_enabled,
           id,
           composition,
         ),
@@ -3035,26 +3048,30 @@ fn model_info(
 
 /// The extensions enabled with no session override: what services run with.
 pub fn global(runtime: Runtime) -> Result(List(extension.Extension), String) {
-  extension.enabled(
-    runtime.work,
-    runtime.extensions,
-    runtime.default_enabled,
-    "",
-  )
+  enabled(runtime.work, shared.read(runtime.installed), "")
+}
+
+/// The extensions a session runs: its saved selection over the installed set.
+fn enabled(
+  work: work.Store,
+  installed: Installed,
+  id: String,
+) -> Result(List(extension.Extension), String) {
+  extension.enabled(work, installed.extensions, installed.default_enabled, id)
 }
 
 /// Immutable declarations are safe to inspect under a settings owner lock;
 /// they do not call the composition actor or read mutable configuration.
 pub fn installed(runtime: Runtime) -> List(extension.Extension) {
-  runtime.extensions
+  shared.read(runtime.installed).extensions
 }
 
 pub fn quarantined(runtime: Runtime) -> List(extension.Quarantined) {
-  runtime.quarantined
+  shared.read(runtime.installed).quarantined
 }
 
 pub fn base_defaults(runtime: Runtime) -> List(String) {
-  runtime.default_enabled
+  shared.read(runtime.installed).default_enabled
 }
 
 /// Refetch the model catalogs this session enables, on the caller's process.
@@ -3062,17 +3079,12 @@ pub fn reload_catalogs(
   runtime: Runtime,
   id: String,
 ) -> Result(List(#(String, Result(Nil, String))), String) {
-  extension.enabled(
-    runtime.work,
-    runtime.extensions,
-    runtime.default_enabled,
-    id,
-  )
+  enabled(runtime.work, shared.read(runtime.installed), id)
   |> result.map(extension.reload_catalogs)
 }
 
 pub fn logins(runtime: Runtime) -> List(oauth.Login) {
-  extension.logins(runtime.extensions)
+  extension.logins(installed(runtime))
 }
 
 pub fn model_names(
@@ -3080,7 +3092,7 @@ pub fn model_names(
   provider: String,
   endpoint: Option(String),
 ) -> List(String) {
-  extension.provider_model_names(runtime.extensions, provider, endpoint)
+  extension.provider_model_names(installed(runtime), provider, endpoint)
 }
 
 /// One model a provider lists, with what the catalog knows about it.
@@ -3144,10 +3156,9 @@ pub fn upstream(
       configuration.named(home, profile)
       |> result.map(fn(profile) { profile.image_edge })
   })
-  use selected <- result.try(extension.enabled(
+  use selected <- result.try(enabled(
     runtime.work,
-    runtime.extensions,
-    runtime.default_enabled,
+    shared.read(runtime.installed),
     session,
   ))
   use upstream <- result.map(extension.upstream(
