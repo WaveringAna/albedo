@@ -27,7 +27,7 @@ blocked(Owner) ->
 
 sample({Ref, {Owner, _, Control, _}}) ->
     {Count, Bytes} = case ets:lookup(albedo_bus_queues, Ref) of
-        [{_, {_, C, B}}] -> {C, B};
+        [{_, {_, C, B, _}}] -> {C, B};
         [] -> {0, 0}
     end,
     case process_info(Owner, [messages, message_queue_len]) of

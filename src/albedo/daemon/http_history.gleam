@@ -358,7 +358,7 @@ fn encode_part(
         True -> None
         False -> {
           let value = json.string(text)
-          case string.byte_size(json.to_string(value)) <= budget {
+          case http_api.encoded_size(value) <= budget {
             True -> Some(value)
             False -> None
           }
@@ -382,7 +382,7 @@ fn encode_part(
       }
     }
     Value(field, value) -> {
-      let bytes = string.byte_size(json.to_string(value))
+      let bytes = http_api.encoded_size(value)
       case bytes <= budget {
         True -> #(
           json.object([
@@ -402,7 +402,7 @@ fn encode_part(
       }
     }
     Trace(field, value) -> {
-      let bytes = string.byte_size(json.to_string(value))
+      let bytes = http_api.encoded_size(value)
       case bytes <= budget {
         True -> #(
           json.object([#("kind", json.string("trace")), #("trace", value)]),
@@ -429,7 +429,24 @@ fn encode_part(
               #("width", json.int(width)),
               #("height", json.int(height)),
               #("original_bytes", json.int(bytes)),
-              #("reference", reference(session, id, field, image_bytes(image))),
+              #(
+                "reference",
+                json.object([
+                  #(
+                    "url",
+                    json.string(
+                      "/sessions/"
+                      <> session
+                      <> "/history/"
+                      <> id
+                      <> "/"
+                      <> field,
+                    ),
+                  ),
+                  #("field", json.string(field)),
+                  #("bytes", json.int(bytes)),
+                ]),
+              ),
             ]),
           ),
         ]),
@@ -437,12 +454,6 @@ fn encode_part(
       )
     }
   }
-}
-
-fn image_bytes(image: types.Image) -> Int {
-  // Encoded length is available without loading a stored blob. Exact decoded
-  // bytes are resolved only by an explicit content request.
-  types.image_meta(image).3
 }
 
 pub fn checkpoint(entry: Entry) -> Option(json.Json) {

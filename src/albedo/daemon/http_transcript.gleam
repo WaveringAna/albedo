@@ -3,8 +3,10 @@
 import albedo/daemon/conversation
 import albedo/daemon/http_api
 import albedo/daemon/http_history
+import albedo/daemon/images
 import albedo/daemon/store
 import albedo/openai_api/types
+import gleam/bytes_tree
 import gleam/dynamic/decode
 import gleam/http/request
 import gleam/http/response
@@ -381,90 +383,53 @@ pub fn content(
         })
       }
     })
-    use part <- result.try(
-      list.drop(entry.parts, cursor.0)
-      |> list.first
-      |> result.map_error(fn(_) {
-        http_api.Failure(404, "content_unknown", "entry content was not found")
-      }),
-    )
-    use part <- result.try(case part {
-      http_history.Reference(field, source_id, _) -> {
-        use source <- result.try(history_entry(ledger, id, source_id))
-        list.find(source.parts, fn(part) {
-          case part {
-            http_history.Text(key, _)
-            | http_history.Value(key, _)
-            | http_history.Trace(key, _)
-            | http_history.Image(key, _)
-            | http_history.Reference(key, _, _) -> key == field
-          }
-        })
-        |> result.map_error(fn(_) {
-          http_api.Failure(
+    // Image fields are served whole by `image`, never as pages here.
+    let parts =
+      list.filter(entry.parts, fn(part) {
+        case part {
+          http_history.Image(..) -> False
+          _ -> True
+        }
+      })
+    use page <- result.try(case list.drop(parts, cursor.0), cursor {
+      [], #(0, 0) -> Ok(None)
+      [], _ ->
+        Error(http_api.Failure(
+          404,
+          "content_unknown",
+          "entry content was not found",
+        ))
+      [part, ..], _ -> {
+        use #(field, text) <- result.try(stored_text(ledger, id, part))
+        use sliced <- result.try(
+          text
+          |> result.try(http_api.content_slice(_, cursor.1, 262_144))
+          |> result.replace_error(http_api.Failure(
             503,
             "content_unavailable",
-            "associated tool content is unavailable",
-          )
-        })
+            "entry content is unavailable",
+          )),
+        )
+        Ok(Some(#(field, sliced)))
       }
-      _ -> Ok(part)
     })
-    let #(field, encoding, content, image) = case part {
-      http_history.Reference(field, _, _) -> #(
-        field,
-        "utf8",
-        Error("associated tool content is unavailable"),
-        None,
-      )
-      http_history.Text(field, text) -> #(field, "utf8", Ok(text), None)
-      http_history.Value(field, value) | http_history.Trace(field, value) -> #(
-        field,
-        "utf8",
-        Ok(json.to_string(value)),
-        None,
-      )
-      http_history.Image(field, image) -> {
-        let bytes = case types.image_data(image) {
-          types.InlineData(data) -> Ok(data)
-          types.StoredData(read: read, ..) -> read()
-        }
-        #(
-          field,
-          "base64",
-          bytes |> result.map_error(fn(_) { "image unavailable" }),
-          Some(image),
-        )
-      }
+    let parts_json = case page {
+      None -> []
+      Some(#(field, sliced)) -> [
+        json.object([
+          #("field", json.string(field)),
+          #("offset_bytes", json.int(cursor.1)),
+          #("encoding", json.string("utf8")),
+          #("text", json.string(sliced.0)),
+          #("complete", json.bool(sliced.2)),
+        ]),
+      ]
     }
-    use content <- result.try(
-      content
-      |> result.map_error(fn(_) {
-        http_api.Failure(
-          503,
-          "content_unavailable",
-          "entry content is unavailable",
-        )
-      }),
-    )
-    use sliced <- result.try(
-      case encoding {
-        "base64" -> http_api.image_slice(content, cursor.1, 262_144)
-        _ -> http_api.content_slice(content, cursor.1, 262_144)
-      }
-      |> result.map_error(fn(_) {
-        http_api.Failure(
-          503,
-          "content_unavailable",
-          "entry content is unavailable",
-        )
-      }),
-    )
-    let next_state = case sliced.2 {
-      True -> #(cursor.0 + 1, 0)
-      False -> #(cursor.0, sliced.1)
+    let next_state = case page {
+      Some(#(_, #(_, offset, False))) -> #(cursor.0, offset)
+      _ -> #(cursor.0 + 1, 0)
     }
-    let next = case next_state.0 < list.length(entry.parts) {
+    let next = case next_state.0 < list.length(parts) {
       False -> json.null()
       True ->
         json.string(http_api.page_token(
@@ -477,39 +442,89 @@ pub fn content(
             |> json.to_string,
         ))
     }
-    let image =
-      json.nullable(image, fn(image) {
-        let #(mime, width, height, bytes) = types.image_meta(image)
-        json.object([
-          #("mime_type", json.string(mime)),
-          #("width", json.int(width)),
-          #("height", json.int(height)),
-          #("original_bytes", json.int(bytes)),
-        ])
-      })
     Ok(http_api.reply(
       200,
       json.object([
         #("entry_id", json.string(entry_id)),
-        #(
-          "parts",
-          json.array(
-            [
-              json.object([
-                #("field", json.string(field)),
-                #("offset_bytes", json.int(cursor.1)),
-                #("encoding", json.string(encoding)),
-                #("text", json.string(sliced.0)),
-                #("complete", json.bool(sliced.2)),
-              ]),
-            ],
-            fn(value) { value },
-          ),
-        ),
+        #("parts", json.array(parts_json, fn(value) { value })),
         #("next", next),
-        #("image", image),
       ]),
     ))
+  }
+  http_api.answer(outcome)
+}
+
+/// A part's field name and stored UTF-8, read from the entry a reference
+/// names. Images and unresolved references have no text.
+fn stored_text(
+  ledger: store.Store,
+  id: String,
+  part: http_history.Part,
+) -> Result(#(String, Result(String, String)), http_api.Failure) {
+  case part {
+    http_history.Reference(field, source_id, _) -> {
+      use source <- result.try(history_entry(ledger, id, source_id))
+      list.find(source.parts, fn(part) { part.field == field })
+      |> result.map(fn(part) { #(field, part_text(part)) })
+      |> result.replace_error(http_api.Failure(
+        503,
+        "content_unavailable",
+        "associated tool content is unavailable",
+      ))
+    }
+    _ -> Ok(#(part.field, part_text(part)))
+  }
+}
+
+fn part_text(part: http_history.Part) -> Result(String, String) {
+  case part {
+    http_history.Text(_, text) -> Ok(text)
+    http_history.Value(_, value) | http_history.Trace(_, value) ->
+      Ok(json.to_string(value))
+    http_history.Image(..) | http_history.Reference(..) ->
+      Error("part has no stored text")
+  }
+}
+
+/// One image field's decoded bytes with its own MIME type.
+pub fn image(
+  storage: Result(store.Store, String),
+  id: String,
+  entry_id: String,
+  field: String,
+  req: request.Request(BitArray),
+) -> response.Response(mist.ResponseData) {
+  let outcome = {
+    use _ <- result.try(http_api.parameters(req, []))
+    use ledger <- result.try(storage |> result.map_error(http_api.failure))
+    use entry <- result.try(history_entry(ledger, id, entry_id))
+    use image <- result.try(
+      list.find_map(entry.parts, fn(part) {
+        case part {
+          http_history.Image(key, image) if key == field -> Ok(image)
+          _ -> Error(Nil)
+        }
+      })
+      |> result.replace_error(http_api.Failure(
+        404,
+        "content_unknown",
+        "entry image was not found",
+      )),
+    )
+    use bytes <- result.try(
+      images.bytes(ledger, image)
+      |> result.replace_error(http_api.Failure(
+        503,
+        "content_unavailable",
+        "entry image is unavailable",
+      )),
+    )
+    Ok(
+      response.new(200)
+      |> response.set_header("content-type", types.image_meta(image).0)
+      |> response.set_header("cache-control", "no-store")
+      |> response.set_body(mist.Bytes(bytes_tree.from_bit_array(bytes))),
+    )
   }
   http_api.answer(outcome)
 }

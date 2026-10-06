@@ -31,6 +31,7 @@ type State {
     cursor: session.Cursor,
     initial: Option(String),
     tail: Int,
+    writer: http_stream.Writer,
   )
 }
 
@@ -109,9 +110,10 @@ pub fn attach(
         ))
     },
   )
+  let coded = http_stream.coded(req)
   Ok(mist.chunked(
     req,
-    http_stream.response(req),
+    http_stream.response(req, coded),
     fn(subject) {
       let owner = process.self()
       session.watch(worker, owner, fn() { process.send(subject, StreamWake) })
@@ -126,6 +128,7 @@ pub fn attach(
         first.cursor,
         Some(initial),
         tail,
+        http_stream.writer(req, coded),
       )
     },
     session_stream_loop,
@@ -133,13 +136,13 @@ pub fn attach(
 }
 
 fn stream_failure(
-  connection: mist.Connection,
+  writer: http_stream.Writer,
   cursor: session.Cursor,
   failure: http_api.Failure,
 ) -> mist.ChunkNext(a) {
   let _ =
     http_stream.send(
-      connection,
+      writer,
       json.object([
         #("generation", json.string(cursor.generation)),
         #("cursor", json.int(cursor.sequence)),
@@ -158,17 +161,18 @@ fn stream_failure(
       ])
         |> json.to_string,
     )
+  http_stream.close(writer)
   mist.ChunkStop
 }
 
 fn session_stream_loop(
   state: State,
   message: StreamMessage,
-  connection: mist.Connection,
+  _connection: mist.Connection,
 ) -> mist.ChunkNext(State) {
   case state.initial {
     Some(batch) ->
-      case http_stream.send(connection, batch) {
+      case http_stream.send(state.writer, batch) {
         Error(_) -> mist.ChunkStop
         Ok(_) -> {
           session.consumed(
@@ -199,15 +203,15 @@ fn session_stream_loop(
         Ok(#(page, batch))
       }
       case outcome {
-        Error(failure) -> stream_failure(connection, state.cursor, failure)
+        Error(failure) -> stream_failure(state.writer, state.cursor, failure)
         Ok(#(page, batch)) -> {
           let sent = case
             page.snapshot == None
             && list.is_empty(page.events)
             && message == StreamTick
           {
-            True -> http_stream.keepalive(connection)
-            False -> http_stream.send(connection, batch)
+            True -> http_stream.keepalive(state.writer)
+            False -> http_stream.send(state.writer, batch)
           }
           case sent {
             Error(_) -> mist.ChunkStop

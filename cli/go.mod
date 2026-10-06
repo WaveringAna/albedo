@@ -12,6 +12,7 @@ require (
 	github.com/charmbracelet/x/ansi v0.11.8
 	github.com/charmbracelet/x/term v0.2.2
 	github.com/google/jsonschema-go v0.4.3
+	github.com/klauspost/compress v1.20.1
 	github.com/lucasb-eyer/go-colorful v1.4.1
 	github.com/mattn/go-isatty v0.0.24
 	github.com/oapi-codegen/runtime v1.7.0

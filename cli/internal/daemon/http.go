@@ -61,9 +61,16 @@ func (c *Connection) operationEndpoint(op operation) (ConnectionSnapshot, error)
 	return state.endpoint, nil
 }
 
+func (c *Connection) capability(name string) int64 {
+	if state := c.state.Load(); state != nil {
+		return state.capabilities[name]
+	}
+	return 0
+}
+
 func newHTTPClient() *http.Client {
 	return &http.Client{
-		Transport:     &http.Transport{Proxy: http.ProxyFromEnvironment},
+		Transport:     codingTransport{base: &http.Transport{Proxy: http.ProxyFromEnvironment}},
 		CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse },
 	}
 }
@@ -187,9 +194,13 @@ func requestBytes(ctx context.Context, conn *Connection, operation operation, li
 		if err != nil {
 			return nil, err
 		}
-		req, err := operationRequest(ctx, snapshot, operation, payload)
+		sent, encoding := requestBody(conn, payload)
+		req, err := operationRequest(ctx, snapshot, operation, sent)
 		if err != nil {
 			return nil, err
+		}
+		if encoding != "" {
+			req.Header.Set("Content-Encoding", encoding)
 		}
 		if canceled := ctx.Err(); canceled != nil {
 			return nil, canceled

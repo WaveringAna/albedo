@@ -14,7 +14,7 @@ subscribe_filtered(Owner, Notify, Sessions) ->
     Filter = maps:from_keys(Sessions, true),
     Ref = make_ref(),
     Control = atomics:new(2, [{signed, false}]),
-    albedo_registry:register(?QUEUES, Ref, {queue:new(), 0, 0}),
+    albedo_registry:register(?QUEUES, Ref, {queue:new(), 0, 0, false}),
     albedo_registry:register(?TABLE, Ref, {Owner, Notify, Control, Filter}),
     spawn(fun() ->
         Monitor = erlang:monitor(process, Owner),
@@ -37,7 +37,7 @@ publish(Event) ->
         _ ->
             lists:foreach(
                 fun({Ref, {_Owner, Notify, Control, _Filter}}) ->
-                    admit(Ref, Event, byte_size(Event), Notify, Control, ?CAS_ATTEMPTS)
+                    admit(Ref, Event, byte_size(Event), true, Notify, Control, ?CAS_ATTEMPTS)
                 end,
                 ets:tab2list(?TABLE)),
             nil
@@ -63,7 +63,7 @@ publish_activity(Session, Event) ->
         _ ->
             lists:foreach(fun({Ref, {_Owner, Notify, Control, Filter}}) ->
                 case maps:is_key(Session, Filter) of
-                    true -> admit(Ref, Event, byte_size(Event), Notify, Control, ?CAS_ATTEMPTS);
+                    true -> admit(Ref, Event, byte_size(Event), false, Notify, Control, ?CAS_ATTEMPTS);
                     false -> ok
                 end
             end, ets:tab2list(?TABLE)),
@@ -80,32 +80,34 @@ publish_mail(Sender, Recipient, Event) ->
                 Interested = maps:is_key(Recipient, Filter)
                     orelse case Sender of {some, Id} -> maps:is_key(Id, Filter); _ -> false end,
                 case Interested of
-                    true -> admit(Ref, Event, byte_size(Event), Notify, Control, ?CAS_ATTEMPTS);
+                    true -> admit(Ref, Event, byte_size(Event), false, Notify, Control, ?CAS_ATTEMPTS);
                     false -> ok
                 end
             end, ets:tab2list(?TABLE)),
             nil
     end.
 
-admit(Ref, Event, Size, Notify, Control, Attempts) ->
+%% Invalidates marks a batch that requires a collection refresh, so a drain
+%% reports it without decoding the encoded events.
+admit(Ref, Event, Size, Invalidates, Notify, Control, Attempts) ->
     case atomics:get(Control, 1) of
         1 -> ok;
         0 when Attempts == 0 -> overflow(Ref, Notify, Control);
         0 ->
             case ets:lookup(?QUEUES, Ref) of
                 [] -> ok;
-                [{Ref, {Queue, Count, Bytes} = Previous}] ->
+                [{Ref, {Queue, Count, Bytes, Invalidated} = Previous}] ->
                     case Count + 1 > ?EVENT_LIMIT orelse Bytes + Size > ?BYTE_LIMIT of
                         true ->
                             case replace_queue(Ref, Previous, Previous) of
                                 true -> overflow(Ref, Notify, Control);
-                                false -> admit(Ref, Event, Size, Notify, Control, Attempts - 1)
+                                false -> admit(Ref, Event, Size, Invalidates, Notify, Control, Attempts - 1)
                             end;
                         false ->
-                            Next = {queue:in(Event, Queue), Count + 1, Bytes + Size},
+                            Next = {queue:in(Event, Queue), Count + 1, Bytes + Size, Invalidated orelse Invalidates},
                             case replace_queue(Ref, Previous, Next) of
                                 true -> wake(Notify, Control);
-                                false -> admit(Ref, Event, Size, Notify, Control, Attempts - 1)
+                                false -> admit(Ref, Event, Size, Invalidates, Notify, Control, Attempts - 1)
                             end
                     end
             end
@@ -134,7 +136,7 @@ replace_queue(Ref, Previous, Next) ->
 drain(Ref) ->
     case ets:lookup(?TABLE, Ref) of
         [{Ref, {_Owner, Notify, Control, _Filter}}] -> drain(Ref, Notify, Control, ?CAS_ATTEMPTS);
-        [] -> {batch, []}
+        [] -> {batch, [], false}
     end.
 
 drain(Ref, Notify, Control, Attempts) ->
@@ -143,14 +145,14 @@ drain(Ref, Notify, Control, Attempts) ->
         0 when Attempts == 0 -> overflow(Ref, Notify, Control), overflow;
         0 ->
             case ets:lookup(?QUEUES, Ref) of
-                [] -> {batch, []};
-                [{Ref, {Queue, _Count, _Bytes} = Previous}] ->
-                    case replace_queue(Ref, Previous, {queue:new(), 0, 0}) of
+                [] -> {batch, [], false};
+                [{Ref, {Queue, _Count, _Bytes, Invalidated} = Previous}] ->
+                    case replace_queue(Ref, Previous, {queue:new(), 0, 0, false}) of
                         false -> drain(Ref, Notify, Control, Attempts - 1);
                         true ->
                             case atomics:get(Control, 1) of
                                 1 -> ets:delete(?QUEUES, Ref), overflow;
-                                0 -> {batch, queue:to_list(Queue)}
+                                0 -> {batch, queue:to_list(Queue), Invalidated}
                             end
                     end
             end
@@ -167,7 +169,7 @@ rearm(Ref, WakeConsumed) ->
             end,
             case {atomics:get(Control, 1), ets:lookup(?QUEUES, Ref)} of
                 {1, _} -> wake(Notify, Control);
-                {0, [{Ref, {_Queue, Count, _Bytes}}]} when Count > 0 -> wake(Notify, Control);
+                {0, [{Ref, {_Queue, Count, _Bytes, _Invalidated}}]} when Count > 0 -> wake(Notify, Control);
                 _ -> ok
             end;
         [] -> ok

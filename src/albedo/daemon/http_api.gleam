@@ -17,6 +17,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import gleam/string_tree
 import gleam/uri
 import mist
 
@@ -137,13 +138,18 @@ pub type Interrupt {
 }
 
 pub fn problem(failure: Failure) -> json.Json {
-  json.object([
+  json.object(problem_fields(failure))
+}
+
+/// The problem members, for a decision body that extends them.
+pub fn problem_fields(failure: Failure) -> List(#(String, json.Json)) {
+  [
     #("type", json.string("about:blank")),
     #("title", json.string(failure.code)),
     #("status", json.int(failure.status)),
     #("detail", json.string(failure.detail)),
     #("code", json.string(failure.code)),
-  ])
+  ]
 }
 
 pub fn fail(failure: Failure) -> response.Response(mist.ResponseData) {
@@ -155,14 +161,27 @@ pub fn reply(
   status: Int,
   value: json.Json,
 ) -> response.Response(mist.ResponseData) {
-  raw(status, json.to_string(value))
+  let encoded = json.to_string_tree(value)
+  bounded(
+    status,
+    string_tree.byte_size(encoded),
+    bytes_tree.from_string_tree(encoded),
+  )
 }
 
 pub fn raw(
   status: Int,
   encoded: String,
 ) -> response.Response(mist.ResponseData) {
-  case string.byte_size(encoded) > response_limit {
+  bounded(status, string.byte_size(encoded), bytes_tree.from_string(encoded))
+}
+
+fn bounded(
+  status: Int,
+  size: Int,
+  body: bytes_tree.BytesTree,
+) -> response.Response(mist.ResponseData) {
+  case size > response_limit {
     True ->
       fail(Failure(
         503,
@@ -173,8 +192,13 @@ pub fn raw(
       response.new(status)
       |> response.set_header("content-type", "application/json")
       |> response.set_header("cache-control", "no-store")
-      |> response.set_body(mist.Bytes(bytes_tree.from_string(encoded)))
+      |> response.set_body(mist.Bytes(body))
   }
+}
+
+/// The encoded byte length of `value`, counted without flattening it.
+pub fn encoded_size(value: json.Json) -> Int {
+  string_tree.byte_size(json.to_string_tree(value))
 }
 
 pub fn invalid(detail: String) -> Failure {
@@ -241,7 +265,7 @@ pub fn bounded_items(
     budget,
     fn(item) {
       let value = encode(item)
-      Ok(#(value, string.byte_size(json.to_string(value)) + overhead))
+      Ok(#(value, encoded_size(value) + overhead))
     },
     [],
   )
@@ -257,7 +281,7 @@ pub fn bounded_catalog(
     values,
     budget,
     fn(value) {
-      let bytes = string.byte_size(json.to_string(value))
+      let bytes = encoded_size(value)
       case bytes > 65_536 {
         True ->
           Error(Failure(
@@ -307,13 +331,6 @@ pub fn next_page(
   }
 }
 
-@external(erlang, "albedo_http_api", "image_slice")
-pub fn image_slice(
-  base64: String,
-  offset: Int,
-  limit: Int,
-) -> Result(#(String, Int, Bool), String)
-
 @external(erlang, "albedo_http_api", "read_chunked")
 pub fn read_chunked(
   connection: mist.Connection,
@@ -326,19 +343,6 @@ pub fn json_value(encoded: String) -> Result(json.Json, Failure) {
     |> result.map_error(invalid),
   )
   Ok(dynamic_json(value))
-}
-
-/// Decode a bus event once for forwarding and its structural type decision.
-pub fn event_value(
-  encoded: String,
-) -> Result(#(json.Json, Option(String)), Failure) {
-  use value <- result.try(
-    strict_json(bit_array.from_string(encoded)) |> result.map_error(invalid),
-  )
-  let kind =
-    decode.run(value, decode.field("type", decode.string, decode.success))
-    |> option.from_result
-  Ok(#(dynamic_json(value), kind))
 }
 
 pub fn fields(encoded: String) -> Result(List(#(String, json.Json)), Failure) {

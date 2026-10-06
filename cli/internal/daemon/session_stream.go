@@ -179,7 +179,7 @@ func (c *ChatClient) readStream(ctx context.Context, scanner *bufio.Scanner, onB
 			}
 			events = append(events, wireChatEvent{StreamEvent: StreamEvent{Type: EventUsage, Usage: usageValue(snapshot.wire.Usage), Replayed: true}})
 			for _, progress := range snapshot.wire.CurrentProgress {
-				parsed, err := typedToolProgress(progress)
+				parsed, err := validateToolProgress(progress)
 				if err != nil || parsed == nil {
 					return streamFailure(StreamProtocol, fieldError("current progress"))
 				}

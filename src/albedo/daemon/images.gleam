@@ -49,6 +49,31 @@ fn read(db: sqlight.Connection, hash: String) -> Result(String, Nil) {
   }
 }
 
+/// An image's decoded bytes, for serving the image itself. Same caveat as
+/// `reader`: never call this from inside `store.query`.
+pub fn bytes(ledger: store.Store, image: types.Image) -> Result(BitArray, Nil) {
+  case types.image_data(image) {
+    types.InlineData(data) -> decode_legacy_base64(data)
+    types.StoredData(hash: hash, ..) -> stored_bytes(ledger, hash)
+  }
+}
+
+fn stored_bytes(ledger: store.Store, hash: String) -> Result(BitArray, Nil) {
+  store.query(ledger, fn(db) {
+    case
+      store.rows(
+        db,
+        "SELECT data FROM images WHERE hash=? AND typeof(data)='blob'",
+        [sqlight.text(hash)],
+        decode.field(0, decode.bit_array, decode.success),
+      )
+    {
+      Ok([data]) -> Ok(data)
+      _ -> read(db, hash) |> result.try(decode_legacy_base64)
+    }
+  })
+}
+
 /// The input with its inline images replaced by stored references, after
 /// writing their payloads. Runs inside the caller's transaction.
 pub fn externalize(
@@ -272,3 +297,6 @@ fn hashes(payload: BitArray) -> List(String)
 
 @external(erlang, "albedo_images", "encode_base64")
 fn encode_base64(data: BitArray) -> String
+
+@external(erlang, "albedo_images", "decode_legacy_base64")
+fn decode_legacy_base64(data: String) -> Result(BitArray, Nil)

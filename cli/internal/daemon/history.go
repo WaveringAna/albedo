@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -218,17 +217,11 @@ func ReadEntryContent(ctx context.Context, conn *Connection, session, entry stri
 			if part.Field == "" || complete[part.Field] || part.OffsetBytes != int64(len(fields[part.Field])) {
 				return fieldError("content byte offset")
 			}
-			data := []byte(part.Text)
-			if part.Encoding == "base64" {
-				var err error
-				data, err = base64.StdEncoding.DecodeString(part.Text)
-				if err != nil {
-					return err
-				}
-			} else if part.Encoding != "utf8" {
+			if part.Encoding != "utf8" {
 				return fieldError("content encoding")
 			}
-			if part.Encoding == "utf8" && !utf8.Valid(data) {
+			data := []byte(part.Text)
+			if !utf8.Valid(data) {
 				return fieldError("content UTF-8")
 			}
 			total += len(data)

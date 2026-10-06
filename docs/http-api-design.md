@@ -191,6 +191,17 @@ HTTP body framing accepts valid fixed-length and chunked requests, enforcing
 the same byte limit while reading. Ambiguous framing, unsupported content
 encoding, and incomplete bodies fail without executing the operation.
 
+zstd is the one content coding. A JSON or text response of at least 1 KiB is
+compressed when `Accept-Encoding` admits `zstd`, and so is a session or
+collection event stream, flushed after every frame. Limits and `ETag` values
+describe the decoded representation, and these responses add
+`Vary: Accept-Encoding`. Image resources are never coded. A daemon whose
+runtime lacks zstd answers in identity; stream compression needs OTP 29.
+When `GET /server` lists the `zstd_requests` capability, a request body may use
+`Content-Encoding: zstd`. It must be one frame that declares its decoded size,
+which must fit the route's limit; anything else is `400`. The CLI compresses
+bodies of 16 KiB or more.
+
 Lists return `{ "items": [], "next": null }`. `next` is an opaque continuation
 token tied to the query and representation, including `limit`. Follow-up requests
 retain the original query and add `next`. Default `limit` is 50; maximum is
@@ -835,11 +846,13 @@ It provides the TUI tree and fork picker without a separate tree route.
 as pages of `parts`, each with `field`, `offset_bytes`, `text`, and `complete`.
 Text and JSON fields use their exact stored UTF-8 encoding; offsets are bytes,
 and pieces end on UTF-8 boundaries. Opaque `next` identifies the next piece.
-Binary image parts use base64 with decoded-byte offsets. The decoded content
-budget is 256 KiB per page. The daemon shortens a page further when JSON escaping
-or base64 would reach the common encoded response bound.
-Metadata identifies MIME type, dimensions, and original byte count. Clients
-can reconstruct full arguments, results, and images without filesystem access.
+The decoded content budget is 256 KiB per page. The daemon shortens a page
+further when JSON escaping would reach the common encoded response bound.
+Image fields are not paged. An image's metadata gives its MIME type,
+dimensions, byte count, and a reference to
+`GET /sessions/{session_id}/history/{entry_id}/{field}`, which returns the
+stored bytes with the image's own `Content-Type`. Clients can reconstruct full
+arguments, results, and images without filesystem access.
 
 ### Prepared context and request records
 
@@ -1289,7 +1302,7 @@ Both stream kinds send keepalives at least every five seconds when quiet.
 Sockets have bounded write waits. Publication never awaits subscriber socket
 writes. A stalled reader cannot retain an unbounded mailbox or force another
 subscriber's writes to wait behind its own. Reverse proxies must pass streaming
-responses without buffering. Compression is disabled by default. History, images, and
+responses without buffering. History, images, and
 large extension results remain bounded HTTP reads, not unsolicited stream data.
 
 ## Extension contracts

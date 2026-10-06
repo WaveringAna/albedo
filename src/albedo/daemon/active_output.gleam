@@ -6,6 +6,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import gleam/string_tree
 
 pub opaque type Projection {
   Projection(
@@ -199,7 +200,8 @@ fn append_segment(
         Segment(..next, pending: segment.pending <> text),
       ))
     None -> {
-      let encoded = string.byte_size(json.to_string(json.string(text))) - 2
+      let encoded =
+        string_tree.byte_size(json.to_string_tree(json.string(text))) - 2
       let raw = projection.raw + bytes
       let size = projection.encoded + encoded
       case raw <= 65_536 && size <= 65_536 {

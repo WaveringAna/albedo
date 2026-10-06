@@ -424,7 +424,7 @@ type Composition struct {
 	Quarantine      []QuarantineDiagnostic `json:"quarantine"`
 }
 
-// ContentPart UTF-8 offsets count exact stored bytes. Base64 offsets count decoded image bytes.
+// ContentPart Offsets count exact stored UTF-8 bytes.
 type ContentPart struct {
 	Complete    bool    `json:"complete"`
 	Encoding    string  `json:"encoding"`
@@ -603,15 +603,9 @@ type EmptyRequest = map[string]interface{}
 // EntryContentPage defines model for EntryContentPage.
 type EntryContentPage struct {
 	// EntryID Opaque identity. Never infer a resource type or route from its contents.
-	EntryID ID `json:"entry_id"`
-	Image   *struct {
-		Height        int64   `json:"height"`
-		MimeType      string  `json:"mime_type"`
-		OriginalBytes Counter `json:"original_bytes"`
-		Width         int64   `json:"width"`
-	} `json:"image" nullable:"true"`
-	Next  *PageToken    `json:"next" nullable:"true"`
-	Parts []ContentPart `json:"parts"`
+	EntryID ID            `json:"entry_id"`
+	Next    *PageToken    `json:"next" nullable:"true"`
+	Parts   []ContentPart `json:"parts"`
 }
 
 // ExtensionDeletion defines model for ExtensionDeletion.
@@ -978,11 +972,13 @@ type ImageContent struct {
 
 // ImageMetadata defines model for ImageMetadata.
 type ImageMetadata struct {
-	Height        int64            `json:"height"`
-	MimeType      string           `json:"mime_type"`
-	OriginalBytes Counter          `json:"original_bytes"`
-	Reference     ContentReference `json:"reference"`
-	Width         int64            `json:"width"`
+	Height        int64   `json:"height"`
+	MimeType      string  `json:"mime_type"`
+	OriginalBytes Counter `json:"original_bytes"`
+
+	// Reference Its url is the image resource, which serves the decoded bytes.
+	Reference ContentReference `json:"reference"`
+	Width     int64            `json:"width"`
 }
 
 // ImageUpload Strict base64; decoded dimensions and provider constraints are validated before admission.
@@ -4173,10 +4169,17 @@ type ClientInterface interface {
 
 	// GetHistoryContent Read full content in bounded pieces
 	//
-	// Follow next until null. UTF-8 pieces end at character boundaries. Base64 image offsets count decoded bytes. Reconstruct stored content, not shortened previews.
+	// Follow next until null. UTF-8 pieces end at character boundaries. Reconstruct stored content, not shortened previews. Image fields are not paged here; their references name the image resource.
 	//
 	// Corresponds with GET /sessions/{session_id}/history/{entry_id} (the `GetHistoryContent` operationId).
 	GetHistoryContent(ctx context.Context, sessionID ID, entryID ID, params *GetHistoryContentParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetHistoryImage Read one image field as its own bytes
+	//
+	// Image references in history point here. The body is the stored image itself, not base64, and is never content-coded.
+	//
+	// Corresponds with GET /sessions/{session_id}/history/{entry_id}/{field} (the `GetHistoryImage` operationId).
+	GetHistoryImage(ctx context.Context, sessionID ID, entryID ID, field string, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// GetInput Read a durable input outcome
 	//
@@ -5716,11 +5719,28 @@ func (c *Client) GetHistory(ctx context.Context, sessionID ID, params *GetHistor
 
 // GetHistoryContent Read full content in bounded pieces
 //
-// Follow next until null. UTF-8 pieces end at character boundaries. Base64 image offsets count decoded bytes. Reconstruct stored content, not shortened previews.
+// Follow next until null. UTF-8 pieces end at character boundaries. Reconstruct stored content, not shortened previews. Image fields are not paged here; their references name the image resource.
 //
 // Corresponds with GET /sessions/{session_id}/history/{entry_id} (the `GetHistoryContent` operationId).
 func (c *Client) GetHistoryContent(ctx context.Context, sessionID ID, entryID ID, params *GetHistoryContentParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewGetHistoryContentRequest(c.Server, sessionID, entryID, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// GetHistoryImage Read one image field as its own bytes
+//
+// Image references in history point here. The body is the stored image itself, not base64, and is never content-coded.
+//
+// Corresponds with GET /sessions/{session_id}/history/{entry_id}/{field} (the `GetHistoryImage` operationId).
+func (c *Client) GetHistoryImage(ctx context.Context, sessionID ID, entryID ID, field string, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetHistoryImageRequest(c.Server, sessionID, entryID, field)
 	if err != nil {
 		return nil, err
 	}
@@ -9693,6 +9713,54 @@ func NewGetHistoryContentRequest(server string, sessionID ID, entryID ID, params
 			rawQueryFragments = append(rawQueryFragments, encoded)
 		}
 		queryURL.RawQuery = strings.Join(rawQueryFragments, "&")
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewGetHistoryImageRequest constructs an http.Request for the GetHistoryImage method
+func NewGetHistoryImageRequest(server string, sessionID ID, entryID ID, field string) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "session_id", sessionID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	var pathParam1 string
+
+	pathParam1, err = runtime.StyleParamWithOptions("simple", false, "entry_id", entryID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	var pathParam2 string
+
+	pathParam2, err = runtime.StyleParamWithOptions("simple", false, "field", field, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/sessions/%s/history/%s/%s", pathParam0, pathParam1, pathParam2)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
 	}
 
 	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)

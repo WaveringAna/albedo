@@ -11,7 +11,10 @@ info:
     and SSE frames are at most 1 MiB unless an extension explicitly overrides that limit. Ordinary request
     bodies are at most 64 KiB, input bodies 72,200,000 bytes and proxy bodies 32,000,000 bytes. UTF-8 and
     encoded-byte limits are described with x-max-utf8-bytes/x-max-encoded-bytes; standard schema validation
-    alone does not assert them. Examples use synthetic secrets only.
+    alone does not assert them. Examples use synthetic secrets only. JSON and text responses of at least
+    1 KiB, and session event streams, use Content-Encoding zstd when Accept-Encoding admits it; limits
+    and ETags apply to the decoded representation. When capabilities include zstd_requests, a request
+    body may use Content-Encoding zstd as one frame that declares its decoded size.
 jsonSchemaDialect: https://json-schema.org/draft/2020-12/schema
 externalDocs:
   description: Behavior, ownership, feature coverage and verification.
@@ -1406,8 +1409,9 @@ paths:
           $ref: '#/components/responses/Problem503'
         '404':
           $ref: '#/components/responses/Problem404'
-      description: Follow next until null. UTF-8 pieces end at character boundaries. Base64 image offsets
-        count decoded bytes. Reconstruct stored content, not shortened previews.
+      description: Follow next until null. UTF-8 pieces end at character boundaries. Reconstruct stored
+        content, not shortened previews. Image fields are not paged here; their references name the
+        image resource.
       parameters:
       - name: entry_id
         in: path
@@ -1420,6 +1424,60 @@ paths:
         schema:
           $ref: '#/components/schemas/ID'
       - $ref: '#/components/parameters/Next'
+  /sessions/{session_id}/history/{entry_id}/{field}:
+    get:
+      operationId: getHistoryImage
+      summary: Read one image field as its own bytes
+      tags:
+      - sessions
+      responses:
+        '200':
+          description: The decoded image, typed by its MIME type.
+          content:
+            image/png:
+              schema:
+                type: string
+                contentMediaType: image/png
+            image/jpeg:
+              schema:
+                type: string
+                contentMediaType: image/jpeg
+            image/webp:
+              schema:
+                type: string
+                contentMediaType: image/webp
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '405':
+          $ref: '#/components/responses/Problem405'
+        '503':
+          $ref: '#/components/responses/Problem503'
+        '404':
+          $ref: '#/components/responses/Problem404'
+      description: Image references in history point here. The body is the stored image itself,
+        not base64, and is never content-coded.
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ID'
+      - name: entry_id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ID'
+      - name: field
+        in: path
+        required: true
+        schema:
+          type: string
+          minLength: 1
+          maxLength: 256
   /sessions/{session_id}/context:
     get:
       operationId: getContext
@@ -6896,6 +6954,7 @@ components:
           $ref: '#/components/schemas/Counter'
         reference:
           $ref: '#/components/schemas/ContentReference'
+          description: Its url is the image resource, which serves the decoded bytes.
       required: [mime_type, width, height, original_bytes, reference]
       additionalProperties: false
     TextContent:
@@ -7110,13 +7169,13 @@ components:
           $ref: '#/components/schemas/Counter'
         encoding:
           type: string
-          enum: [utf8, base64]
+          enum: [utf8]
         text:
           type: string
           maxLength: 1048576
         complete:
           type: boolean
-      description: UTF-8 offsets count exact stored bytes. Base64 offsets count decoded image bytes.
+      description: Offsets count exact stored UTF-8 bytes.
       required: [field, offset_bytes, encoding, text, complete]
       additionalProperties: false
     EntryContentPage:
@@ -7133,28 +7192,8 @@ components:
           anyOf:
           - $ref: '#/components/schemas/PageToken'
           - type: 'null'
-        image:
-          anyOf:
-          - type: object
-            properties:
-              mime_type:
-                type: string
-                maxLength: 100
-              width:
-                type: integer
-                minimum: 1
-                maximum: 9007199254740991
-              height:
-                type: integer
-                minimum: 1
-                maximum: 9007199254740991
-              original_bytes:
-                $ref: '#/components/schemas/Counter'
-            required: [mime_type, width, height, original_bytes]
-            additionalProperties: false
-          - type: 'null'
       x-max-decoded-content-bytes: 262144
-      required: [entry_id, parts, next, image]
+      required: [entry_id, parts, next]
       additionalProperties: false
     ContextSection:
       type: object

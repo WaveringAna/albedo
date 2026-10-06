@@ -13,7 +13,7 @@ func TestPagedContentValidatesOffsetsAndReconstructsUTF8(t *testing.T) {
 	for _, failure := range []string{"", "offset", "false completeness"} {
 		t.Run(failure, func(t *testing.T) {
 			imageReads := 0
-			image := map[string]any{"mime_type": "image/png", "width": 1, "height": 1, "original_bytes": 3, "reference": map[string]any{"url": "/sessions/s/history/u", "field": "image-0", "bytes": 3}}
+			image := map[string]any{"mime_type": "image/png", "width": 1, "height": 1, "original_bytes": 3, "reference": map[string]any{"url": "/sessions/s/history/u/image-0", "field": "image-0", "bytes": 3}}
 			conn := controlledConnection(t, func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path == "/sessions/s/history" {
 					entry := func(id, kind string, position int, content ...any) map[string]any {
@@ -29,9 +29,8 @@ func TestPagedContentValidatesOffsetsAndReconstructsUTF8(t *testing.T) {
 					}, "older": nil, "newer": nil, "high_water": 3})
 					return
 				}
-				if r.URL.Path == "/sessions/s/history/u" {
+				if strings.HasPrefix(r.URL.Path, "/sessions/s/history/u") {
 					imageReads++
-					_ = json.NewEncoder(w).Encode(map[string]any{"entry_id": "u", "parts": []any{map[string]any{"field": "image-0", "offset_bytes": 0, "encoding": "base64", "text": "AAEC", "complete": true}}, "next": nil, "image": image})
 					return
 				}
 				if r.URL.Path != "/sessions/s/history/e" {
@@ -50,7 +49,7 @@ func TestPagedContentValidatesOffsetsAndReconstructsUTF8(t *testing.T) {
 						offset = 1
 					}
 				}
-				_ = json.NewEncoder(w).Encode(map[string]any{"entry_id": "e", "parts": []any{map[string]any{"field": "text", "offset_bytes": offset, "encoding": "utf8", "text": text, "complete": complete}}, "next": next, "image": nil})
+				_ = json.NewEncoder(w).Encode(map[string]any{"entry_id": "e", "parts": []any{map[string]any{"field": "text", "offset_bytes": offset, "encoding": "utf8", "text": text, "complete": complete}}, "next": next})
 			})
 			page, err := NewChatClient(conn, "s").History(t.Context(), 0, 10)
 			if failure != "" {
@@ -63,11 +62,7 @@ func TestPagedContentValidatesOffsetsAndReconstructsUTF8(t *testing.T) {
 				t.Fatalf("history lost full text or image metadata: %+v, %v", page, err)
 			}
 			if imageReads != 0 {
-				t.Fatal("displaying image metadata fetched raw image bytes")
-			}
-			fields, err := ReadEntryContent(t.Context(), conn, "s", "u")
-			if err != nil || string(fields["image-0"]) != string([]byte{0, 1, 2}) || imageReads != 1 {
-				t.Fatalf("explicit full image retrieval changed: %v, %v", fields, err)
+				t.Fatal("displaying image metadata fetched the image")
 			}
 		})
 	}

@@ -19,7 +19,11 @@ it. starting a new turn does not require `/compact` to change the old phase.
 Internal checkpoint and provider-started signals are suppressed before stream
 encoding and do not allocate SSE sequence numbers.
 
-Session streams require the `text/event-stream` content type. Each batch carries
+Session streams require the `text/event-stream` content type, zstd-coded when
+the request accepts it ([encoding](../docs/http-api-design.md)): `http_stream`
+flushes the coder after every frame and ends the frame before a deliberate
+stop. A zstd context works only in the process that created it, so the stream
+process creates its own writer. Each batch carries
 a nonempty `generation`, a nonnegative integer `cursor`, and an `events` array.
 The generation identifies one lifetime of the session actor. Reconnect requests
 send both `after_generation` and `after_seq`; an initial request omits both.

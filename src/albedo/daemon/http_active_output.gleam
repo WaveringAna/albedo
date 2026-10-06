@@ -12,7 +12,6 @@ import gleam/json
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
-import gleam/string
 import gleam/uri
 import mist
 
@@ -218,7 +217,6 @@ pub fn content(
           ),
         ),
         #("next", next),
-        #("image", json.null()),
       ]),
     ))
   }
@@ -239,7 +237,7 @@ fn encoded_page(
       ))
   })
   let value = json.string(read.0)
-  case string.byte_size(json.to_string(value)) <= content_page_bytes {
+  case http_api.encoded_size(value) <= content_page_bytes {
     True -> Ok(#(value, read.1, read.2))
     False -> {
       // One scalar escapes to at most six ASCII bytes. This fallback bounds

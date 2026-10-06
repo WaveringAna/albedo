@@ -230,14 +230,11 @@ fn tool(
     False -> json.null()
   }
   let result = json.string(output)
-  let result_bytes = string.byte_size(json.to_string(result))
+  let result_bytes = http_api.encoded_size(result)
   let size =
-    string.byte_size(json.to_string(arguments))
+    http_api.encoded_size(arguments)
     + result_bytes
-    + {
-      option.map(trace, fn(value) { string.byte_size(json.to_string(value)) })
-      |> option.unwrap(0)
-    }
+    + { option.map(trace, http_api.encoded_size) |> option.unwrap(0) }
   let complete = string.byte_size(call.arguments) <= 65_536 && size <= 65_536
   json.object([
     #("tool_call_id", json.string(call.id)),
@@ -287,7 +284,7 @@ pub fn status(value: session_activity.Status) -> json.Json {
 
 pub fn activity(value: session_activity.Projection) -> json.Json {
   let encoded = activity_value(value)
-  case string.byte_size(json.to_string(encoded)) <= 16_384 {
+  case http_api.encoded_size(encoded) <= 16_384 {
     True -> encoded
     False ->
       case value.lines {

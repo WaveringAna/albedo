@@ -20,6 +20,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 import gleam/result
+import gleam/string
 import mist
 
 fn collection_filter(
@@ -151,9 +152,10 @@ pub fn read(
           |> result.map_error(http_api.failure),
         )
         use _ <- result.try(http_stream.configure(live.body))
+        let coded = http_stream.coded(live)
         Ok(mist.chunked(
           live,
-          http_stream.response(live),
+          http_stream.response(live, coded),
           fn(subject) {
             let subscription =
               bus.subscribe_filtered(
@@ -170,6 +172,7 @@ pub fn read(
               filter,
               subscription,
               subject,
+              http_stream.writer(live, coded),
               True,
             )
           },
@@ -284,6 +287,7 @@ type CollectionStream {
     filter: session_collection.Filter,
     subscription: bus.Subscription,
     subject: Subject(StreamMessage),
+    writer: http_stream.Writer,
     initial: Bool,
   )
 }
@@ -305,10 +309,10 @@ fn collection_ids(
   }
 }
 
-fn collection_overflow(connection: mist.Connection) -> mist.ChunkNext(a) {
+fn collection_overflow(writer: http_stream.Writer) -> mist.ChunkNext(a) {
   let _ =
     http_stream.send(
-      connection,
+      writer,
       json.object([
         #(
           "events",
@@ -325,6 +329,7 @@ fn collection_overflow(connection: mist.Connection) -> mist.ChunkNext(a) {
       ])
         |> json.to_string,
     )
+  http_stream.close(writer)
   mist.ChunkStop
 }
 
@@ -346,16 +351,16 @@ fn collection_refresh(
 fn collection_stream_loop(
   state: CollectionStream,
   message: StreamMessage,
-  connection: mist.Connection,
+  _connection: mist.Connection,
 ) -> mist.ChunkNext(CollectionStream) {
   case state.initial {
     True ->
       case collection_refresh(state) {
-        Error(_) -> collection_overflow(connection)
+        Error(_) -> collection_overflow(state.writer)
         Ok(state) -> {
           let sent =
             http_stream.send(
-              connection,
+              state.writer,
               json.object([
                 #(
                   "events",
@@ -390,33 +395,23 @@ fn collection_stream_loop(
       }
     False ->
       case bus.drain(state.subscription) {
-        bus.Overflow -> collection_overflow(connection)
-        bus.Batch(encoded) -> {
-          let outcome = {
-            use events <- result.try(list.try_map(encoded, http_api.event_value))
-            use state <- result.try(
-              case
-                list.any(events, fn(event) { event.1 == Some("invalidate") })
-              {
-                True -> collection_refresh(state)
-                False -> Ok(state)
-              },
-            )
-            Ok(#(state, list.map(events, fn(event) { event.0 })))
+        bus.Overflow -> collection_overflow(state.writer)
+        bus.Batch(encoded, invalidated) -> {
+          let refreshed = case invalidated {
+            True -> collection_refresh(state)
+            False -> Ok(state)
           }
-          case outcome {
-            Error(_) -> collection_overflow(connection)
-            Ok(#(state, events)) -> {
-              let sent = case events, message {
+          case refreshed {
+            Error(_) -> collection_overflow(state.writer)
+            Ok(state) -> {
+              // Bus events are already encoded; the batch only joins them.
+              let sent = case encoded, message {
                 [], StreamWake -> Ok(Nil)
-                [], StreamTick -> http_stream.keepalive(connection)
+                [], StreamTick -> http_stream.keepalive(state.writer)
                 _, _ ->
                   http_stream.send(
-                    connection,
-                    json.object([
-                      #("events", json.array(events, fn(value) { value })),
-                    ])
-                      |> json.to_string,
+                    state.writer,
+                    "{\"events\":[" <> string.join(encoded, ",") <> "]}",
                   )
               }
               case sent {

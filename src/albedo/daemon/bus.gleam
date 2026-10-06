@@ -135,8 +135,10 @@ fn scalar_prefix(value: String, count: Int) -> String {
 /// One subscriber's bounded queue, removed when its stream process dies.
 pub type Subscription
 
+/// Events stay encoded on the bus; `invalidated` says whether any of them
+/// came from `invalidate`.
 pub type Batch {
-  Batch(events: List(String))
+  Batch(events: List(String), invalidated: Bool)
   Overflow
 }
 

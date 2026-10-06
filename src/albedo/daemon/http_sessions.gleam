@@ -86,13 +86,10 @@ fn creation_failure(
         ),
       ),
     ])
-  use fields <- result.try(http_api.fields(
-    http_api.problem(failure) |> json.to_string,
-  ))
   Ok(
     http_api.reply(
       failure.status,
-      json.object([#("decision", decision), ..fields]),
+      json.object([#("decision", decision), ..http_api.problem_fields(failure)]),
     )
     |> response.set_header("content-type", "application/problem+json"),
   )
@@ -727,11 +724,7 @@ fn input_decision_response(
     "accepted" ->
       http_api.reply(outcome.receipt.http_status, http_wire.input(outcome))
     _ -> {
-      let fields =
-        http_api.problem(rejection_failure(outcome.receipt))
-        |> json.to_string
-        |> http_api.fields
-        |> result.unwrap([])
+      let fields = http_api.problem_fields(rejection_failure(outcome.receipt))
       http_api.reply(
         outcome.receipt.http_status,
         json.object([

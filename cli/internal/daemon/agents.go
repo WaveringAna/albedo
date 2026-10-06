@@ -172,7 +172,7 @@ func decodeAgentEvent(raw json.RawMessage) (*AgentEvent, error) {
 				return nil, fieldError("duplicate collection progress")
 			}
 			seen[p.CallID] = true
-			progress, err := typedToolProgress(p)
+			progress, err := validateToolProgress(p)
 			if err != nil || progress == nil {
 				return nil, fieldError("collection progress")
 			}
@@ -229,7 +229,7 @@ func GetAgents(ctx context.Context, conn *Connection, id string) (AgentsSnapshot
 			session.FamilyRevision = result.FamilyRevision
 			node := AgentNode{Parent: row.ParentID, Address: row.Address, Session: session, Name: session.Title, Depth: session.Depth, Running: session.Status.Running, Closed: session.Closed, Cursor: row.Cursor, Activity: row.Activity, CurrentProgress: []ToolProgress{}}
 			for _, p := range row.CurrentProgress {
-				progress, progressErr := typedToolProgress(p)
+				progress, progressErr := validateToolProgress(p)
 				if progressErr != nil || progress == nil {
 					return fieldError("family progress")
 				}

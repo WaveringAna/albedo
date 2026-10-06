@@ -1,5 +1,6 @@
 -module(albedo_http_api).
--export([stream_socket/1, scalar_prefix/2, content_slice/3, image_slice/3, page_token/3, page_state/3, parse/1, accept/2, encode/1, timestamp/1, etag/1, instance_id/0, read_chunked/2]).
+-export([zstd_available/0, zstd_streams/0, accepts_zstd/1, zstd_compress/1, zstd_stream/0, zstd_flush/2, zstd_end/1, zstd_decompress/2,
+         stream_socket/1, scalar_prefix/2, content_slice/3, page_token/3, page_state/3, parse/1, accept/2, encode/1, timestamp/1, etag/1, instance_id/0, read_chunked/2]).
 
 parse(Bytes) ->
     try
@@ -151,14 +152,68 @@ utf8_end(Text, End, Size) ->
         _ -> End
     end.
 
-image_slice(Base64, Offset, Limit) ->
-    try
-        Bytes = base64:decode(Base64), Size = byte_size(Bytes),
-        true = Offset >= 0 andalso Offset =< Size,
-        End = min(Size, Offset + Limit),
-        {ok, {base64:encode(binary:part(Bytes, Offset, End - Offset)), End, End =:= Size}}
-    catch _:_ -> {error, <<"image content is unavailable">>} end.
+%% zstd ships with OTP 28; flushing a stream mid-frame needs OTP 29.
+zstd_available() -> code:ensure_loaded(zstd) =:= {module, zstd}.
 
+zstd_streams() -> zstd_available() andalso erlang:function_exported(zstd, flush, 1).
+
+%% Whether an Accept-Encoding header admits zstd, by name or wildcard.
+accepts_zstd(Header) ->
+    try
+        true = byte_size(Header) =< 8192,
+        Codings = [media_range(Part) || Part0 <- binary:split(Header, <<",">>, [global]),
+            Part <- [string:trim(Part0)], Part =/= <<>>],
+        Named = [Quality || {<<"zstd">>, Quality} <- Codings],
+        Any = [Quality || {<<"*">>, Quality} <- Codings],
+        Quality = case {Named, Any} of
+            {[_|_], _} -> lists:max(Named);
+            {[], [_|_]} -> lists:max(Any);
+            {[], []} -> 0
+        end,
+        Quality > 0 andalso zstd_available()
+    catch _:_ -> false end.
+
+zstd_compress(Data) -> zstd:compress(Data, #{compressionLevel => 1}).
+
+zstd_stream() ->
+    {ok, Context} = zstd:context(compress, #{compressionLevel => 1}),
+    Context.
+
+%% Everything written so far, decodable by a reader without waiting for more.
+zstd_flush(Context, Data) ->
+    Buffered = zstd_feed(Context, Data),
+    {continue, Flushed} = zstd:flush(Context),
+    [Buffered, Flushed].
+
+zstd_feed(Context, Data) ->
+    case zstd:stream(Context, Data) of
+        {continue, Rest, Out} -> [Out | zstd_feed(Context, Rest)];
+        {continue, Out} -> [Out]
+    end.
+
+zstd_end(Context) ->
+    {done, Tail} = zstd:finish(Context, <<>>),
+    Tail.
+
+%% One frame that declares its decoded size, at most Limit bytes. Output is
+%% produced in bounded steps, so a frame that lies about its size cannot
+%% allocate past Limit, and a truncated frame fails the size check.
+zstd_decompress(Data, Limit) ->
+    try
+        {ok, #{frameContentSize := Size}} = zstd:get_frame_header(Data),
+        true = is_integer(Size) andalso Size =< Limit,
+        {ok, Context} = zstd:context(decompress),
+        try inflate(Context, Data, Size, [], 0) after zstd:close(Context) end
+    catch _:_ -> {error, nil} end.
+
+inflate(_, _, Size, _, Total) when Total > Size -> {error, nil};
+inflate(Context, Data, Size, Acc, Total) ->
+    case zstd:stream(Context, Data) of
+        {continue, Rest, Out} -> inflate(Context, Rest, Size, [Out|Acc], Total + byte_size(Out));
+        {continue, Out} when Total + byte_size(Out) =:= Size ->
+            {ok, iolist_to_binary(lists:reverse(Acc, [Out]))};
+        {continue, _} -> {error, nil}
+    end.
 
 %% Rank supported representations while respecting a specific q=0 exclusion
 %% over a less-specific wildcard. JSON wins a tie so */* never starts a stream.

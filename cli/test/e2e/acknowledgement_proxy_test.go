@@ -111,6 +111,8 @@ func mutateAcknowledgement(t *testing.T, path string, fault acknowledgementFault
 		forwarded.URL.Scheme, forwarded.URL.Host = destination.Scheme, destination.Host
 		forwarded.RequestURI = ""
 		forwarded.Host = destination.Host
+		// Faults rewrite the JSON acknowledgement, so it must cross uncoded.
+		forwarded.Header.Del("Accept-Encoding")
 		response, forwardErr := transport.RoundTrip(forwarded)
 		if forwardErr != nil {
 			proxy.mu.Lock()

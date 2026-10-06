@@ -3,6 +3,7 @@ import albedo/daemon/configuration
 import albedo/daemon/http_active_output
 import albedo/daemon/http_api
 import albedo/daemon/http_auth
+import albedo/daemon/http_coding
 import albedo/daemon/http_resources
 import albedo/daemon/http_session_collection
 import albedo/daemon/http_sessions
@@ -108,7 +109,7 @@ fn route(
   req: request.Request(mist.Connection),
 ) -> response.Response(mist.ResponseData) {
   case http_request(fn() { handle_request(config, registry, boundary, req) }) {
-    Ok(response) -> response
+    Ok(response) -> http_coding.encode(req, response)
     Error(_) ->
       http_api.fail(http_api.Failure(
         503,
@@ -313,21 +314,29 @@ fn admitted(
         list.filter(req.headers, fn(header) {
           string.lowercase(header.0) == "content-encoding"
         })
-      let supported = case admission, encodings {
-        extension.RelayAdmission(..), _ -> True
-        _, [] -> True
+      // Ok(True) when the body arrives zstd-compressed.
+      let compressed = case admission, encodings {
+        extension.RelayAdmission(..), _ | _, [] -> Ok(False)
         _, [#(_, encoding)] ->
-          string.lowercase(string.trim(encoding)) == "identity"
-        _, _ -> False
+          case string.lowercase(string.trim(encoding)) {
+            "identity" -> Ok(False)
+            "zstd" ->
+              case http_coding.available() {
+                True -> Ok(True)
+                False -> Error(Nil)
+              }
+            _ -> Error(Nil)
+          }
+        _, _ -> Error(Nil)
       }
-      case supported {
-        False ->
+      case compressed {
+        Error(_) ->
           failure(
             415,
             "unsupported_encoding",
             "content encoding is unsupported",
           )
-        True ->
+        Ok(compressed) ->
           case body_length(req, admission.body_limit, failure) {
             Error(refusal) -> refusal
             Ok(length) -> {
@@ -343,10 +352,20 @@ fn admitted(
               case read {
                 Ok(body) -> {
                   let size = bit_array.byte_size(body)
-                  case length {
-                    Some(length) if size != length ->
+                  case length, compressed {
+                    Some(length), _ if size != length ->
                       failure(400, "invalid_request", "invalid request body")
-                    _ -> next(request.set_body(req, body))
+                    _, False -> next(request.set_body(req, body))
+                    _, True ->
+                      case http_coding.decompress(body, admission.body_limit) {
+                        Ok(body) -> next(request.set_body(req, body))
+                        Error(_) ->
+                          failure(
+                            400,
+                            "invalid_request",
+                            "request body does not decode within its limit",
+                          )
+                      }
                   }
                 }
                 Error(mist.MalformedBody) ->
@@ -528,6 +547,14 @@ fn daemon_route(
         id,
         req,
       )
+    Get, ["sessions", id, "history", entry_id, field] ->
+      http_transcript.image(
+        registry.host(registry) |> result.map(runtime.ledger),
+        id,
+        entry_id,
+        field,
+        req,
+      )
     Get, ["sessions", id, "history", entry_id] ->
       http_transcript.content(
         config.token,
@@ -659,6 +686,7 @@ fn protocol_method(path: List(String)) -> response.Response(mist.ResponseData) {
     ["sessions", _, "visits", _] -> Some("PUT")
     ["sessions", _, "history"]
     | ["sessions", _, "history", _]
+    | ["sessions", _, "history", _, _]
     | ["sessions", _, "active-output", _]
     | ["sessions", _, "context"]
     | ["sessions", _, "catalog"] -> Some("GET")
@@ -753,9 +781,21 @@ fn protocol_server(
         json.object(
           list.map(
             [
-              "durable_inputs", "session_replay", "collection_invalidation",
-              "tool_progress", "storage_report", "context", "catalog",
-              "settings", "workspace_browsing", "host_probes", "provider_auth",
+              "durable_inputs",
+              "session_replay",
+              "collection_invalidation",
+              "tool_progress",
+              "storage_report",
+              "context",
+              "catalog",
+              "settings",
+              "workspace_browsing",
+              "host_probes",
+              "provider_auth",
+              ..case http_coding.available() {
+                True -> ["zstd_requests"]
+                False -> []
+              }
             ],
             fn(name) {
               #(
