@@ -16,14 +16,14 @@ the warmer is an ordinary `ManagedPlugin` (robot-docs/extensions.md): preparing 
 - `TurnEnded` schedules the first ping; `Compacted` drops the captured call, since nothing the next turn sends is warm yet.
 - `Stirred` — a submit, a note, a wake, or a change of model, effort, workspace or extensions — raises a generation counter, so a pending tick scheduled under an older one is dropped when it arrives.
 - a ping is the session's background call (`extension.Session.call`): exclusive work that holds the session exactly as a compaction run does, so a submit queues behind it and starts when the ping ends; it is short. a background call refused because a run holds the session ends the stretch.
-- none of it needs the kernel. the idle sweep releases an idle kernel after `ALBEDO_IDLE_SECONDS` (default 10 minutes) whatever the warmer plans, but the composition the warmer belongs to stays prepared for the next open, so the session keeps reporting its events to it and its pings still go out. the unload sweep, which would stop the session and its warmer with it, leaves a session alone while one of its children runs (robot-docs/sessions.md).
+- none of it needs the kernel. the idle sweep releases an idle kernel after `ALBEDO_IDLE_SECONDS` (default 10 minutes) whatever the warmer plans, but the composition the warmer belongs to stays prepared for the next open, so the session keeps reporting its events to it and its pings still go out. the unload sweep, which would stop the session and its warmer with it, leaves a session alone while one of its children works (robot-docs/sessions.md).
 
 ## when it warms
 
 a ping goes out while:
 
 - the session is idle — no turn, compaction or other background call in flight.
-- at least one of its children is running (`bus.is_running`, the same answer `agents.self.children()` gives), or a background job is (`extension.Session.awaiting_jobs`). a job started with `run(..., service=True)` — a dev server, a file watcher — does not count: nothing waits for it to finish, so it would only spend pings. jobs the kernel cannot list, such as a remote one with no summary, do not count either.
+- work that will wake it is under way (`extension.Session.awaited`): a background job of its own, or an open child that works — one in a turn (`bus.is_running`, the same answer `agents.self.children()` gives), one idle between turns while its kernel runs a job (`runtime.awaiting_jobs`, which asks the runtime, never the child's actor), or one whose own child works, all the way down. a child waiting on its build is the common case: its turn ended with "i'll pick up when it wakes me", the build's end wakes it, and its report then wakes the parent. a job started with `run(..., service=True)` — a dev server, a file watcher — does not count: nothing waits for it to finish, so it would only spend pings. jobs the kernel cannot list, such as a remote one with no summary, do not count either.
 - the last request's cached prefix is worth a round trip: at least `minCachedTokens` (default 1024) cached tokens on the turn it repeats — reads plus writes, so a first write-only turn counts.
 - a clock can be beat. with cache marks (Claude), the shortest `ttlSeconds` among them. with none — the OpenAI protocols cache on their own — the cache table's entry: `refresh`/`fixed` policy, its first tier's `seconds`. `evict`/`unknown`, or no entry, means no warming (robot-docs/cache-ttl.md).
 
@@ -35,7 +35,7 @@ exactly the request the turn actually sent: same instructions, tools, inputs, op
 
 ## after a restart
 
-a restart ends every warmer with the daemon, while the session's jobs, children and provider cache live on. at boot, the daemon starts the idle sessions still waiting: each session whose reattached kernel runs a job that is not a service (`runtime.resume_kernels` hands it to the registry), and each parent of a child the restart resumes mid-turn. such a session takes its kernel without starting a turn (`Rewarm`), and `session_last_call` rebuilds its last turn call:
+a restart ends every warmer with the daemon, while the session's jobs, children and provider cache live on. at boot, the daemon starts the idle sessions still waiting: each session whose reattached kernel runs a job that is not a service (`runtime.resume_kernels` hands it to the registry), each parent of a child the restart resumes mid-turn, and the open ancestors of both, which wait on the same work (the registry's `Rewarm` passes itself on to the parent). such a session takes its kernel without starting a turn (`Rewarm`), and `session_last_call` rebuilds its last turn call:
 
 - the call is the session's latest completed `turn` row with a transcript seq; its request carried the transcript rows before that seq.
 - that history goes through the session's model projection and `loop.rebuild`, which builds the request the way a turn does — the pinned or current prompt, tools, effort — but projects it with `compaction.project`, under the strategy's saved state, never compacting. building it writes nothing and calls no model.

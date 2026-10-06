@@ -235,6 +235,12 @@ fn serve(state: State, message: Message) -> actor.Next(State, a) {
         Ok(worker) -> session.rewarm(worker)
         Error(_) -> Nil
       }
+      // Its parent waits on the same work: the report it ends in.
+      case family.get(runtime.ledger(state.host), id) {
+        Ok(Some(member)) if !member.closed ->
+          process.send(state.self, Rewarm(member.parent))
+        _ -> Nil
+      }
       actor.continue(state)
     }
     Existing(id, reply) -> {

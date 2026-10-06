@@ -165,10 +165,11 @@ pub type Session {
     /// the transcript. Answers at once; the session declines while a turn is
     /// running, so call it again when the next one ends.
     refresh: fn(String) -> Nil,
-    /// Whether a background job the session is waiting on is running: one
-    /// not started as a service, whose end wakes the session. False when
-    /// the kernel cannot say.
-    awaiting_jobs: fn() -> Bool,
+    /// Whether work that will wake the session is under way: a background
+    /// job not started as a service, or an open child (or one beneath it)
+    /// in a turn or itself waiting on such a job. A job a kernel cannot
+    /// list does not count.
+    awaited: fn() -> Bool,
   )
 }
 

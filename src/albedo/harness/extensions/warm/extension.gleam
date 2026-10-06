@@ -12,7 +12,6 @@
 //// also measures one TTL for free: its request row's `cachedInputTokens`
 //// says whether the cache was still there.
 
-import albedo/daemon/bus
 import albedo/daemon/requests
 import albedo/daemon/store
 import albedo/harness/cache_ttl
@@ -42,8 +41,6 @@ pub fn extension() -> extension.Extension {
 /// under an older one is dropped), and the pings this idle stretch has sent.
 type Warmer {
   Warmer(
-    db: store.Store,
-    session: String,
     sent: Option(#(extension.Session, extension.SentCall)),
     generation: Int,
     pings: Int,
@@ -67,8 +64,8 @@ type Plan {
 /// The warmer runs unlinked: closing it must not take the runtime down, and
 /// a crash in it must not either.
 fn prepare(
-  db: store.Store,
-  session: String,
+  _db: store.Store,
+  _session: String,
   _workspace: String,
 ) -> Result(extension.Managed, String) {
   let ready = process.new_subject()
@@ -76,7 +73,7 @@ fn prepare(
     process.spawn_unlinked(fn() {
       let inbox = process.new_subject()
       process.send(ready, inbox)
-      serve(inbox, Warmer(db, session, None, 0, 0))
+      serve(inbox, Warmer(None, 0, 0))
     })
   use inbox <- result.map(
     process.receive(ready, 5000)
@@ -103,7 +100,7 @@ fn step(inbox: Subject(Message), warmer: Warmer, message: Message) -> Warmer {
       Warmer(..warmer, generation: warmer.generation + 1)
     // Nothing the next turn sends is warm yet.
     Observed(_, extension.Compacted) ->
-      Warmer(..warmer, sent: None, generation: warmer.generation + 1, pings: 0)
+      Warmer(sent: None, generation: warmer.generation + 1, pings: 0)
     // A restart lost the call this warmer kept; the session rebuilt it.
     // Whether work still waits is asked when the ping would go out: children
     // the restart resumes may not run yet.
@@ -150,7 +147,7 @@ fn due(
     Some(#(handle, call)) ->
       case plan_for(call) {
         Some(plan) if warmer.pings < plan.cap ->
-          case wanted(warmer.db, warmer.session, handle) {
+          case wanted(handle) {
             True -> Some(#(handle, call, plan))
             False -> None
           }
@@ -219,11 +216,12 @@ fn ping_budget(protocol: types.Protocol) -> Int {
   }
 }
 
-/// Whether work that will wake this idle session is still running: a child,
-/// or a background job not started as a service. One small test, so
-/// persistent agents can add their own reason later.
-fn wanted(db: store.Store, session: String, handle: extension.Session) -> Bool {
-  bus.children_running(db, session) || handle.awaiting_jobs()
+/// Whether work that will wake this idle session is still under way: a
+/// background job not started as a service, or a child working in a turn or
+/// on a job of its own. One small test, so persistent agents can add their
+/// own reason later.
+fn wanted(handle: extension.Session) -> Bool {
+  handle.awaited()
 }
 
 /// The smallest cached prefix worth a round trip: `minCachedTokens` in

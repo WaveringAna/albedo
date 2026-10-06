@@ -181,8 +181,8 @@ pub type Message {
   Rewarm
   ReadCapture(Subject(Result(Unobserved, String)))
   ReadSummary(Subject(Summary))
-  /// See `extension.Session.awaiting_jobs`.
-  ReadAwaitingJobs(Subject(Bool))
+  /// See `extension.Session.awaited`.
+  ReadAwaited(Subject(Bool))
   ChangeConfiguration(
     session_configuration.Version,
     session_configuration.Patch,
@@ -1082,7 +1082,7 @@ fn handle(
   case message {
     ReadCapture(reply) -> answer(state, reply, capture_state(state))
     ReadSummary(reply) -> answer(state, reply, summary_state(state))
-    ReadAwaitingJobs(reply) -> answer(state, reply, awaiting_jobs(state))
+    ReadAwaited(reply) -> answer(state, reply, awaited(state))
     ChangeConfiguration(expected, patch, reply) -> {
       let #(state, changed) = session_configure.change(state, expected, patch)
       case changed {
@@ -1844,7 +1844,7 @@ fn handle(
         || state.steering != []
         || state.watchers != []
         || jobs > 0
-        || bus.children_running(runtime.ledger(state.host), state.info.id)
+        || children_working(state.host, state.info.id)
       {
         True -> answer(state, reply, False)
         False -> {
@@ -3086,10 +3086,16 @@ fn background_handle(id: String, self: Session) -> extension.Session {
     },
     fn(reason) { process.send(self, RefreshRequested(reason)) },
     fn() {
-      actor_call.try_call(self, 5000, ReadAwaitingJobs)
+      actor_call.try_call(self, 5000, ReadAwaited)
       |> result.unwrap(False)
     },
   )
+}
+
+/// Whether work that will wake this session is under way: a job of its own,
+/// or one of its children's.
+fn awaited(state: State) -> Bool {
+  awaiting_jobs(state) || children_working(state.host, state.info.id)
 }
 
 /// Whether a live job that is not a service runs in the kernel. Jobs the
@@ -3099,6 +3105,24 @@ fn awaiting_jobs(state: State) -> Bool {
     Ok(session_namespace.KernelObservation(running_jobs: Some(jobs), ..)) ->
       list.any(jobs, fn(job) { !job.service })
     _ -> False
+  }
+}
+
+/// Whether an open child of `id`, or one beneath it, has work under way that
+/// ends in a report: a turn, or a job its idle session waits on. A child
+/// between turns waiting on its build is still working for its parent.
+fn children_working(host: runtime.Runtime, id: String) -> Bool {
+  case family.children(runtime.ledger(host), id) {
+    Ok(children) ->
+      list.any(children, fn(child) {
+        !child.closed
+        && {
+          bus.is_running(child.session)
+          || runtime.awaiting_jobs(host, child.session)
+          || children_working(host, child.session)
+        }
+      })
+    Error(_) -> False
   }
 }
 

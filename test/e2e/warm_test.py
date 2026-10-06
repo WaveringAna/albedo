@@ -6,8 +6,9 @@ Catches: pings that rebuild the request instead of repeating the one the turn
 sent (which would compact or summarize), ping request rows that do not carry
 the turn's prefix identity, pings that commit or publish anything, warming
 that never stops at its budget, warming that continues after the waking work
-finished, warming kept up for a job that was started as a service, and a submit
-that cannot get through while a ping holds the session.
+finished, warming kept up for a job that was started as a service, a parent
+let go cold while its child sits between turns on a build of its own, and a
+submit that cannot get through while a ping holds the session.
 None of this is observable from the transcript alone; the provider and the
 request rows are the witnesses.
 """
@@ -52,6 +53,7 @@ CHILD_USAGE = {
 
 TASK = "hold the fort until released"
 JOB_PROMPT = "wait for the job"
+CHILD_JOB_TASK = "start the build and report back"
 
 
 # A local cache-table override matching the fixture host: a short refresh TTL,
@@ -151,6 +153,10 @@ class WarmTest(unittest.TestCase):
         if TASK in sent:
             self.gate.wait(timeout=90)
             return text("scout finished", usage=CHILD_USAGE)
+        if CHILD_JOB_TASK in sent:
+            if "function_call_output" not in sent:
+                return python(self.job_code)
+            return text("build started", usage=CHILD_USAGE)
         if JOB_PROMPT in sent and "function_call_output" not in sent:
             return python(self.job_code)
         return text("orchestrator reply", usage=PARENT_USAGE)
@@ -187,9 +193,8 @@ class WarmTest(unittest.TestCase):
                 return items
             after = items[-1]["position"]
 
-    def swarm(self, parent=None):
-        """A parent whose turn has run while its scout is still working."""
-        parent = parent or self.app.session()
+    def spawn(self, parent, task):
+        """The parent's scout, started on `task`."""
         child = operation_id()
         self.app.api(
             f"/sessions/{child}",
@@ -199,20 +204,25 @@ class WarmTest(unittest.TestCase):
                 "address": "scout",
                 "name": "scout",
                 "initial_input_id": operation_id(),
-                "task": TASK,
+                "task": task,
                 "model": "scout/scout-model",
             },
             method="PUT",
             headers={"If-None-Match": "*"},
         ).close()
+        return child
+
+    def swarm(self, parent=None):
+        """A parent whose turn has run while its scout is still working."""
+        parent = parent or self.app.session()
+        child = self.spawn(parent, TASK)
         wait_for(lambda: self.requests("/child/") or None)
         self.app.prompt(parent, "run the swarm").close()
         self.app.idle(parent)
         return parent, child
 
-    def job(self, service):
-        """A parent whose turn started a job that runs until released, and
-        then went idle waiting on it."""
+    def job_gate(self, service):
+        """The fifo a job started by `self.job_code` runs until."""
         gate = self.app.workspace / "job-release"
         os.mkfifo(gate)
         program = f"open({str(gate)!r}, 'rb').read(1)"
@@ -222,10 +232,44 @@ class WarmTest(unittest.TestCase):
         )
         # A failed test must not leave the job blocked.
         self.addCleanup(release_fifo, gate)
+        return gate
+
+    def job(self, service):
+        """A parent whose turn started a job that runs until released, and
+        then went idle waiting on it."""
+        gate = self.job_gate(service)
         parent = self.app.session()
         self.app.prompt(parent, JOB_PROMPT).close()
         self.app.idle(parent)
         return parent, gate
+
+    def child_job(self):
+        """A parent woken by its scout's report that a build it started is
+        running, idle again with the scout idle between turns on that job."""
+        gate = self.job_gate(service=False)
+        parent = self.app.session()
+        child = self.spawn(parent, CHILD_JOB_TASK)
+        wait_for(lambda: self.requests("/parent/") or None)
+        self.app.idle(child)
+        self.app.idle(parent)
+        return parent, child, gate
+
+    def build_finished(self, gate):
+        """Release the scout's build and wait for its end to wake the scout."""
+        release(gate)
+        wait_for(
+            lambda: any(
+                "job finished" in json.dumps(request)
+                for request in self.requests("/child/")
+            )
+        )
+
+    def turns(self, fragment):
+        return [
+            request
+            for request in self.requests(fragment)
+            if "max_output_tokens" not in request
+        ]
 
     def assert_no_pings(self, parent, child):
         time.sleep(QUIET_SECONDS)
@@ -335,11 +379,7 @@ class WarmTest(unittest.TestCase):
         time.sleep(QUIET_SECONDS)
         self.assertEqual(len(self.pings(self.requests("/parent/"))), 2)
         # The scout's answer woke the parent with an ordinary turn.
-        turns = [
-            request
-            for request in self.requests("/parent/")
-            if "max_output_tokens" not in request
-        ]
+        turns = self.turns("/parent/")
         self.assertEqual(len(turns), 2)
         self.assertIn("scout finished", json.dumps(turns[1]))
 
@@ -419,11 +459,7 @@ class WarmTest(unittest.TestCase):
         time.sleep(QUIET_SECONDS)
         self.assertEqual(len(self.pings(self.requests("/parent/"))), settled)
         # Every ping that did go out repeated a turn's request, budget aside.
-        turns = [
-            request
-            for request in self.requests("/parent/")
-            if "max_output_tokens" not in request
-        ]
+        turns = self.turns("/parent/")
         for ping in self.pings(self.requests("/parent/")):
             self.assertIn(
                 ping, [{**repeated, "max_output_tokens": 16} for repeated in turns]
@@ -434,11 +470,7 @@ class WarmTest(unittest.TestCase):
     def test_a_running_job_keeps_the_cache_warm_until_it_finishes(self):
         parent, gate = self.job(service=False)
         pings = wait_for(lambda: self.pings(self.requests("/parent/")) or None)
-        turn = [
-            request
-            for request in self.requests("/parent/")
-            if "max_output_tokens" not in request
-        ][-1]
+        turn = self.turns("/parent/")[-1]
         self.assertEqual(pings[0], {**turn, "max_output_tokens": 16})
 
         # The job's end wakes the parent with an ordinary turn, and warming
@@ -463,19 +495,36 @@ class WarmTest(unittest.TestCase):
         self.assertEqual(len(self.requests("/parent/")), 2)
         self.assertEqual([row["kind"] for row in self.rows(parent)], ["turn", "turn"])
 
+    # exclusive: writes daemon-wide cache TTL and warmer settings
+    @exclusive
+    def test_a_child_waiting_on_its_job_keeps_the_parent_warm(self):
+        parent, child, gate = self.child_job()
+        # Neither session is in a turn, yet the scout's build will wake it,
+        # and its report the parent.
+        pings = wait_for(lambda: self.pings(self.requests("/parent/")) or None)
+        turns = self.turns("/parent/")
+        self.assertEqual(pings[0], {**turns[-1], "max_output_tokens": 16})
+
+        # The build's end wakes the scout, and warming ends with the work that
+        # kept it up.
+        self.build_finished(gate)
+        self.app.idle(child)
+        self.app.idle(parent)
+        settled = len(self.pings(self.requests("/parent/")))
+        time.sleep(QUIET_SECONDS)
+        self.assertEqual(len(self.pings(self.requests("/parent/"))), settled)
+
     def restarted_pings(self, wait):
         """The parent's pings after a restart while it idles on `wait`: a
-        job, a service, or a child."""
+        job, a service, a child, or a child idle on a job."""
         (self.app.home / "cache-ttl.json").write_text(json.dumps(RESTART_TTL))
         if wait == "child":
             parent, gate = self.swarm()
+        elif wait == "child job":
+            parent, _, gate = self.child_job()
         else:
             parent, gate = self.job(service=wait == "service")
-        turn = [
-            request
-            for request in self.requests("/parent/")
-            if "max_output_tokens" not in request
-        ][-1]
+        turn = self.turns("/parent/")[-1]
         self.app.restart()
         before = len(self.provider.requests)
         return (
@@ -547,6 +596,16 @@ class WarmTest(unittest.TestCase):
         self.assertEqual(wait_for(pings)[0], {**turn, "max_output_tokens": 16})
         self.gate.set()
         self.app.idle(child)
+        self.app.idle(parent)
+
+    # exclusive: writes daemon-wide cache TTL and warmer settings, restarts
+    @exclusive
+    def test_a_restart_keeps_warming_a_parent_whose_child_waits_on_a_job(self):
+        parent, gate, turn, pings = self.restarted_pings("child job")
+        # The scout's kernel comes back running its build, which brings back
+        # the parent waiting on its report.
+        self.assertEqual(wait_for(pings)[0], {**turn, "max_output_tokens": 16})
+        self.build_finished(gate)
         self.app.idle(parent)
 
     # exclusive: writes daemon-wide cache TTL and warmer settings, restarts

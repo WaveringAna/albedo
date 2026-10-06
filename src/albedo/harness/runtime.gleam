@@ -413,18 +413,25 @@ pub fn resume_kernels(runtime: Runtime, awaited: fn(String) -> Nil) -> Nil {
       let reply = process.new_subject()
       process.send(subject, runtime_state.Reattach(id, cwd, reply))
       let _ = process.receive(reply, 60_000)
-      let awaiting = case observe_loaded(runtime, id) {
-        Ok(runtime_state.LoadedObservation(kernel: Some(observed), ..)) ->
-          list.any(observed.running_jobs, fn(job) { !job.service })
-        _ -> False
-      }
-      case awaiting {
+      case awaiting_jobs(runtime, id) {
         True -> awaited(id)
         False -> Nil
       }
     })
   })
   Nil
+}
+
+/// Whether the kernel held for session `id` runs a job that will wake it,
+/// one not started as a service. False when no kernel is held or it cannot
+/// say. Answers without the session's actor, so any session may ask it of
+/// another.
+pub fn awaiting_jobs(runtime: Runtime, id: String) -> Bool {
+  case observe_loaded(runtime, id) {
+    Ok(runtime_state.LoadedObservation(kernel: Some(observed), ..)) ->
+      list.any(observed.running_jobs, fn(job) { !job.service })
+    _ -> False
+  }
 }
 
 pub fn origin(session: Session) -> Origin {
