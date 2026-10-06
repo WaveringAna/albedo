@@ -156,13 +156,11 @@ fn reopen(
   let workspace =
     option.map(previous, fn(session) { session.cwd }) |> option.unwrap(cwd)
   let generation = reference.new()
+  let state =
+    runtime_state.without_session(state, id)
+    |> runtime_state.admit(id, generation)
   runtime_state.State(
-    ..runtime_state.without_session(state, id),
-    booting: dict.insert(
-      state.booting,
-      id,
-      runtime_state.Booting(generation, []),
-    ),
+    ..state,
     waiting: list.append(state.waiting, [
       runtime_state.RecomposeSelected(
         id,
@@ -360,14 +358,8 @@ pub fn start_desired_reload(
       |> result.flatten
     publish_reload(self, id, generation, previous, outcome, reply)
   })
-  runtime_state.State(
-    ..runtime_state.without_session(state, id),
-    booting: dict.insert(
-      state.booting,
-      id,
-      runtime_state.Booting(generation, []),
-    ),
-  )
+  runtime_state.without_session(state, id)
+  |> runtime_state.admit(id, generation)
 }
 
 pub fn reloaded(
@@ -381,12 +373,7 @@ pub fn reloaded(
   ),
   reply: Subject(Result(Option(runtime_state.Session), String)),
 ) -> runtime_state.State {
-  let waiting = case dict.get(state.booting, id) {
-    Ok(runtime_state.Booting(current, waiters)) if current == generation ->
-      Ok(waiters)
-    _ -> Error(Nil)
-  }
-  case waiting {
+  case runtime_state.current_waiters(state, id, generation) {
     Error(_) -> {
       case outcome {
         Error(_) ->
@@ -427,8 +414,7 @@ pub fn reloaded(
               dict.get(state.compositions, id) |> result.replace_error(reason),
             )
           process.send(reply, Error(reason))
-          runtime_state.State(..state, booting: dict.delete(state.booting, id))
-          |> runtime_state.replay(id)
+          runtime_state.generation_over(state, id)
         }
         Ok(#(fresh, replacement)) -> {
           kernels.close_cached_at(state, id)
@@ -444,12 +430,7 @@ pub fn reloaded(
           case replacement, waiters {
             Some(session), _ ->
               preparation.booted(state, id, generation, Ok(session))
-            None, [] ->
-              runtime_state.State(
-                ..state,
-                booting: dict.delete(state.booting, id),
-              )
-              |> runtime_state.replay(id)
+            None, [] -> runtime_state.generation_over(state, id)
             None, _ ->
               runtime_state.State(
                 ..state,

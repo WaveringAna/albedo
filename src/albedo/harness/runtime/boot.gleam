@@ -317,15 +317,7 @@ fn reattach_prepared(
     }
     False -> {
       let generation = reference.new()
-      let state =
-        runtime_state.State(
-          ..state,
-          booting: dict.insert(
-            state.booting,
-            id,
-            runtime_state.Booting(generation, []),
-          ),
-        )
+      let state = runtime_state.admit(state, id, generation)
       case dict.get(state.compositions, id) {
         Ok(cached) if cached.cwd == cwd ->
           runtime_state.State(
@@ -356,15 +348,13 @@ pub fn reattached(
   cached: runtime_state.Cached,
   outcome: Result(Option(runtime_state.Session), python.Error),
 ) -> runtime_state.State {
-  case dict.get(state.booting, id) {
-    Ok(runtime_state.Booting(current, waiters)) if current == generation -> {
+  case runtime_state.current_waiters(state, id, generation) {
+    Ok(waiters) -> {
       let state = preparation.finish_commands(state, id, Ok(cached))
       case outcome, waiters {
         Ok(Some(session)), _ ->
           preparation.booted(state, id, generation, Ok(session))
-        _, [] ->
-          runtime_state.State(..state, booting: dict.delete(state.booting, id))
-          |> runtime_state.replay(id)
+        _, [] -> runtime_state.generation_over(state, id)
         _, _ ->
           runtime_state.State(
             ..state,

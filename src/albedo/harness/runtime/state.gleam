@@ -324,11 +324,31 @@ pub fn active(state: State) -> Int {
   dict.size(state.booting) - queued_preparations + state.observing
 }
 
-pub fn current_work(state: State, id: String, generation: Reference) -> Bool {
+/// Opens a generation for the session: its kernel work is on the way, and
+/// `waiters` collect whoever asks for the kernel meanwhile.
+pub fn admit(state: State, id: String, generation: Reference) -> State {
+  State(
+    ..state,
+    booting: dict.insert(state.booting, id, Booting(generation, [])),
+  )
+}
+
+/// The waiters of the session's open generation, if `generation` is still it.
+pub fn current_waiters(
+  state: State,
+  id: String,
+  generation: Reference,
+) -> Result(List(fn(Result(Session, python.Error)) -> Nil), Nil) {
   case dict.get(state.booting, id) {
-    Ok(Booting(current, _)) -> current == generation
-    Error(_) -> False
+    Ok(Booting(current, waiters)) if current == generation -> Ok(waiters)
+    _ -> Error(Nil)
   }
+}
+
+/// The generation ended: what waited for the session's kernel runs now.
+pub fn generation_over(state: State, id: String) -> State {
+  State(..state, booting: dict.delete(state.booting, id))
+  |> replay(id)
 }
 
 pub fn owner_alive(subject: Subject(Message)) -> Bool {

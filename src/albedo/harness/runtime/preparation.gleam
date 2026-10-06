@@ -249,14 +249,7 @@ pub fn peek(
         True -> state
         False -> {
           let generation = reference.new()
-          runtime_state.State(
-            ..state,
-            booting: dict.insert(
-              state.booting,
-              id,
-              runtime_state.Booting(generation, []),
-            ),
-          )
+          runtime_state.admit(state, id, generation)
           |> prepare(id, cwd, generation, runtime_state.CommandsOrOpen)
         }
       }
@@ -320,12 +313,7 @@ pub fn composed(
                     runtime_state.BootKernel(id, generation, cached),
                     ..state.waiting
                   ])
-                _ ->
-                  runtime_state.State(
-                    ..state,
-                    booting: dict.delete(state.booting, id),
-                  )
-                  |> runtime_state.replay(id)
+                _ -> runtime_state.generation_over(state, id)
               }
           }
         }
@@ -357,12 +345,7 @@ pub fn booted(
   generation: Reference,
   result: Result(runtime_state.Session, python.Error),
 ) -> runtime_state.State {
-  let waiting = case dict.get(state.booting, id) {
-    Ok(runtime_state.Booting(current, waiters)) if current == generation ->
-      Ok(waiters)
-    _ -> Error(Nil)
-  }
-  case waiting, result {
+  case runtime_state.current_waiters(state, id, generation), result {
     Error(_), Ok(session) -> {
       kernels.drop_kernel("boot for a forgotten session", session)
       state

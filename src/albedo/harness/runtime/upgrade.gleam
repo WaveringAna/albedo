@@ -146,14 +146,8 @@ pub fn start_kernel_upgrade(
         Ok(Some(#(cwd, cached))) -> {
           let generation = reference.new()
           let state =
-            runtime_state.State(
-              ..runtime_state.without_session(state, id),
-              booting: dict.insert(
-                state.booting,
-                id,
-                runtime_state.Booting(generation, []),
-              ),
-            )
+            runtime_state.without_session(state, id)
+            |> runtime_state.admit(id, generation)
           case cached {
             Some(cached) if cached.cwd == cwd ->
               runtime_state.State(
@@ -286,13 +280,13 @@ pub fn kernel_upgraded(
   outcome: Result(runtime_state.KernelUpgrade, String),
   answer: fn(Result(runtime_state.KernelUpgrade, String)) -> Nil,
 ) -> runtime_state.State {
-  case runtime_state.current_work(state, id, generation) {
-    False -> {
+  case runtime_state.current_waiters(state, id, generation) {
+    Error(Nil) -> {
       discard_upgrade(previous, outcome)
       answer(Error("the session closed during kernel upgrade"))
       state
     }
-    True -> {
+    Ok(waiters) -> {
       let current = case outcome {
         Ok(report) -> report.session
         Error(_) -> previous
@@ -302,12 +296,6 @@ pub fn kernel_upgraded(
           runtime_state.holding(state, id, runtime_state.handed_out(session))
         None -> runtime_state.without_session(state, id)
       }
-      let waiters =
-        dict.get(state.booting, id)
-        |> result.map(fn(booting) { booting.waiters })
-        |> result.unwrap([])
-      let state =
-        runtime_state.State(..state, booting: dict.delete(state.booting, id))
       let state =
         preparation.finish_commands(
           state,
@@ -325,7 +313,7 @@ pub fn kernel_upgraded(
             ))
         })
       })
-      runtime_state.replay(state, id)
+      runtime_state.generation_over(state, id)
     }
   }
 }
