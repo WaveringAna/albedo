@@ -17,7 +17,7 @@
 
     # The sources are formatted by Gleam 1.19, whose formatter and 1.18's
     # each reject the other's output. Built from source (hashes from nixpkgs
-    # master) only while nixpkgs-unstable still ships an older release.
+    # master) only while the locked nixpkgs still ships an older release.
     _module.args.gleam =
       if lib.versionAtLeast pkgs.gleam.version "1.19.0"
       then pkgs.gleam

@@ -2,7 +2,9 @@
   description = "albedo coding agent and terminal client";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
+    # nixos-unstable, not nixpkgs-unstable: that channel lags by days, and while
+    # it still shipped Gleam 1.18 every CI run compiled Gleam 1.19 from source.
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-parts.url = "github:hercules-ci/flake-parts";
 
     treefmt-nix = {
