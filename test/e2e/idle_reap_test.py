@@ -22,24 +22,16 @@ def notes_for(app, session, cursor):
 IDLE_SECONDS = 2
 
 
-def kernels(daemon_pid):
+def kernels(home):
+    """Pids of the kernels whose run directory is under this daemon's home."""
     listing = subprocess.run(
-        ["ps", "-o", "pid=,ppid=,command=", "-ax"], capture_output=True, text=True
-    )
-    processes = {}
-    for line in listing.stdout.splitlines():
-        fields = line.split(maxsplit=2)
-        if len(fields) == 3 and fields[0].isdigit() and fields[1].isdigit():
-            processes[int(fields[0])] = (int(fields[1]), fields[2])
-    owned, frontier = [], [daemon_pid]
-    while frontier:
-        parent = frontier.pop()
-        for pid, (ppid, command) in processes.items():
-            if ppid == parent:
-                frontier.append(pid)
-                if "albedo_kernel.py" in command:
-                    owned.append(pid)
-    return owned
+        ["ps", "-axo", "pid=,command="], capture_output=True, text=True, check=True
+    ).stdout
+    return [
+        int(line.split(None, 1)[0])
+        for line in listing.splitlines()
+        if "albedo_kernel.py" in line and f"{home}/run/" in line
+    ]
 
 
 # exclusive: changes the daemon idle timeout and counts all its kernels
@@ -74,22 +66,21 @@ class IdleReapTests(unittest.TestCase):
 
     def test_idle_kernel_reaps_and_restores_variables_with_notices(self):
         app = self.app
-        daemon = app.connection["pid"]
-        existing = set(kernels(daemon))
+        existing = set(kernels(app.home))
         session = app.session()
         cursor = app.stream_page(session)
         self.assertEqual(
-            set(kernels(daemon)) - existing,
+            set(kernels(app.home)) - existing,
             set(),
             "session must not eagerly open a kernel",
         )
         self.turn(session, "remember this")
-        self.assertEqual(len(set(kernels(daemon)) - existing), 1)
+        self.assertEqual(len(set(kernels(app.home)) - existing), 1)
         deadline = time.monotonic() + IDLE_SECONDS * 4
-        while time.monotonic() < deadline and set(kernels(daemon)) - existing:
+        while time.monotonic() < deadline and set(kernels(app.home)) - existing:
             time.sleep(0.1)
         self.assertEqual(
-            set(kernels(daemon)) - existing, set(), "idle kernel outlived its limit"
+            set(kernels(app.home)) - existing, set(), "idle kernel outlived its limit"
         )
         notes = notes_for(app, session, cursor)
         self.assertIn("released", notes[-1])

@@ -520,8 +520,8 @@ class PreparingOperationsTests(InputScenario):
             wrapper = commands / "python3"
             wrapper.write_text(
                 "#!/bin/sh\n"
-                # a detached kernel opens through its bridge's start
-                + 'case "$*" in *albedo_kernel.py*|*"albedo_bridge.py start"*)\n'
+                # a detached kernel opens through its bridge's start or launch
+                + 'case "$*" in *albedo_kernel.py*|*"albedo_bridge.py start"*|*"albedo_bridge.py launch"*)\n'
                 + "touch "
                 + shlex.quote(str(self.opened))
                 + "\n"

@@ -1,9 +1,9 @@
-"""A session's kernel outlives its daemon and its bridge.
+"""A session's kernel outlives its daemon and its connection.
 
-The kernel runs detached behind a bridge process; the daemon reattaches to it
-after a restart (graceful or crash) and after the bridge dies mid-cell, so the
-namespace, the kernel process, and an in-flight cell's result all survive.
-A kernel found dead after a restart has its jobs ended.
+The kernel runs detached and the daemon connects to its socket directly; it
+reattaches after a restart (graceful or crash) and after the connection drops
+mid-cell, so the namespace, the kernel process, and an in-flight cell's result
+all survive. A kernel found dead after a restart has its jobs ended.
 """
 
 import ast
@@ -49,12 +49,10 @@ class KernelDetachTests(unittest.TestCase):
         self.addCleanup(self.app.__exit__, None, None, None)
         self.session = self.app.session()
 
-    def cell(self, code, *, during=None):
+    def cell(self, code):
         """Run one cell through a model turn and return its tool result."""
         self.cells.append(code)
         self.app.prompt(self.session, "run it").close()
-        if during:
-            during()
         self.app.idle(self.session)
         results = [
             json.loads(part["value"])
@@ -82,23 +80,20 @@ class KernelDetachTests(unittest.TestCase):
         ]
         self.assertFalse([note for note in notes if "variables are gone" in note])
 
-    def test_a_bridge_killed_mid_cell_still_delivers_the_result(self):
+    def test_a_connection_dropped_mid_cell_still_delivers_the_result(self):
         first = self.cell("import os\nos.getpid()")
-        (bridge,) = bridges(self.app.home)
-
-        def kill_bridge():
-            time.sleep(1)
-            os.kill(bridge, signal.SIGKILL)
-
+        self.assertEqual(bridges(self.app.home), [], "a local kernel kept a bridge")
+        # The kernel drops the daemon's connection from its side a second in.
         slept = self.cell(
-            "import threading\nthreading.Event().wait(3)\nprint('woke')\nos.getpid()",
-            during=kill_bridge,
+            "import socket, sys, threading\n"
+            "link = sys.modules['__main__'].LINK\n"
+            "threading.Timer(1, link.connection.shutdown, [socket.SHUT_RDWR]).start()\n"
+            "threading.Event().wait(3)\nprint('woke')\nos.getpid()"
         )
         self.assertEqual(slept["status"], "ok", slept)
         self.assertEqual(slept["output"].strip(), "woke")
         self.assertEqual(slept["value"], first["value"])
-        (replacement,) = bridges(self.app.home)
-        self.assertNotEqual(replacement, bridge)
+        self.assertEqual(bridges(self.app.home), [])
 
     def test_concurrent_jobs_keep_running_and_deadlines_count_wall_time(self):
         # Legacy admission settings must not throttle new kernels.

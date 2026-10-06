@@ -150,7 +150,7 @@ Top-level traces emit before `done`. Nested `cells.run` traces emit before waiti
 
 interfaces: [`PythonApi`](../priv/python/albedo_api.py), [`work`](../src/albedo/harness/extensions/work/extension.gleam), [`compaction strategy`](../src/albedo/harness/compaction.gleam).
 
-The kernel runs detached behind a bridge, with a durable session layer under these messages; see [kernel](kernel.md). Kernel control messages are checked by `priv/python/albedo_protocol.py` before delivery to the event loop. Invalid JSON, oversized frames, unknown message types, and invalid fields enter the kernel shutdown path, including plugin cleanup and child-process cleanup. Host replies are checked before their pending futures are removed or completed. Extra fields on known messages are accepted. Missing methods, expired references, and tool exceptions remain call errors.
+The kernel runs detached, reached over its socket, with a durable session layer under these messages; see [kernel](kernel.md). Kernel control messages are checked by `priv/python/albedo_protocol.py` before delivery to the event loop. Invalid JSON, oversized frames, unknown message types, and invalid fields enter the kernel shutdown path, including plugin cleanup and child-process cleanup. Host replies are checked before their pending futures are removed or completed. Extra fields on known messages are accepted. Missing methods, expired references, and tool exceptions remain call errors.
 
 ## run
 

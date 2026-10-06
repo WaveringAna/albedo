@@ -2,6 +2,7 @@
 
     albedo_bridge.py start <run_dir> <modules-json>
     albedo_bridge.py attach <run_dir>
+    albedo_bridge.py launch <run_dir> <modules-json>
     albedo_bridge.py --frame
 
 `--frame` takes the same arguments from its first stdin frame instead,
@@ -16,6 +17,10 @@ file in its own session (the token travels over the kernel's stdin, never
 argv), and waits for its socket; `attach` connects to a kernel that is already running. Either way this
 process announces the bundle it runs from, then copies bytes both ways until
 one side closes. Killing it never touches the kernel.
+
+`launch` only starts the kernel, its token read as one stdin line, and exits 0
+once the socket answers: a local daemon connects to that socket itself, so no
+bridge stays running beside a local kernel.
 
 Exit status 3 means no kernel is there to attach to, so the daemon can tell a
 kernel that is gone from a connection that merely dropped.
@@ -122,6 +127,9 @@ def main(argv: list[str]) -> None:
     if argv[1:] == ["--frame"]:
         argv = framed()
     mode, run_dir = argv[1], argv[2]
+    if mode == "launch":
+        start(run_dir, argv[3], sys.stdin.readline().strip()).close()
+        return
     if mode == "start":
         attach = albedo_link.read_frame(stdin)
         if not isinstance(attach, dict) or not isinstance(attach.get("attach"), dict):

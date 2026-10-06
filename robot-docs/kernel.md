@@ -2,8 +2,8 @@
 
 a session's python kernel (`priv/python/albedo_kernel.py`) is its own process,
 detached from the daemon: it outlives a dropped connection and a daemon
-restart, keeping its namespace and its background jobs. the daemon reaches it
-through a bridge, and every message between the two travels through a small
+restart, keeping its namespace and its background jobs. the daemon connects
+to it directly, or through a bridge when it runs on another host, and every message between the two travels through a small
 session layer that neither loses nor repeats a message across a reconnect.
 
 ## tool bindings
@@ -110,15 +110,25 @@ completion. A read racing with the completion journal also retires the wake.
   directory so a long temp home stays under the ~104-byte `sun_path` limit).
   `kernel.log` there catches what it writes before its own output capture
   starts.
+- **relay** (in `albedo_python.erl`): how the port owner reaches a local
+  kernel. an erlang process owns a `gen_tcp` connection to `kernel.sock`
+  (`{packet, 4}`) and passes frames to the port owner as a bridge port would,
+  so no python process stays beside a local kernel. a fresh boot first runs
+  `albedo_bridge.py launch <run_dir> <modules-json>` (token as its one stdin
+  line), which starts the kernel and exits once the socket answers. the relay
+  announces nothing, so the port owner hashes the bundle itself, the same way
+  `albedo_bundle.digest()` does. a refused or missing socket reads as exit 3.
+  a run directory whose socket path does not fit `sun_path` (104 bytes) keeps
+  the bridge.
 - **bridge** (`priv/python/albedo_bridge.py`): what the daemon's erlang port
-  runs now, with the same `{packet, 4}` stdio framing the kernel used to have.
-  `start <run_dir> <modules-json>` starts the kernel beside it (the token goes
-  over the kernel's stdin, never argv) and waits for its socket;
-  `attach <run_dir>` connects to a running one. it announces its own bundle
-  hash (`{"bridge": {"bundle"}}`), then copies bytes both ways until either
-  side closes. exit status 3 means no kernel is there. killing it never
-  touches the kernel. a remote kernel's bridge is the same argv run over ssh
-  (see remote kernels below).
+  runs for a remote kernel (the same argv over ssh, see remote kernels below)
+  or a run directory too deep for the relay, with the same `{packet, 4}` stdio
+  framing the kernel used to have. `start <run_dir> <modules-json>` starts the
+  kernel beside it (the token goes over the kernel's stdin, never argv) and
+  waits for its socket; `attach <run_dir>` connects to a running one. it
+  announces its own bundle hash (`{"bridge": {"bundle"}}`), then copies bytes
+  both ways until either side closes. exit status 3 means no kernel is there.
+  killing it never touches the kernel.
 - **port owner** (`albedo_python.erl`): one erlang process per kernel, as
   before. it owns the job groups the kernel reports and the
   `albedo_signal.py` termination ladder, aimed at the pid/pgid/leader the
@@ -137,7 +147,8 @@ off any older connection (newest attach wins), and answers
 external, dropped}}`, or `{"refused": reason}`. `protocol` (1) and the
 hello reports the running `cells` count. `bundle` is
 `albedo_bundle.digest()`, the same content hash the remote plugin stages
-under; a hello whose bundle or protocol differs from the bridge's makes the
+under; a hello whose bundle or protocol differs from the bridge's (or, for a
+local kernel, the port owner's own hash) makes the
 kernel stale (see version skew). `jobs` (live `job_start` frames) and `external`
 let a fresh port owner take over job ownership and live-job observations.
 
@@ -182,7 +193,7 @@ dedupe:
 
 ## drops
 
-- the bridge dies: the port owner reattaches with backoff (50 ms doubling to
+- the connection drops (the relay's socket closes, or the bridge dies): the port owner reattaches with backoff (50 ms doubling to
   2 s, 40 tries); exit 3 or a refusal means the kernel is gone and the old
   abandon path reaps it. a port owner attaching after a restart starts from
   the record's pid/pgid/leader and groups, so a kernel that died hard while
@@ -194,7 +205,7 @@ dedupe:
   `kernel.Detached`, which leaves the journaled cell `started` (the model is
   told to check `cells.info`). a `done` that arrives for a cell nobody waits
   for any more is journaled through the `cells.finish` host route.
-- the daemon crashes: the bridge sees EOF and exits; the kernel waits.
+- the daemon crashes: its connection closes (a bridge sees EOF and exits); the kernel waits.
 - graceful shutdown: `runtime.detach_kernels` first, so closing sessions and
   stopping the runtime let kernels go instead of ending them.
 - daemon start: `runtime.resume_kernels` reattaches every recorded kernel in
@@ -212,7 +223,8 @@ the live kernel, never attached to it), and the old kernel after a swap.
 
 ## version skew
 
-a kernel is stale when it runs another bundle than the bridge that reached it,
+a kernel is stale when it runs another bundle than the bridge that reached it
+(for a local kernel, the bundle the port owner hashed),
 speaks another protocol (both read from the hello), or booted with another
 module set than its session now has (found at reattach). `kernel.stale`
 answers the reason and whether the swap was forced. `GET /sessions/{id}`

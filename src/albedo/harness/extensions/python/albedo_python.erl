@@ -1,10 +1,12 @@
 %% OS process ownership and port multiplexing; application logic stays in Gleam.
 %%
 %% The kernel runs detached, in its own session, listening on a unix socket in
-%% its run directory (priv/python/albedo_link.py). This module talks to it
-%% through a bridge process (priv/python/albedo_bridge.py) that copies the same
-%% 4-byte-framed messages between the port and that socket, so the bridge can
-%% die, here or over ssh, without the kernel or its jobs noticing. Every frame
+%% its run directory (priv/python/albedo_link.py). This module connects to a
+%% local kernel's socket itself, through a relay process that speaks as a port
+%% would; a remote kernel, or one whose socket path is too long to connect to,
+%% is reached through a bridge process (priv/python/albedo_bridge.py) that
+%% copies the same 4-byte-framed messages between the port and that socket.
+%% Either can die, here or over ssh, without the kernel or its jobs noticing. Every frame
 %% after the attach handshake is wrapped as {seq, ack, frame}: what this side
 %% sends is persisted through the Gleam link until the kernel acknowledges it,
 %% and a reattach resends the rest; a kernel frame already seen is dropped.
@@ -31,6 +33,8 @@
 -define(ESCALATE_KILL_MS, 500).
 -define(ACK_DELAY, 100).         %% a kernel frame is acknowledged within this
 -define(GONE, 3).                %% the bridge's exit status when no kernel is there
+-define(SOCKET, "kernel.sock").  %% in the run directory (albedo_link.SOCKET)
+-define(SUN_PATH, 104).          %% bytes a unix socket path may take, with its NUL
 -define(NO_FOLDER, 4).           %% a remote bridge's when the workspace is no folder
 -define(SSH_FAILED, 255).        %% ssh's own
 -define(REMOTE_HELPER_WAIT, 15000). %% a helper run over ssh
@@ -69,7 +73,10 @@ start({boot, Owner, Python, Bridge, Cwd, Host, Modules, Link, RunDir, Kernel, To
 %% The attach frame goes first either way: the token, what we have seen, and
 %% how long the kernel may outlive a dropped connection. A remote kernel's
 %% bridge is the same argv run over ssh, so a dropped ssh connection is just
-%% a bridge that exited.
+%% a bridge that exited. A local kernel gets a relay instead of a bridge.
+open_bridge(S = #{remote := none, run_dir := RunDir}, Mode)
+        when byte_size(RunDir) + byte_size(<<"/", ?SOCKET>>) < ?SUN_PATH ->
+    open_relay(S, Mode);
 open_bridge(S = #{python := Python, bridge := Bridge, run_dir := RunDir}, Mode) ->
     {Args, Cd} = case Mode of
         start -> {[<<"start">>, RunDir, maps:get(modules, S)], maps:get(cwd, S)};
@@ -94,13 +101,105 @@ open_bridge(S = #{python := Python, bridge := Bridge, run_dir := RunDir}, Mode) 
              {args, [binary_to_list(A) || A <- Argv]},
              {cd, binary_to_list(Dir)},
              {env, Env}]) of
-        Port ->
-            Attach = #{attach => #{kernel => maps:get(kernel, S), token => maps:get(token, S),
-                                   ack => maps:get(in, S), grace => maps:get(grace, S)}},
-            _ = try [port_command(Port, Frame) || Frame <- First ++ [json:encode(Attach)]] catch _:_ -> ok end,
-            {ok, S#{port => Port, acked => maps:get(in, S)}}
+        Port -> {ok, handshake(S, Port, First)}
     catch _:Reason -> {error, Reason}
     end.
+
+%% The relay announces nothing, so the bundle a bridge would have announced
+%% is read here, from the tree the kernel starts from.
+open_relay(S = #{python := Python, bridge := Bridge, run_dir := RunDir}, Mode) ->
+    Owner = self(),
+    Launch = case Mode of
+        start -> {Python, [<<"-u">>, Bridge, <<"launch">>, RunDir, maps:get(modules, S)],
+                  maps:get(cwd, S), maps:get(token, S)};
+        attach -> none
+    end,
+    Socket = <<RunDir/binary, "/", ?SOCKET>>,
+    Relay = spawn(fun() -> relay(Owner, Launch, Socket) end),
+    {ok, handshake(S#{bundle => bundle_digest(filename:dirname(Bridge))}, Relay, [])}.
+
+handshake(S, Port, First) ->
+    Attach = #{attach => #{kernel => maps:get(kernel, S), token => maps:get(token, S),
+                           ack => maps:get(in, S), grace => maps:get(grace, S)}},
+    _ = [send_port(Port, Frame) || Frame <- First ++ [json:encode(Attach)]],
+    S#{port => Port, acked => maps:get(in, S)}.
+
+%% Owns a local kernel's socket for Owner and speaks as a bridge port would:
+%% {self(), {data, Frame}} and {self(), {exit_status, Status}} go out,
+%% {Owner, {command, Frame}} and {Owner, close} come in. Starting a kernel
+%% runs the bridge script's launch mode first, which exits once it listens.
+relay(Owner, Launch, Socket) ->
+    Watch = monitor(process, Owner),
+    Status = case Launch of none -> 0; _ -> launch(Launch) end,
+    Connected = Status =:= 0 andalso
+        gen_tcp:connect({local, Socket}, 0, [local, binary, {packet, 4}, {active, true}]),
+    case Connected of
+        {ok, Connection} -> relay_loop(Owner, Watch, Connection);
+        false -> Owner ! {self(), {exit_status, Status}};
+        {error, Gone} when Gone =:= enoent; Gone =:= econnrefused; Gone =:= enotdir ->
+            Owner ! {self(), {exit_status, ?GONE}};
+        {error, _} -> Owner ! {self(), {exit_status, 1}}
+    end.
+
+relay_loop(Owner, Watch, Connection) ->
+    receive
+        {tcp, Connection, Data} ->
+            Owner ! {self(), {data, Data}},
+            relay_loop(Owner, Watch, Connection);
+        {Owner, {command, Data}} ->
+            _ = gen_tcp:send(Connection, Data),
+            relay_loop(Owner, Watch, Connection);
+        {tcp_closed, Connection} -> Owner ! {self(), {exit_status, 0}};
+        {tcp_error, Connection, _} -> Owner ! {self(), {exit_status, 0}};
+        {Owner, close} -> gen_tcp:close(Connection);
+        {'DOWN', Watch, process, Owner, _} -> gen_tcp:close(Connection)
+    end.
+
+%% The launcher's exit status; it gets the token as its one line of stdin.
+launch({Python, Args, Cwd, Token}) ->
+    try open_port({spawn_executable, binary_to_list(Python)},
+                  [binary, exit_status, use_stdio, hide,
+                   {args, [binary_to_list(A) || A <- Args]},
+                   {cd, binary_to_list(Cwd)},
+                   {env, clean_environment()}]) of
+        Port ->
+            port_command(Port, [Token, $\n]),
+            launched(Port)
+    catch _:_ -> 1
+    end.
+
+launched(Port) ->
+    receive
+        {Port, {exit_status, Status}} -> Status;
+        {Port, {data, _}} -> launched(Port)
+    end.
+
+%% albedo_bundle.digest() of the tree at Root: sha256 over each .py file's
+%% relative path and bytes, ordered by path components as pathlib sorts.
+bundle_digest(Root) ->
+    try
+        Hash = lists:foldl(fun(Parts, Acc) ->
+                    Relative = filename:join(Parts),
+                    {ok, Bytes} = file:read_file(filename:join(Root, Relative)),
+                    crypto:hash_update(crypto:hash_update(Acc, Relative), Bytes)
+                end, crypto:hash_init(sha256), lists:sort(python_files(Root, []))),
+        binary:encode_hex(crypto:hash_final(Hash), lowercase)
+    catch _:_ -> none
+    end.
+
+python_files(Root, Dir) ->
+    {ok, Names} = file:list_dir(filename:join([Root | Dir])),
+    lists:flatmap(fun(Name) ->
+        Parts = Dir ++ [unicode:characters_to_binary(Name)],
+        case filelib:is_dir(filename:join([Root | Parts])) of
+            true -> python_files(Root, Parts);
+            false ->
+                case binary:longest_common_suffix([lists:last(Parts), <<".py">>]) of
+                    3 -> [Parts];
+                    _ -> []
+                end
+        end
+    end, Names).
 
 %% Plugin setup can call the host or start a job before the ready handshake.
 %% Keep admission and ownership responsive through the same absolute boot deadline.
@@ -613,7 +712,7 @@ write_envelope(S = #{in := In}, Seq, Frame) ->
               <<",\"frame\":">>, Frame, <<"}">>]).
 
 write(#{port := none}, _) -> ok;
-write(#{port := Port}, Data) -> _ = try port_command(Port, Data) catch _:_ -> ok end, ok.
+write(#{port := Port}, Data) -> send_port(Port, Data).
 
 interrupt_active(S = #{active := none}, _) -> S;
 interrupt_active(S = #{active := {_, Ref, _, _, Id}}, Reason) ->
@@ -845,7 +944,7 @@ job_specs(Groups) ->
 %% removes the run directory, which a kernel that did start notices and
 %% leaves; one that did declare itself is supervised like any shutdown.
 reap_start(S = #{port := Port}) ->
-    Bridge = case Port =/= none andalso erlang:port_info(Port, os_pid) of
+    Bridge = case is_port(Port) andalso erlang:port_info(Port, os_pid) of
                  {os_pid, OsPid} when is_integer(OsPid), OsPid > 1 ->
                      [#{label => <<"bridge">>, pid => OsPid}];
                  _ -> []
@@ -874,7 +973,11 @@ reap_finish(S = #{port := Port}, Result) ->
     end.
 
 close_port(none) -> ok;
+close_port(Relay) when is_pid(Relay) -> Relay ! {self(), close}, ok;
 close_port(Port) -> _ = try port_close(Port) catch _:_ -> ok end, ok.
+
+send_port(Relay, Data) when is_pid(Relay) -> Relay ! {self(), {command, Data}}, ok;
+send_port(Port, Data) -> _ = try port_command(Port, Data) catch _:_ -> ok end, ok.
 
 %% A failure with no caller to answer goes to the log; a clean outcome is silent.
 report(_Event, ok) -> ok;
