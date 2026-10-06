@@ -6,6 +6,7 @@ import albedo/harness/extensions/python/cells as journal
 import albedo/harness/extensions/python/kernel as python
 import albedo/harness/location
 import albedo/harness/runtime
+import albedo/harness/runtime/state as runtime_state
 import albedo/harness/ssh
 import gleam/int
 import gleam/list
@@ -224,7 +225,7 @@ pub fn ready(
 ) -> #(session_state.State(message), Option(runtime.Session)) {
   case state.kernel {
     Some(kernel) ->
-      case runtime.alive(kernel) && !runtime.upgradable(kernel) {
+      case runtime.alive(kernel) && !runtime_state.upgradable(kernel) {
         True -> #(state, Some(kernel))
         False -> #(session_state.State(..state, kernel: None), None)
       }
@@ -255,10 +256,10 @@ pub fn adopt(
 ) -> session_state.State(message) {
   let state = session_state.State(..state, released: None)
   case runtime.origin(kernel) {
-    runtime.Resumed -> resumed(state, kernel)
-    runtime.Upgraded(carried) -> upgraded(state, kernel, carried)
-    runtime.Kept -> session_state.State(..state, kernel: Some(kernel))
-    runtime.Fresh -> revive(state, kernel)
+    runtime_state.Resumed -> resumed(state, kernel)
+    runtime_state.Upgraded(carried) -> upgraded(state, kernel, carried)
+    runtime_state.Kept -> session_state.State(..state, kernel: Some(kernel))
+    runtime_state.Fresh -> revive(state, kernel)
   }
 }
 
