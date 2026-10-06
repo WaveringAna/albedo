@@ -3,6 +3,7 @@
 import albedo/daemon/conversation
 import albedo/daemon/events as view
 import albedo/daemon/note
+import albedo/daemon/requests
 import albedo/daemon/session_history
 import albedo/daemon/session_state
 import albedo/harness/loop
@@ -158,6 +159,89 @@ fn changes(previous: String, current: String) -> String {
       <> current
       <> "\n\n"
   }
+}
+
+/// Saves the prompt the model now knows the session by, so a composition
+/// prepared afresh can be compared against it.
+pub fn remember_prompt(
+  state: session_state.State(message),
+) -> session_state.State(message) {
+  case state.kernel, runtime.peek_prompt(state.host, state.info.id) {
+    Some(kernel), Some(#(instructions, context)) ->
+      case
+        conversation.remember_prompt(
+          runtime.ledger(state.host),
+          state.info.id,
+          conversation.PinnedPrompt(instructions, context),
+          requests.tools_hash(runtime.tools(kernel)),
+        )
+      {
+        Ok(_) -> state
+        Error(error) ->
+          session_state.emit(
+            state,
+            view.error("the session prompt could not be saved: " <> error),
+          )
+      }
+    _, _ -> state
+  }
+}
+
+/// A kernel arrived, maybe with a composition prepared afresh after a daemon
+/// restart or an unload, which read its context again. The model still knows
+/// the prompt it was last told: an unchanged one needs nothing, a changed one
+/// with the same tools is pinned and announced as a live reload would be, and
+/// a changed tool set misses the cache anyway, so the current prompt is used.
+pub fn reconcile_prompt(
+  state: session_state.State(message),
+) -> session_state.State(message) {
+  let current =
+    runtime.peek_prompt(state.host, state.info.id)
+    |> option.map(fn(prompt) { conversation.PinnedPrompt(prompt.0, prompt.1) })
+  let tools =
+    option.map(state.kernel, fn(kernel) {
+      requests.tools_hash(runtime.tools(kernel))
+    })
+  case conversation.known_prompt(runtime.ledger(state.host), state.info.id) {
+    Error(error) ->
+      session_state.emit(
+        state,
+        view.error("the saved session prompt could not be read: " <> error),
+      )
+    Ok(Some(#(known, known_tools))) if Some(known_tools) == tools ->
+      case Some(known) == current {
+        True -> state
+        False -> pin_known_prompt(state, known)
+      }
+    Ok(_) -> remember_prompt(state)
+  }
+}
+
+fn pin_known_prompt(
+  state: session_state.State(message),
+  known: conversation.PinnedPrompt,
+) -> session_state.State(message) {
+  case pin_changed_prompt(state, Some(#(known.instructions, known.context))) {
+    // Without history there is no cached prompt to keep.
+    Ok(#(state, "")) -> state
+    Ok(#(state, detail)) ->
+      session_state.emit(
+        state,
+        view.note(
+          "daemon",
+          "the session prompt changed while unloaded" <> detail,
+        ),
+      )
+    Error(error) ->
+      session_state.emit(
+        state,
+        view.error(
+          "the session prompt changed while unloaded, but the capability notice could not be saved: "
+          <> error,
+        ),
+      )
+  }
+  |> remember_prompt
 }
 
 /// Pin the old prompt until compaction, while reporting live capability changes.

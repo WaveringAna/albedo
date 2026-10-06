@@ -1862,6 +1862,83 @@ pub fn clear_prompt_pin(store: store.Store, id: String) -> Result(Nil, String) {
   )
 }
 
+/// The prompt the model last knew the session by, sent or announced in a
+/// capability note, and a hash of the tools offered beside it. A prompt
+/// prepared afresh after a restart or an unload is compared against it.
+pub fn known_prompt(
+  store: store.Store,
+  id: String,
+) -> Result(Option(#(PinnedPrompt, String)), String) {
+  use rows <- result.try(
+    store.read(
+      store,
+      "SELECT known_instructions, known_context, known_tools FROM sessions WHERE id=? AND known_instructions IS NOT NULL",
+      [sqlight.text(id)],
+      {
+        use instructions <- decode.field(0, decode.string)
+        use context <- decode.field(1, decode.bit_array)
+        use tools <- decode.field(2, decode.string)
+        decode.success(#(instructions, context, tools))
+      },
+    ),
+  )
+  case rows {
+    [#(instructions, context, tools)] ->
+      Ok(
+        unpack_list(context, images.reader(store))
+        |> result.map(fn(context) {
+          #(PinnedPrompt(instructions, context), tools)
+        })
+        |> option.from_result,
+      )
+    _ -> Ok(None)
+  }
+}
+
+pub fn remember_prompt(
+  store: store.Store,
+  id: String,
+  prompt: PinnedPrompt,
+  tools: String,
+) -> Result(Nil, String) {
+  store.write(
+    store,
+    "UPDATE sessions SET known_instructions=?, known_context=?, known_tools=? WHERE id=?",
+    [
+      sqlight.text(prompt.instructions),
+      sqlight.blob(pack_list(prompt.context)),
+      sqlight.text(tools),
+      sqlight.text(id),
+    ],
+  )
+}
+
+/// How many original inputs the session's last prepared request had
+/// compaction stand in for: the baseline a pin made after a restart starts at.
+pub fn prepared_head(
+  store: store.Store,
+  id: String,
+) -> Result(Option(Int), String) {
+  store.read(
+    store,
+    "SELECT prepared_head FROM sessions WHERE id=? AND prepared_head IS NOT NULL",
+    [sqlight.text(id)],
+    decode.field(0, decode.int, decode.success),
+  )
+  |> result.map(fn(rows) { list.first(rows) |> option.from_result })
+}
+
+pub fn save_prepared_head(
+  store: store.Store,
+  id: String,
+  head: Int,
+) -> Result(Nil, String) {
+  store.write(store, "UPDATE sessions SET prepared_head=? WHERE id=?", [
+    sqlight.int(head),
+    sqlight.text(id),
+  ])
+}
+
 /// The entries inputs committed together become. A response's thinking time
 /// goes on its first input that shows the thinking, so it is counted once.
 pub fn entries(

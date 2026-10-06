@@ -132,20 +132,26 @@ pub fn direct_prefix(
 fn head_hash(instructions: String, tools: List(types.Tool)) -> String {
   json.object([
     #("instructions", json.string(instructions)),
-    #(
-      "tools",
-      json.array(tools, fn(tool) {
-        json.object([
-          #("name", json.string(tool.name)),
-          #("description", json.string(tool.description)),
-          #("parameters", tool.parameters),
-          #("strict", json.bool(tool.strict)),
-        ])
-      }),
-    ),
+    #("tools", tools_json(tools)),
   ])
   |> json.to_string
   |> hash
+}
+
+/// The hash of the tools a request offers, as its head hash encodes them.
+pub fn tools_hash(tools: List(types.Tool)) -> String {
+  tools_json(tools) |> json.to_string |> hash
+}
+
+fn tools_json(tools: List(types.Tool)) -> Json {
+  json.array(tools, fn(tool) {
+    json.object([
+      #("name", json.string(tool.name)),
+      #("description", json.string(tool.description)),
+      #("parameters", tool.parameters),
+      #("strict", json.bool(tool.strict)),
+    ])
+  })
 }
 
 /// The hash of a run of inputs, as request rows identify them.

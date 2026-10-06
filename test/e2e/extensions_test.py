@@ -709,6 +709,43 @@ class ExtensionTests(unittest.TestCase):
         (request,) = self.turn("pin stays released")
         self.assertIn("another live skill", request["instructions"])
 
+    # exclusive: restarts the daemon
+    @exclusive
+    def test_restart_keeps_sent_system_prompt_until_compaction(self):
+        for index in range(3):
+            self.turn(f"older turn {index}")
+        self.compact()
+        self.app.idle(self.sid)
+        (sent,) = self.turn("turn after compaction")
+        self.assertIn("[older conversation summary;", json.dumps(sent["input"]))
+        self.skill.write_text(
+            SKILL.replace(
+                "catalog-only fixture description", "edited while the daemon was down"
+            )
+        )
+        self.restart()
+        (request,) = self.turn("first turn after restart")
+        self.assertEqual(request["instructions"], sent["instructions"])
+        updates = [
+            item["content"]
+            for item in request["input"]
+            if item.get("role") == "user"
+            and "capabilities changed" in str(item.get("content", ""))
+        ]
+        self.assertEqual(len(updates), 1)
+        self.assertIn("edited while the daemon was down", updates[0])
+        self.restart()
+        (request,) = self.turn("unchanged restart")
+        self.assertEqual(request["instructions"], sent["instructions"])
+        self.assertEqual(
+            sum(
+                "capabilities changed" in str(item.get("content", ""))
+                for item in request["input"]
+                if item.get("role") == "user"
+            ),
+            1,
+        )
+
     # exclusive: changes global compaction settings and restarts the daemon
     @exclusive
     def test_auto_compaction_releases_pin_on_first_turn_after_restart(self):

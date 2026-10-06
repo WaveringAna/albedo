@@ -94,7 +94,10 @@ pub fn change(
               }
             False -> session_prompt.reset_prompt_cache(state, namespace)
           }
-          #(state, runtime.extension_summaries(state.host, state.info.id))
+          #(
+            session_prompt.remember_prompt(state),
+            runtime.extension_summaries(state.host, state.info.id),
+          )
         }
       }
     }
@@ -160,6 +163,7 @@ pub fn reload(
                 )
               }
           }
+          let state = session_prompt.remember_prompt(state)
           let warnings =
             list.append(warnings, case kernel {
               Some(kernel) -> runtime.warnings(kernel)

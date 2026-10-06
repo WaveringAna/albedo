@@ -21,6 +21,7 @@ import albedo/daemon/session_configure
 import albedo/daemon/session_extensions
 import albedo/daemon/session_history
 import albedo/daemon/session_namespace
+import albedo/daemon/session_prompt
 import albedo/daemon/session_provider
 import albedo/daemon/session_run
 import albedo/daemon/session_state
@@ -313,6 +314,10 @@ pub fn start(
       runtime.ledger(host),
       info.id,
     ))
+    use prepared_head <- result.try(conversation.prepared_head(
+      runtime.ledger(host),
+      info.id,
+    ))
     case conversation.resumable(info.stage) {
       True -> process.send(self, Resume)
       False -> Nil
@@ -351,7 +356,7 @@ pub fn start(
           Some(#(prompt, head)) -> loop.Pinned(prompt, Some(head))
           None -> loop.Unpinned
         },
-        prepared_head: None,
+        prepared_head: prepared_head,
         last_touch: clock.monotonic_ms(),
         booting: None,
         blocked_until: 0,
@@ -1569,15 +1574,11 @@ fn handle(
         True, Some(head), loop.Pinned(prompt, _) ->
           actor.continue(
             session_state.State(
-              ..state,
+              ..prepared(state, head),
               pin: loop.Pinned(prompt, Some(head)),
-              prepared_head: Some(head),
             ),
           )
-        True, Some(head), loop.Unpinned ->
-          actor.continue(
-            session_state.State(..state, prepared_head: Some(head)),
-          )
+        True, Some(head), loop.Unpinned -> actor.continue(prepared(state, head))
         True, None, loop.Pinned(..) ->
           case
             conversation.clear_prompt_pin(
@@ -2203,6 +2204,34 @@ fn adopt(state: State, kernel: runtime.Session) -> State {
   session_history.ensure_history(state)
   |> result.unwrap(state)
   |> session_namespace.adopt(kernel)
+  |> session_prompt.reconcile_prompt
+}
+
+/// Records the head a prepared request reported. It moves when compaction
+/// does, and is saved then, so a pin made after a restart starts at it.
+fn prepared(state: State, head: Int) -> State {
+  let moved = state.prepared_head != Some(head)
+  let state = session_state.State(..state, prepared_head: Some(head))
+  case moved {
+    False -> state
+    True ->
+      case
+        conversation.save_prepared_head(
+          runtime.ledger(state.host),
+          state.info.id,
+          head,
+        )
+      {
+        Ok(_) -> state
+        Error(error) ->
+          session_state.emit(
+            state,
+            view.error(
+              "the prepared request head could not be saved: " <> error,
+            ),
+          )
+      }
+  }
 }
 
 fn kernel_opened(
