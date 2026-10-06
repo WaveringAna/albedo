@@ -11,6 +11,8 @@
   bash,
   coreutils,
   makeWrapper,
+  wl-clipboard,
+  xclip,
   zig,
   usage-core,
 }: let
@@ -162,8 +164,12 @@
     modRoot = "cli";
     subPackages = ["cmd/albedo"];
     vendorHash = "sha256-Pl+bXHakJyxncOSWMI1FVpNui/LI/zgKg74nvjCwSKU=";
-    nativeBuildInputs = [python311];
+    nativeBuildInputs = [python311 makeWrapper];
     ALBEDO_NO_BROWSER = "1";
+    postInstall = ''
+      wrapProgram $out/bin/albedo \
+        --prefix PATH : ${lib.makeBinPath [wl-clipboard xclip]}
+    '';
     meta = {
       description = "Charm terminal client for the albedo coding agent";
       license = lib.licenses.wtfpl;
