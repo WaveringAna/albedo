@@ -217,8 +217,10 @@ dedupe:
   idle session yet, so a wake finds no registered closure: `albedo_wakes`
   then calls the loader the registry installs (`on_missing`), which starts the
   session as a `Lookup` would, and delivers to it; only a session that cannot
-  start answers `unavailable`, which the kernel does not retry. a session that asks for
-  its kernel meanwhile waits for that attach, and gets a fresh boot if there
+  start answers `unavailable`, which the kernel does not retry. a session whose
+  kernel came back running a job that is not a service is started at once,
+  idle, so its cache warming resumes (robot-docs/cache-warming.md). a session
+  that asks for its kernel meanwhile waits for that attach, and gets a fresh boot if there
   was nothing to attach to. an attached kernel's `runtime.origin` is
   `Resumed`, and the session keeps its namespace without the disk restore. a
   recorded kernel whose module set no longer fits is kept and marked stale; one

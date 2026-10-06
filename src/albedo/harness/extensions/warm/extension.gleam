@@ -7,7 +7,8 @@
 //// Each session gets its own warmer process, which hears the session through
 //// `observe`, keeps the last sent call in memory only, and pings through the
 //// session's background call. Disabling the extension closes the process, so
-//// pending pings go with it; a daemon restart simply stops warming. Each ping
+//// pending pings go with it. A daemon restart loses the call; a session that
+//// still waits comes back with it rebuilt (`Restored`). Each ping
 //// also measures one TTL for free: its request row's `cachedInputTokens`
 //// says whether the cache was still there.
 
@@ -104,6 +105,18 @@ fn step(inbox: Subject(Message), warmer: Warmer, message: Message) -> Warmer {
     // Nothing the next turn sends is warm yet.
     Observed(_, extension.Compacted) ->
       Warmer(..warmer, sent: None, generation: warmer.generation + 1, pings: 0)
+    // A restart lost the call this warmer kept; the session rebuilt it.
+    // Whether work still waits is asked when the ping would go out: children
+    // the restart resumes may not run yet.
+    Observed(handle, extension.Restored(call, pings)) ->
+      case warmer.sent, plan_for(call) {
+        None, Some(plan) if pings < plan.cap -> {
+          let warmer = Warmer(..warmer, sent: Some(#(handle, call)), pings:)
+          schedule(inbox, warmer, plan, call.started_ms, call.finished_ms)
+          warmer
+        }
+        _, _ -> warmer
+      }
     Observed(_, extension.TurnEnded(cancelled: True)) -> warmer
     Observed(_, extension.TurnEnded(cancelled: False)) -> {
       case due(warmer) {

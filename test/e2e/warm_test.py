@@ -76,6 +76,20 @@ CACHE_TTL = {
 }
 
 
+# Long enough to outlast a daemon restart: pings 2s apart, the latest 5s past
+# that, and floor(1.0 / 0.1) - 1 = 9 of them.
+RESTART_TTL = {
+    **CACHE_TTL,
+    "entries": [
+        {
+            **CACHE_TTL["entries"][0],
+            "tiers": [{"seconds": 12, "write": 1.0}],
+            "read": 0.1,
+        }
+    ],
+}
+
+
 def release(gate):
     wait_for(lambda: release_fifo(gate))
 
@@ -443,3 +457,73 @@ class WarmTest(unittest.TestCase):
         time.sleep(QUIET_SECONDS)
         self.assertEqual(len(self.requests("/parent/")), 2)
         self.assertEqual([row["kind"] for row in self.rows(parent)], ["turn", "turn"])
+
+    def restarted_pings(self, wait):
+        """The parent's pings after a restart while it idles on `wait`: a
+        job, a service, or a child."""
+        (self.app.home / "cache-ttl.json").write_text(json.dumps(RESTART_TTL))
+        if wait == "child":
+            parent, gate = self.swarm()
+        else:
+            parent, gate = self.job(service=wait == "service")
+        turn = [
+            request
+            for request in self.requests("/parent/")
+            if "max_output_tokens" not in request
+        ][-1]
+        self.app.restart()
+        before = len(self.provider.requests)
+        return (
+            parent,
+            gate,
+            turn,
+            lambda: self.pings(
+                [
+                    record["request"]
+                    for record in self.provider.requests[before:]
+                    if "/parent/" in record["path"]
+                ]
+            ),
+        )
+
+    # exclusive: writes daemon-wide cache TTL and warmer settings, restarts
+    @exclusive
+    def test_a_restart_keeps_warming_a_session_waiting_on_a_job(self):
+        parent, gate, turn, pings = self.restarted_pings("job")
+        # The warmer's call lived in memory only; the restarted session
+        # rebuilds it from the transcript, exactly as the turn sent it.
+        ping = wait_for(pings)[0]
+        self.assertEqual(ping, {**turn, "max_output_tokens": 16})
+        # The provider answers before the ping's request row is written.
+        rows = wait_for(
+            lambda: (rows := self.rows(parent))[-1]["kind"] == "background" and rows
+        )
+        head = [row for row in rows if row["kind"] == "turn"][-1]
+        self.assertEqual(rows[-1]["head_hash"], head["head_hash"])
+        self.assertEqual(rows[-1]["input_count"], head["input_count"])
+
+        release(gate)
+        wait_for(
+            lambda: any(
+                "background job finished" in json.dumps(request)
+                for request in self.requests("/parent/")
+            )
+        )
+        self.app.idle(parent)
+
+    # exclusive: writes daemon-wide cache TTL and warmer settings, restarts
+    @exclusive
+    def test_a_restart_keeps_warming_a_parent_waiting_on_its_child(self):
+        parent, child, turn, pings = self.restarted_pings("child")
+        # The restart resumes the scout mid-turn, and its parent with it.
+        self.assertEqual(wait_for(pings)[0], {**turn, "max_output_tokens": 16})
+        self.gate.set()
+        self.app.idle(child)
+        self.app.idle(parent)
+
+    # exclusive: writes daemon-wide cache TTL and warmer settings, restarts
+    @exclusive
+    def test_a_restart_does_not_warm_a_session_with_only_a_service(self):
+        _, _, _, pings = self.restarted_pings("service")
+        time.sleep(QUIET_SECONDS)
+        self.assertEqual(pings(), [])

@@ -88,6 +88,8 @@ pub type Message {
     Subject(Result(#(conversation.Info, family.Member), String)),
   )
   Lookup(String, Subject(Result(session.Session, String)))
+  /// Start an idle session that waits on work, so it can warm again.
+  Rewarm(String)
   Existing(String, Subject(Result(Option(session.Session), String)))
   SessionDeleted(String)
   /// What an agent asks of other sessions, through the agents seam.
@@ -225,6 +227,14 @@ fn serve(state: State, message: Message) -> actor.Next(State, a) {
     Lookup(id, reply) -> {
       let #(state, found) = activate(state, id)
       process.send(reply, found)
+      actor.continue(state)
+    }
+    Rewarm(id) -> {
+      let #(state, found) = activate(state, id)
+      case found {
+        Ok(worker) -> session.rewarm(worker)
+        Error(_) -> Nil
+      }
       actor.continue(state)
     }
     Existing(id, reply) -> {
@@ -392,6 +402,7 @@ fn refuse(state: State, message: Message) -> Nil {
     Create(_, _, _, reply) -> process.send(reply, Error(closed))
     CreateChild(_, _, _, _, reply) -> process.send(reply, Error(closed))
     Lookup(_, reply) -> process.send(reply, Error(closed))
+    Rewarm(_) -> Nil
     Existing(_, reply) -> process.send(reply, Error(closed))
     AgentOp(_, reply) -> process.send(reply, Error(closed))
     List(reply) -> process.send(reply, [])
@@ -533,6 +544,10 @@ pub fn start(
         let _ = process.send_after(self, config.tick_ms, ScheduleTick)
         // Letters left from before a restart go out now, not a tick later.
         process.send(self, MailWaiting)
+        // A parent idle on children the restart resumes waits on them.
+        list.each(waiting_parents(ledger, saved), fn(parent) {
+          process.send(self, Rewarm(parent))
+        })
         // Agents start and stop other sessions from kernel host routes.
         agents.register(fn(op) { actor.call(self, 60_000, AgentOp(op, _)) })
         mail.on_waiting(fn() { process.send(self, MailWaiting) })
@@ -672,6 +687,28 @@ fn dispatch_schedule(
       }
     }
   }
+}
+
+/// Tell `registry` that the session `id` waits on work that will wake it:
+/// it starts, idle, and warms again.
+pub fn rewarm(registry: Subject(Message), id: String) -> Nil {
+  process.send(registry, Rewarm(id))
+}
+
+/// The parents of the sessions a restart resumes mid-turn.
+fn waiting_parents(
+  ledger: store.Store,
+  saved: List(conversation.Info),
+) -> List(String) {
+  saved
+  |> list.filter(fn(info) { conversation.resumable(info.stage) })
+  |> list.filter_map(fn(info) {
+    case family.get(ledger, info.id) {
+      Ok(Some(member)) if !member.closed -> Ok(member.parent)
+      _ -> Error(Nil)
+    }
+  })
+  |> list.unique
 }
 
 @external(erlang, "albedo_wakes", "on_missing")

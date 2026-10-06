@@ -12,7 +12,7 @@ two cases: an orchestrator whose children are still running, and a session waiti
 
 the warmer is an ordinary `ManagedPlugin` (robot-docs/extensions.md): preparing it for a session starts one warmer process, its `observe` forwards the session's events to that process, and its `close` stops it. everything below — the captured call, the timer, the ping budget, the cost model — lives in that process; the daemon only reports events and runs background calls.
 
-- a turn call that succeeds arrives as `CallSent`: the request exactly as sent, its prefix identity, usage, cache marks, profile, endpoint, protocol and timing. the warmer keeps the latest one in memory only; a restart simply stops warming.
+- a turn call that succeeds arrives as `CallSent`: the request exactly as sent, its prefix identity, usage, cache marks, profile, endpoint, protocol and timing. the warmer keeps the latest one in memory only, so a daemon restart loses it; see "after a restart" below.
 - `TurnEnded` schedules the first ping; `Compacted` drops the captured call, since nothing the next turn sends is warm yet.
 - `Stirred` — a submit, a note, a wake, or a change of model, effort, workspace or extensions — raises a generation counter, so a pending tick scheduled under an older one is dropped when it arrives.
 - a ping is the session's background call (`extension.Session.call`): exclusive work that holds the session exactly as a compaction run does, so a submit queues behind it and starts when the ping ends; it is short. a background call refused because a run holds the session, or because the kernel was released, ends the stretch.
@@ -26,11 +26,23 @@ a ping goes out while:
 - the last request's cached prefix is worth a round trip: at least `minCachedTokens` (default 1024) cached tokens on the turn it repeats — reads plus writes, so a first write-only turn counts.
 - a clock can be beat. with cache marks (Claude), the shortest `ttlSeconds` among them. with none — the OpenAI protocols cache on their own — the cache table's entry: `refresh`/`fixed` policy, its first tier's `seconds`. `evict`/`unknown`, or no entry, means no warming (robot-docs/cache-ttl.md).
 
-warming starts when the turn that will be repeated ends, and again after every ping. a child or job that starts running while the session is already idle does not wake warming until the session's next turn.
+warming starts when the turn that will be repeated ends, and again after every ping, or when a restarted session restores its call. a child or job that starts running while the session is already idle does not wake warming until the session's next turn.
 
 ## what a ping sends
 
-exactly the request the turn actually sent: same instructions, tools, inputs, options, cache marks. it is captured, never rebuilt — a rebuild runs `prepare`, which can compact or call the summarizer and change the prefix. the only change is the output budget: `max_output_tokens` 1, or 16 on the Responses protocol, whose minimum is higher.
+exactly the request the turn actually sent: same instructions, tools, inputs, options, cache marks. it is captured, not rebuilt, except after a restart. the only change is the output budget: `max_output_tokens` 1, or 16 on the Responses protocol, whose minimum is higher.
+
+## after a restart
+
+a restart ends every warmer with the daemon, while the session's jobs, children and provider cache live on. at boot, the daemon starts the idle sessions still waiting: each session whose reattached kernel runs a job that is not a service (`runtime.resume_kernels` hands it to the registry), and each parent of a child the restart resumes mid-turn. such a session takes its kernel without starting a turn (`Rewarm`), and `session_last_call` rebuilds its last turn call:
+
+- the call is the session's latest completed `turn` row with a transcript seq; its request carried the transcript rows before that seq.
+- that history goes through the session's model projection and `loop.rebuild`, which builds the request the way a turn does — the pinned or current prompt, tools, effort — but projects it with `compaction.project`, under the strategy's saved state, never compacting. building it writes nothing and calls no model.
+- it is kept only when the model, profile and provider are the row's, and its prefix identity (head hash, input count, replaced count, projection hash, strategy) is exactly the row's. anything since that changed the request — a compaction, a model switch, a changed tool set — means no warming.
+
+the warmer hears it as `Restored(call, pings)`: the usage is the turn's, the timing that of the latest send of the prefix (the turn, or a ping that repeated it since), and `pings` those pings, which count against this stretch's budget. a warmer that already holds a call ignores it. the first ping is scheduled from that timing like any other, so a restart that outlasted the cache sends nothing; whether work still waits is asked when the ping would go out, since a child the restart resumes may not be running yet when its parent comes back.
+
+a rebuilt request is what the next turn would send, which can differ from what the turn sent where the turn added something the transcript does not keep (a kernel notice on its newest message). it extends the same cached prefix, which is what a ping keeps warm.
 
 ## the stop rule and its arithmetic
 

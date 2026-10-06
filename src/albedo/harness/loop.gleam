@@ -279,7 +279,7 @@ pub fn compact(state: Loop, inputs: List(types.Input)) -> Result(Nil, String) {
   }
   state.report_pin(Some(evicted))
   let instructions = case changed {
-    True -> current_instructions(state)
+    True -> kernel_instructions(state.kernel)
     False -> request_instructions(state)
   }
   // A forced compaction keeps the default options; an ordinary turn sets effort.
@@ -662,9 +662,15 @@ fn retry_stream(
 }
 
 fn request_instructions(state: Loop) -> String {
-  case state.pin {
+  instructions_for(state.pin, state.kernel)
+}
+
+/// The system prompt a request carries: the pinned one while a pin holds,
+/// else the kernel's current one.
+fn instructions_for(pin: Pin, kernel: runtime.Session) -> String {
+  case pin {
     Pinned(prompt, _) -> prompt.instructions <> context_text(prompt.context)
-    Unpinned -> current_instructions(state)
+    Unpinned -> kernel_instructions(kernel)
   }
 }
 
@@ -675,19 +681,28 @@ fn request(
   instructions: String,
   history: List(types.Input),
 ) -> types.Request {
+  request_for(state.model, state.effort, state.kernel, instructions, history)
+}
+
+fn request_for(
+  model: String,
+  effort: Option(String),
+  kernel: runtime.Session,
+  instructions: String,
+  history: List(types.Input),
+) -> types.Request {
   types.Request(
-    state.model,
+    model,
     Some(instructions),
     history,
-    runtime.tools(state.kernel),
+    runtime.tools(kernel),
     None,
-    types.Options(..types.defaults, effort: state.effort),
+    types.Options(..types.defaults, effort: effort),
   )
 }
 
-fn current_instructions(state: Loop) -> String {
-  runtime.instructions(state.kernel)
-  <> context_text(runtime.context(state.kernel))
+fn kernel_instructions(kernel: runtime.Session) -> String {
+  runtime.instructions(kernel) <> context_text(runtime.context(kernel))
 }
 
 fn context_text(context: List(types.Input)) -> String {
@@ -715,26 +730,66 @@ fn settle_pin(
   original: List(types.Input),
   history: List(types.Input),
 ) -> #(Loop, List(types.Input)) {
-  case state.pin {
-    Unpinned -> #(state, history)
+  let pin = settled(state.pin, original, history)
+  case state.pin, pin {
+    Pinned(_, None), Pinned(_, head) -> state.report_pin(head)
+    Pinned(_, Some(_)), Unpinned -> state.report_pin(None)
+    _, _ -> Nil
+  }
+  #(Loop(..state, pin:), history)
+}
+
+/// The pin a request for `history`, projected from `original`, is sent
+/// under. Strategies may rebuild recap text every request, but the count of
+/// original inputs they stand in for only grows when compaction runs, so a
+/// pin's first request records that count and a later, larger one drops it.
+fn settled(
+  pin: Pin,
+  original: List(types.Input),
+  history: List(types.Input),
+) -> Pin {
+  case pin {
+    Unpinned -> Unpinned
     Pinned(prompt, baseline) -> {
-      // Strategies may rebuild recap text every request, but the count of
-      // original inputs they stand in for only grows when compaction runs.
       let head =
         list.length(original) - compaction.common_suffix(original, history)
       case baseline {
-        None -> {
-          state.report_pin(Some(head))
-          #(Loop(..state, pin: Pinned(prompt, Some(head))), history)
-        }
-        Some(previous) if previous == head -> #(state, history)
-        Some(_) -> {
-          state.report_pin(None)
-          #(Loop(..state, pin: Unpinned), history)
-        }
+        None -> Pinned(prompt, Some(head))
+        Some(previous) if previous == head -> pin
+        Some(_) -> Unpinned
       }
     }
   }
+}
+
+/// The request a turn call sends for `original`, the chronological history,
+/// and its prefix identity, built as `run` builds it but projected under the
+/// strategy's saved state without ever compacting: building it writes
+/// nothing and calls no model. Whether it is the request an earlier call
+/// sent is for the caller to judge, by comparing their prefix identities.
+pub fn rebuild(
+  host: runtime.Runtime,
+  kernel: runtime.Session,
+  model: String,
+  effort: Option(String),
+  pin: Pin,
+  upstream: extension.Upstream,
+  original: List(types.Input),
+) -> Result(#(types.Request, requests.Prefix), String) {
+  use prepared <- result.map(runtime.project_view_scoped(
+    host,
+    kernel,
+    model,
+    request_source(upstream, model),
+    extension.clean_endpoint(upstream.endpoint),
+    instructions_for(pin, kernel),
+    original,
+    upstream.images,
+  ))
+  let history = prepared.inputs
+  let instructions = instructions_for(settled(pin, original, history), kernel)
+  let request = request_for(model, effort, kernel, instructions, history)
+  #(request, request_prefix(request, history, original, prepared.observation))
 }
 
 fn describe(upstream: extension.Upstream, error: types.Error) -> String {

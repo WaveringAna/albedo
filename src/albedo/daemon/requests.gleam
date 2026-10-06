@@ -387,6 +387,72 @@ pub fn page(
   })
 }
 
+/// The session's latest completed turn call whose response the transcript
+/// holds, with the background calls since then that repeated its prefix
+/// (cache-warming pings), oldest first.
+pub fn last_turn(
+  database: store.Store,
+  session: String,
+) -> Result(Option(#(Row, List(Row))), String) {
+  store.query(database, fn(db) {
+    use turns <- result.try(store.rows(
+      db,
+      "SELECT "
+        <> columns
+        <> " FROM provider_requests WHERE session=? AND kind='turn' AND outcome='ok' AND seq IS NOT NULL ORDER BY id DESC LIMIT 1",
+      [sqlight.text(session)],
+      row_decoder(),
+    ))
+    case turns {
+      [] -> Ok(None)
+      [turn, ..] -> {
+        use pings <- result.map(store.rows(
+          db,
+          "SELECT "
+            <> columns
+            <> " FROM provider_requests WHERE session=? AND kind='background' AND outcome='ok' AND id>? AND head_hash=? AND inputs=? ORDER BY id",
+          [
+            sqlight.text(session),
+            sqlight.int(turn.id),
+            sqlight.text(turn.head_hash),
+            sqlight.int(turn.inputs),
+          ],
+          row_decoder(),
+        ))
+        Some(#(turn, pings))
+      }
+    }
+  })
+}
+
+/// The prefix identity a row was recorded with.
+pub fn row_prefix(row: Row) -> Prefix {
+  Prefix(
+    row.head_hash,
+    row.inputs,
+    row.replaced,
+    row.projection_hash,
+    row.strategy,
+  )
+}
+
+/// The usage a row recorded, when the call reported one.
+pub fn row_usage(row: Row) -> Option(types.Usage) {
+  case row.input_tokens, row.output_tokens {
+    Some(input), Some(output) ->
+      Some(types.Usage(
+        input,
+        output,
+        row.cached_input_tokens,
+        row.cache_creation_tokens,
+        row.cache_write_5m_tokens,
+        row.cache_write_1h_tokens,
+        row.reasoning_tokens,
+      ))
+    _, _ -> None
+  }
+}
+
 /// What a request head (its instructions and tools, under the hour-long
 /// cache marks) takes up, from the latest call through `profile` to `model`
 /// that wrote that head's hour-long entries: its read covered a prefix, and

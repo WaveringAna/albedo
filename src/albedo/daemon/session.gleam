@@ -20,6 +20,7 @@ import albedo/daemon/session_configuration
 import albedo/daemon/session_configure
 import albedo/daemon/session_extensions
 import albedo/daemon/session_history
+import albedo/daemon/session_last_call
 import albedo/daemon/session_namespace
 import albedo/daemon/session_prompt
 import albedo/daemon/session_provider
@@ -171,6 +172,9 @@ pub fn submission_error(error: SubmissionError) -> String {
 
 pub type Message {
   Resume
+  /// An idle session started after a daemon restart because it waits on
+  /// work that will wake it: its extensions hear its last turn call again.
+  Rewarm
   ReadCapture(Subject(Result(Unobserved, String)))
   ReadSummary(Subject(Summary))
   /// See `extension.Session.awaiting_jobs`.
@@ -654,6 +658,12 @@ pub fn alive(session: Session) -> Bool {
   |> result.unwrap(False)
 }
 
+/// Asks an idle session to take its kernel and let its extensions pick up
+/// warming where a daemon restart left it.
+pub fn rewarm(session: Session) -> Nil {
+  process.send(session, Rewarm)
+}
+
 pub fn close(session: Session) -> Nil {
   actor.call(session, 30_000, Close)
 }
@@ -1092,6 +1102,15 @@ fn handle(
       case kernel_or_park(state, Resume) {
         Error(state) -> actor.continue(state)
         Ok(state) -> actor.continue(resume(state))
+      }
+    Rewarm ->
+      case busy(state) || state.steering != [] {
+        True -> actor.continue(state)
+        False ->
+          case kernel_or_park(state, Rewarm) {
+            Error(state) -> actor.continue(state)
+            Ok(state) -> actor.continue(restore_last_call(state))
+          }
       }
     KernelOpened(result) -> actor.continue(kernel_opened(state, result))
     StartQueued -> actor.continue(start_queued(state))
@@ -2968,6 +2987,18 @@ fn report_end(state: State, run: turn.Run) -> Nil {
       observe(state, extension.Compacted)
     turn.Compaction(..) -> Nil
     turn.Background(_) -> Nil
+  }
+}
+
+/// Tells the extensions the last turn call, rebuilt, so warming picks up
+/// where the restart left it.
+fn restore_last_call(state: State) -> State {
+  case session_last_call.restore(state) {
+    #(state, Some(#(call, pings))) -> {
+      observe(state, extension.Restored(call, pings))
+      state
+    }
+    #(state, None) -> state
   }
 }
 

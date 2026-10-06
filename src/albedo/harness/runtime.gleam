@@ -872,7 +872,9 @@ pub fn detach_kernels(runtime: Runtime) -> Nil {
 /// Attach every recorded kernel again, one at a time in the background, so
 /// a restarted daemon hears their late results and job wakes without waiting
 /// for each session to need its kernel. A kernel that is gone is forgotten.
-pub fn resume_kernels(runtime: Runtime) -> Nil {
+/// `awaited` hears each session whose kernel came back running a job that
+/// will wake it, one not started as a service.
+pub fn resume_kernels(runtime: Runtime, awaited: fn(String) -> Nil) -> Nil {
   let subject = runtime.subject
   let work = runtime.work
   process.spawn_unlinked(fn() {
@@ -881,7 +883,15 @@ pub fn resume_kernels(runtime: Runtime) -> Nil {
       let reply = process.new_subject()
       process.send(subject, Reattach(id, cwd, reply))
       let _ = process.receive(reply, 60_000)
-      Nil
+      let awaiting = case observe_loaded(runtime, id) {
+        Ok(LoadedObservation(kernel: Some(observed), ..)) ->
+          list.any(observed.running_jobs, fn(job) { !job.service })
+        _ -> False
+      }
+      case awaiting {
+        True -> awaited(id)
+        False -> Nil
+      }
     })
   })
   Nil
@@ -3223,6 +3233,63 @@ pub fn prepare_view_scoped(
   force: Bool,
   images: types.ImageLimits,
 ) -> Result(compaction.Prepared, String) {
+  view_scoped(
+    runtime,
+    session,
+    model,
+    source,
+    endpoint,
+    instructions,
+    summarize,
+    history,
+    force,
+    images,
+    compaction.prepare,
+  )
+}
+
+/// The request the active strategy's saved state makes of `history`, the
+/// way `prepare_view_scoped` would send it, except that it never compacts:
+/// it writes nothing and calls no model.
+pub fn project_view_scoped(
+  runtime: Runtime,
+  session: Session,
+  model: String,
+  source: String,
+  endpoint: Option(String),
+  instructions: String,
+  history: List(types.Input),
+  images: types.ImageLimits,
+) -> Result(compaction.Prepared, String) {
+  view_scoped(
+    runtime,
+    session,
+    model,
+    source,
+    endpoint,
+    instructions,
+    fn(_) { Error("a projection never summarizes") },
+    history,
+    False,
+    images,
+    compaction.project,
+  )
+}
+
+fn view_scoped(
+  runtime: Runtime,
+  session: Session,
+  model: String,
+  source: String,
+  endpoint: Option(String),
+  instructions: String,
+  summarize: fn(compaction.SummaryRequest) -> Result(String, String),
+  history: List(types.Input),
+  force: Bool,
+  images: types.ImageLimits,
+  view: fn(compaction.Strategy, compaction.Context, List(types.Input)) ->
+    Result(compaction.Prepared, String),
+) -> Result(compaction.Prepared, String) {
   use _ <- result.try(owned_by(runtime, session))
   let pinned_tokens = compaction.estimate_pinned(instructions, tools(session))
   let enabled = extension.extensions(session.composition)
@@ -3255,11 +3322,7 @@ pub fn prepare_view_scoped(
       // A strategy that raises fails the turn the way one returning an error
       // does, naming itself, rather than killing the turn's process.
       protect.guarded(fn() {
-        use prepared <- result.try(compaction.prepare(
-          strategy,
-          context,
-          history,
-        ))
+        use prepared <- result.try(view(strategy, context, history))
         list.try_fold(extension.notes(enabled), prepared, fn(prepared, layer) {
           case prepared.compacted {
             True -> layer.compact(context, history, prepared)

@@ -128,6 +128,12 @@ pub type SessionEvent {
   /// Something new reached the session: a submit, a note, a wake, or a
   /// change of model, effort, workspace, or extensions.
   Stirred
+  /// An idle session came back after a daemon restart, still waiting on
+  /// work that will wake it, and rebuilt its last turn call: the request it
+  /// sent, checked against that call's prefix identity, with the call's
+  /// usage. Its timing is the latest send of that prefix, the turn call or
+  /// one of the `pings` background calls that repeated it since.
+  Restored(call: SentCall, pings: Int)
 }
 
 /// One successful provider call, as it went out.

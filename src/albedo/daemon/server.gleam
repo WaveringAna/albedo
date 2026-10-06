@@ -71,8 +71,8 @@ pub fn start(config: Config, port: Int) -> Result(Int, String) {
     |> result.map_error(string.inspect),
   )
   // A name, not a pid: handlers keep reaching the registry across restarts.
+  runtime.resume_kernels(host, registry.rewarm(process.named_subject(name), _))
   let registry = process.named_subject(name)
-  runtime.resume_kernels(host)
   // A restarted listener comes back on the port it was built with, so port 0
   // would bring it back somewhere daemon.json does not say: pick it once.
   let port = case port {

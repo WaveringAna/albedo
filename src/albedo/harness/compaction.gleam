@@ -355,6 +355,21 @@ pub fn prepare(
   }
 }
 
+/// The request `strategy` sends for `history` under its saved state, never
+/// compacting even when due: building it changes nothing, so it can stand in
+/// for a request sent earlier.
+pub fn project(
+  strategy: Strategy,
+  context: Context,
+  history: List(types.Input),
+) -> Result(Prepared, String) {
+  use view <- result.map(strategy.project(
+    Context(..context, force: False),
+    history,
+  ))
+  Prepared(view.inputs, view.observation, False)
+}
+
 /// A deliberately approximate request-size estimate. It is used only when a
 /// provider has not supplied a tokenizer for the current request.
 fn estimate_text(text: String) -> Int {
