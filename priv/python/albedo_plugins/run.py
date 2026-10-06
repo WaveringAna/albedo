@@ -33,6 +33,7 @@ from albedo_api import (
 )
 import albedo_proc
 import albedo_shell
+import albedo_shims
 import albedo_trace
 import asyncio
 import os
@@ -709,6 +710,9 @@ def run(
     cell, and the wake names the job when it lands. Awaiting the job, reading
     its result, or stopping it first means no wake.
 
+    `cargo` runs through mbx when it is installed, so every checkout
+    shares compiled work; env={"ALBEDO_NO_MBX": "1"} runs plain cargo.
+
     Pass service=True for a program that is meant to keep running (a dev
     server, a file watcher): you are not waiting for it to finish, so it
     does not keep your prompt cache warm while you are idle.
@@ -722,7 +726,7 @@ def run(
     script = albedo_shell.shell_script(argv)
     if script is not None:
         raise albedo_shell.refusal(f"`{os.path.basename(argv[0])} -c`", script=script)
-    environment = (
+    environment = albedo_shims.prepend(
         None
         if env is None
         else {**os.environ, **{str(k): str(v) for k, v in env.items()}}

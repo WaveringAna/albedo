@@ -82,7 +82,7 @@ An extension bundles plugins: context (system instructions), tool (model tools +
 
 ### robot-docs/
 
-`robot-docs/` is one model-facing doc per subsystem (agents, auth, settings, kernel-state, migrations, cache-ttl, cache-warming, commands, compaction, context, extensions, files, kernel, mcp, models, paperclips, provider-requests, proxy, quota, runtime, skills, usage-feed, web-search, webhooks, workspaces). This file is the map; those are the details. When you change a subsystem's behavior, update its doc in the same change; when you need to understand one, read it there first.
+`robot-docs/` is one model-facing doc per subsystem (agents, auth, settings, kernel-state, migrations, cache-ttl, cache-warming, commands, compaction, context, extensions, files, kernel, mcp, models, paperclips, provider-requests, proxy, quota, runtime, shims, skills, usage-feed, web-search, webhooks, workspaces). This file is the map; those are the details. When you change a subsystem's behavior, update its doc in the same change; when you need to understand one, read it there first.
 
 Shared clock, Unicode scalar, and native-boundary rules live in `robot-docs/runtime.md`. Read it before adding runtime helpers or moving logic across the Gleam/Erlang boundary.
 
