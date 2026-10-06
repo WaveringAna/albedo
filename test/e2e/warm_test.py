@@ -14,6 +14,7 @@ request rows are the witnesses.
 
 import json
 import os
+import sqlite3
 from datetime import datetime
 import threading
 import time
@@ -21,6 +22,7 @@ import unittest
 
 from harness import (
     Albedo,
+    alive,
     Provider,
     exclusive,
     operation_id,
@@ -76,18 +78,21 @@ CACHE_TTL = {
 }
 
 
-# Long enough to outlast a daemon restart: pings 2s apart, the latest 5s past
-# that, and floor(1.0 / 0.1) - 1 = 9 of them.
+# Long enough to outlast a slow daemon restart: pings 10s apart, the latest 5s
+# past that, and floor(1.0 / 0.1) - 1 = 9 of them. A 1s idle or unload sweep
+# comes well before the first one.
 RESTART_TTL = {
     **CACHE_TTL,
     "entries": [
         {
             **CACHE_TTL["entries"][0],
-            "tiers": [{"seconds": 12, "write": 1.0}],
+            "tiers": [{"seconds": 20, "write": 1.0}],
             "read": 0.1,
         }
     ],
 }
+# Past a restarted session's first ping, had there been one.
+RESTART_QUIET_SECONDS = 12
 
 
 def release(gate):
@@ -511,6 +516,29 @@ class WarmTest(unittest.TestCase):
         )
         self.app.idle(parent)
 
+    # exclusive: shortens the daemon's idle and unload limits, restarts
+    @exclusive
+    def test_a_parent_waiting_on_its_child_keeps_warming_once_released(self):
+        (self.app.home / "cache-ttl.json").write_text(json.dumps(RESTART_TTL))
+        self.app.restart(
+            prepare=lambda app: app.env.update(
+                ALBEDO_IDLE_SECONDS="1", ALBEDO_UNLOAD_SECONDS="1"
+            )
+        )
+        parent, child = self.swarm()
+        with sqlite3.connect(self.app.home / "albedo.sqlite") as database:
+            (kernel,) = database.execute(
+                "SELECT pid FROM kernel_links WHERE session=?", (parent,)
+            ).fetchone()
+        # The idle sweep takes the kernel long before the first ping is due,
+        # and the unload sweep would stop the session with its warmer.
+        wait_for(lambda: not alive(kernel))
+        self.assertEqual(self.pings(self.requests("/parent/")), [])
+        wait_for(lambda: self.pings(self.requests("/parent/")), timeout=40)
+        self.gate.set()
+        self.app.idle(child)
+        self.app.idle(parent)
+
     # exclusive: writes daemon-wide cache TTL and warmer settings, restarts
     @exclusive
     def test_a_restart_keeps_warming_a_parent_waiting_on_its_child(self):
@@ -525,5 +553,5 @@ class WarmTest(unittest.TestCase):
     @exclusive
     def test_a_restart_does_not_warm_a_session_with_only_a_service(self):
         _, _, _, pings = self.restarted_pings("service")
-        time.sleep(QUIET_SECONDS)
+        time.sleep(RESTART_QUIET_SECONDS)
         self.assertEqual(pings(), [])

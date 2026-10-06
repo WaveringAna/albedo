@@ -4,6 +4,7 @@
 import albedo/text_scalars
 
 import albedo/daemon/family
+import albedo/daemon/store
 import gleam/erlang/process
 import gleam/json
 import gleam/list
@@ -57,6 +58,18 @@ fn mark_running(session: String, running: Bool) -> Nil
 
 @external(erlang, "albedo_bus", "running")
 pub fn is_running(session: String) -> Bool
+
+/// Whether any open child of `session` is still running: work whose report
+/// will wake it.
+pub fn children_running(db: store.Store, session: String) -> Bool {
+  case family.children(db, session) {
+    Ok(children) ->
+      list.any(children, fn(child) {
+        !child.closed && is_running(child.session)
+      })
+    Error(_) -> False
+  }
+}
 
 pub fn spawned(member: family.Member) -> Nil {
   invalidate(

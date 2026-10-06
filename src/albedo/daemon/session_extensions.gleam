@@ -21,6 +21,7 @@ fn with_kernel(
   session_state.State(
     ..state,
     kernel: Some(kernel),
+    released: None,
     context: session_state.unprepared(),
   )
 }

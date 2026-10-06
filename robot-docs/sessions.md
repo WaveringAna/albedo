@@ -104,8 +104,10 @@ The maintenance sweep releases an idle kernel after `ALBEDO_IDLE_SECONDS`
 (default 10 minutes) and unloads a session whose last turn (`activity_at`) is
 older than `ALBEDO_UNLOAD_SECONDS` (default one hour): the provider's prompt
 cache has expired by then. The session refuses while a turn runs or waits, a
-client watches its stream, or a background job is live. Unloading saves the
-kernel's variables like a release. The next request loads it again.
+client watches its stream, a background job is live, or one of its children
+runs: that child's report will wake it, and its prompt cache may be kept warm
+meanwhile (robot-docs/cache-warming.md). Unloading saves the kernel's
+variables like a release. The next request loads it again.
 
 Listing sessions reads loaded sessions' summaries but does not count as
 attention, so an open session list never keeps a kernel alive.

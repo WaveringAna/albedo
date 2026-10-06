@@ -127,7 +127,8 @@ fn release_idle(
 
 /// Stop sessions whose last turn is older than the unload limit: their
 /// provider cache has expired, so nothing is lost by loading them again. The
-/// session refuses while a client watches it or work is queued.
+/// session refuses while a client watches it, work is queued, or a child it
+/// waits on still runs (its cache may be kept warm meanwhile).
 fn unload_quiet(
   reports: List(#(String, session.Session, session.Report)),
   activity: List(#(String, Int)),

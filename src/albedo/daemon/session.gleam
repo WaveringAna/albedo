@@ -267,8 +267,8 @@ pub type Message {
   /// the binaries it references stay resident until the next message.
   Collect
   Close(Subject(Nil))
-  /// Stop the actor if nothing runs, waits, watches, or holds a live job.
-  /// True when it stopped.
+  /// Stop the actor if nothing runs, waits, watches, or holds a live job or a
+  /// running child, whose report will wake it. True when it stopped.
   Unload(Subject(Bool))
   CloseForDeletion(Subject(Result(Nil, String)))
   ClaimDeletion(
@@ -344,6 +344,7 @@ pub fn start(
         info: info,
         host: host,
         kernel: None,
+        released: None,
         home: home,
         self: self,
         history: None,
@@ -1759,6 +1760,7 @@ fn handle(
             session_state.State(
               ..state,
               kernel: None,
+              released: Some(kernel),
               context: session_state.unprepared(),
             )
               |> session_state.emit(view.note(
@@ -1838,6 +1840,7 @@ fn handle(
         || state.steering != []
         || state.watchers != []
         || jobs > 0
+        || bus.children_running(runtime.ledger(state.host), state.info.id)
       {
         True -> answer(state, reply, False)
         False -> {
@@ -2896,22 +2899,21 @@ fn finish_turn(
 }
 
 /// An extension's background call starts only while nothing else holds the
-/// session and a live kernel can carry it; otherwise the caller hears why.
+/// session; otherwise the caller hears why. The request is complete, so it
+/// needs no kernel: a released one does not stop it.
 fn start_background(
   state: State,
   request: types.Request,
   prefix: requests.Prefix,
   reply: Subject(Result(Option(types.Usage), String)),
 ) -> State {
-  let #(state, kernel) = session_namespace.ready(state)
   let refused = fn(state, reason) {
     process.send(reply, Error(reason))
     state
   }
-  case turn.running(state.activity), kernel {
-    Some(_), _ -> refused(state, "the session is busy")
-    None, None -> refused(state, "the session has no live kernel")
-    None, Some(_) ->
+  case turn.running(state.activity) {
+    Some(_) -> refused(state, "the session is busy")
+    None ->
       case session_provider.configured_client(state) {
         Ok(#(primed, client)) ->
           session_run.start_background(
@@ -3008,10 +3010,10 @@ fn stirred(state: State) -> State {
   state
 }
 
-/// Tells the extensions this session composed about one of its events. A
-/// released kernel's session reports nothing: it cannot run anything either.
+/// Tells the extensions this session composed about one of its events, those
+/// of a released kernel too: its composition outlives it.
 fn observe(state: State, event: extension.SessionEvent) -> Nil {
-  case state.kernel {
+  case option.or(state.kernel, state.released) {
     Some(kernel) ->
       runtime.observe(
         kernel,

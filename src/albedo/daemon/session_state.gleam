@@ -33,6 +33,9 @@ pub type State(message) {
     info: conversation.Info,
     host: runtime.Runtime,
     kernel: Option(runtime.Session),
+    /// The kernel the idle sweep released, whose composition stays prepared
+    /// for the next open: its extensions keep hearing the session meanwhile.
+    released: Option(runtime.Session),
     home: String,
     self: Subject(message),
     history: Option(List(transcript.Entry)),

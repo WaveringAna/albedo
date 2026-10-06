@@ -15,7 +15,8 @@ the warmer is an ordinary `ManagedPlugin` (robot-docs/extensions.md): preparing 
 - a turn call that succeeds arrives as `CallSent`: the request exactly as sent, its prefix identity, usage, cache marks, profile, endpoint, protocol and timing. the warmer keeps the latest one in memory only, so a daemon restart loses it; see "after a restart" below.
 - `TurnEnded` schedules the first ping; `Compacted` drops the captured call, since nothing the next turn sends is warm yet.
 - `Stirred` — a submit, a note, a wake, or a change of model, effort, workspace or extensions — raises a generation counter, so a pending tick scheduled under an older one is dropped when it arrives.
-- a ping is the session's background call (`extension.Session.call`): exclusive work that holds the session exactly as a compaction run does, so a submit queues behind it and starts when the ping ends; it is short. a background call refused because a run holds the session, or because the kernel was released, ends the stretch.
+- a ping is the session's background call (`extension.Session.call`): exclusive work that holds the session exactly as a compaction run does, so a submit queues behind it and starts when the ping ends; it is short. a background call refused because a run holds the session ends the stretch.
+- none of it needs the kernel. the idle sweep releases an idle kernel after `ALBEDO_IDLE_SECONDS` (default 10 minutes) whatever the warmer plans, but the composition the warmer belongs to stays prepared for the next open, so the session keeps reporting its events to it and its pings still go out. the unload sweep, which would stop the session and its warmer with it, leaves a session alone while one of its children runs (robot-docs/sessions.md).
 
 ## when it warms
 

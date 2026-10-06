@@ -13,7 +13,6 @@
 //// says whether the cache was still there.
 
 import albedo/daemon/bus
-import albedo/daemon/family
 import albedo/daemon/requests
 import albedo/daemon/store
 import albedo/harness/cache_ttl
@@ -224,17 +223,7 @@ fn ping_budget(protocol: types.Protocol) -> Int {
 /// or a background job not started as a service. One small test, so
 /// persistent agents can add their own reason later.
 fn wanted(db: store.Store, session: String, handle: extension.Session) -> Bool {
-  children_running(db, session) || handle.awaiting_jobs()
-}
-
-fn children_running(db: store.Store, session: String) -> Bool {
-  case family.children(db, session) {
-    Ok(children) ->
-      list.any(children, fn(child) {
-        !child.closed && bus.is_running(child.session)
-      })
-    Error(_) -> False
-  }
+  bus.children_running(db, session) || handle.awaiting_jobs()
 }
 
 /// The smallest cached prefix worth a round trip: `minCachedTokens` in

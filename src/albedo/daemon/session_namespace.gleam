@@ -251,6 +251,7 @@ pub fn adopt(
   state: session_state.State(message),
   kernel: runtime.Session,
 ) -> session_state.State(message) {
+  let state = session_state.State(..state, released: None)
   case runtime.origin(kernel) {
     runtime.Resumed -> resumed(state, kernel)
     runtime.Upgraded(carried) -> upgraded(state, kernel, carried)
