@@ -52,10 +52,11 @@ TASK = "hold the fort until released"
 JOB_PROMPT = "wait for the job"
 
 
-# A local cache-table override matching the fixture host: the shortest refresh
-# TTL the table can say, bought at 1.0x and read at 0.3x, so pings come 0.9s
-# apart and at most floor(1.0 / 0.3) - 1 = 2 of them pay for themselves.
-TTL_SECONDS = 1
+# A local cache-table override matching the fixture host: a short refresh TTL,
+# bought at 1.0x and read at 0.3x, so pings come 2.7s apart and at most
+# floor(1.0 / 0.3) - 1 = 2 of them pay for themselves. A tick later than half
+# the 0.3s margin is dropped, so a shorter TTL fails on a loaded machine.
+TTL_SECONDS = 3
 # Longer than a ping interval by more than a loaded machine's jitter: a ping
 # that was due would have gone out within it.
 QUIET_SECONDS = 2 * TTL_SECONDS
