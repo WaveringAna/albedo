@@ -65,6 +65,19 @@ def scripted(request):
     return text("older conversation summary")
 
 
+def capability_notes(request):
+    """The capability notes a request carries as inputs of their own; the
+    rolling recap may quote the newest one too."""
+    return [
+        item["content"]
+        for item in request["input"]
+        if item.get("role") == "user"
+        and str(item.get("content", "")).startswith(
+            '<system-note origin="capabilities changed">'
+        )
+    ]
+
+
 class ExtensionTests(unittest.TestCase):
     def setUp(self):
         self.provider = Provider(scripted)
@@ -726,25 +739,13 @@ class ExtensionTests(unittest.TestCase):
         self.restart()
         (request,) = self.turn("first turn after restart")
         self.assertEqual(request["instructions"], sent["instructions"])
-        updates = [
-            item["content"]
-            for item in request["input"]
-            if item.get("role") == "user"
-            and "capabilities changed" in str(item.get("content", ""))
-        ]
+        updates = capability_notes(request)
         self.assertEqual(len(updates), 1)
         self.assertIn("edited while the daemon was down", updates[0])
         self.restart()
         (request,) = self.turn("unchanged restart")
         self.assertEqual(request["instructions"], sent["instructions"])
-        self.assertEqual(
-            sum(
-                "capabilities changed" in str(item.get("content", ""))
-                for item in request["input"]
-                if item.get("role") == "user"
-            ),
-            1,
-        )
+        self.assertEqual(capability_notes(request), updates)
 
     # exclusive: changes global compaction settings and restarts the daemon
     @exclusive
