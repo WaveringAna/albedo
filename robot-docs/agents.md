@@ -20,6 +20,9 @@ hits = await kid.search_messages("error")     # rows by seq, with previews
 await agents.progress("on turn.gleam now")    # shows in /agents, starts no turn
 ```
 
+- `running=False` means no active turn. A new child can be waiting for kernel
+  preparation with an empty transcript; neither observation proves spawn failed.
+  End the parent turn and wait for mail instead of cancelling on that snapshot.
 - spawn never returns the child's answer: the answer arrives later as `<mail>` and starts the parent's next turn. a child whose turn ends without answering forwards its last message, marked `unreviewed`.
 - names resolve inside the family (children, siblings, parent); anything else takes a session id.
 - any session may look up and read any other: `get`, `messages`, and `search_messages` resolve names and ids the way mail does, and closed agents stay readable. cancel and close work on your own children only. `cancel(tree=True)` and `cancel_all()` stop parents before their children, so a stopped agent cannot answer by spawning, and answer the sessions that were running; they never close or delete anything. the model cannot delete an agent; it asks the user.
@@ -27,7 +30,9 @@ await agents.progress("on turn.gleam now")    # shows in /agents, starts no turn
 
 ## mail delivery
 
-a letter is stored first and marked delivered in the same transaction that writes it into the recipient's transcript. an idle recipient starts a turn; a running one reads it at its next step. undelivered letters retry every 15 seconds, so a restart or a session that is not running yet loses nothing. webhook deliveries are letters from outside, and wait for an idle session.
+a letter is stored first and marked delivered in the same transaction that writes it into the recipient's transcript. an idle recipient accepts it for a turn (kernel preparation may still be pending); a running one reads it at its next step.
+
+the Python receipt `delivered` means accepted by an idle recipient, not that a provider request has started; `queued` means it waits behind a turn, and `pending` means it is stored for retry. undelivered letters retry every 15 seconds, so a restart or a session that is not running yet loses nothing. Closed children keep their undelivered letters but do not run them; close also prevents pending kernel preparation from admitting them. webhook deliveries are letters from outside, and wait for an idle session.
 
 ## the orchestrator view
 

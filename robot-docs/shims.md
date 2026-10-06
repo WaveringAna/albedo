@@ -6,6 +6,9 @@ only when the program it needs is on the job's PATH (`albedo_shims.prepend`):
 `shims/nix/nix` when nix is, `shims/mbx/cargo` when mbx is. the kernel writes
 them where it runs (only `.py` files travel to a remote kernel), and every
 nix call a job makes goes through the shim, however deep in a script it is.
+Before lookup, `prepend` removes inherited `*/shims/nix` and `*/shims/mbx`
+directories, then installs only this kernel's shims for real tools on PATH.
+Nested daemon jobs must not resolve one shim generation through another.
 there is no nix API for the model to learn: it types `nix develop -c cargo
 test` or `nix build .#x` and the shim makes that safe and fast.
 

@@ -5,14 +5,18 @@ the flake from that commit instead of copying the directory; cargo goes
 through mbx, with the environment mbx needs to share builds across checkouts."""
 
 import json
+import os
 import shutil
 import subprocess
+import sys
 import unittest
 from pathlib import Path
 
-from harness import Albedo, Provider, exclusive, python, text
-
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "priv/python"))
+import albedo_shims  # noqa: E402
+
+from harness import Albedo, Provider, exclusive, python, text  # noqa: E402
 
 
 def script_for(test):
@@ -113,6 +117,18 @@ FLAKE = """{
 class NixShellTests(unittest.TestCase):
     def setUp(self):
         def prepare(app):
+            # Keep two inherited shim generations to cover nested daemon launches.
+            source = albedo_shims.NIX
+            inherited = []
+            for name in ("outer-a", "outer-b"):
+                directory = app.workspace / name / "shims" / "nix"
+                directory.mkdir(parents=True)
+                shim = directory / "nix"
+                shim.write_text(source)
+                shim.chmod(0o755)
+                inherited.append(str(directory))
+            app.env["PATH"] = os.pathsep.join([*inherited, app.env["PATH"]])
+            app.env["NIX_CONFIG"] = "experimental-features = nix-command flakes"
             # a first dev shell evaluates nixpkgs; let the cell finish in place
             app.env["ALBEDO_CELL_BACKGROUND_SECONDS"] = "900"
 

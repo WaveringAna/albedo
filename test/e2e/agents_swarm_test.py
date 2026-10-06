@@ -2,11 +2,22 @@
 
 import json
 import os
+import sqlite3
+import sys
 import time
 import unittest
 import urllib.error
 
-from harness import Albedo, Provider, operation_id, python, text
+from harness import (
+    Albedo,
+    Provider,
+    exclusive,
+    operation_id,
+    python,
+    release_fifo,
+    text,
+    wait_until,
+)
 
 HEAVY = os.environ.get("ALBEDO_E2E_HEAVY") == "1"
 ROOTS = 4 if HEAVY else 2
@@ -96,6 +107,131 @@ class AgentsSwarmTests(unittest.TestCase):
                     self.assertEqual(json.load(response)["state"], "ready")
         finally:
             provider.close()
+
+    @exclusive
+    def test_closed_child_does_not_start_when_its_kernel_finishes_booting(self):
+        def script(request):
+            if request["messages"][-1].get("role") != "user":
+                return text("done")
+            if user_text(request) == "spawn held child":
+                return python(
+                    "models = await agents.models()\n"
+                    "child = await agents.self.spawn('held task', name='held', model=models[0])\n"
+                    "print(child.id)"
+                )
+            if user_text(request) == "close held child":
+                return python(
+                    "await child.close()\nprint((await mail.submit(child, 'late task')).status)"
+                )
+            return text("done")
+
+        def prepare(app):
+            # The parent boots normally; creating this FIFO holds later launches.
+            wrapper = app.home / "bin" / "python3"
+            wrapper.parent.mkdir()
+            gate = app.workspace / "boot-gate"
+            wrapper.write_text(
+                f"#!{sys.executable}\n"
+                "import os, sys\n"
+                "from pathlib import Path\n"
+                f"gate = Path({str(gate)!r})\n"
+                "if ('launch' in sys.argv or 'start' in sys.argv) and gate.exists():\n"
+                f"    Path({str(app.workspace / 'boot-ready')!r}).touch()\n"
+                "    with gate.open('rb') as reader: reader.read(1)\n"
+                f"os.execv({sys.executable!r}, [{sys.executable!r}, *sys.argv[1:]])\n"
+            )
+            wrapper.chmod(0o700)
+            app.env["PATH"] = str(wrapper.parent) + os.pathsep + app.env["PATH"]
+
+        provider = Provider(script)
+        self.addCleanup(provider.close)
+        with Albedo(provider, prepare=prepare) as app:
+            parent = app.session()
+            app.prompt(parent, "prime parent kernel").close()
+            app.idle(parent)
+            gate = app.workspace / "boot-gate"
+            os.mkfifo(gate)
+            app.prompt(parent, "spawn held child").close()
+            app.idle(parent)
+            with app.api(f"/sessions?scope=all&family_id={parent}") as response:
+                child = next(
+                    item["id"]
+                    for item in json.load(response)["items"]
+                    if item["parent_id"] == parent
+                )
+            with sqlite3.connect(app.home / "albedo.sqlite") as database:
+                self.assertEqual(
+                    database.execute(
+                        "SELECT count(*) FROM mail WHERE recipient=? AND delivered_at IS NULL",
+                        (child,),
+                    ).fetchone()[0],
+                    1,
+                )
+            self.assertEqual(app.history(child)["items"], [])
+            wait_until(
+                (app.workspace / "boot-ready").exists, 10, "child did not start booting"
+            )
+            app.prompt(parent, "close held child").close()
+            app.idle(parent)
+            wait_until(
+                lambda: release_fifo(gate), 10, "child did not reach its boot gate"
+            )
+            gate.unlink()
+            # Wait for the child's preparation to finish, not an arbitrary sleep.
+            app.idle(child)
+            self.assertEqual(app.history(child)["items"], [])
+            with sqlite3.connect(app.home / "albedo.sqlite") as database:
+                self.assertIsNotNone(
+                    database.execute(
+                        "SELECT closed_at FROM session_family WHERE session=?",
+                        (child,),
+                    ).fetchone()[0]
+                )
+                self.assertEqual(
+                    database.execute(
+                        "SELECT count(*) FROM mail WHERE recipient=? AND delivered_at IS NULL",
+                        (child,),
+                    ).fetchone()[0],
+                    2,
+                )
+            self.assertFalse(
+                any(
+                    "held task" in user_text(record["request"])
+                    for record in provider.requests
+                )
+            )
+            # A manual chat can still visit a closed child without consuming its letters.
+            app.prompt(child, "manual visit").close()
+            app.idle(child)
+            self.assertTrue(
+                any(
+                    user_text(record["request"]) == "manual visit"
+                    for record in provider.requests
+                )
+            )
+            # Closing one child must not prevent a later sibling from starting.
+            sibling = operation_id()
+            with app.api(
+                f"/sessions/{sibling}",
+                {
+                    "kind": "child",
+                    "parent_id": parent,
+                    "address": "sibling",
+                    "name": "sibling",
+                    "initial_input_id": operation_id(),
+                    "task": "normal task",
+                },
+                method="PUT",
+                headers={"If-None-Match": "*"},
+            ) as response:
+                self.assertEqual(json.load(response)["id"], sibling)
+            app.idle(sibling)
+            self.assertTrue(
+                any(
+                    "normal task" in user_text(record["request"])
+                    for record in provider.requests
+                )
+            )
 
     def test_explicit_session_provider_binds_and_unknown_profile_is_rejected(self):
         provider = Provider(lambda _request: text("ok"))

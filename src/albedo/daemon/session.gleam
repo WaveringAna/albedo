@@ -2418,6 +2418,38 @@ fn last_words(state: State) -> #(State, Option(String)) {
   }
 }
 
+/// Whether this session's durable family member has been closed.
+fn family_closed(state: State) -> Result(Bool, String) {
+  case family.get(runtime.ledger(state.host), state.info.id) {
+    Ok(Some(member)) -> Ok(member.closed)
+    Ok(None) -> Ok(False)
+    Error(error) -> Error(error)
+  }
+}
+
+/// Whether a queued submission includes a durable agent letter.
+fn waiting_mail(submissions: List(Submission)) -> Bool {
+  list.any(submissions, fn(submission) {
+    case submission.source {
+      turn.Mail(..) -> True
+      _ -> False
+    }
+  })
+}
+
+/// Drop queued work after close, before a parked kernel can start it.
+fn cancel_closed_waiting(state: State) -> State {
+  case operations.cancel(runtime.ledger(state.host), state.info.id) {
+    Error(error) -> session_state.emit(state, view.error(error))
+    Ok(_) -> {
+      let ids = turn.operations(state.steering)
+      session_state.State(..state, steering: [], active_submissions: [])
+      |> session_submission.refresh_ids(ids)
+      |> session_state.announce
+    }
+  }
+}
+
 /// Whether a submission starts a run, waits in the queue, or is refused.
 fn admit(
   state: State,
@@ -2426,9 +2458,18 @@ fn admit(
 ) -> actor.Next(State, Message) {
   // Anything a client submits counts as attention.
   let state = stirred(state)
-  case refused_image(state, submission) {
-    #(state, Some(reason)) -> answer(state, reply, Error(Rejected(reason)))
-    #(state, None) -> admit_within_limits(state, submission, reply)
+  let closed = case submission.source {
+    turn.Mail(..) -> family_closed(state)
+    _ -> Ok(False)
+  }
+  case closed {
+    Ok(True) -> answer(state, reply, Error(Rejected("session is closed")))
+    Error(error) -> answer(state, reply, Error(Rejected(error)))
+    Ok(False) ->
+      case refused_image(state, submission) {
+        #(state, Some(reason)) -> answer(state, reply, Error(Rejected(reason)))
+        #(state, None) -> admit_within_limits(state, submission, reply)
+      }
   }
 }
 
@@ -3074,6 +3115,18 @@ fn start_queued(state: State) -> State {
 }
 
 fn start_waiting(state: State) -> State {
+  case waiting_mail(state.steering) {
+    False -> start_waiting_open(state)
+    True ->
+      case family_closed(state) {
+        Ok(True) -> cancel_closed_waiting(state)
+        Ok(False) -> start_waiting_open(state)
+        Error(error) -> session_state.emit(state, view.error(error))
+      }
+  }
+}
+
+fn start_waiting_open(state: State) -> State {
   case state.booting {
     Some(_) -> start_waiting_in_workspace(state)
     None ->

@@ -958,20 +958,24 @@ fn agent_op(
       #(state, Ok(json.bool(running)))
     }
     agents.Close(id) -> {
-      case worker(id) {
-        Some(active) -> {
-          // Saving the kernel's variables can take a while.
-          process.spawn_unlinked(fn() {
-            let _ = session.interrupt(active)
-            session.release(active)
-          })
-          Nil
-        }
-        None -> Nil
-      }
+      // Close the durable family row before the asynchronous kernel cleanup.
+      // An in-flight mail admission must observe the closed gate.
       let closed = family.close(runtime.ledger(state.host), id)
       case closed {
-        Ok(_) -> bus.closed(id)
+        Ok(_) -> {
+          bus.closed(id)
+          case worker(id) {
+            Some(active) -> {
+              // Saving the kernel's variables can take a while.
+              process.spawn_unlinked(fn() {
+                let _ = session.interrupt(active)
+                session.release(active)
+              })
+              Nil
+            }
+            None -> Nil
+          }
+        }
         Error(_) -> Nil
       }
       #(state, closed |> result.replace(json.bool(True)))

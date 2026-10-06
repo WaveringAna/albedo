@@ -85,19 +85,27 @@ def _directory(needs: str) -> Path:
 
 
 def prepend(environment: dict[str, str] | None) -> dict[str, str] | None:
-    """A job's environment with each shim whose program is on its PATH first
-    on that PATH; otherwise the environment as given (None inherits)."""
+    """Return the job environment with only this kernel's shims before real tools.
+    Remove inherited shim generations even when their tools are absent."""
     base = environment or os.environ
     path = base.get("PATH", "")
     entries = path.split(os.pathsep)
+    # Remove inherited generations before adding this kernel's shims.
+    entries = [
+        entry
+        for entry in entries
+        if not (Path(entry).name in SHIMS and Path(entry).parent.name == "shims")
+    ]
+    path = os.pathsep.join(entries)
     shims = [
         str(_directory(needs))
         for needs in SHIMS
         if shutil.which(needs, path=path) is not None
     ]
-    shims = [directory for directory in shims if directory not in entries]
     if not shims:
-        return environment
+        if environment is None and path == base.get("PATH", ""):
+            return None
+        return {**base, "PATH": path}
     return {
         **base,
         "PATH": os.pathsep.join([*shims, path]),

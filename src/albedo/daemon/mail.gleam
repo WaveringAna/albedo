@@ -286,13 +286,13 @@ pub fn insert(
   })
 }
 
-/// The oldest undelivered letters across every recipient.
+/// The oldest undelivered letters, excluding closed recipients before the limit.
 pub fn pending(db: store.Store, limit: Int) -> Result(List(Letter), String) {
   store.read(
     db,
     "SELECT "
       <> columns
-      <> " FROM mail WHERE delivered_at IS NULL AND delivery_owner='mail' ORDER BY created_at,id LIMIT ?",
+      <> " FROM mail WHERE delivered_at IS NULL AND delivery_owner='mail' AND NOT EXISTS (SELECT 1 FROM session_family WHERE session_family.session=mail.recipient AND session_family.closed_at IS NOT NULL) ORDER BY created_at,id LIMIT ?",
     [sqlight.int(limit)],
     decoder(),
   )
@@ -323,14 +323,30 @@ pub fn record_failure(
   )
 }
 
-/// Mark letters delivered inside the caller's transaction. A letter already
-/// delivered fails the whole commit: its input is in the transcript once.
+/// Mark letters delivered in the caller's transaction. Closed recipients and
+/// already delivered letters fail the whole commit.
 pub fn receive(
   connection: sqlight.Connection,
   recipient: String,
   ids: List(String),
 ) -> Result(Nil, String) {
   let now = usage.now()
+  use _ <- result.try(case ids {
+    [] -> Ok(Nil)
+    _ ->
+      store.rows(
+        connection,
+        "SELECT session FROM session_family WHERE session=? AND closed_at IS NOT NULL",
+        [sqlight.text(recipient)],
+        decode.field(0, decode.string, decode.success),
+      )
+      |> result.try(fn(rows) {
+        case rows {
+          [] -> Ok(Nil)
+          _ -> Error("session is closed")
+        }
+      })
+  })
   list.try_each(ids, fn(id) {
     store.rows(
       connection,

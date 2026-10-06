@@ -41,7 +41,8 @@ class Agent:
     """A handle to one agent. `running` and `closed` are set on snapshots
     from get(), children(), siblings(), and sessions(); None on handles that
     were not looked up. `cwd`, `model`, `last_active` (unix seconds of its
-    last answer), and `matches` are set only on snapshots from sessions()."""
+    last answer), and `matches` are set only on snapshots from sessions().
+    `running=False` does not rule out a task waiting for kernel preparation."""
 
     id: str
     name: str

@@ -10,7 +10,8 @@ from albedo_api import Host, PythonApi, Record
 
 class Receipt(Record):
     """receipt.id, .to (session id), .name, and .status: "delivered",
-    "queued" behind a running turn, or "pending" until that session runs."""
+    "queued" behind a running turn, or "pending" until that session runs.
+    "delivered" may still be waiting for kernel preparation."""
 
     id: str
     to: str
