@@ -75,7 +75,7 @@ An extension bundles plugins: context (system instructions), tool (model tools +
 
 ### `priv/` and `native/`
 
-- **`priv/python/`** — the actual Python kernel: `albedo_kernel.py` (cell execution, persistent namespace), `albedo_proc.py`/`albedo_shell.py` (run jobs), `albedo_api.py`, `albedo_trace.py`, and `albedo_plugins/`. The daemon boots this per session; changes apply to new kernels.
+- **`priv/python/`** — the actual Python kernel: `albedo_kernel.py` (the entry point) and `albedo_cells.py` (cell execution, persistent namespace), `albedo_proc.py`/`albedo_shell.py` (run jobs), `albedo_api.py`, `albedo_trace.py`, and `albedo_plugins/`. The daemon boots this per session; changes apply to new kernels.
 - **`priv/linguist/`** — GitHub's language data for file detection (`harness/languages.gleam`)
 - **`priv/cache-ttl.json`** — the prompt-cache TTL prior table (see `robot-docs/cache-ttl.md`)
 - **`native/render/`** — optional Rust renderer behind the `view` extension, which shows the model its changes as highlighted images for the final review pass. Install with `native/render/install.sh`; needs cargo.
