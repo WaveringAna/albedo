@@ -6,7 +6,7 @@ The default session uses `rolling`. Selecting another strategy (`snapcompact` or
 
 `/compact` compacts now with the session's strategy. `/compact <strategy>` first makes the named strategy the session's own, as `/extensions` would, then compacts with it. Later requests read the projection that strategy saved. For example, `/compact rolling` before switching to a model without image input leaves a text summary that the new model can read.
 
-A strategy returns prepared inputs and an observation for `/context`. The observation describes that preparation. The inspector does not read strategy state. The durable transcript supplies the source rows for each derived view.
+A strategy has two halves. `project` returns the request its saved state makes of the history, an observation for `/context`, and whether that request reached the trigger; it only reads, never writing state or calling a model, so a request can be inspected or rebuilt without changing it. `compact` summarizes or archives history into the saved state, and runs only when a projection is due or `/compact` forces it. `compaction.prepare` composes them for every request: project, compact when due or forced, then project again; a request compacts at most once, so the projection after a compaction is sent even if it is still due. A saved state the history no longer matches is ignored by `project` and replaced by the next compaction, not deleted. Layers such as `notes` split the same way: `compact` runs on the request a compaction produced, `project` on every other one. The observation describes that preparation. The inspector does not read strategy state. The durable transcript supplies the source rows for each derived view.
 
 ## source references
 

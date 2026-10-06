@@ -64,7 +64,17 @@ pub fn extension() -> extension.Extension {
     "Notes the model writes for itself at every compaction",
     [],
     [
-      extension.NotesPlugin(compaction.Notes("notes", apply)),
+      extension.NotesPlugin(
+        compaction.Notes(
+          "notes",
+          fn(context, history, prepared) {
+            apply(context, history, prepared, False)
+          },
+          fn(context, history, prepared) {
+            apply(context, history, prepared, True)
+          },
+        ),
+      ),
       extension.CleanPlugin(fn(db, session) {
         store.forget_session(db, ["compaction_notes"], session)
       }),
@@ -84,10 +94,11 @@ fn apply(
   context: compaction.Context,
   history: List(types.Input),
   prepared: compaction.Prepared,
+  compacted: Bool,
 ) -> Result(compaction.Prepared, String) {
   use config <- result.try(load_config())
   use saved <- result.try(load(context.store, context.session))
-  use #(saved, failure) <- result.try(case prepared.compacted {
+  use #(saved, failure) <- result.try(case compacted {
     True -> refresh(config, context, history, prepared.inputs, saved)
     False -> Ok(#(saved, None))
   })

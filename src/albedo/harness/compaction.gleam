@@ -98,6 +98,15 @@ pub fn require(condition: Bool, message: String) -> Result(Nil, String) {
   }
 }
 
+/// The pinned system prompt, extension context, and tool schemas leave room
+/// in `capacity` for any history at all.
+pub fn fits_pinned(context: Context, capacity: Int) -> Result(Nil, String) {
+  require(
+    context.pinned_tokens < capacity,
+    "context window is not large enough for pinned system, extension context, and tool schemas",
+  )
+}
+
 /// The history a strategy sees when no fold provider is enabled.
 pub fn no_prior(history: List(types.Input)) -> Result(Prior, String) {
   Ok(Prior([], history))
@@ -289,8 +298,20 @@ pub fn tail_budget(
 pub type Notes {
   Notes(
     name: String,
-    apply: fn(Context, List(types.Input), Prepared) -> Result(Prepared, String),
+    /// Adds what the layer keeps to the request, reading only.
+    project: fn(Context, List(types.Input), Prepared) ->
+      Result(Prepared, String),
+    /// The same, right after the strategy compacted: the layer may rewrite
+    /// what it keeps from the history that just left the request.
+    compact: fn(Context, List(types.Input), Prepared) ->
+      Result(Prepared, String),
   )
+}
+
+/// What a strategy would send for one request from its saved state, and
+/// whether that request reached its trigger.
+pub type View {
+  View(inputs: List(types.Input), observation: Option(Observation), due: Bool)
 }
 
 /// Receives chronological history before each model request. Implementations
@@ -299,8 +320,39 @@ pub type Notes {
 pub type Strategy {
   Strategy(
     name: String,
-    prepare: fn(Context, List(types.Input)) -> Result(Prepared, String),
+    /// The request under the saved state. It never writes state or calls a
+    /// model, so a request can be inspected or rebuilt without changing it.
+    project: fn(Context, List(types.Input)) -> Result(View, String),
+    /// Folds history into the saved state now, because a projection was due
+    /// or `context.force` asks; answers whether the saved state changed.
+    compact: fn(Context, List(types.Input)) -> Result(Bool, String),
   )
+}
+
+/// The request `strategy` sends for `history`: its projection, compacted
+/// first when forced or due. A request compacts at most once, so the
+/// projection after a compaction is sent even if it is still due.
+pub fn prepare(
+  strategy: Strategy,
+  context: Context,
+  history: List(types.Input),
+) -> Result(Prepared, String) {
+  let viewing = Context(..context, force: False)
+  let compacted = fn() {
+    use changed <- result.try(strategy.compact(context, history))
+    use view <- result.try(strategy.project(viewing, history))
+    Ok(Prepared(view.inputs, view.observation, changed))
+  }
+  case context.force {
+    True -> compacted()
+    False -> {
+      use view <- result.try(strategy.project(viewing, history))
+      case view.due {
+        True -> compacted()
+        False -> Ok(Prepared(view.inputs, view.observation, False))
+      }
+    }
+  }
 }
 
 /// A deliberately approximate request-size estimate. It is used only when a

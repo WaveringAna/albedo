@@ -297,10 +297,23 @@ fn compaction_plugins() -> List(extension.Plugin) {
 fn strategy_with(
   resolve: fn() -> Result(Config, String),
 ) -> compaction.Strategy {
-  compaction.Strategy("snapcompact", fn(context, history) {
-    use valid <- result.try(result.try(resolve(), validate_config))
-    prepare_view(valid, context, history)
-  })
+  compaction.Strategy(
+    "snapcompact",
+    fn(context, history) {
+      use valid <- result.try(result.try(resolve(), validate_config))
+      case compaction.reads_images(context) {
+        Some(False) -> text_project(context, history)
+        _ -> visual_project(valid, context, history)
+      }
+    },
+    fn(context, history) {
+      use valid <- result.try(result.try(resolve(), validate_config))
+      case compaction.reads_images(context) {
+        Some(False) -> rolling.with_settings().compact(context, history)
+        _ -> visual_compact(valid, context, history)
+      }
+    },
+  )
 }
 
 /// The text fallback keeps its summary in rolling's tables.
@@ -319,28 +332,17 @@ fn initialise(ledger: store.Store) -> Result(Nil, String) {
   })
 }
 
-fn prepare_view(
-  config: Config,
-  context: compaction.Context,
-  history: List(types.Input),
-) -> Result(compaction.Prepared, String) {
-  case compaction.reads_images(context) {
-    Some(False) -> text_view(context, history)
-    _ -> visual_view(config, context, history)
-  }
-}
-
 /// A model without image input cannot read frames: rolling's text summary
 /// stands in, and the frame archive waits for a model that reads images.
-fn text_view(
+fn text_project(
   context: compaction.Context,
   history: List(types.Input),
-) -> Result(compaction.Prepared, String) {
-  use prepared <- result.try(rolling.prepare_with_settings(context, history))
+) -> Result(compaction.View, String) {
+  use view <- result.try(rolling.with_settings().project(context, history))
   Ok(
-    compaction.Prepared(
-      ..prepared,
-      observation: option.map(prepared.observation, fn(observed) {
+    compaction.View(
+      ..view,
+      observation: option.map(view.observation, fn(observed) {
         compaction.Observation(
           ..observed,
           strategy: "snapcompact",
@@ -352,25 +354,43 @@ fn text_view(
   )
 }
 
-fn visual_view(
+/// One request's archive against its history: the saved archive this history
+/// still matches, the request it renders, and the budgets that decide whether
+/// more history ages into it.
+type Survey {
+  Survey(
+    folds: List(types.Input),
+    folded: List(types.Input),
+    previous: Option(Archive),
+    evicted: List(types.Input),
+    rest: List(types.Input),
+    current: List(types.Input),
+    status: String,
+    shape: Shape,
+    limit: Int,
+    capacity: Option(Int),
+    triggered: Bool,
+    tail_budget: Int,
+  )
+}
+
+fn survey(
   config: Config,
   context: compaction.Context,
   history: List(types.Input),
-) -> Result(compaction.Prepared, String) {
+) -> Result(Survey, String) {
   // Other strategies' folds are already summaries: they stay as text ahead
   // of the archive, so the frame budget only ever drops raw rows.
   use compaction.Prior(folds, folded) <- result.try(context.prior(history))
   use saved <- result.try(load_archive(context.store, context.session))
+  // An archive this history no longer matches is ignored until the next
+  // compaction replaces it.
   let resumed =
     option.then(saved, fn(archive) {
       compaction.resume(folded, archive.cut)
       |> result.map(fn(split) { #(archive, split.0, split.1) })
       |> option.from_result
     })
-  use _ <- result.try(case saved, resumed {
-    Some(_), None -> delete_archive(context.store, context.session)
-    _, _ -> Ok(Nil)
-  })
   let shape = fit(shape(context.model), context.images)
   let capacity = case context.capacity {
     Some(compaction.Capacity(tokens, _)) -> Some(tokens)
@@ -389,13 +409,6 @@ fn visual_view(
     context.pinned_tokens
     + compaction.estimate_inputs(folds)
     + compaction.estimate_inputs(current)
-  let triggered =
-    compaction.triggered(
-      context.force,
-      estimated,
-      capacity,
-      config.trigger_percent,
-    )
   // Without a window the tail budget is a share of what the request holds.
   let tail_budget = case capacity {
     Some(tokens) ->
@@ -407,31 +420,74 @@ fn visual_view(
       )
     None -> int.max(estimated / 4, 1000)
   }
-  let observe = fn(status, prepared) {
-    observation(status, config, capacity, folds, folded, prepared)
-  }
-  use #(prepared, status, compacted) <- result.try(
-    case triggered, compaction.split_tail(rest, tail_budget) {
-      // Only a whole unit remains, or nothing is due: keep the saved cut.
-      True, #([_, ..] as newly_evicted, tail) -> {
-        let archive = extend(shape, limit, previous, evicted, newly_evicted)
-        use _ <- result.try(save_archive(
-          context.store,
-          context.session,
-          archive,
-        ))
-        let #(prepared, status) =
-          view(context.store, shape, limit, archive, tail)
-        Ok(#(prepared, status, True))
-      }
-      _, _ -> Ok(#(current, status, False))
-    },
-  )
-  Ok(compaction.Prepared(
-    list.append(folds, prepared),
-    observe(status, prepared),
-    compacted,
+  Ok(Survey(
+    folds:,
+    folded:,
+    previous:,
+    evicted:,
+    rest:,
+    current:,
+    status:,
+    shape:,
+    limit:,
+    capacity:,
+    triggered: compaction.triggered(
+      context.force,
+      estimated,
+      capacity,
+      config.trigger_percent,
+    ),
+    tail_budget:,
   ))
+}
+
+/// The saved archive's frames ahead of the verbatim tail. A compaction is
+/// due once the trigger is reached and more than a whole unit remains.
+fn visual_project(
+  config: Config,
+  context: compaction.Context,
+  history: List(types.Input),
+) -> Result(compaction.View, String) {
+  use survey <- result.try(survey(config, context, history))
+  let #(newly_evicted, _) =
+    compaction.split_tail(survey.rest, survey.tail_budget)
+  Ok(compaction.View(
+    list.append(survey.folds, survey.current),
+    observation(
+      survey.status,
+      config,
+      survey.capacity,
+      survey.folds,
+      survey.folded,
+      survey.current,
+    ),
+    survey.triggered && newly_evicted != [],
+  ))
+}
+
+/// Ages the history before the verbatim tail into the archive; answers
+/// whether anything did, since a whole unit is never split.
+fn visual_compact(
+  config: Config,
+  context: compaction.Context,
+  history: List(types.Input),
+) -> Result(Bool, String) {
+  use survey <- result.try(survey(config, context, history))
+  case compaction.split_tail(survey.rest, survey.tail_budget) {
+    #([], _) -> Ok(False)
+    #(newly_evicted, _) -> {
+      let archive =
+        extend(
+          survey.shape,
+          survey.limit,
+          survey.previous,
+          survey.evicted,
+          newly_evicted,
+        )
+      use _ <- result.try(save_archive(context.store, context.session, archive))
+      Ok(True)
+    }
+  }
 }
 
 /// The archive after `newly_evicted` ages into it: the previous kept text,
@@ -921,10 +977,4 @@ fn save_archive(
       sqlight.int(archive.dropped),
     ],
   )
-}
-
-fn delete_archive(ledger: store.Store, session: String) -> Result(Nil, String) {
-  store.write(ledger, "DELETE FROM snapcompact_archive WHERE session=?", [
-    sqlight.text(session),
-  ])
 }

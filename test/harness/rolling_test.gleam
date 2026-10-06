@@ -12,6 +12,7 @@ import gleam/erlang/process
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/result
 import gleam/string
 import gleeunit/should
 import harness/session_fixture
@@ -42,12 +43,14 @@ fn long_history() -> List(types.Input) {
 }
 
 /// A row saved before cuts counted user messages validates the old way, by
-/// item count under its source, and is rewritten in the portable form.
-pub fn legacy_item_count_state_upgrades_in_place_test() -> Nil {
+/// item count under its source. A projection only reads it; the next
+/// compaction saves the portable form in its place.
+pub fn legacy_item_count_state_resumes_and_compaction_upgrades_it_test() -> Nil {
   let #(host, session) = host(rolling.Config(Some(10_000), 90, 25))
   let history = long_history()
+  let ledger = runtime.ledger(host)
   let assert Ok(_) =
-    store.query(runtime.ledger(host), fn(db) {
+    store.query(ledger, fn(db) {
       sqlight.query(
         "INSERT INTO rolling_compaction_state(session,summary,cutoff_count,source_hash) VALUES(?,?,?,?)",
         db,
@@ -73,21 +76,46 @@ pub fn legacy_item_count_state_upgrades_in_place_test() -> Nil {
     )
   string.contains(summary, "legacy facts") |> should.be_true
   tail |> should.equal(list.drop(history, 4))
-  let assert Ok([#(2, cut_hash)]) =
-    store.query(runtime.ledger(host), fn(db) {
-      sqlight.query(
-        "SELECT cutoff_count,source_hash FROM rolling_compaction_state",
-        db,
-        [],
-        {
-          use users <- decode.field(0, decode.int)
-          use hash <- decode.field(1, decode.string)
-          decode.success(#(users, hash))
-        },
-      )
-    })
+  let assert Ok([#(4, legacy)]) = saved_cut(ledger)
+  string.starts_with(legacy, "users:") |> should.be_false
+  let longer =
+    list.append(history, [
+      types.User("u4 " <> string.repeat("g", 380)),
+      types.Assistant("a4 " <> string.repeat("h", 380)),
+    ])
+  let assert Ok(_) =
+    runtime.compact_history_scoped(
+      host,
+      session,
+      "model-a",
+      "model-a",
+      None,
+      "",
+      fn(request: compaction.SummaryRequest) {
+        request.previous |> should.equal(Some("legacy facts"))
+        Ok("folded facts")
+      },
+      longer,
+    )
+  let assert Ok([#(3, cut_hash)]) = saved_cut(ledger)
   string.starts_with(cut_hash, "users:") |> should.be_true
   runtime.stop(host)
+}
+
+fn saved_cut(ledger: store.Store) -> Result(List(#(Int, String)), String) {
+  store.query(ledger, fn(db) {
+    sqlight.query(
+      "SELECT cutoff_count,source_hash FROM rolling_compaction_state",
+      db,
+      [],
+      {
+        use users <- decode.field(0, decode.int)
+        use hash <- decode.field(1, decode.string)
+        decode.success(#(users, hash))
+      },
+    )
+    |> result.map_error(string.inspect)
+  })
 }
 
 /// A long eviction folds into the summary chunk by chunk, each request under

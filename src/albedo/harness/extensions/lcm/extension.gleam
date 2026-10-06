@@ -57,10 +57,17 @@ fn bundle(
     ["lcm-memory"],
     [
       harness_extension.CompactionPlugin(
-        compaction.Strategy("lcm", fn(context, history) {
-          use config <- result.try(resolve())
-          prepare(config, context, history)
-        }),
+        compaction.Strategy(
+          "lcm",
+          fn(context, history) {
+            use config <- result.try(resolve())
+            project(config, context, history)
+          },
+          fn(context, history) {
+            use config <- result.try(resolve())
+            compact(config, context, history)
+          },
+        ),
       ),
       harness_extension.CleanPlugin(graph.forget_session),
     ],
@@ -117,11 +124,142 @@ fn validate(config: Config) -> Result(Config, String) {
   |> result.replace(config)
 }
 
-fn prepare(
+/// The stored frontier's summary nodes ahead of a verbatim tail, and whether
+/// that request reached the trigger.
+fn project(
   config: Config,
   context: compaction.Context,
   history: List(types.Input),
-) -> Result(compaction.Prepared, String) {
+) -> Result(compaction.View, String) {
+  use Saved(frontier:, stats:, ..) <- result.try(saved(context))
+  let window =
+    rolling.effective_window(config.context_window_tokens, context, history)
+  let current =
+    projection(frontier, history, stats, tail_budget(config, window), 1)
+  let estimated = context.pinned_tokens + compaction.estimate_inputs(current)
+  case window {
+    None ->
+      Ok(view(
+        current,
+        frontier,
+        "unknown",
+        "estimated; no configured or catalogued context window",
+        None,
+        estimated,
+        config,
+        history,
+        False,
+      ))
+    Some(compaction.Capacity(tokens: capacity, source: capacity_source)) -> {
+      use _ <- result.try(compaction.fits_pinned(context, capacity))
+      Ok(view(
+        current,
+        frontier,
+        case frontier {
+          [] -> "not_needed"
+          _ -> "compacted"
+        },
+        "estimated from current request projection; window from "
+          <> capacity_source,
+        Some(capacity),
+        estimated,
+        config,
+        history,
+        compaction.triggered(
+          False,
+          estimated,
+          Some(capacity),
+          config.trigger_percent,
+        ),
+      ))
+    }
+  }
+}
+
+/// Summarizes the complete units after the frontier into leaves, then
+/// condenses the frontier until the request fits; answers whether the
+/// frontier changed.
+fn compact(
+  config: Config,
+  context: compaction.Context,
+  history: List(types.Input),
+) -> Result(Bool, String) {
+  use Saved(snapshot, covered, frontier, stats) <- result.try(saved(context))
+  let window =
+    rolling.effective_window(config.context_window_tokens, context, history)
+  use compaction.Capacity(tokens: capacity, ..) <- result.try(option.to_result(
+    window,
+    "no configured or catalogued context window to compact against",
+  ))
+  use _ <- result.try(compaction.fits_pinned(context, capacity))
+  let tail_budget = tail_budget(config, window)
+  let previous_frontier = frontier
+  use latest_user <- result.try(option.to_result(
+    stats.latest_user,
+    "LCM needs a user message to retain as its tail",
+  ))
+  use eligible <- result.try(case covered + 1 < latest_user {
+    False -> Ok([])
+    True ->
+      conversation.fold_sources(
+        context.store,
+        snapshot,
+        covered + 1,
+        latest_user - 1,
+        [],
+        fn(rows, item) { conversation.Continue([item, ..rows]) },
+      )
+  })
+  let eligible = list.reverse(eligible)
+  use _ <- result.try(compaction.require(
+    eligible != [] || frontier != [],
+    "cannot compact without an older complete conversation unit",
+  ))
+  let summary_limit =
+    int.min(
+      summary_tokens,
+      int.max(32, { capacity - context.pinned_tokens } / 4),
+    )
+  use leaves <- result.try(summarize_leaves(context, eligible, summary_limit))
+  use _ <- result.try(graph.save_leaves(context.store, context.session, leaves))
+  use frontier <- result.try(graph.frontier(context.store, context.session))
+  use covered <- result.try(graph.last_seq(context.store, context.session))
+  use stats <- result.try(conversation.source_stats(
+    context.store,
+    snapshot,
+    covered,
+  ))
+  use frontier <- result.try(condense_until_fit(
+    context,
+    frontier,
+    history,
+    stats,
+    tail_budget,
+    capacity,
+    summary_limit,
+    0,
+  ))
+  let next = projection(frontier, history, stats, tail_budget, 1)
+  use _ <- result.try(compaction.require(
+    context.pinned_tokens + compaction.estimate_inputs(next) < capacity
+      || context.force,
+    "LCM summaries and the newest conversation/tool unit do not fit the context window",
+  ))
+  Ok(frontier != previous_frontier)
+}
+
+/// The session's saved graph against its transcript: the append boundary,
+/// the last row the graph covers, its frontier, and the rows after it.
+type Saved {
+  Saved(
+    snapshot: conversation.Snapshot,
+    covered: Int,
+    frontier: List(graph.Node),
+    stats: conversation.SourceStats,
+  )
+}
+
+fn saved(context: compaction.Context) -> Result(Saved, String) {
   use snapshot <- result.try(conversation.snapshot(
     context.store,
     context.session,
@@ -133,145 +271,18 @@ fn prepare(
     snapshot,
     covered,
   ))
-  let window =
-    rolling.effective_window(config.context_window_tokens, context, history)
-  let tail_budget =
-    option.map(window, fn(window) { window.tokens * config.tail_percent / 100 })
-  let current = projection(frontier, history, stats, tail_budget, 1)
-  let estimated = context.pinned_tokens + compaction.estimate_inputs(current)
-  case window {
-    None ->
-      Ok(prepared(
-        current,
-        frontier,
-        "unknown",
-        "estimated; no configured or catalogued context window",
-        None,
-        estimated,
-        config,
-        history,
-      ))
-    Some(compaction.Capacity(tokens: capacity, source: capacity_source)) -> {
-      use _ <- result.try(compaction.require(
-        context.pinned_tokens < capacity,
-        "context window is not large enough for pinned system, extension context, and tool schemas",
-      ))
-      case
-        compaction.triggered(
-          context.force,
-          estimated,
-          Some(capacity),
-          config.trigger_percent,
-        )
-      {
-        False ->
-          Ok(prepared(
-            current,
-            frontier,
-            case frontier {
-              [] -> "not_needed"
-              _ -> "compacted"
-            },
-            "estimated from current request projection; window from "
-              <> capacity_source,
-            Some(capacity),
-            estimated,
-            config,
-            history,
-          ))
-        True -> {
-          let previous_frontier = frontier
-          use latest_user <- result.try(option.to_result(
-            stats.latest_user,
-            "LCM needs a user message to retain as its tail",
-          ))
-          use eligible <- result.try(case covered + 1 < latest_user {
-            False -> Ok([])
-            True ->
-              conversation.fold_sources(
-                context.store,
-                snapshot,
-                covered + 1,
-                latest_user - 1,
-                [],
-                fn(rows, item) { conversation.Continue([item, ..rows]) },
-              )
-          })
-          let eligible = list.reverse(eligible)
-          use _ <- result.try(compaction.require(
-            eligible != [] || frontier != [],
-            "cannot compact without an older complete conversation unit",
-          ))
-          let summary_limit =
-            int.min(
-              summary_tokens,
-              int.max(32, { capacity - context.pinned_tokens } / 4),
-            )
-          use leaves <- result.try(summarize_leaves(
-            context,
-            eligible,
-            summary_limit,
-          ))
-          use _ <- result.try(graph.save_leaves(
-            context.store,
-            context.session,
-            leaves,
-          ))
-          use frontier <- result.try(graph.frontier(
-            context.store,
-            context.session,
-          ))
-          use covered <- result.try(graph.last_seq(
-            context.store,
-            context.session,
-          ))
-          use stats <- result.try(conversation.source_stats(
-            context.store,
-            snapshot,
-            covered,
-          ))
-          use frontier <- result.try(condense_until_fit(
-            context,
-            frontier,
-            history,
-            stats,
-            tail_budget,
-            capacity,
-            summary_limit,
-            0,
-          ))
-          let next = projection(frontier, history, stats, tail_budget, 1)
-          let next_estimated =
-            context.pinned_tokens + compaction.estimate_inputs(next)
-          use _ <- result.try(compaction.require(
-            next_estimated < capacity || context.force,
-            "LCM summaries and the newest conversation/tool unit do not fit the context window",
-          ))
-          let prepared =
-            prepared(
-              next,
-              frontier,
-              "compacted",
-              "estimated from source-backed summary nodes; window from "
-                <> capacity_source,
-              Some(capacity),
-              next_estimated,
-              config,
-              history,
-            )
-          Ok(
-            compaction.Prepared(
-              ..prepared,
-              compacted: frontier != previous_frontier,
-            ),
-          )
-        }
-      }
-    }
-  }
+  Ok(Saved(snapshot, covered, frontier, stats))
 }
 
-fn prepared(
+/// The verbatim tail's share of the window, when there is one.
+fn tail_budget(
+  config: Config,
+  window: Option(compaction.Capacity),
+) -> Option(Int) {
+  option.map(window, fn(window) { window.tokens * config.tail_percent / 100 })
+}
+
+fn view(
   inputs: List(types.Input),
   frontier: List(graph.Node),
   status: String,
@@ -280,8 +291,9 @@ fn prepared(
   estimated: Int,
   config: Config,
   original: List(types.Input),
-) -> compaction.Prepared {
-  compaction.Prepared(
+  due: Bool,
+) -> compaction.View {
+  compaction.View(
     inputs,
     Some(compaction.observation(
       "lcm",
@@ -298,7 +310,7 @@ fn prepared(
       list.length(original),
       list.length(inputs),
     )),
-    False,
+    due,
   )
 }
 

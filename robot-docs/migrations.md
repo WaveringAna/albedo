@@ -79,7 +79,8 @@ cwd default when absent, then creates `work_cwd_id`;
 column, `paperclips/migrations/scope.apply` drops the now-unused workspace
 index left from the cwd-scoped vent era, and
 `paperclips/migrations/reply.apply` adds the non-null empty-default reply
-column that makes a /paperclips answer durable. these upgrades run immediately
+column that makes a /paperclips answer durable. `rolling/migrations/observation.apply`
+drops the observation table rolling used to write and read straight back. these upgrades run immediately
 after their owner's table creation, so later extension initialisers can use
 the upgraded schema. embedding hosts call
 `runtime.migrate` after preparing core storage and before opening sessions.
@@ -142,6 +143,7 @@ the upgraded schema. embedding hosts call
 | `paperclips/ledger.initialise`: title addition | `paperclips/migrations/title.apply`, contributed by paperclips |
 | `paperclips/ledger.initialise`: `paperclips_cwd` index creation | dropped from the schema; `paperclips/migrations/scope.apply` removes it from existing stores |
 | `paperclips/ledger.initialise`: reply column | `paperclips/migrations/reply.apply`, added with the global ledger |
+| `rolling.initialise`: `rolling_compaction_observation` creation | dropped from the schema; `rolling/migrations/observation.apply` removes it from existing stores |
 
 `images.migrate` and `cells.migrate_images` are removed rather than wrapped:
 the migration implementations are separate from the live domain readers and
