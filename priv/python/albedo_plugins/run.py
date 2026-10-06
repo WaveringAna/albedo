@@ -710,7 +710,9 @@ def run(
     cell, and the wake names the job when it lands. Awaiting the job, reading
     its result, or stopping it first means no wake.
 
-    `cargo` runs through mbx when it is installed, so every checkout
+    `nix` never copies a jj workspace into the store (a flake there is read
+    from its commit), and `nix develop -c program ...` reuses a cached dev
+    shell. `cargo` runs through mbx when it is installed, so every checkout
     shares compiled work; env={"ALBEDO_NO_MBX": "1"} runs plain cargo.
 
     Pass service=True for a program that is meant to keep running (a dev
