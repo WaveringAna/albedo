@@ -113,6 +113,31 @@ pub fn session_over(
   )
 }
 
+/// Swap a stale kernel for one on the current bundle and modules, carrying
+/// its namespace: the session over the new kernel, and what came across.
+pub fn upgrade(
+  owner: work.Store,
+  id: String,
+  cached: runtime_state.Cached,
+  kernel: python.Kernel,
+) -> Result(#(runtime_state.Session, python.Carried), python.UpgradeFailure) {
+  python.upgrade(
+    owner,
+    id,
+    cached.cwd,
+    kernel_routes(owner, id, cached.composition),
+    extension.python_modules(cached.composition),
+    kernel,
+  )
+  |> result.map(fn(upgraded) {
+    let #(kernel, carried) = upgraded
+    #(
+      session_over(owner, id, cached, kernel, runtime_state.Upgraded(carried)),
+      carried,
+    )
+  })
+}
+
 /// The session's recorded kernel attached again, or None when it is gone.
 pub fn resume_kernel(
   owner: work.Store,

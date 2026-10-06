@@ -23,7 +23,7 @@ import albedo/harness/runtime/upgrade
 import albedo/openai_api/types
 import albedo/shared
 import gleam/dict
-import gleam/erlang/process
+import gleam/erlang/process.{type Subject}
 import gleam/erlang/reference
 import gleam/int
 import gleam/io
@@ -92,20 +92,30 @@ pub fn observe_composition(
   home: String,
   id: String,
 ) -> Result(CompositionObservation, String) {
+  ask(
+    runtime,
+    runtime_state.observe_call_ms,
+    runtime_state.ObserveComposition(home, id, _),
+    "composition observation",
+  )
+}
+
+/// One bounded read of the runtime actor, or why it could not answer.
+fn ask(
+  runtime: Runtime,
+  timeout: Int,
+  message: fn(Subject(Result(a, String))) -> runtime_state.Message,
+  what: String,
+) -> Result(a, String) {
   use _owner <- result.try(
     process.subject_owner(runtime.subject)
     |> result.replace_error("runtime owner is unavailable"),
   )
-  actor_call.try_call(
-    runtime.subject,
-    runtime_state.observe_call_ms,
-    runtime_state.ObserveComposition(home, id, _),
-  )
+  actor_call.try_call(runtime.subject, timeout, message)
   |> result.map_error(fn(error) {
     case error {
-      actor_call.CalleeDown ->
-        "runtime owner stopped during composition observation"
-      actor_call.TimedOut -> "runtime composition observation is unavailable"
+      actor_call.CalleeDown -> "runtime owner stopped during " <> what
+      actor_call.TimedOut -> "runtime " <> what <> " is unavailable"
     }
   })
   |> result.flatten
@@ -130,23 +140,12 @@ pub fn observe_catalog(
   home: String,
   id: String,
 ) -> Result(CatalogObservation, String) {
-  use _owner <- result.try(
-    process.subject_owner(runtime.subject)
-    |> result.replace_error("runtime owner is unavailable"),
+  ask(
+    runtime,
+    runtime_state.observe_call_ms,
+    runtime_state.ObserveCatalog(home, id, _),
+    "catalog observation",
   )
-  actor_call.try_call(runtime.subject, 15_000, runtime_state.ObserveCatalog(
-    home,
-    id,
-    _,
-  ))
-  |> result.map_error(fn(error) {
-    case error {
-      actor_call.CalleeDown ->
-        "runtime owner stopped during catalog observation"
-      actor_call.TimedOut -> "runtime catalog observation is unavailable"
-    }
-  })
-  |> result.flatten
 }
 
 /// Observe retained loaded state even when desired discovery is unreadable.
@@ -154,18 +153,7 @@ pub fn observe_loaded(
   runtime: Runtime,
   id: String,
 ) -> Result(LoadedObservation, String) {
-  use _owner <- result.try(
-    process.subject_owner(runtime.subject)
-    |> result.replace_error("runtime owner is unavailable"),
-  )
-  actor_call.try_call(runtime.subject, 5000, runtime_state.ObserveLoaded(id, _))
-  |> result.map_error(fn(error) {
-    case error {
-      actor_call.CalleeDown -> "runtime owner stopped during observation"
-      actor_call.TimedOut -> "loaded runtime observation is unavailable"
-    }
-  })
-  |> result.flatten
+  ask(runtime, 5000, runtime_state.ObserveLoaded(id, _), "loaded observation")
 }
 
 pub fn start(database: String) -> Result(Runtime, actor.StartError) {

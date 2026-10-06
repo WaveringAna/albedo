@@ -72,7 +72,7 @@ fn quarantine(state: runtime_state.State, name: String) -> Option(String) {
 }
 
 /// The extension this change enables, if it enables one.
-pub fn demanded(change: extension.Change) -> Option(String) {
+fn demanded(change: extension.Change) -> Option(String) {
   case change {
     extension.SetSession(name, True) | extension.SetGlobal(name, True) ->
       Some(name)
@@ -332,28 +332,14 @@ pub fn start_desired_reload(
                         case runtime_state.upgradable(session) {
                           False -> Error(python.Busy)
                           True ->
-                            python.upgrade(
+                            kernels.upgrade(
                               inventory.ledger,
                               id,
-                              cwd,
-                              kernels.kernel_routes(
-                                inventory.ledger,
-                                id,
-                                fresh.composition,
-                              ),
-                              extension.python_modules(fresh.composition),
+                              fresh,
                               session.kernel,
                             )
                             |> result.map_error(fn(failure) { failure.reason })
-                            |> result.map(fn(upgraded) {
-                              Some(kernels.session_over(
-                                inventory.ledger,
-                                id,
-                                fresh,
-                                upgraded.0,
-                                runtime_state.Upgraded(upgraded.1),
-                              ))
-                            })
+                            |> result.map(fn(upgraded) { Some(upgraded.0) })
                         }
                       }
                     }

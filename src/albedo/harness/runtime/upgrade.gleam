@@ -2,7 +2,6 @@
 //// like a boot, carrying what the old namespace could, and settled when the
 //// worker reports which kernel the session ends up with.
 
-import albedo/harness/extension
 import albedo/harness/extensions/python/kernel as python
 import albedo/harness/extensions/python/link
 import albedo/harness/extensions/work/ledger as work
@@ -52,24 +51,10 @@ pub fn start_upgrade(
       process.spawn_unlinked(fn() {
         let upgraded =
           protect.attempt(fn() {
-            python.upgrade(
-              owner,
-              id,
-              cached.cwd,
-              kernels.kernel_routes(owner, id, cached.composition),
-              extension.python_modules(cached.composition),
-              session.kernel,
-            )
+            kernels.upgrade(owner, id, cached, session.kernel)
           })
         let result = case upgraded {
-          Ok(Ok(#(kernel, carried))) ->
-            Ok(kernels.session_over(
-              owner,
-              id,
-              cached,
-              kernel,
-              runtime_state.Upgraded(carried),
-            ))
+          Ok(Ok(#(session, _))) -> Ok(session)
           Ok(Error(error)) -> {
             io.println_error(
               "kernel upgrade waits: " <> string.inspect(error.reason),
@@ -147,13 +132,13 @@ pub fn start_kernel_upgrade(
         Ok(None) -> {
           answer(
             Ok(runtime_state.KernelUpgrade(
-              "unchanged",
-              None,
-              None,
-              None,
-              [],
-              [],
-              None,
+              state: "unchanged",
+              old: None,
+              new: None,
+              session: None,
+              stopped_jobs: [],
+              warnings: [],
+              failure: None,
             )),
           )
           state
@@ -213,45 +198,31 @@ pub fn upgrade_value(
   case python.observation(current.kernel) {
     Error(_) ->
       Ok(runtime_state.KernelUpgrade(
-        "failed",
-        None,
-        None,
-        Some(current),
-        [],
-        [],
-        Some("the live kernel did not answer observation"),
+        state: "failed",
+        old: None,
+        new: None,
+        session: Some(current),
+        stopped_jobs: [],
+        warnings: [],
+        failure: Some("the live kernel did not answer observation"),
       ))
     Ok(old) ->
       case old.stale {
         None ->
           Ok(runtime_state.KernelUpgrade(
-            "unchanged",
-            Some(old),
-            Some(old),
-            Some(current),
-            [],
-            [],
-            None,
+            state: "unchanged",
+            old: Some(old),
+            new: Some(old),
+            session: Some(current),
+            stopped_jobs: [],
+            warnings: [],
+            failure: None,
           ))
         Some(_) -> {
-          let outcome =
-            python.upgrade(
-              owner,
-              id,
-              cached.cwd,
-              kernels.kernel_routes(owner, id, cached.composition),
-              extension.python_modules(cached.composition),
-              current.kernel,
-            )
+          let outcome = kernels.upgrade(owner, id, cached, current.kernel)
           let #(session, failure, restored_warnings, stopped) = case outcome {
-            Ok(#(kernel, carried)) -> #(
-              Some(kernels.session_over(
-                owner,
-                id,
-                cached,
-                kernel,
-                runtime_state.Upgraded(carried),
-              )),
+            Ok(#(session, carried)) -> #(
+              Some(session),
               None,
               list.map(carried.saved.missed, fn(item) {
                 item.0 <> ": " <> item.1
@@ -287,16 +258,16 @@ pub fn upgrade_value(
             )
           Ok(
             runtime_state.KernelUpgrade(
-              case failure, observed {
+              state: case failure, observed {
                 None, Some(_) -> "upgraded"
                 _, _ -> "failed"
               },
-              Some(old),
-              observed,
-              session,
-              stopped,
-              warnings,
-              case failure, observed {
+              old: Some(old),
+              new: observed,
+              session: session,
+              stopped_jobs: stopped,
+              warnings: warnings,
+              failure: case failure, observed {
                 None, None -> Some("replacement observation unavailable")
                 _, _ -> failure
               },
