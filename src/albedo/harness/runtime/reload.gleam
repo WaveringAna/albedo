@@ -4,6 +4,8 @@
 
 import albedo/daemon/session_catalog
 import albedo/harness/extension
+import albedo/harness/extension/composition
+import albedo/harness/extension/selection
 import albedo/harness/extensions/python/kernel as python
 import albedo/harness/extensions/python/link
 import albedo/harness/protect
@@ -43,7 +45,7 @@ pub fn orphaned(
           kernels.drop_kernel("reload for a stopped runtime", session)
         None -> Nil
       }
-      extension.close(fresh.composition)
+      composition.close(fresh.composition)
     }
   }
   process.send(reply, Error("runtime owner stopped during reload"))
@@ -61,9 +63,9 @@ fn quarantine(state: runtime_state.State, name: String) -> Option(String) {
 }
 
 /// The extension this change enables, if it enables one.
-fn demanded(change: extension.Change) -> Option(String) {
+fn demanded(change: selection.Change) -> Option(String) {
   case change {
-    extension.SetSession(name, True) | extension.SetGlobal(name, True) ->
+    selection.SetSession(name, True) | selection.SetGlobal(name, True) ->
       Some(name)
     _ -> None
   }
@@ -76,14 +78,14 @@ pub fn reload(
   state: runtime_state.State,
   id: String,
   cwd: String,
-  change: extension.Change,
+  change: selection.Change,
   reply: Subject(Result(Option(runtime_state.Session), String)),
 ) -> runtime_state.State {
   let installed = shared.read(state.installed)
-  let proposed = case quarantine(state, extension.change_name(change)) {
+  let proposed = case quarantine(state, selection.change_name(change)) {
     Some(error) -> Error(error)
     None ->
-      extension.propose(
+      selection.propose(
         state.work,
         installed.extensions,
         installed.default_enabled,
@@ -103,7 +105,7 @@ pub fn reload(
   let ledger = state.work
   let persist = fn(selected) {
     use previous <- result.try(current)
-    extension.record_selected(
+    selection.record_selected(
       ledger,
       id,
       change,
@@ -190,11 +192,11 @@ pub fn recompose_selected(
       id,
       workspace,
       kernels.kernel_routes(inventory.ledger, id, cached.composition),
-      extension.python_modules(cached.composition),
+      composition.python_modules(cached.composition),
     )
   case staged {
     Error(error) -> {
-      extension.close(cached.composition)
+      composition.close(cached.composition)
       Error("could not prepare replacement: " <> string.inspect(error))
     }
     Ok(#(kernel, record)) -> {
@@ -228,7 +230,7 @@ pub fn recompose_selected(
       case published {
         Error(reason) -> {
           let cleanup = python.stop(replacement.kernel)
-          extension.close(cached.composition)
+          composition.close(cached.composition)
           Error(case cleanup {
             Ok(_) -> reason
             Error(failure) ->
@@ -253,7 +255,7 @@ pub fn start_desired_reload(
     dict.get(state.compositions, id)
     |> option.from_result
     |> option.then(fn(cached) {
-      extension.compaction(extension.extensions(cached.composition))
+      extension.compaction(composition.extensions(cached.composition))
     })
     |> option.map(fn(strategy) { strategy.name })
   let state =
@@ -284,7 +286,7 @@ pub fn recompose_desired(
   previous: Option(runtime_state.Session),
   active_strategy: Option(String),
 ) -> Result(#(runtime_state.Cached, Option(runtime_state.Session)), String) {
-  use selected <- result.try(extension.enabled(
+  use selected <- result.try(selection.enabled(
     inventory.ledger,
     inventory.installed,
     inventory.defaults,
@@ -310,7 +312,7 @@ pub fn recompose_desired(
   case rebound {
     Ok(session) -> Ok(#(fresh, session))
     Error(error) -> {
-      extension.close(fresh.composition)
+      composition.close(fresh.composition)
       Error("could not reload extensions: " <> string.inspect(error))
     }
   }
@@ -334,8 +336,8 @@ fn rebound(
         True ->
           case
             session.cwd == cwd
-            && extension.python_modules(session.composition)
-            == extension.python_modules(fresh.composition)
+            && composition.python_modules(session.composition)
+            == composition.python_modules(fresh.composition)
           {
             True ->
               python.rebind(
@@ -395,7 +397,7 @@ pub fn reloaded(
               kernels.drop_kernel("reload for a forgotten session", session)
             None -> Nil
           }
-          extension.close(fresh.composition)
+          composition.close(fresh.composition)
         }
       }
       process.send(reply, Error("the session closed during reload"))

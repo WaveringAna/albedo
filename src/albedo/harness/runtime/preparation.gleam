@@ -5,6 +5,8 @@
 import albedo/daemon/session_catalog
 import albedo/harness/command
 import albedo/harness/extension
+import albedo/harness/extension/composition
+import albedo/harness/extension/selection
 import albedo/harness/extensions/python/kernel as python
 import albedo/harness/instruction_files
 import albedo/harness/project_files
@@ -43,23 +45,23 @@ pub fn build_cached(
   use selected <- result.try(case selected {
     Some(value) -> Ok(value)
     None ->
-      extension.enabled(
+      selection.enabled(
         inventory.ledger,
         inventory.installed,
         inventory.defaults,
         id,
       )
   })
-  let composition = extension.compose(selected, inventory.ledger, id, cwd)
+  let composed = composition.compose(selected, inventory.ledger, id, cwd)
   // A session opening on its own composes around whatever is broken, but an
   // extension the caller just asked for, and one a change must not break,
   // fail here instead of going quiet.
   use _ <- result.try(
     list.try_each(required, fn(name) {
-      case list.key_find(extension.inactive(composition), name) {
+      case list.key_find(composition.inactive(composed), name) {
         Error(_) -> Ok(Nil)
         Ok(warning) -> {
-          extension.close(composition)
+          composition.close(composed)
           Error(warning)
         }
       }
@@ -103,9 +105,9 @@ pub fn build_cached(
     Ok(#(replacement, appended)) ->
       Ok(runtime_state.Cached(
         cwd,
-        composition,
-        system_instructions(replacement, composition),
-        context_inputs(composition, appended),
+        composed,
+        system_instructions(replacement, composed),
+        context_inputs(composed, appended),
         option.map(basis, fn(observed) {
           session_catalog.composition_revision(
             observed.snapshot,
@@ -115,7 +117,7 @@ pub fn build_cached(
         basis,
       ))
     Error(error) -> {
-      extension.close(composition)
+      composition.close(composed)
       Error(error)
     }
   }
@@ -123,10 +125,10 @@ pub fn build_cached(
 
 fn system_instructions(
   replacement: Option(String),
-  composition: extension.Composition,
+  composed: composition.Composition,
 ) -> String {
   let base = option.unwrap(replacement, base_instructions)
-  let extensions = extension.instructions(composition)
+  let extensions = composition.instructions(composed)
   case replacement, extensions {
     Some(_), "" -> base
     Some(_), _ -> base <> "\n" <> extensions
@@ -137,15 +139,15 @@ fn system_instructions(
 /// Extension context and tool catalog precede APPEND_SYSTEM.md; the
 /// autoloaded project conventions follow it at the end of the system prompt.
 fn context_inputs(
-  composition: extension.Composition,
+  composed: composition.Composition,
   appended: Option(String),
 ) -> List(types.Input) {
-  let blocks = extension.context(composition)
+  let blocks = composition.context(composed)
   let agents = list.filter(blocks, fn(block) { block.0 == "instructions" })
   let others = list.filter(blocks, fn(block) { block.0 != "instructions" })
   let before =
     list.append(others, [
-      #("commands", command.context_block(extension.commands(composition))),
+      #("commands", command.context_block(composition.commands(composed))),
     ])
   let append = case appended {
     Some(text) ->
@@ -180,7 +182,7 @@ fn command_value(
   cached: runtime_state.Cached,
 ) -> Result(#(List(command.Command), command.Context), String) {
   case cached.cwd == cwd {
-    True -> Ok(#(extension.commands(cached.composition), command.context(id)))
+    True -> Ok(#(composition.commands(cached.composition), command.context(id)))
     False -> Error("prepared composition belongs to another workspace")
   }
 }
@@ -321,7 +323,7 @@ pub fn composed(
     }
     _ -> {
       case prepared {
-        Ok(cached) -> extension.close(cached.composition)
+        Ok(cached) -> composition.close(cached.composition)
         Error(_) -> Nil
       }
       state

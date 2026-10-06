@@ -7,6 +7,7 @@ import albedo/daemon/session_prompt
 import albedo/daemon/session_state
 import albedo/daemon/turn
 import albedo/harness/extension
+import albedo/harness/extension/selection
 import albedo/harness/extensions/python/kernel as python
 import albedo/harness/runtime
 import gleam/list
@@ -28,7 +29,7 @@ fn with_kernel(
 
 pub fn change(
   state: session_state.State(message),
-  change: extension.Change,
+  change: selection.Change,
 ) -> #(session_state.State(message), Result(List(extension.Summary), String)) {
   case turn.running(state.activity) {
     Some(_) -> #(state, Error("session must be idle to reload extensions"))

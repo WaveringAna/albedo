@@ -6,6 +6,7 @@ import albedo/daemon/store
 import albedo/harness/capabilities
 import albedo/harness/capability_catalog
 import albedo/harness/extension
+import albedo/harness/extension/selection
 import albedo/harness/extensions/skills/catalog as skills
 import albedo/harness/instruction_files
 import albedo/harness/project_files
@@ -149,7 +150,7 @@ pub fn inspect(
 ) -> Result(Snapshot, String) {
   use observed_inputs <- result.try(inputs(home, inventory, id))
   use captured <- result.try(conversation.capture(inventory.ledger, id))
-  use summaries <- result.try(extension.summaries(
+  use summaries <- result.try(selection.summaries(
     inventory.ledger,
     inventory.installed,
     inventory.quarantined,

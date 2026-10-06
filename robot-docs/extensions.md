@@ -17,7 +17,7 @@ confirming a change reloads that session's workers, context, model tools, python
 
 ## contribute plugins
 
-interfaces live in [`extension.gleam`](../src/albedo/harness/extension.gleam); built-in composition lives in [`extensions.gleam`](../src/albedo/harness/extensions.gleam).
+interfaces, installation and quarantine, and the per-installed-list queries live in [`extension.gleam`](../src/albedo/harness/extension.gleam); a session's composed `Composition` and its accessors in [`extension/composition.gleam`](../src/albedo/harness/extension/composition.gleam); the saved selection (`enabled`, `propose`, `record_selected`, `change_defaults`, raised caps, summaries) in [`extension/selection.gleam`](../src/albedo/harness/extension/selection.gleam); the built-in list in [`extensions.gleam`](../src/albedo/harness/extensions.gleam).
 
 ```gleam
 extension.Extension(

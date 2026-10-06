@@ -10,7 +10,7 @@ import albedo/daemon/operations
 import albedo/daemon/session
 import albedo/daemon/session_submission
 import albedo/daemon/store
-import albedo/harness/extension
+import albedo/harness/extension/selection
 import albedo/harness/page
 import albedo/harness/runtime
 import gleam/dict
@@ -131,7 +131,7 @@ fn glance_row(row: page.Row) -> json.Json {
   ])
 }
 
-fn glance_value(glance: extension.Glance) -> json.Json {
+fn glance_value(glance: selection.Glance) -> json.Json {
   json.object([
     #("extension", json.string(glance.extension)),
     #("title", json.string(glance.value.title)),

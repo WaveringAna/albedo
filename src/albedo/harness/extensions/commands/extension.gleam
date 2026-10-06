@@ -7,6 +7,7 @@ import albedo/harness/command.{
   ModelSelect, Refresh, ReloadCatalogs, UserCall,
 }
 import albedo/harness/extension
+import albedo/harness/extension/selection
 import albedo/harness/extensions/commands/client
 import gleam/dict
 import gleam/dynamic/decode
@@ -285,14 +286,14 @@ fn raise_cap() -> Command {
               |> result.replace_error("could not read this session's model")
             }
           })
-          let raised = list.contains(extension.raised_caps(), model)
+          let raised = list.contains(selection.raised_caps(), model)
           use raise <- result.try(case dict.get(args, "state") {
             Ok("on") -> Ok(True)
             Ok("off") -> Ok(False)
             Ok(other) -> Error("state must be on or off, not " <> other)
             Error(_) -> Ok(!raised)
           })
-          use _ <- result.try(extension.raise_cap(model, raise))
+          use _ <- result.try(selection.raise_cap(model, raise))
           let message = case raise {
             True ->
               "Raised the context cap for "

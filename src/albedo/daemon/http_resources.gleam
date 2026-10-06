@@ -11,6 +11,7 @@ import albedo/daemon/storage_report
 import albedo/daemon/usage
 import albedo/harness/cache_ttl
 import albedo/harness/extension
+import albedo/harness/extension/selection
 import albedo/harness/location
 import albedo/harness/runtime
 import albedo/harness/ssh
@@ -491,7 +492,7 @@ fn model_json(
     ),
     #(
       "effective_context_tokens",
-      json.nullable(fact(extension.window), json.int),
+      json.nullable(fact(selection.window), json.int),
     ),
     #(
       "max_context_tokens",
@@ -510,7 +511,7 @@ fn model_json(
       ),
     ),
     #("image_edge", json.null()),
-    #("raised", json.bool(list.contains(extension.raised_caps(), model.id))),
+    #("raised", json.bool(list.contains(selection.raised_caps(), model.id))),
     #("cap_key", json.string(model.id)),
     #(
       "cache_policy",

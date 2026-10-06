@@ -4,6 +4,8 @@
 
 import albedo/daemon/session_catalog
 import albedo/harness/extension
+import albedo/harness/extension/composition
+import albedo/harness/extension/selection
 import albedo/harness/protect
 import albedo/harness/runtime/state as runtime_state
 import albedo/harness/settings
@@ -82,11 +84,11 @@ pub fn observe(
           result.map(discovered, fn(value) { value.snapshot }),
           option.then(cached, fn(value) { value.loaded_revision }),
           option.map(cached, fn(value) {
-            extension.command_entries(value.composition)
+            composition.command_entries(value.composition)
           })
             |> option.unwrap([]),
           option.map(cached, fn(value) {
-            extension.client_commands(value.composition)
+            composition.client_commands(value.composition)
           })
             |> option.unwrap([]),
         ))
@@ -204,12 +206,12 @@ pub fn observe_composition_value(
   let loaded = option.then(cached, fn(value) { value.loaded_revision })
   let failures =
     option.map(cached, fn(value) {
-      extension.inactive(value.composition) |> list.map(fn(item) { item.0 })
+      composition.inactive(value.composition) |> list.map(fn(item) { item.0 })
     })
     |> option.unwrap([])
   let selected =
     option.map(cached, fn(value) {
-      extension.extensions(value.composition)
+      composition.extensions(value.composition)
       |> list.map(fn(item) { item.name })
     })
     |> option.unwrap([])
@@ -234,7 +236,7 @@ pub fn observe_composition_value(
     list.append(
       inventory.quarantined,
       list.filter_map(
-        option.map(cached, fn(value) { extension.inactive(value.composition) })
+        option.map(cached, fn(value) { composition.inactive(value.composition) })
           |> option.unwrap([]),
         fn(failure) {
           list.find(inventory.installed, fn(item) { item.name == failure.0 })
@@ -247,7 +249,7 @@ pub fn observe_composition_value(
   use glances <- result.try(case cached {
     None -> Ok([])
     Some(cached) ->
-      extension.glances(cached.composition, inventory.ledger, id, cached.cwd)
+      selection.glances(cached.composition, inventory.ledger, id, cached.cwd)
   })
   Ok(runtime_state.CompositionObservation(
     discovery,

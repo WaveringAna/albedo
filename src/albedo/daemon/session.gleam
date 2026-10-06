@@ -36,6 +36,7 @@ import albedo/daemon/usage
 import albedo/harness/cache_fade
 import albedo/harness/command
 import albedo/harness/extension
+import albedo/harness/extension/selection
 import albedo/harness/extensions/python/kernel as python
 import albedo/harness/extensions/run/extension as run
 import albedo/harness/location
@@ -2682,7 +2683,7 @@ fn select_strategy(
               let #(state, outcome) =
                 session_extensions.change(
                   state,
-                  extension.SetSession(name, True),
+                  selection.SetSession(name, True),
                 )
               let state = case outcome {
                 Error(_) -> state

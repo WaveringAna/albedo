@@ -5,6 +5,7 @@
 //// a per-session one (the composition) shows what it actually costs.
 
 import albedo/harness/extension
+import albedo/harness/extension/composition
 import albedo/harness/runtime
 import gleam/int
 import gleam/io
@@ -35,10 +36,10 @@ pub fn main() -> Nil {
   report("Session", session)
   // Session(id, cwd, kernel, owner, composition, ...): the composition is
   // element 6 of the record tuple, after the constructor tag.
-  let composition = element(6, session)
-  report("  composition.extensions", extension.extensions(composition))
+  let composed = element(6, session)
+  report("  composition.extensions", composition.extensions(composed))
   // Composition(extensions, static, managed, failures): managed is element 4.
-  let managed: List(extension.Prepared) = element(4, composition)
+  let managed: List(extension.Prepared) = element(4, composed)
   list.each(managed, fn(prepared) {
     report("  managed " <> prepared.extension, prepared.value)
   })

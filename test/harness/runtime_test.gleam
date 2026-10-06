@@ -4,6 +4,7 @@ import albedo/daemon/conversation
 import albedo/daemon/session
 import albedo/daemon/store
 import albedo/harness/extension
+import albedo/harness/extension/selection
 import albedo/harness/extensions/python/kernel as python
 import albedo/harness/extensions/python/link
 import albedo/harness/runtime
@@ -190,10 +191,10 @@ pub fn blocked_preparations_leave_session_capture_responsive_test() -> Nil {
       session_fixture.create(host, id, workspace)
       // Keep the blocking loader selected regardless of shared global defaults.
       let assert Ok(_) =
-        extension.record_selected(
+        selection.record_selected(
           runtime.ledger(host),
           id,
-          extension.SetSession(held.name, True),
+          selection.SetSession(held.name, True),
           [],
           [held],
           [held],

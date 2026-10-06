@@ -6,6 +6,7 @@ import albedo/daemon/registry.{type Config, type Message, Logins}
 import albedo/daemon/session_catalog
 import albedo/daemon/settings
 import albedo/harness/extension
+import albedo/harness/extension/selection
 import albedo/harness/oauth
 import albedo/harness/runtime
 import gleam/bit_array
@@ -101,7 +102,7 @@ pub fn settings(
             logins,
             fn(patch) { resolve_global_capabilities(config.home, host, patch) },
             fn(current, changes) {
-              extension.change_defaults(
+              selection.change_defaults(
                 runtime.installed(host),
                 runtime.base_defaults(host),
                 current,
@@ -109,12 +110,12 @@ pub fn settings(
               )
               |> result.map_error(fn(error) {
                 case error {
-                  extension.ConflictingStrategies -> #(
+                  selection.ConflictingStrategies -> #(
                     400,
                     "selection_conflict",
                     "choose one compaction strategy in each patch",
                   )
-                  extension.InvalidSelection(detail) -> #(
+                  selection.InvalidSelection(detail) -> #(
                     400,
                     "selection_invalid",
                     detail,

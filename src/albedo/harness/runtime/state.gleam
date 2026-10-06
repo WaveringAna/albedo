@@ -6,6 +6,8 @@ import albedo/daemon/session_catalog
 import albedo/harness/client_api
 import albedo/harness/command
 import albedo/harness/extension
+import albedo/harness/extension/composition
+import albedo/harness/extension/selection
 import albedo/harness/extensions/python/kernel as python
 import albedo/harness/extensions/work/ledger as work
 import albedo/openai_api/types
@@ -43,7 +45,7 @@ pub type Session {
     cwd: String,
     kernel: python.Kernel,
     owner: work.Store,
-    composition: extension.Composition,
+    composition: composition.Composition,
     instructions: String,
     context: List(types.Input),
     /// How the kernel came to be the session's: the adopting session tells
@@ -83,7 +85,7 @@ pub type Origin {
 pub type Cached {
   Cached(
     cwd: String,
-    composition: extension.Composition,
+    composition: composition.Composition,
     instructions: String,
     context: List(types.Input),
     loaded_revision: Option(String),
@@ -106,7 +108,7 @@ pub type CompositionObservation {
     dependencies: Dict(String, List(String)),
     quarantine: List(extension.Quarantined),
     availability: Dict(String, Bool),
-    glances: List(extension.Glance),
+    glances: List(selection.Glance),
   )
 }
 
@@ -257,7 +259,7 @@ pub type Message {
   Reload(
     String,
     String,
-    extension.Change,
+    selection.Change,
     Subject(Result(Option(Session), String)),
   )
   ReloadDesired(String, String, Subject(Result(Option(Session), String)))
@@ -393,7 +395,7 @@ pub fn enabled(
   installed: Installed,
   id: String,
 ) -> Result(List(extension.Extension), String) {
-  extension.enabled(work, installed.extensions, installed.default_enabled, id)
+  selection.enabled(work, installed.extensions, installed.default_enabled, id)
 }
 
 @external(erlang, "albedo_inspect", "label")

@@ -7,6 +7,8 @@ import albedo/daemon/store
 import albedo/harness/command
 import albedo/harness/compaction
 import albedo/harness/extension
+import albedo/harness/extension/composition
+import albedo/harness/extension/selection
 import albedo/harness/extensions
 import albedo/harness/extensions/python/cells as journal
 import albedo/harness/extensions/python/kernel as python
@@ -292,7 +294,7 @@ pub fn reload_extension(
     runtime,
     id,
     cwd,
-    extension.SetSession(name, enabled),
+    selection.SetSession(name, enabled),
   ))
   case replaced {
     Some(session) -> Ok(session)
@@ -309,7 +311,7 @@ pub fn change_extension(
   runtime: Runtime,
   id: String,
   cwd: String,
-  change: extension.Change,
+  change: selection.Change,
 ) -> Result(Option(Session), String) {
   actor.call(runtime.subject, 30_000, runtime_state.Reload(id, cwd, change, _))
 }
@@ -442,7 +444,7 @@ pub fn interrupt(session: Session) -> Nil {
 }
 
 pub fn warnings(session: Session) -> List(String) {
-  extension.warnings(session.composition)
+  composition.warnings(session.composition)
 }
 
 pub fn kernel_pid(session: Session) -> Result(Int, Nil) {
@@ -833,7 +835,7 @@ fn serve(
     }
     runtime_state.Summaries(id, reply) -> {
       let installed = shared.read(state.installed)
-      let composition = case
+      let composed = case
         dict.get(state.sessions, id),
         dict.get(state.compositions, id)
       {
@@ -843,13 +845,13 @@ fn serve(
       }
       process.send(
         reply,
-        extension.summaries(
+        selection.summaries(
           state.work,
           installed.extensions,
           installed.quarantined,
           installed.default_enabled,
           id,
-          composition,
+          composed,
         ),
       )
       actor.continue(state)
@@ -917,7 +919,7 @@ fn serve(
         kernels.release_kernel(state, id, "runtime stop")
       })
       dict.each(state.compositions, fn(_, cached) {
-        extension.close(cached.composition)
+        composition.close(cached.composition)
       })
       work.close(state.work)
       process.send(reply, Nil)
@@ -937,7 +939,7 @@ fn serve(
 }
 
 pub fn tools(session: Session) -> List(types.Tool) {
-  extension.tools(session.composition)
+  composition.tools(session.composition)
   |> list.map(fn(tool) { tool.definition })
 }
 
@@ -947,7 +949,7 @@ fn tool_call(
   call: types.ToolCall,
   images: types.ImageLimits,
 ) -> Result(#(extension.Tool, extension.Context), Nil) {
-  extension.tools(session.composition)
+  composition.tools(session.composition)
   |> list.find(fn(tool) { tool.definition.name == call.name })
   |> result.map(fn(tool) {
     #(
@@ -1024,13 +1026,13 @@ pub fn observe(
   handle: extension.Session,
   event: extension.SessionEvent,
 ) -> Nil {
-  list.each(extension.observers(session.composition), fn(observe) {
+  list.each(composition.observers(session.composition), fn(observe) {
     observe(handle, event)
   })
 }
 
 pub fn compaction_name(session: Session) -> Option(String) {
-  extension.compaction(extension.extensions(session.composition))
+  extension.compaction(composition.extensions(session.composition))
   |> option.map(fn(strategy) { strategy.name })
 }
 
@@ -1066,7 +1068,7 @@ fn model_info(
   endpoint: Option(String),
 ) -> Option(extension.ModelInfo) {
   extension.model_info(
-    extension.extensions(session.composition),
+    composition.extensions(session.composition),
     model,
     endpoint,
   )
@@ -1205,7 +1207,7 @@ pub fn upstream(
 
 fn capacity(info: Option(extension.ModelInfo)) -> Option(compaction.Capacity) {
   use info <- option.then(info)
-  use tokens <- option.map(extension.window(info))
+  use tokens <- option.map(selection.window(info))
   let source = case info.provider {
     "" -> info.source
     provider -> provider <> " " <> info.source
@@ -1321,7 +1323,7 @@ fn view_scoped(
 ) -> Result(compaction.Prepared, String) {
   use _ <- result.try(owned_by(runtime, session))
   let pinned_tokens = compaction.estimate_pinned(instructions, tools(session))
-  let enabled = extension.extensions(session.composition)
+  let enabled = composition.extensions(session.composition)
   let info = model_info(session, model, endpoint)
   case extension.compaction(enabled) {
     None if force -> Error("no compaction strategy is enabled")

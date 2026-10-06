@@ -2,7 +2,7 @@
 //// upgrades, and observations into a bounded set of workers, and reattaches
 //// recorded kernels after a daemon restart.
 
-import albedo/harness/extension
+import albedo/harness/extension/composition
 import albedo/harness/extensions/python/kernel as python
 import albedo/harness/protect
 import albedo/harness/runtime/kernels
@@ -122,7 +122,7 @@ fn start(
         },
         fn(prepared) {
           case prepared {
-            Ok(cached) -> extension.close(cached.composition)
+            Ok(cached) -> composition.close(cached.composition)
             Error(_) -> Nil
           }
         },

@@ -10,6 +10,7 @@ import albedo/daemon/session_state
 import albedo/daemon/store
 import albedo/daemon/turn
 import albedo/harness/extension
+import albedo/harness/extension/selection
 import albedo/harness/runtime
 import gleam/dict
 import gleam/list
@@ -353,12 +354,12 @@ fn resolve_choices(
         })
         |> list.map(fn(row) { row.id })
       use _ <- result.try(
-        extension.select(
+        selection.select(
           runtime.installed(state.host),
           defaults,
           dict.to_list(candidate.selection.extensions),
         )
-        |> extension.validate_selection
+        |> selection.validate_selection
         |> result.replace_error("selection_invalid"),
       )
       Ok(choices)

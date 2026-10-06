@@ -1,7 +1,7 @@
 //// Kernel plumbing for the runtime actor: opening, resuming, and ending a
 //// session's Python kernel, and the routes a kernel's host calls come in on.
 
-import albedo/harness/extension
+import albedo/harness/extension/composition
 import albedo/harness/extensions/python/kernel as python
 import albedo/harness/extensions/work/ledger as work
 import albedo/harness/rpc
@@ -47,7 +47,7 @@ pub fn drop_kernel_at(
 
 pub fn close_cached_at(state: runtime_state.State, id: String) -> Nil {
   case dict.get(state.compositions, id) {
-    Ok(cached) -> extension.close(cached.composition)
+    Ok(cached) -> composition.close(cached.composition)
     Error(_) -> Nil
   }
 }
@@ -63,11 +63,11 @@ pub fn checked_id(id: String) -> Result(String, python.Error) {
 pub fn kernel_routes(
   owner: work.Store,
   id: String,
-  composition: extension.Composition,
+  composed: composition.Composition,
 ) -> fn(String) -> String {
   // Partial application captures its expressions, not just their results.
   // Keep only this session's routes: the callback is copied for every RPC.
-  let routes = extension.routes(composition)
+  let routes = composition.routes(composed)
   rpc.handle(routes, owner, id, _)
 }
 
@@ -83,7 +83,7 @@ pub fn open_kernel(
     id,
     cached.cwd,
     kernel_routes(owner, id, cached.composition),
-    extension.python_modules(cached.composition),
+    composition.python_modules(cached.composition),
   )
   |> result.map(fn(opened) {
     let origin = case opened.1 {
@@ -126,7 +126,7 @@ pub fn upgrade(
     id,
     cached.cwd,
     kernel_routes(owner, id, cached.composition),
-    extension.python_modules(cached.composition),
+    composition.python_modules(cached.composition),
     kernel,
   )
   |> result.map(fn(upgraded) {
@@ -149,7 +149,7 @@ pub fn resume_kernel(
     id,
     cached.cwd,
     kernel_routes(owner, id, cached.composition),
-    extension.python_modules(cached.composition),
+    composition.python_modules(cached.composition),
   )
   |> option.map(fn(kernel) {
     session_over(owner, id, cached, kernel, runtime_state.Resumed)
