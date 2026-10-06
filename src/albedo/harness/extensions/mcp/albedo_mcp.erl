@@ -1,8 +1,8 @@
 -module(albedo_mcp).
 -export([check_candidate/3]).
 
--export([prepare/5, definitions/1, context/1, offline/1, observe/3, only/2, call/3, close/1,
-         url_allowed/1, validate_settings/3]).
+-export([prepare/5, definitions/1, context/1, offline/1, observe/3, only/2, observer/1, closer/1,
+         call/3, close/1, url_allowed/1, validate_settings/3]).
 
 -define(DEFAULT_STARTUP_MS, 20000).
 -define(DEFAULT_CALL_MS, 60000).
@@ -417,9 +417,20 @@ definitions(#{operations := Operations}) ->
 
 context(#{context := Context}) -> Context.
 
-%% The handle a single tool's call needs: the servers and that one operation.
-only(Handle = #{operations := Operations}, Advertised) ->
-    Handle#{operations => [O || O <- Operations, maps:get(advertised, O) =:= Advertised]}.
+%% The handle a single tool's call needs: the servers and that one operation,
+%% without the schema its tool definition already carries. Each closure in a
+%% composition is copied into every process that holds it, so these three
+%% narrow the handle to what one closure uses.
+only(#{servers := Servers, operations := Operations}, Advertised) ->
+    #{servers => Servers,
+      operations => [maps:with([advertised, server, kind, raw, timeout], O)
+                     || O <- Operations, maps:get(advertised, O) =:= Advertised]}.
+
+%% What `observe` needs: the watcher.
+observer(#{watcher := Watcher}) -> #{watcher => Watcher}.
+
+%% What `close` needs: the connectors and the watcher.
+closer(#{servers := Servers, watcher := Watcher}) -> #{servers => Servers, watcher => Watcher}.
 
 call(#{servers := Servers, operations := Operations}, Advertised, ArgumentsJson) ->
     try

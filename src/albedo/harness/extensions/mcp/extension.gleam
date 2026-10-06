@@ -225,7 +225,11 @@ fn prepare(
       native_close(handle)
       Error(error)
     }
-    Ok(definitions) ->
+    Ok(definitions) -> {
+      // Like each tool's `own` below: a closure that held the whole handle
+      // would carry the catalogue into every process holding the composition.
+      let observer = native_observer(handle)
+      let closer = native_closer(handle)
       Ok(
         extension.Managed(
           ..extension.empty(),
@@ -261,15 +265,16 @@ fn prepare(
           observe: fn(session: extension.Session, event) {
             case event {
               extension.Stirred ->
-                native_observe(handle, False, session.refresh)
+                native_observe(observer, False, session.refresh)
               extension.TurnEnded(_) ->
-                native_observe(handle, True, session.refresh)
+                native_observe(observer, True, session.refresh)
               _ -> Nil
             }
           },
-          close: fn() { native_close(handle) },
+          close: fn() { native_close(closer) },
         ),
       )
+    }
   }
 }
 
@@ -451,6 +456,12 @@ fn native_observe(
 
 @external(erlang, "albedo_mcp", "only")
 fn native_only(handle: Handle, name: String) -> Handle
+
+@external(erlang, "albedo_mcp", "observer")
+fn native_observer(handle: Handle) -> Handle
+
+@external(erlang, "albedo_mcp", "closer")
+fn native_closer(handle: Handle) -> Handle
 
 @external(erlang, "albedo_mcp", "call")
 fn native_call(

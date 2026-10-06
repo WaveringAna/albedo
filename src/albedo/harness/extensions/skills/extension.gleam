@@ -85,18 +85,10 @@ fn skill_command(
   snapshot: catalog.Catalog,
   entry: catalog.Command,
 ) -> command.Command {
-  // Only this skill: the command is copied into every process that holds the
-  // composition, and a copy of the whole catalog per command adds up.
+  // Only this skill, captured once per closure: the command is copied into
+  // every process that holds the composition, and a copy does not keep what
+  // its closures share, so a closure holding another closure pays twice.
   let own = catalog.Catalog(catalog.only(snapshot, [entry.name]).skills, [])
-  let activate = catalog.activate(own, entry.name, _)
-  let prepare = fn(arguments) {
-    let arguments = string.trim(arguments)
-    use activation <- result.try(activate(arguments))
-    Ok(#(
-      display(entry.command, arguments),
-      catalog.activation_prompt(activation),
-    ))
-  }
   command.Command(
     entry.command,
     entry.description,
@@ -104,21 +96,36 @@ fn skill_command(
     True,
     True,
     False,
-    Some(prepare),
+    Some(fn(arguments) { prepare(own, entry, arguments) }),
     fn(_context, caller, args) {
       let arguments = dict.get(args, "arguments") |> result.unwrap("")
       case caller {
         command.UserCall -> {
-          use prepared <- result.try(prepare(arguments))
+          use prepared <- result.try(prepare(own, entry, arguments))
           Ok(command.Turn(prepared.0, prepared.1))
         }
         command.ModelCall -> {
-          use activation <- result.try(activate(arguments))
+          use activation <- result.try(catalog.activate(
+            own,
+            entry.name,
+            arguments,
+          ))
           Ok(command.Data(rpc.activation_json(activation)))
         }
       }
     },
   )
+}
+
+/// The turn a user's invocation submits: its display line and prompt.
+fn prepare(
+  own: catalog.Catalog,
+  entry: catalog.Command,
+  arguments: String,
+) -> Result(#(String, String), String) {
+  let arguments = string.trim(arguments)
+  use activation <- result.try(catalog.activate(own, entry.name, arguments))
+  Ok(#(display(entry.command, arguments), catalog.activation_prompt(activation)))
 }
 
 fn display(name: String, arguments: String) -> String {
