@@ -6,6 +6,7 @@ import (
 	"cmp"
 	"encoding/json"
 	"fmt"
+	"github.com/alecthomas/chroma/v2/lexers"
 	"github.com/charmbracelet/x/ansi"
 	"os"
 	"path/filepath"
@@ -160,19 +161,13 @@ func (r TranscriptRenderer) signoff(entry HistoryEntry) string {
 
 var diffHunk = regexp.MustCompile(`^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@`)
 
-// diffLanguages names the highlighter for a changed file's extension.
-var diffLanguages = map[string]string{
-	"ts": "typescript", "tsx": "typescript", "js": "javascript", "jsx": "javascript",
-	"py": "python", "rs": "rust", "sh": "bash",
-}
-
 func (r TranscriptRenderer) renderDiffPath(diff, path string, width int) string {
 	if width < 8 {
 		return "…"
 	}
 	var rows []string
 	oldLine, newLine := 0, 0
-	lang := cmp.Or(diffLanguages[path[strings.LastIndex(path, ".")+1:]], "text")
+	lexer := lexers.Match(filepath.Base(path))
 	clean := func(text string) string {
 		return strings.Map(func(ch rune) rune {
 			if ch == '\t' || ch < 32 || ch == 127 {
@@ -184,7 +179,7 @@ func (r TranscriptRenderer) renderDiffPath(diff, path string, width int) string 
 	row := func(gutter, content, bg string, syntax bool) {
 		body := keepBackground(DefaultStyles.Faint.Render(content))
 		if syntax {
-			body = keepBackground(HighlightCode(content, lang))
+			body = keepBackground(HighlightCode(content, lexer))
 		}
 		for i, part := range strings.Split(ansi.Hardwrap(body, max(1, width-ansi.StringWidth(gutter)), true), "\n") {
 			prefix := gutter

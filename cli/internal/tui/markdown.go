@@ -12,59 +12,27 @@ import (
 	"charm.land/glamour/v2/ansi"
 	"charm.land/glamour/v2/styles"
 	"github.com/alecthomas/chroma/v2"
+	"github.com/alecthomas/chroma/v2/formatters"
 	chromastyles "github.com/alecthomas/chroma/v2/styles"
 )
 
-// hashComments are the languages whose line comments start with "#".
-var hashComments = wordSet(
-	"python", "py", "sh", "bash", "zsh", "shell", "nu",
-	"nix", "toml", "yaml", "yml", "ruby", "rb", "elixir",
-)
-
-// HighlightCode marks only comments. Every other token keeps the code's own
-// ink: highlighting has shown little measured benefit for comprehension, and
-// a hue per token class drowns the few hues that carry meaning here.
-// Comments stay readable because they are the notes in the code.
-func HighlightCode(code string, lang string) string {
-	l := strings.ToLower(lang)
-	if l == "" || l == "text" || l == "plain" || l == "txt" {
-		return code
+// HighlightCode colors one line of code the way a reply's code blocks are
+// colored: the lexer chroma matched to the file, in the theme built from the
+// terminal's palette. A line no lexer claims stays as it is.
+func HighlightCode(line string, lexer chroma.Lexer) string {
+	if lexer == nil {
+		return line
 	}
-	hash := hashComments[l]
-	comment := faintInk() + ansiItalic
+	tokens, err := chroma.Coalesce(lexer).Tokenise(nil, line)
+	if err != nil {
+		return line
+	}
 	var b strings.Builder
-	chars := []rune(code)
-	for i := 0; i < len(chars); {
-		ch := chars[i]
-		if (hash && ch == '#') || (!hash && ch == '/' && i+1 < len(chars) && chars[i+1] == '/') {
-			j := i
-			for j < len(chars) && chars[j] != '\n' {
-				j++
-			}
-			b.WriteString(comment)
-			b.WriteString(string(chars[i:j]))
-			b.WriteString(ansiReset)
-			b.WriteString(codeInk())
-			i = j
-			continue
-		}
-		if ch == '"' || ch == '\'' || ch == '`' {
-			j := i + 1
-			for j < len(chars) && chars[j] != ch && chars[j] != '\n' {
-				if chars[j] == '\\' {
-					j++
-				}
-				j++
-			}
-			j = min(j+1, len(chars))
-			b.WriteString(string(chars[i:j]))
-			i = j
-			continue
-		}
-		b.WriteRune(ch)
-		i++
+	if formatters.TTY256.Format(&b, chromastyles.Get(codeTheme(transcriptInk)), tokens) != nil {
+		return line
 	}
-	return b.String()
+	// some lexers end every input with a newline, which would wrap a row
+	return strings.ReplaceAll(b.String(), "\n", "")
 }
 
 var markdownThemes sync.Mutex
