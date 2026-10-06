@@ -1098,7 +1098,9 @@ pub fn validate_selection(selected: List(Extension)) -> Result(Nil, String) {
 pub opaque type Composition {
   Composition(
     extensions: List(Extension),
-    contributions: List(Prepared),
+    /// Static contributions only; `contributions` appends the other two, so
+    /// a composition copied to another process carries each plugin once.
+    static: List(Prepared),
     managed: List(Prepared),
     /// The warning-only contributions of the extensions that broke.
     failures: List(Prepared),
@@ -1128,12 +1130,12 @@ pub fn compose(
       unpreparable,
       managed_rejected,
     ])
-  Composition(
-    selected,
-    list.flatten([static, managed, failures]),
-    managed,
-    failures,
-  )
+  Composition(selected, static, managed, failures)
+}
+
+/// Every contribution in order: static, managed, then the broken ones.
+fn contributions(composition: Composition) -> List(Prepared) {
+  list.flatten([composition.static, composition.managed, composition.failures])
 }
 
 /// The working contributions and the broken ones, each in order.
@@ -1229,7 +1231,7 @@ pub fn close(composition: Composition) -> Nil {
 pub fn observers(
   composition: Composition,
 ) -> List(fn(Session, SessionEvent) -> Nil) {
-  list.map(composition.contributions, fn(item) {
+  list.map(contributions(composition), fn(item) {
     fn(session, event) {
       case protect.attempt(fn() { item.value.observe(session, event) }) {
         Ok(_) -> Nil
@@ -1245,7 +1247,7 @@ pub fn extensions(composition: Composition) -> List(Extension) {
 
 /// Nonempty context blocks, labelled by the extension that supplied them.
 pub fn context(composition: Composition) -> List(#(String, String)) {
-  composition.contributions
+  contributions(composition)
   |> list.filter(fn(item) { string.trim(item.value.context) != "" })
   |> list.map(fn(item) { #(item.extension, item.value.context) })
 }
@@ -1259,22 +1261,22 @@ pub fn inactive(composition: Composition) -> List(#(String, String)) {
 }
 
 pub fn warnings(composition: Composition) -> List(String) {
-  list.flat_map(composition.contributions, fn(item) { item.value.warnings })
+  list.flat_map(contributions(composition), fn(item) { item.value.warnings })
 }
 
 pub fn instructions(composition: Composition) -> String {
-  composition.contributions
+  contributions(composition)
   |> list.map(fn(item) { item.value.instructions })
   |> list.filter(fn(value) { string.trim(value) != "" })
   |> string.join("\n")
 }
 
 pub fn tools(composition: Composition) -> List(Tool) {
-  list.flat_map(composition.contributions, fn(item) { item.value.tools })
+  list.flat_map(contributions(composition), fn(item) { item.value.tools })
 }
 
 pub fn python_modules(composition: Composition) -> List(String) {
-  list.flat_map(composition.contributions, fn(item) {
+  list.flat_map(contributions(composition), fn(item) {
     item.value.python_modules
   })
 }
@@ -1282,13 +1284,13 @@ pub fn python_modules(composition: Composition) -> List(String) {
 /// Every session command, in registry order. One list feeds the CLI menu,
 /// the kernel bindings, and the aggregate command routes.
 pub fn commands(composition: Composition) -> List(command.Command) {
-  list.flat_map(composition.contributions, fn(item) { item.value.commands })
+  list.flat_map(contributions(composition), fn(item) { item.value.commands })
 }
 
 pub fn command_entries(
   composition: Composition,
 ) -> List(#(String, command.Command)) {
-  list.flat_map(composition.contributions, fn(item) {
+  list.flat_map(contributions(composition), fn(item) {
     list.map(item.value.commands, fn(command) { #(item.extension, command) })
   })
 }
@@ -1318,7 +1320,7 @@ pub fn client_commands(
 
 pub fn routes(composition: Composition) -> List(Route) {
   contribution_routes(
-    list.map(composition.contributions, fn(item) { item.value }),
+    list.map(contributions(composition), fn(item) { item.value }),
   )
 }
 

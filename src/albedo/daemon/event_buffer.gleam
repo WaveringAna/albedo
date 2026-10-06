@@ -16,6 +16,8 @@ pub fn new() -> Buffer {
 
 /// The session supplies consecutive sequence numbers, starting at one.
 pub fn push(buffer: Buffer, sequence: Int, event: json.Json) -> Buffer {
+  // Kept encoded: one binary is a fraction of the iodata tree it came as.
+  let event = encoded(event)
   let size = string.byte_size(json.to_string(event))
   case size > 4_194_304 {
     // An unretained event is a gap: even a client one event behind must reset.
@@ -42,6 +44,10 @@ fn trim(buffer: Buffer) -> Buffer {
     }
   }
 }
+
+/// The event as one binary, which is still a valid `Json` on Erlang.
+@external(erlang, "erlang", "iolist_to_binary")
+fn encoded(event: json.Json) -> json.Json
 
 /// Events in wire order, or a gap requiring a durable transcript reset.
 pub fn since(

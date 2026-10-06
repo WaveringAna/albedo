@@ -3,8 +3,14 @@ import albedo/daemon/event_buffer as buffer
 import gleam/int
 import gleam/json
 import gleam/list
+import gleam/result
 import gleam/string
 import gleeunit/should
+
+/// Replayed events as the text a client receives: the buffer keeps them encoded.
+fn texts(replayed: Result(List(json.Json), Nil)) -> Result(List(String), Nil) {
+  result.map(replayed, list.map(_, json.to_string))
+}
 
 pub fn replay_is_ordered_and_only_a_gap_requires_reset_test() -> Nil {
   let events =
@@ -29,10 +35,13 @@ pub fn byte_budget_evicts_oldest_without_splitting_unicode_test() -> Nil {
     buffer.new()
     |> buffer.push(1, large)
     |> buffer.push(2, large)
-  buffer.since(events, 0, 2) |> should.equal(Ok([large, large]))
+  let large = json.to_string(large)
+  buffer.since(events, 0, 2) |> texts |> should.equal(Ok([large, large]))
   let events = buffer.push(events, 3, json.string("next"))
   buffer.since(events, 0, 3) |> should.equal(Error(Nil))
-  buffer.since(events, 1, 3) |> should.equal(Ok([large, json.string("next")]))
+  buffer.since(events, 1, 3)
+  |> texts
+  |> should.equal(Ok([large, "\"next\""]))
 }
 
 pub fn oversized_event_leaves_a_replay_gap_until_the_client_resets_test() -> Nil {
@@ -43,5 +52,5 @@ pub fn oversized_event_leaves_a_replay_gap_until_the_client_resets_test() -> Nil
   buffer.since(events, 2, 2) |> should.equal(Ok([]))
   let events = buffer.push(events, 3, json.string("after"))
   buffer.since(events, 1, 3) |> should.equal(Error(Nil))
-  buffer.since(events, 2, 3) |> should.equal(Ok([json.string("after")]))
+  buffer.since(events, 2, 3) |> texts |> should.equal(Ok(["\"after\""]))
 }

@@ -101,7 +101,7 @@ cursor. Opening it, watching its stream, or submitting to it loads it. Reading
 stored history instead of the session resource.
 
 The maintenance sweep releases an idle kernel after `ALBEDO_IDLE_SECONDS`
-(default 31 minutes) and unloads a session whose last turn (`activity_at`) is
+(default 10 minutes) and unloads a session whose last turn (`activity_at`) is
 older than `ALBEDO_UNLOAD_SECONDS` (default one hour): the provider's prompt
 cache has expired by then. The session refuses while a turn runs or waits, a
 client watches its stream, or a background job is live. Unloading saves the
@@ -109,6 +109,11 @@ kernel's variables like a release. The next request loads it again.
 
 Listing sessions reads loaded sessions' summaries but does not count as
 attention, so an open session list never keeps a kernel alive.
+
+The same sweep collects every waiting process whose heap passed 1 MB
+(`albedo_daemon:collect_idle`): a long-lived actor otherwise keeps the heap a
+busy turn grew it to. The launcher's VM defaults (`priv/bin/albedo-daemon`)
+then hand the freed carriers back to the OS instead of caching them.
 
 The session list marks a session active (green) while it is loaded and its
 last turn is under an hour old.

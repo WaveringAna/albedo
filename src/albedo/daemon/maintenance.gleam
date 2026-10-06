@@ -54,6 +54,7 @@ pub fn run(sweep: Sweep) -> Nil {
     }
     False -> Nil
   }
+  collect_idle()
 }
 
 /// Saved pastes expire on the same schedule as kernel state.
@@ -216,6 +217,9 @@ fn expire(
     }
   }
 }
+
+@external(erlang, "albedo_daemon", "collect_idle")
+fn collect_idle() -> Nil
 
 @external(erlang, "albedo_daemon", "rss")
 fn rss(pids: List(Int)) -> List(#(Int, Int))

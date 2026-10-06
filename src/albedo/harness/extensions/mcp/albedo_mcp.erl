@@ -1,7 +1,7 @@
 -module(albedo_mcp).
 -export([check_candidate/3]).
 
--export([prepare/5, definitions/1, context/1, offline/1, observe/3, call/3, close/1,
+-export([prepare/5, definitions/1, context/1, offline/1, observe/3, only/2, call/3, close/1,
          url_allowed/1, validate_settings/3]).
 
 -define(DEFAULT_STARTUP_MS, 20000).
@@ -413,6 +413,10 @@ definitions(#{operations := Operations}) ->
     } || O <- Operations])).
 
 context(#{context := Context}) -> Context.
+
+%% The handle a single tool's call needs: the servers and that one operation.
+only(Handle = #{operations := Operations}, Advertised) ->
+    Handle#{operations => [O || O <- Operations, maps:get(advertised, O) =:= Advertised]}.
 
 call(#{servers := Servers, operations := Operations}, Advertised, ArgumentsJson) ->
     try

@@ -84,7 +84,10 @@ fn skill_command(
   snapshot: catalog.Catalog,
   entry: catalog.Command,
 ) -> command.Command {
-  let activate = catalog.activate(snapshot, entry.name, _)
+  // Only this skill: the command is copied into every process that holds the
+  // composition, and a copy of the whole catalog per command adds up.
+  let own = catalog.Catalog(catalog.only(snapshot, [entry.name]).skills, [])
+  let activate = catalog.activate(own, entry.name, _)
   let prepare = fn(arguments) {
     let arguments = string.trim(arguments)
     use activation <- result.try(activate(arguments))

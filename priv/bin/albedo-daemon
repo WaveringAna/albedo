@@ -1,7 +1,11 @@
 #!/bin/sh
 # VM defaults must be installed before Erlang starts in every launch mode.
+# The daemon waits on the network and its kernels, so two schedulers that never
+# spin carry it. Mostly-empty heap and binary carriers are abandoned (acul) and
+# their free pages handed back (acful), and freed segments are not cached
+# (MMmcs), so memory a busy turn took goes back once it is over.
 set -eu
-vm_defaults='+P 65536 +Q 16384 +MBsbct 16 +MHsbct 32 +MBlmbcs 256 +MHlmbcs 256 +MBsmbcs 32 +MHsmbcs 32 +MBas aobf +MHas aobf +MBacul 0 +MHacul 0'
+vm_defaults='+P 65536 +Q 16384 +S 2:2 +SDcpu 2:2 +SDio 2 +sbwt none +sbwtdcpu none +sbwtdio none +MBsbct 16 +MHsbct 32 +MBlmbcs 256 +MHlmbcs 256 +MBsmbcs 32 +MHsmbcs 32 +MBas aobf +MHas aobf +MBacul 50 +MHacul 50 +MBacful 50 +MHacful 50 +MMmcs 0'
 ERL_FLAGS="$vm_defaults ${ERL_FLAGS:-}"
 export ERL_FLAGS
 if [ "$#" -eq 0 ]; then

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from typing import SupportsIndex
-from collections.abc import Callable
 
 import asyncio
 import base64
@@ -18,7 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
-from . import javascript as js
+from . import hooks, javascript as js
 from .capture import CaptureLimits, FrameSession, Reference, capture_frames
 from .errors import (
     ActionOutcomeUnknown,
@@ -46,14 +45,6 @@ from .recovery import PageCDPSession
 if TYPE_CHECKING:
     from .session import Browser
 from .transport import CDPSession, JSON, positive
-
-
-_attach_image: Callable[[bytes], str] | None = None
-
-
-def register_attach_image(callback: Callable[[bytes], str] | None) -> None:
-    global _attach_image
-    _attach_image = callback
 
 
 def now() -> str:
@@ -1218,9 +1209,9 @@ class Page:
         if destination.suffix.lower() != ".png":
             raise ValueError("Screenshot path must end in .png")
         raw = base64.b64decode(data, validate=True)
-        if _attach_image is not None:
+        if hooks.attach_image is not None:
             try:
-                _attach_image(raw)
+                hooks.attach_image(raw)
             except Exception:
                 pass
 

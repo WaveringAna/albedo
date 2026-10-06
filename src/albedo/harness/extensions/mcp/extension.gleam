@@ -223,6 +223,10 @@ fn prepare(
           context: native_context(handle),
           instructions: "MCP tool calls may have side effects. Never retry a failed or interrupted MCP call without first inspecting its effects; transport loss means the outcome is unknown.",
           tools: list.map(definitions, fn(definition) {
+            // The call captures only its own operation: every process that
+            // holds the composition gets its own copy of each tool.
+            let name = definition.name
+            let own = native_only(handle, name)
             extension.Tool(
               types.Tool(
                 definition.name,
@@ -231,7 +235,7 @@ fn prepare(
                 False,
               ),
               fn(_, arguments) {
-                native_call(handle, definition.name, arguments)
+                native_call(own, name, arguments)
                 |> result.map(extension.text)
                 |> result.map_error(extension.Refused)
               },
@@ -353,6 +357,9 @@ fn native_observe(
   turn_ended: Bool,
   refresh: fn(String) -> Nil,
 ) -> Nil
+
+@external(erlang, "albedo_mcp", "only")
+fn native_only(handle: Handle, name: String) -> Handle
 
 @external(erlang, "albedo_mcp", "call")
 fn native_call(

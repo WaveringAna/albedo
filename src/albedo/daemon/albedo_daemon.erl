@@ -1,6 +1,6 @@
 -module(albedo_daemon).
 -include_lib("kernel/include/file.hrl").
--export([defaults/0,refuse_home/1,env/1,free_port/0,ready/3,read_config/1,directory/1,shutdown/0,rss/1,watch_parent/1,hold/1,http_request/1,build_digest/0,tree_digest/1]).
+-export([defaults/0,refuse_home/1,env/1,free_port/0,ready/3,read_config/1,directory/1,shutdown/0,rss/1,collect_idle/0,watch_parent/1,hold/1,http_request/1,build_digest/0,tree_digest/1]).
 env(Name) -> case os:getenv(binary_to_list(Name)) of false -> <<>>; Value -> unicode:characters_to_binary(Value) end.
 %% Home and authentication belong to the daemon, including direct starts.
 defaults() ->
@@ -171,6 +171,18 @@ watch_parent(Parent) ->
             nil;
         _ -> nil
     end.
+
+%% Collect every waiting process whose heap has grown past 1 MB. A long-lived
+%% actor keeps the heap a busy moment grew to until it fills again; a full
+%% collection shrinks it to what it holds, so the allocator can give the rest
+%% back. Run from the maintenance sweep, never from an actor's own loop.
+collect_idle() ->
+    [erlang:garbage_collect(Pid)
+     || Pid <- erlang:processes(),
+        [{status, waiting}, {message_queue_len, 0}, {total_heap_size, Words}] <-
+            [erlang:process_info(Pid, [status, message_queue_len, total_heap_size])],
+        Words * erlang:system_info(wordsize) > 1048576],
+    nil.
 
 %% Resident memory of live kernels, in kibibytes. One ps per sweep, never per session;
 %% a pid ps does not report is simply absent from the result.

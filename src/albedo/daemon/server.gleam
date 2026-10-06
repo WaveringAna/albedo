@@ -570,7 +570,7 @@ pub fn main() -> Nil {
     Config(
       home,
       token,
-      setting("ALBEDO_IDLE_SECONDS", 31 * 60, 1, 604_800) * 1000,
+      setting("ALBEDO_IDLE_SECONDS", 10 * 60, 1, 604_800) * 1000,
       setting("ALBEDO_UNLOAD_SECONDS", 60 * 60, 1, 604_800) * 1000,
       setting("ALBEDO_KERNEL_BUDGET_MB", 2048, 64, 1_048_576) * 1024,
       setting("ALBEDO_STATE_EXPIRY_SECONDS", 1_209_600, 1, 31_536_000),
@@ -584,8 +584,9 @@ pub fn main() -> Nil {
   }
   // A fixed port gives services such as the proxy a stable base url.
   let assert Ok(port) = start(config, setting("ALBEDO_PORT", 0, 0, 65_535))
-  let assert Ok(_) = ready(home, port, token)
+  // Before readiness, so a client that sees the daemon can already inspect it.
   inspect(home)
+  let assert Ok(_) = ready(home, port, token)
   watch_parent(env("ALBEDO_PARENT_PID"))
   process.sleep_forever()
 }
