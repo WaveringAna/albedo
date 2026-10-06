@@ -174,15 +174,15 @@ func (m *AgentsViewModel) step() {
 	}
 	m.packets = live
 	for key, h := range m.heat {
-		if slices.ContainsFunc(m.packets, func(p agentPacket) bool { return p.edge == key }) {
-			continue
-		}
-		h -= dt * 0.8
-		if h <= 0 {
+		if h -= dt * 0.8; h <= 0 {
 			delete(m.heat, key)
-			continue
+		} else {
+			m.heat[key] = h
 		}
-		m.heat[key] = h
+	}
+	// an edge still carrying a packet stays hot
+	for _, p := range m.packets {
+		m.heat[p.edge] = 1
 	}
 	floats := m.floats[:0]
 	for _, f := range m.floats {

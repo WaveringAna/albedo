@@ -25,6 +25,8 @@ func (m *AppModel) handleChatLifecycle(msg tea.Msg) (tea.Cmd, bool) {
 	case ChatProgressTickMsg:
 		// a tick dropped under a modal would leave the face frozen for good
 		sid, forward = sm.SessionID, true
+	case ChatLiveDrawMsg:
+		sid, forward = sm.SessionID, true
 	case ChatStatusMsg:
 		sid, forward = sm.SessionID, true
 	case ChatStreamResultMsg:

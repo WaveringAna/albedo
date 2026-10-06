@@ -8,6 +8,7 @@ import (
 	"maps"
 	"slices"
 	"strings"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -199,8 +200,7 @@ func (m *ChatModel) refreshViewportContent() int {
 		last = laneOf(entries[len(entries)-1])
 		stacks = Compact(entries[len(entries)-1], m.Flags)
 		if burst := trailingBurst(entries, m.Flags); len(burst) > 0 {
-			key := burstRowsKey{entries: len(entries), evicted: m.History.EvictedCount(), epoch: m.burstEpoch, width: m.Renderer.BodyWidth, workspace: m.Renderer.Workspace, flags: m.Flags}
-			if key != m.burstRowsKey {
+			if key := m.rowsKey(); key != m.burstRowsKey {
 				m.burstRows = m.Renderer.BurstBlock(entries[:len(entries)-len(burst)], burst, m.Flags)
 				m.burstRowsKey = key
 				m.burstRenders++
@@ -211,8 +211,7 @@ func (m *ChatModel) refreshViewportContent() int {
 	if m.transcript.activeKind != StreamKindNone && m.transcript.activeText != "" &&
 		(m.transcript.activeKind != StreamKindThinking || m.Flags.Thinking) {
 		activeEntry := HistoryEntry{Kind: m.transcript.activeEntryKind(), Speaker: m.AgentName, Text: m.transcript.activeText, Live: true}
-		rows, _ := m.Renderer.Block(m.History.Entries(), activeEntry, m.Flags)
-		allLines = append(allLines, rows...)
+		allLines = append(allLines, m.liveBlock(activeEntry)...)
 		last, stacks = laneOf(activeEntry), false
 	}
 
@@ -261,6 +260,24 @@ func (m *ChatModel) refreshViewportContent() int {
 	return maxScroll
 }
 
+// rowsKey names what rows drawn after the settled transcript depend on.
+func (m ChatModel) rowsKey() burstRowsKey {
+	return burstRowsKey{entries: m.History.Len(), evicted: m.History.EvictedCount(), epoch: m.burstEpoch, width: m.Renderer.BodyWidth, workspace: m.Renderer.Workspace, flags: m.Flags}
+}
+
+// liveBlock is the reply streaming in as rows, rendered again only when the
+// reply or the transcript end before it changed.
+func (m *ChatModel) liveBlock(entry HistoryEntry) []string {
+	key := liveRowsKey{burstRowsKey: m.rowsKey(), text: entry.Text, kind: entry.Kind}
+	if key != m.liveRowsKey {
+		start := time.Now()
+		m.liveRows, _ = m.Renderer.Block(m.History.Entries(), entry, m.Flags)
+		m.liveRowsKey, m.liveDrawn = key, start
+		m.liveInterval = max(liveFrame, 4*time.Since(start))
+	}
+	return m.liveRows
+}
+
 // pendingRows are your messages the daemon has not echoed yet, greyed out at
 // the end of the transcript where they will settle. Each follows whatever is
 // live above it, so the rails and names join up as they will once settled.
@@ -268,7 +285,7 @@ func (m ChatModel) pendingRows() []string {
 	if len(m.pendingUsers) == 0 && len(m.pendingContinuations) == 0 {
 		return nil
 	}
-	before := slices.Clone(m.History.Entries())
+	before := slices.Clone(recent(m.History.Entries()))
 	if m.transcript.activeKind != StreamKindNone && m.transcript.activeText != "" {
 		before = append(before, HistoryEntry{Kind: m.transcript.activeEntryKind(), Speaker: m.AgentName})
 	}

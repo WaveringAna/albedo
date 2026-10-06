@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"cmp"
 	"crypto/sha256"
 	"fmt"
 	"regexp"
@@ -129,23 +130,26 @@ func markdownStyle() ansi.StyleConfig {
 }
 
 // RenderMarkdownAnsi renders text block by block. Glamour spaces a block by
-// the one before it and no further, so a finished block renders once and a
-// reply streaming in re-renders only its last block.
+// the one before it and no further, so each block renders once.
 func RenderMarkdownAnsi(text string, width int) string {
-	if width <= 0 {
-		width = 80
-	}
-	return renderBlocks(text, width)
+	return renderBlocks(text, cmp.Or(max(0, width), 80), true)
+}
+
+// renderGrowing is RenderMarkdownAnsi for a reply streaming in: its last
+// block is still growing, so it is rendered again each time and not kept.
+func renderGrowing(text string, width int) string {
+	return renderBlocks(text, cmp.Or(max(0, width), 80), false)
 }
 
 // renderCopyable renders text to width with its wrapped rows marked, so a
 // copy can join them back into the lines they were.
 func renderCopyable(text string, width int) string {
-	return markWraps(RenderMarkdownAnsi(text, width), renderBlocks(text, 0))
+	return markWraps(RenderMarkdownAnsi(text, width), renderBlocks(text, 0, true))
 }
 
-// renderBlocks is RenderMarkdownAnsi at width, or unwrapped at 0.
-func renderBlocks(text string, width int) string {
+// renderBlocks is text rendered at width, or unwrapped at 0. Unless whole,
+// its last block may still grow and is not cached.
+func renderBlocks(text string, width int, whole bool) string {
 	blocks := markdownBlocks(text)
 	var b strings.Builder
 	for i, block := range blocks {
@@ -153,7 +157,7 @@ func renderBlocks(text string, width int) string {
 		if i > 0 {
 			prev = blocks[i-1]
 		}
-		piece, ok := markdownPiece(prev, block, width, i < len(blocks)-1)
+		piece, ok := markdownPiece(prev, block, width, whole || i < len(blocks)-1)
 		if !ok {
 			return strings.Trim(renderMarkdown(text, width), " \n")
 		}

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"albedo/cli/internal/daemon"
 	tea "charm.land/bubbletea/v2"
@@ -209,5 +210,29 @@ func TestReadingPositionSurvivesOutputPastTheLineCap(t *testing.T) {
 	m.appendSettledEntry(block("tail"))
 	if !m.Follow || len(m.settledLines) > MaxSettledLines {
 		t.Fatalf("caps not restored when following: follow=%v lines=%d", m.Follow, len(m.settledLines))
+	}
+}
+
+func TestAGrowingReplyRedrawsAtMostOncePerIntervalAndShowsItsLastTokens(t *testing.T) {
+	// Redraw pacing is a timing decision inside one Update; an e2e cannot
+	// tell a throttled frame from a slow terminal.
+	m := newTestChatModel(t, &daemon.Session{ID: "s"})
+	m.SetSize(80, 20)
+	delta := func(text string) tea.Cmd {
+		var cmd tea.Cmd
+		m, cmd = m.Update(ChatStreamEventMsg{SessionID: m.SessionID, Generation: m.Generation,
+			Event: daemon.StreamEvent{Type: daemon.EventText, Text: text, MessageID: "m"}})
+		return cmd
+	}
+	delta("first ")
+	m.liveInterval = time.Hour
+	delta("second ")
+	delta("third")
+	if strings.Contains(m.Viewport.View(), "third") || !m.liveDue {
+		t.Fatal("a reply that only grew was redrawn inside its interval")
+	}
+	m, _ = m.Update(ChatLiveDrawMsg{SessionID: m.SessionID, Generation: m.Generation})
+	if !strings.Contains(ansi.Strip(m.Viewport.View()), "first second third") {
+		t.Fatalf("the deferred redraw lost the last tokens: %q", ansi.Strip(m.Viewport.View()))
 	}
 }

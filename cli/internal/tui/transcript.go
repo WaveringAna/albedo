@@ -75,6 +75,17 @@ func priorOf(entries []HistoryEntry) prior {
 	return p
 }
 
+// recent is as much of the end of entries as priorOf and a separator read:
+// back to the newest entry with a speaker.
+func recent(entries []HistoryEntry) []HistoryEntry {
+	for i := len(entries) - 1; i >= 0; i-- {
+		if speaker(entries[i]) != "" {
+			return entries[i:]
+		}
+	}
+	return entries
+}
+
 // awayMs is the pause before your message that earns a "later" note.
 const awayMs = 30 * 60_000
 
@@ -487,8 +498,13 @@ func toolFailed(entry HistoryEntry) bool {
 var toolErrorLine = regexp.MustCompile(`(?im)^(?:error:|cancelled:|traceback \(most recent call last\):)`)
 
 func (r TranscriptRenderer) faintMarkdownRows(text string, width int) []string {
+	return r.faintRows(RenderMarkdownAnsi(text, width), width)
+}
+
+// faintRows is rendered markdown greyed out and wrapped to width.
+func (r TranscriptRenderer) faintRows(rendered string, width int) []string {
 	var rows []string
-	for line := range strings.SplitSeq(RenderMarkdownAnsi(text, width), "\n") {
+	for line := range strings.SplitSeq(rendered, "\n") {
 		for _, wrapped := range wrapOrChunkLine(line, width) {
 			rows = append(rows, r.Styles.Faint.Render(ansi.Strip(wrapped)))
 		}
@@ -516,7 +532,7 @@ func (r TranscriptRenderer) RenderAfter(before prior, entry HistoryEntry, flags 
 		}
 		render := renderCopyable
 		if entry.Live {
-			render = RenderMarkdownAnsi
+			render = renderGrowing
 		}
 		body := render(entry.Text, width)
 		if entry.Kind == EntryUser && (entry.Source == "" || entry.Source == "chat") {
@@ -526,7 +542,11 @@ func (r TranscriptRenderer) RenderAfter(before prior, entry HistoryEntry, flags 
 	case EntryThinking:
 		rows = []string{markChrome + r.Styles.Faint.Render("thinking")}
 		if flags.Thinking {
-			rows = append(rows, r.faintMarkdownRows(entry.Text, width)...)
+			render := RenderMarkdownAnsi
+			if entry.Live {
+				render = renderGrowing
+			}
+			rows = append(rows, r.faintRows(render(entry.Text, width), width)...)
 		}
 	case EntryTool:
 		trace := entry.ToolTrace

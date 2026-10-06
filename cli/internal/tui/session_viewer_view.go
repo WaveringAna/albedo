@@ -6,7 +6,6 @@ import (
 	"cmp"
 	"fmt"
 	"path/filepath"
-	"slices"
 	"strings"
 	"time"
 
@@ -328,25 +327,25 @@ func (m SessionViewer) column(width, height int, now time.Time) []string {
 // scrollWindow shows exactly width × height of lines, centred on selectedAt
 // when they overflow, with ··· where lines were cut off.
 func scrollWindow(all []string, selectedAt, width, height int) []string {
-	if len(all) > height {
-		start := min(max(0, selectedAt-height/2), len(all)-height)
-		window := slices.Clone(all[start : start+height])
-		if height >= 3 {
-			more := DefaultStyles.Faint.Render("   ···")
-			if start > 0 {
-				window[0] = more
-			}
-			if start+height < len(all) {
-				window[len(window)-1] = more
-			}
-		}
-		all = window
+	return drawWindow(len(all), func(i int) string { return all[i] }, selectedAt, width, height)
+}
+
+// drawWindow is scrollWindow over n lines that line draws on demand, so a
+// long list draws only the lines that show.
+func drawWindow(n int, line func(int) string, selectedAt, width, height int) []string {
+	start := 0
+	if n > height {
+		start = min(max(0, selectedAt-height/2), n-height)
 	}
+	cut := n > height && height >= 3
 	out := make([]string, height)
 	for i := range out {
-		if i < len(all) {
-			out[i] = svFit(all[i], width)
-		} else {
+		switch at := start + i; {
+		case cut && (i == 0 && start > 0 || i == height-1 && at < n-1):
+			out[i] = svFit(DefaultStyles.Faint.Render("   ···"), width)
+		case at < n:
+			out[i] = svFit(line(at), width)
+		default:
 			out[i] = strings.Repeat(" ", width)
 		}
 	}

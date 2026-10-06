@@ -20,6 +20,22 @@ type ContextDetail struct {
 	Section daemon.ContextSection
 	Page    int
 	Scroll  int
+	// wrapped is wrappedFrom's content at wrappedWidth, kept because every
+	// scroll step reads it and a page can be long.
+	wrapped      []string
+	wrappedWidth int
+	wrappedFrom  *daemon.ContextPage
+}
+
+// rows is the page's content wrapped to width.
+func (d *ContextDetail) rows(width int) []string {
+	if d.Value == nil {
+		return nil
+	}
+	if d.wrappedFrom != d.Value || d.wrappedWidth != width {
+		d.wrapped, d.wrappedWidth, d.wrappedFrom = wrapContextContent(d.Value.Content, width), width, d.Value
+	}
+	return d.wrapped
 }
 
 type ContextDoneMsg struct{}
@@ -126,10 +142,7 @@ func (m ContextInspectorModel) Update(msg tea.Msg) (ContextInspectorModel, tea.C
 		}
 
 		if m.Detail != nil {
-			lines := []string{}
-			if m.Detail.Value != nil {
-				lines = wrapContextContent(m.Detail.Value.Content, max(1, m.Width-4))
-			}
+			lines := m.Detail.rows(m.Width - 4)
 			visibleRows := max(1, m.Height-7)
 			maxScroll := max(0, len(lines)-visibleRows)
 
@@ -223,7 +236,7 @@ func (m ContextInspectorModel) View() string {
 				line(DefaultStyles.Warning.Render("omitted: " + d.Value.Omitted))
 			}
 			line("")
-			rows := wrapContextContent(d.Value.Content, m.Width-4)
+			rows := d.rows(m.Width - 4)
 			visible := 17
 			if m.Height > 0 {
 				visible = max(1, m.Height-7)

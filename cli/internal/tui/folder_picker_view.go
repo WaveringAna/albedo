@@ -143,16 +143,18 @@ func tailFit(s string, w int) string {
 
 // list is the section rule over the rows, at exactly width × height.
 func (m FolderPicker) list(width, height int) []string {
-	all := []string{sectionRule(m.section, len(m.rows), width)}
+	if len(m.rows) == 0 {
+		return scrollWindow([]string{sectionRule(m.section, 0, width), DefaultStyles.Faint.Render("   " + m.emptyNote())}, 1, width, height)
+	}
 	here, latest := m.workspace(), m.latestOther()
 	now := time.Now()
-	for i, row := range m.rows {
-		all = append(all, m.row(row, i == m.cursor, row.path == here, row.path == latest, width, now))
-	}
-	if len(m.rows) == 0 {
-		all = append(all, DefaultStyles.Faint.Render("   "+m.emptyNote()))
-	}
-	return scrollWindow(all, m.cursor+1, width, height)
+	return drawWindow(len(m.rows)+1, func(i int) string {
+		if i == 0 {
+			return sectionRule(m.section, len(m.rows), width)
+		}
+		row := m.rows[i-1]
+		return m.row(row, i-1 == m.cursor, row.path == here, row.path == latest, width, now)
+	}, m.cursor+1, width, height)
 }
 
 // typedHost is the host a remote listing is typed for, as a row.

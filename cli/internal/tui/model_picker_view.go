@@ -130,19 +130,25 @@ func (m ModelPickerModel) selection() string {
 // list renders the rows grouped by profile at exactly width × height.
 func (m ModelPickerModel) list(width, height int) []string {
 	cols := m.layout(width)
-	var all []string
+	// Rules and notes are drawn here; a model row only once it shows.
+	type line struct {
+		text string
+		row  int
+	}
+	var all []line
 	selectedAt := -1
+	note := func(text string) { all = append(all, line{text: text, row: -1}) }
 	section := func(label string, count int) {
 		if len(all) > 0 && height >= 10 {
-			all = append(all, "")
+			note("")
 		}
-		all = append(all, sectionRule(label, count, width))
+		note(sectionRule(label, count, width))
 	}
 	add := func(i int) {
 		if i == m.cursor {
 			selectedAt = len(all)
 		}
-		all = append(all, m.row(m.rows[i], i == m.cursor, width, cols))
+		all = append(all, line{row: i})
 	}
 
 	i := 0
@@ -157,9 +163,9 @@ func (m ModelPickerModel) list(width, height int) []string {
 		}
 		switch c := m.catalog(profile); {
 		case c.loading:
-			all = append(all, DefaultStyles.Faint.Render("  listing models…"))
+			note(DefaultStyles.Faint.Render("  listing models…"))
 		case c.failed:
-			all = append(all, DefaultStyles.Faint.Render("  Could not list models. Type a model ID to continue."))
+			note(DefaultStyles.Faint.Render("  Could not list models. Type a model ID to continue."))
 		}
 	}
 	if i < len(m.rows) {
@@ -169,9 +175,15 @@ func (m ModelPickerModel) list(width, height int) []string {
 		}
 	}
 	if len(m.rows) == 0 {
-		all = append(all, DefaultStyles.Faint.Render("  no models match"))
+		note(DefaultStyles.Faint.Render("  no models match"))
 	}
-	return scrollWindow(all, selectedAt, width, height)
+	return drawWindow(len(all), func(i int) string {
+		l := all[i]
+		if l.row < 0 {
+			return l.text
+		}
+		return m.row(m.rows[l.row], l.row == m.cursor, width, cols)
+	}, selectedAt, width, height)
 }
 
 func (m ModelPickerModel) row(r modelRow, selected bool, width int, cols modelColumns) string {
@@ -214,24 +226,23 @@ func markedCell(s string, hits []int, width int, base lipgloss.Style) string {
 	}
 	hit := DefaultStyles.Prompt.Inherit(base)
 	var b strings.Builder
-	run, marked := "", false
-	flush := func() {
-		if run != "" {
+	start, marked := 0, false
+	flush := func(end int) {
+		if end > start {
 			style := base
 			if marked {
 				style = hit
 			}
-			b.WriteString(style.Render(run))
+			b.WriteString(style.Render(plain[start:end]))
 		}
 	}
-	for i, r := range plain {
+	for i := range plain {
 		if m := i < kept && slices.Contains(hits, i); m != marked {
-			flush()
-			run, marked = "", m
+			flush(i)
+			start, marked = i, m
 		}
-		run += string(r)
 	}
-	flush()
+	flush(len(plain))
 	return b.String() + strings.Repeat(" ", max(0, width-ansi.StringWidth(plain)))
 }
 

@@ -82,6 +82,17 @@ type burstRowsKey struct {
 	flags     DisplayFlags
 }
 
+// liveRowsKey is what the cached rows of the reply streaming in were
+// rendered for: the same transcript end as a burst, and the reply itself.
+type liveRowsKey struct {
+	burstRowsKey
+	text string
+	kind EntryKind
+}
+
+// liveFrame is the shortest wait between two renderings of a growing reply.
+const liveFrame = 33 * time.Millisecond
+
 type ChatModel struct {
 	Styles Styles
 
@@ -131,7 +142,16 @@ type ChatModel struct {
 	// burstRows is the rendered frame of the trailing run of compact entries.
 	// Its key names every input the rows depend on, so a refresh that changes
 	// nothing redraws nothing, and nothing can ask for a stale frame.
-	burstRows    []string
+	burstRows []string
+	// liveRows is the reply streaming in, rendered whole. While only its
+	// text grows it is rendered again at most once per liveInterval, a few
+	// times what the last rendering took, so a long reply cannot spend the
+	// whole stream re-rendering itself; liveDue is a later redraw on its way.
+	liveRows     []string
+	liveRowsKey  liveRowsKey
+	liveDrawn    time.Time
+	liveInterval time.Duration
+	liveDue      bool
 	Notices      Notices
 	settledLines []string
 
@@ -372,12 +392,18 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 		if msg.Event.Type == daemon.EventInvalidate {
 			return m, tea.Batch(m.waitForNextEvent(), wake)
 		}
+		before, entries := m.transcript, m.History.Len()
 		m.handleStreamEvent(msg.Event)
-		m.refreshViewportContent()
+		var draw tea.Cmd
+		if m.onlyGrew(before, entries) && time.Since(m.liveDrawn) < m.liveInterval {
+			draw = m.drawLiveLater()
+		} else {
+			m.refreshViewportContent()
+		}
 
-		var fade tea.Cmd
+		var fade, window tea.Cmd
 		if msg.Event.Type == daemon.EventUsage {
-			fade = m.cacheFadeCmd()
+			fade, window = m.cacheFadeCmd(), m.windowCmd()
 		}
 		var reconcile []tea.Cmd
 		if msg.Event.Type == daemon.EventReset {
@@ -392,8 +418,15 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 				}
 			}
 		}
-		reconcile = append(reconcile, m.waitForNextEvent(), m.startAnimation(), m.windowCmd(), fade, wake)
+		reconcile = append(reconcile, m.waitForNextEvent(), m.startAnimation(), window, fade, wake, draw)
 		return m, tea.Batch(reconcile...)
+
+	case ChatLiveDrawMsg:
+		if msg.SessionID == m.SessionID && msg.Generation == m.Generation {
+			m.liveDue = false
+			m.refreshViewportContent()
+		}
+		return m, nil
 
 	case ChatWindowMsg:
 		if msg.SessionID == m.SessionID && msg.Generation == m.Generation && msg.Err == nil {

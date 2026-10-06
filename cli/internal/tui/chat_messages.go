@@ -54,6 +54,12 @@ type ChatStreamEventMsg struct {
 	Generation int64
 }
 
+// ChatLiveDrawMsg redraws a growing reply whose last tokens waited.
+type ChatLiveDrawMsg struct {
+	SessionID  string
+	Generation int64
+}
+
 type ChatProgressTickMsg struct {
 	SessionID  string
 	Generation int64

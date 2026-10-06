@@ -25,6 +25,27 @@ func (m ChatModel) progressTickCmd() tea.Cmd {
 	return tea.Tick(faceInterval, func(time.Time) tea.Msg { return ChatProgressTickMsg{SessionID: id, Generation: generation} })
 }
 
+// onlyGrew is whether an event did nothing but lengthen the reply streaming
+// in, given the stream state and history length from before it.
+func (m ChatModel) onlyGrew(before transcriptState, entries int) bool {
+	after := m.transcript
+	return before.activeText != "" && len(after.activeText) > len(before.activeText) &&
+		after.activeKind == before.activeKind && after.activeMessageID == before.activeMessageID &&
+		m.History.Len() == entries
+}
+
+// drawLiveLater redraws the growing reply once its interval has passed.
+func (m *ChatModel) drawLiveLater() tea.Cmd {
+	if m.liveDue {
+		return nil
+	}
+	m.liveDue = true
+	id, generation := m.SessionID, m.Generation
+	return tea.Tick(time.Until(m.liveDrawn.Add(m.liveInterval)), func(time.Time) tea.Msg {
+		return ChatLiveDrawMsg{SessionID: id, Generation: generation}
+	})
+}
+
 func (m ChatModel) waitForNextEvent() tea.Cmd {
 	sessID, gen, ch, ctx := m.SessionID, m.Generation, m.eventChan, m.streamCtx
 	return func() tea.Msg {
@@ -114,7 +135,8 @@ func (m ChatModel) statusCmd() tea.Cmd {
 }
 
 // windowCmd reads the context window when usage names a model whose window
-// has not been read yet.
+// has not been read yet. Only a usage event asks, so a failed read is tried
+// again at the next one rather than on every event.
 func (m ChatModel) windowCmd() tea.Cmd {
 	if m.Usage == nil || m.windowModel != nil && *m.windowModel == m.Usage.Model {
 		return nil

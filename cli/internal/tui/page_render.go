@@ -76,8 +76,18 @@ func (m PageViewModel) selectedAt(height int) int {
 	if len(m.Doc.Rows) == 0 {
 		return 0
 	}
+	return m.lineOf(m.currentIndex(), height)
+}
+
+// listed is how many lines listLines makes, without drawing them.
+func (m PageViewModel) listed(height int) int {
+	return max(1, m.lineOf(len(m.Doc.Rows)-1, height)+1)
+}
+
+// lineOf is where row n sits in listLines.
+func (m PageViewModel) lineOf(n, height int) int {
 	at := 0
-	for i, row := range m.Doc.Rows[:m.currentIndex()+1] {
+	for i, row := range m.Doc.Rows[:n+1] {
 		if i == 0 || row.Badge != m.Doc.Rows[i-1].Badge {
 			at++
 			if i > 0 && height >= 10 {
@@ -210,7 +220,7 @@ func (m PageViewModel) View() string {
 		lines = append(lines, " "+m.Styles.Faint.Render(note))
 		lines = append(lines, make([]string, max(0, body-1))...)
 	default:
-		l := m.layout(body, len(m.listLines(width, body)))
+		l := m.layout(body, m.listed(body))
 		list := m.list(l.list, l.listRows)
 		if l.pane > 0 {
 			pane := m.detail(l.pane, l.listRows)
