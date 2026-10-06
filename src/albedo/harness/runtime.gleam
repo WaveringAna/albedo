@@ -17,6 +17,7 @@ import albedo/harness/oauth
 import albedo/harness/project_files
 import albedo/harness/protect
 import albedo/harness/runtime/kernels
+import albedo/harness/runtime/observation
 import albedo/harness/runtime/state as runtime_state
 import albedo/harness/settings
 import albedo/openai_api/types
@@ -181,170 +182,6 @@ pub fn observe_loaded(
     }
   })
   |> result.flatten
-}
-
-fn composition_inventory(
-  state: runtime_state.State,
-) -> session_catalog.Inventory {
-  let installed = shared.read(state.installed)
-  session_catalog.Inventory(
-    state.work,
-    installed.extensions,
-    installed.quarantined,
-    installed.default_enabled,
-  )
-}
-
-/// Trusted embeddings may prepare kernels without a daemon session row. They
-/// have no saved discovery basis; daemon sessions retain the real basis used
-/// for preparation instead of substituting a later desired revision.
-fn composition_basis(
-  inventory: session_catalog.Inventory,
-  id: String,
-  retained: List(runtime_state.Desired),
-) -> Result(Option(runtime_state.Desired), String) {
-  let home = settings.home()
-  case session_catalog.inputs(home, inventory, id) {
-    Ok(inputs) -> {
-      case list.find(retained, fn(value) { value.inputs == inputs.key }) {
-        Ok(observation) -> Ok(Some(observation))
-        Error(_) -> {
-          use snapshot <- result.try(session_catalog.inspect(
-            home,
-            inventory,
-            id,
-          ))
-          use after <- result.try(session_catalog.inputs(home, inventory, id))
-          case after.key == inputs.key {
-            True ->
-              Ok(
-                Some(runtime_state.Desired(inputs.key, inputs.saved, snapshot)),
-              )
-            False -> Error("composition inputs changed during preparation")
-          }
-        }
-      }
-    }
-    Error("session not found") -> Ok(None)
-    Error(reason) -> Error(reason)
-  }
-}
-
-/// Reuse actual discovery facts while their content and saved choices match.
-/// Equivalent sessions can share the immutable snapshot; each lifetime owns
-/// its retained reference and teardown removes that reference.
-fn desired(
-  inventory: session_catalog.Inventory,
-  retained: List(runtime_state.Desired),
-  home: String,
-  id: String,
-) -> Result(runtime_state.Desired, String) {
-  use inputs <- result.try(session_catalog.inputs(home, inventory, id))
-  case list.find(retained, fn(value) { value.inputs == inputs.key }) {
-    Ok(value) -> Ok(value)
-    Error(_) -> {
-      use snapshot <- result.try(session_catalog.inspect(home, inventory, id))
-      use after <- result.try(session_catalog.inputs(home, inventory, id))
-      case after.key == inputs.key {
-        True -> Ok(runtime_state.Desired(inputs.key, inputs.saved, snapshot))
-        False -> Error("composition inputs changed during discovery")
-      }
-    }
-  }
-}
-
-/// The retained discovery while the saved choices and settings still match.
-/// Skill, instruction, and MCP files are walked again only on a miss; changes
-/// on disk reach a session through a reload.
-fn retained_desired(
-  inventory: session_catalog.Inventory,
-  retained: List(runtime_state.Desired),
-  home: String,
-  id: String,
-) -> Result(runtime_state.Desired, String) {
-  use saved <- result.try(session_catalog.saved_key(home, inventory, id))
-  case list.find(retained, fn(value) { value.saved == saved }) {
-    Ok(value) -> Ok(value)
-    Error(_) -> desired(inventory, retained, home, id)
-  }
-}
-
-fn observe_composition_value(
-  inventory: session_catalog.Inventory,
-  cached: Option(runtime_state.Cached),
-  discovery: session_catalog.Snapshot,
-  id: String,
-) -> Result(runtime_state.CompositionObservation, String) {
-  let desired_revision =
-    session_catalog.composition_revision(
-      discovery,
-      discovery.candidates
-        |> list.filter(fn(candidate) {
-          candidate.kind == "extension" && candidate.effective_enabled
-        })
-        |> list.map(fn(candidate) { candidate.id }),
-    )
-  let loaded = option.then(cached, fn(value) { value.loaded_revision })
-  let failures =
-    option.map(cached, fn(value) {
-      extension.inactive(value.composition) |> list.map(fn(item) { item.0 })
-    })
-    |> option.unwrap([])
-  let selected =
-    option.map(cached, fn(value) {
-      extension.extensions(value.composition)
-      |> list.map(fn(item) { item.name })
-    })
-    |> option.unwrap([])
-  let availability =
-    list.map(
-      discovery.candidates
-        |> list.filter(fn(candidate) { candidate.kind == "extension" }),
-      fn(candidate) {
-        #(
-          candidate.id,
-          list.contains(selected, candidate.id)
-            && !list.contains(failures, candidate.id),
-        )
-      },
-    )
-    |> dict.from_list
-  let dependencies =
-    inventory.installed
-    |> list.map(fn(item) { #(item.name, item.requires) })
-    |> dict.from_list
-  let quarantine =
-    list.append(
-      inventory.quarantined,
-      list.filter_map(
-        option.map(cached, fn(value) { extension.inactive(value.composition) })
-          |> option.unwrap([]),
-        fn(failure) {
-          list.find(inventory.installed, fn(item) { item.name == failure.0 })
-          |> result.map(fn(item) {
-            extension.Quarantined(item.name, item.description, failure.1)
-          })
-        },
-      ),
-    )
-  use glances <- result.try(case cached {
-    None -> Ok([])
-    Some(cached) ->
-      extension.glances(cached.composition, inventory.ledger, id, cached.cwd)
-  })
-  Ok(runtime_state.CompositionObservation(
-    discovery,
-    desired_revision,
-    loaded,
-    case loaded {
-      None -> False
-      Some(revision) -> revision != desired_revision
-    },
-    dependencies,
-    quarantine,
-    availability,
-    glances,
-  ))
 }
 
 pub fn start(
@@ -716,15 +553,6 @@ fn owned_by(
   }
 }
 
-/// Reuse immutable discovery facts from observations and actual preparations.
-fn retained_basis(state: runtime_state.State) -> List(runtime_state.Desired) {
-  list.append(
-    dict.values(state.desired),
-    dict.values(state.compositions)
-      |> list.filter_map(fn(cached) { option.to_result(cached.basis, Nil) }),
-  )
-}
-
 /// Compose one session. `selected = None` reads the persisted selection; a
 /// reload supplies its proposed selection instead (it is persisted only after
 /// the composition succeeds). `required` names the extensions that must come
@@ -740,7 +568,7 @@ fn build_cached(
   // Actual preparation refreshes the remote mirror before capturing its basis.
   // Observation paths only read an existing mirror and never contact a host.
   let _ = project_files.readable(cwd)
-  use basis <- result.try(composition_basis(inventory, id, retained))
+  use basis <- result.try(observation.composition_basis(inventory, id, retained))
   use selected <- result.try(case selected {
     Some(value) -> Ok(value)
     None ->
@@ -1326,7 +1154,7 @@ fn boot_next(state: runtime_state.State) -> runtime_state.State {
       let owner = state.work
       case request {
         runtime_state.Observe(id, home, reply, retries) -> {
-          let inventory = composition_inventory(state)
+          let inventory = observation.composition_inventory(state)
           // A read captures only this session's bases, never the runtime cache.
           let retained =
             list.filter_map(
@@ -1344,9 +1172,9 @@ fn boot_next(state: runtime_state.State) -> runtime_state.State {
               protect.attempt(fn() {
                 case reply {
                   runtime_state.CompositionReply(_) ->
-                    retained_desired(inventory, retained, home, id)
+                    observation.retained_desired(inventory, retained, home, id)
                   runtime_state.CatalogReply(_) ->
-                    desired(inventory, retained, home, id)
+                    observation.desired(inventory, retained, home, id)
                 }
               })
               |> result.flatten
@@ -1355,7 +1183,7 @@ fn boot_next(state: runtime_state.State) -> runtime_state.State {
                 runtime_state.CompositionResult({
                   use value <- result.try(discovered)
                   protect.attempt(fn() {
-                    observe_composition_value(
+                    observation.observe_composition_value(
                       inventory,
                       cached,
                       value.snapshot,
@@ -1418,8 +1246,8 @@ fn boot_next(state: runtime_state.State) -> runtime_state.State {
           })
         }
         runtime_state.Compose(id, cwd, generation) -> {
-          let inventory = composition_inventory(state)
-          let retained = retained_basis(state)
+          let inventory = observation.composition_inventory(state)
+          let retained = observation.retained_basis(state)
           process.spawn_unlinked(fn() {
             let prepared =
               protect.attempt(fn() {
@@ -1526,8 +1354,8 @@ fn boot_next(state: runtime_state.State) -> runtime_state.State {
           previous,
           reply,
         ) -> {
-          let inventory = composition_inventory(state)
-          let retained = retained_basis(state)
+          let inventory = observation.composition_inventory(state)
+          let retained = observation.retained_basis(state)
           process.spawn_unlinked(fn() {
             let outcome =
               protect.attempt(fn() {
@@ -2015,9 +1843,9 @@ fn start_desired_reload(
       extension.compaction(extension.extensions(cached.composition))
     })
     |> option.map(fn(strategy) { strategy.name })
-  let inventory = composition_inventory(state)
+  let inventory = observation.composition_inventory(state)
   let self = state.self
-  let retained = retained_basis(state)
+  let retained = observation.retained_basis(state)
   process.spawn_unlinked(fn() {
     let outcome =
       protect.attempt(fn() {
