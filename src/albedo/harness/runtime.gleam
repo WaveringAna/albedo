@@ -58,9 +58,9 @@ pub type CatalogObservation =
   runtime_state.CatalogObservation
 
 pub fn upgrade_async(
-  runtime: runtime_state.Runtime,
+  runtime: Runtime,
   id: String,
-  answer: fn(Result(runtime_state.KernelUpgrade, String)) -> Nil,
+  answer: fn(Result(KernelUpgrade, String)) -> Nil,
 ) -> Nil {
   case process.subject_owner(runtime.subject) {
     Error(_) -> answer(Error("runtime owner is unavailable"))
@@ -88,10 +88,10 @@ pub fn upgrade_async(
 }
 
 pub fn observe_composition(
-  runtime: runtime_state.Runtime,
+  runtime: Runtime,
   home: String,
   id: String,
-) -> Result(runtime_state.CompositionObservation, String) {
+) -> Result(CompositionObservation, String) {
   use _owner <- result.try(
     process.subject_owner(runtime.subject)
     |> result.replace_error("runtime owner is unavailable"),
@@ -113,25 +113,23 @@ pub fn observe_composition(
 
 /// Sessions with an actual prepared composition; observing this set does not
 /// prepare another session or attach its kernel.
-pub fn loaded_sessions(runtime: runtime_state.Runtime) -> List(String) {
+pub fn loaded_sessions(runtime: Runtime) -> List(String) {
   actor.call(runtime.subject, 5000, runtime_state.LoadedIDs)
 }
 
 /// Every kernel the runtime holds, by session, whether or not a session actor
 /// has claimed it.
-pub fn held_kernels(
-  runtime: runtime_state.Runtime,
-) -> List(#(String, runtime_state.Session)) {
+pub fn held_kernels(runtime: Runtime) -> List(#(String, Session)) {
   actor.call(runtime.subject, 5000, runtime_state.HeldKernels)
 }
 
 /// Desired discovery and retained commands are independent observations. A
 /// failed desired read cannot erase the composition the owner actually loaded.
 pub fn observe_catalog(
-  runtime: runtime_state.Runtime,
+  runtime: Runtime,
   home: String,
   id: String,
-) -> Result(runtime_state.CatalogObservation, String) {
+) -> Result(CatalogObservation, String) {
   use _owner <- result.try(
     process.subject_owner(runtime.subject)
     |> result.replace_error("runtime owner is unavailable"),
@@ -153,9 +151,9 @@ pub fn observe_catalog(
 
 /// Observe retained loaded state even when desired discovery is unreadable.
 pub fn observe_loaded(
-  runtime: runtime_state.Runtime,
+  runtime: Runtime,
   id: String,
-) -> Result(runtime_state.LoadedObservation, String) {
+) -> Result(LoadedObservation, String) {
   use _owner <- result.try(
     process.subject_owner(runtime.subject)
     |> result.replace_error("runtime owner is unavailable"),
@@ -170,16 +168,14 @@ pub fn observe_loaded(
   |> result.flatten
 }
 
-pub fn start(
-  database: String,
-) -> Result(runtime_state.Runtime, actor.StartError) {
+pub fn start(database: String) -> Result(Runtime, actor.StartError) {
   start_with_config(database, extensions.defaults())
 }
 
 pub fn start_with_extensions(
   database: String,
   installed: List(extension.Extension),
-) -> Result(runtime_state.Runtime, actor.StartError) {
+) -> Result(Runtime, actor.StartError) {
   start_with_config(
     database,
     extensions.Config(
@@ -192,7 +188,7 @@ pub fn start_with_extensions(
 pub fn start_with_config(
   database: String,
   config: extensions.Config,
-) -> Result(runtime_state.Runtime, actor.StartError) {
+) -> Result(Runtime, actor.StartError) {
   let installed = config.extensions
   let default_enabled = config.default_enabled
   actor.new_with_initialiser(10_000, fn(subject) {
@@ -248,29 +244,29 @@ pub fn start_with_config(
   |> result.map(fn(started) { started.data })
 }
 
-pub fn ledger(runtime: runtime_state.Runtime) -> work.Store {
+pub fn ledger(runtime: Runtime) -> work.Store {
   runtime.work
 }
 
 /// Apply installed extensions' data upgrades after core storage is ready, before
 /// opening sessions. Embedding hosts supply their own pre-upgrade backup path.
 pub fn migrate(
-  runtime: runtime_state.Runtime,
+  runtime: Runtime,
   backup: String,
 ) -> Result(List(#(String, Int)), String) {
   extension.migrate(installed(runtime), runtime.work, backup)
 }
 
 /// Every installed extension's cleanup for a deleted session.
-pub fn cleaners(runtime: runtime_state.Runtime) -> List(extension.Cleaner) {
+pub fn cleaners(runtime: Runtime) -> List(extension.Cleaner) {
   extension.cleaners(installed(runtime))
 }
 
 pub fn open_session(
-  runtime: runtime_state.Runtime,
+  runtime: Runtime,
   id: String,
   cwd: String,
-) -> Result(runtime_state.Session, python.Error) {
+) -> Result(Session, python.Error) {
   use id <- result.try(kernels.checked_id(id))
   let reply = process.new_subject()
   open_session_async(runtime, id, cwd, process.send(reply, _))
@@ -284,10 +280,10 @@ pub fn open_session(
 /// Ask for a session's kernel; `answer` runs once it is ready or has failed.
 /// Kernels boot a few at a time outside this actor, so asking never blocks.
 pub fn open_session_async(
-  runtime: runtime_state.Runtime,
+  runtime: Runtime,
   id: String,
   cwd: String,
-  answer: fn(Result(runtime_state.Session, python.Error)) -> Nil,
+  answer: fn(Result(Session, python.Error)) -> Nil,
 ) -> Nil {
   case kernels.checked_id(id) {
     Ok(id) -> process.send(runtime.subject, runtime_state.Open(id, cwd, answer))
@@ -298,12 +294,12 @@ pub fn open_session_async(
 /// Reload an idle daemon session with a proposed extension composition. A replacement
 /// kernel and all context/modules are prepared before the persisted selection changes.
 pub fn reload_extension(
-  runtime: runtime_state.Runtime,
+  runtime: Runtime,
   id: String,
   cwd: String,
   name: String,
   enabled: Bool,
-) -> Result(runtime_state.Session, String) {
+) -> Result(Session, String) {
   use replaced <- result.try(change_extension(
     runtime,
     id,
@@ -322,11 +318,11 @@ pub fn reload_extension(
 /// session's selection as it was is only recorded and answers `None`;
 /// otherwise the session gets a replacement kernel prepared and swapped in.
 pub fn change_extension(
-  runtime: runtime_state.Runtime,
+  runtime: Runtime,
   id: String,
   cwd: String,
   change: extension.Change,
-) -> Result(Option(runtime_state.Session), String) {
+) -> Result(Option(Session), String) {
   actor.call(runtime.subject, 30_000, runtime_state.Reload(id, cwd, change, _))
 }
 
@@ -335,29 +331,29 @@ pub fn change_extension(
 /// a parked session remains parked. Preparation and kernel work run outside
 /// the runtime owner, while opens and further reloads wait for this decision.
 pub fn reload_desired(
-  runtime: runtime_state.Runtime,
+  runtime: Runtime,
   id: String,
   cwd: String,
-) -> Result(Option(runtime_state.Session), String) {
+) -> Result(Option(Session), String) {
   actor.call(runtime.subject, 180_000, runtime_state.ReloadDesired(id, cwd, _))
 }
 
 /// Save and reload in the composition owner. No caller holds a settings lock
 /// while waiting for this actor, whose extension operations also persist choices.
 pub fn peek_prompt(
-  runtime: runtime_state.Runtime,
+  runtime: Runtime,
   id: String,
 ) -> Option(#(String, List(types.Input))) {
   actor.call(runtime.subject, 10_000, runtime_state.PeekPrompt(id, _))
 }
 
 /// Extension context blocks included in this session's system instructions.
-pub fn context(session: runtime_state.Session) -> List(types.Input) {
+pub fn context(session: Session) -> List(types.Input) {
   session.context
 }
 
 pub fn extension_summaries(
-  runtime: runtime_state.Runtime,
+  runtime: Runtime,
   id: String,
 ) -> Result(List(extension.Summary), String) {
   actor.call(runtime.subject, 10_000, runtime_state.Summaries(id, _))
@@ -365,20 +361,17 @@ pub fn extension_summaries(
 
 /// Drop the session's kernel but keep its prepared composition. Catalog reads
 /// and command runs keep working without booting Python again.
-pub fn reset_session(runtime: runtime_state.Runtime, id: String) -> Nil {
+pub fn reset_session(runtime: Runtime, id: String) -> Nil {
   actor.call(runtime.subject, 10_000, runtime_state.Reset(id, _))
 }
 
 /// Drop the session's kernel and its prepared composition together.
-pub fn forget_session(runtime: runtime_state.Runtime, id: String) -> Nil {
+pub fn forget_session(runtime: Runtime, id: String) -> Nil {
   actor.call(runtime.subject, 10_000, runtime_state.Forget(id, _))
 }
 
 /// Remove runtime state only after supervising the actual recorded processes.
-pub fn delete_session(
-  runtime: runtime_state.Runtime,
-  id: String,
-) -> Result(Nil, String) {
+pub fn delete_session(runtime: Runtime, id: String) -> Result(Nil, String) {
   use _owner <- result.try(
     process.subject_owner(runtime.subject)
     |> result.replace_error("runtime owner is unavailable"),
@@ -397,14 +390,14 @@ pub fn delete_session(
 /// This session's materialized commands and their state context, served from
 /// the prepared composition without opening a kernel.
 pub fn peek_commands(
-  runtime: runtime_state.Runtime,
+  runtime: Runtime,
   id: String,
   cwd: String,
 ) -> Result(#(List(command.Command), command.Context), String) {
   actor.call(runtime.subject, 15_000, runtime_state.Peek(id, cwd, _))
 }
 
-pub fn stop(runtime: runtime_state.Runtime) -> Nil {
+pub fn stop(runtime: Runtime) -> Nil {
   actor.call(runtime.subject, 10_000, runtime_state.Stop)
   shared.release(runtime.installed)
 }
@@ -412,7 +405,7 @@ pub fn stop(runtime: runtime_state.Runtime) -> Nil {
 /// From now on, closing a session or stopping the runtime lets its kernel go
 /// instead of ending it: a daemon shutting down calls this first, so the
 /// kernels keep their namespaces and jobs for the next daemon.
-pub fn detach_kernels(runtime: runtime_state.Runtime) -> Nil {
+pub fn detach_kernels(runtime: Runtime) -> Nil {
   actor.call(runtime.subject, 10_000, runtime_state.Detach)
 }
 
@@ -421,10 +414,7 @@ pub fn detach_kernels(runtime: runtime_state.Runtime) -> Nil {
 /// for each session to need its kernel. A kernel that is gone is forgotten.
 /// `awaited` hears each session whose kernel came back running a job that
 /// will wake it, one not started as a service.
-pub fn resume_kernels(
-  runtime: runtime_state.Runtime,
-  awaited: fn(String) -> Nil,
-) -> Nil {
+pub fn resume_kernels(runtime: Runtime, awaited: fn(String) -> Nil) -> Nil {
   let subject = runtime.subject
   let work = runtime.work
   process.spawn_unlinked(fn() {
@@ -447,49 +437,44 @@ pub fn resume_kernels(
   Nil
 }
 
-pub fn origin(session: runtime_state.Session) -> runtime_state.Origin {
+pub fn origin(session: Session) -> Origin {
   session.origin
 }
 
-pub fn kernel_observation(
-  session: runtime_state.Session,
-) -> Result(python.Observation, Nil) {
+pub fn kernel_observation(session: Session) -> Result(python.Observation, Nil) {
   python.observation(session.kernel)
 }
 
-pub fn alive(session: runtime_state.Session) -> Bool {
+pub fn alive(session: Session) -> Bool {
   python.alive(session.kernel)
 }
 
-pub fn interrupt(session: runtime_state.Session) -> Nil {
+pub fn interrupt(session: Session) -> Nil {
   python.interrupt(session.kernel)
 }
 
-pub fn warnings(session: runtime_state.Session) -> List(String) {
+pub fn warnings(session: Session) -> List(String) {
   extension.warnings(session.composition)
 }
 
-pub fn kernel_pid(session: runtime_state.Session) -> Result(Int, Nil) {
+pub fn kernel_pid(session: Session) -> Result(Int, Nil) {
   python.os_pid(session.kernel)
 }
 
 /// Background jobs whose groups the kernel still owns, local or remote. A
 /// released kernel would kill them, so the idle sweep keeps kernels with
 /// live jobs alive.
-pub fn job_count(session: runtime_state.Session) -> Int {
+pub fn job_count(session: Session) -> Int {
   python.job_count(session.kernel)
 }
 
 /// Stop one background job by id.
-pub fn stop_job(
-  session: runtime_state.Session,
-  id: String,
-) -> Result(Nil, String) {
+pub fn stop_job(session: Session, id: String) -> Result(Nil, String) {
   python.stop_job(session.kernel, id)
 }
 
 pub fn save_state(
-  session: runtime_state.Session,
+  session: Session,
   path: String,
   timeout_ms: Int,
 ) -> Result(python.Saved, python.Error) {
@@ -497,7 +482,7 @@ pub fn save_state(
 }
 
 pub fn load_state(
-  session: runtime_state.Session,
+  session: Session,
   path: String,
   timeout_ms: Int,
 ) -> Result(python.Saved, python.Error) {
@@ -509,8 +494,8 @@ pub type Execution {
 }
 
 pub fn execute(
-  runtime: runtime_state.Runtime,
-  session: runtime_state.Session,
+  runtime: Runtime,
+  session: Session,
   code: String,
   timeout_ms: Int,
 ) -> Result(Execution, String) {
@@ -522,17 +507,11 @@ pub fn execute(
   Ok(Execution(id, outcome))
 }
 
-pub fn cell(
-  runtime: runtime_state.Runtime,
-  id: String,
-) -> Result(journal.Cell, String) {
+pub fn cell(runtime: Runtime, id: String) -> Result(journal.Cell, String) {
   journal.get(runtime.work, id)
 }
 
-fn owned_by(
-  runtime: runtime_state.Runtime,
-  session: runtime_state.Session,
-) -> Result(Nil, String) {
+fn owned_by(runtime: Runtime, session: Session) -> Result(Nil, String) {
   case session.owner == runtime.work {
     True -> Ok(Nil)
     False -> Error("session belongs to another runtime")
@@ -969,14 +948,14 @@ fn serve(
   }
 }
 
-pub fn tools(session: runtime_state.Session) -> List(types.Tool) {
+pub fn tools(session: Session) -> List(types.Tool) {
   extension.tools(session.composition)
   |> list.map(fn(tool) { tool.definition })
 }
 
 fn tool_call(
-  runtime: runtime_state.Runtime,
-  session: runtime_state.Session,
+  runtime: Runtime,
+  session: Session,
   call: types.ToolCall,
   images: types.ImageLimits,
 ) -> Result(#(extension.Tool, extension.Context), Nil) {
@@ -999,8 +978,8 @@ fn tool_call(
 
 /// Runs `call`; `images` are what the provider its result goes to accepts.
 pub fn invoke(
-  runtime: runtime_state.Runtime,
-  session: runtime_state.Session,
+  runtime: Runtime,
+  session: Session,
   call: types.ToolCall,
   images: types.ImageLimits,
 ) -> Result(types.Input, String) {
@@ -1027,8 +1006,8 @@ fn refusal(call: types.ToolCall, message: String) -> types.Input {
 }
 
 pub fn recover(
-  runtime: runtime_state.Runtime,
-  session: runtime_state.Session,
+  runtime: Runtime,
+  session: Session,
   call: types.ToolCall,
   images: types.ImageLimits,
 ) -> types.Input {
@@ -1047,13 +1026,13 @@ pub fn recover(
   }
 }
 
-pub fn instructions(session: runtime_state.Session) -> String {
+pub fn instructions(session: Session) -> String {
   session.instructions
 }
 
 /// Tells every extension this session composed about one of its events.
 pub fn observe(
-  session: runtime_state.Session,
+  session: Session,
   handle: extension.Session,
   event: extension.SessionEvent,
 ) -> Nil {
@@ -1062,7 +1041,7 @@ pub fn observe(
   })
 }
 
-pub fn compaction_name(session: runtime_state.Session) -> Option(String) {
+pub fn compaction_name(session: Session) -> Option(String) {
   extension.compaction(extension.extensions(session.composition))
   |> option.map(fn(strategy) { strategy.name })
 }
@@ -1070,8 +1049,8 @@ pub fn compaction_name(session: runtime_state.Session) -> Option(String) {
 /// Compaction sees only durable conversation. Extension context belongs to the
 /// system instructions, not the request history or durable transcript.
 pub fn prepare_history_with(
-  runtime: runtime_state.Runtime,
-  session: runtime_state.Session,
+  runtime: Runtime,
+  session: Session,
   model: String,
   instructions: String,
   summarize: fn(compaction.SummaryRequest) -> Result(String, String),
@@ -1094,7 +1073,7 @@ pub fn prepare_history_with(
 
 /// Only a catalog answer becomes a capacity; an unknown model stays unknown.
 fn model_info(
-  session: runtime_state.Session,
+  session: Session,
   model: String,
   endpoint: Option(String),
 ) -> Option(extension.ModelInfo) {
@@ -1106,43 +1085,39 @@ fn model_info(
 }
 
 /// The extensions enabled with no session override: what services run with.
-pub fn global(
-  runtime: runtime_state.Runtime,
-) -> Result(List(extension.Extension), String) {
+pub fn global(runtime: Runtime) -> Result(List(extension.Extension), String) {
   runtime_state.enabled(runtime.work, shared.read(runtime.installed), "")
 }
 
 /// Immutable declarations are safe to inspect under a settings owner lock;
 /// they do not call the composition actor or read mutable configuration.
-pub fn installed(runtime: runtime_state.Runtime) -> List(extension.Extension) {
+pub fn installed(runtime: Runtime) -> List(extension.Extension) {
   shared.read(runtime.installed).extensions
 }
 
-pub fn quarantined(
-  runtime: runtime_state.Runtime,
-) -> List(extension.Quarantined) {
+pub fn quarantined(runtime: Runtime) -> List(extension.Quarantined) {
   shared.read(runtime.installed).quarantined
 }
 
-pub fn base_defaults(runtime: runtime_state.Runtime) -> List(String) {
+pub fn base_defaults(runtime: Runtime) -> List(String) {
   shared.read(runtime.installed).default_enabled
 }
 
 /// Refetch the model catalogs this session enables, on the caller's process.
 pub fn reload_catalogs(
-  runtime: runtime_state.Runtime,
+  runtime: Runtime,
   id: String,
 ) -> Result(List(#(String, Result(Nil, String))), String) {
   runtime_state.enabled(runtime.work, shared.read(runtime.installed), id)
   |> result.map(extension.reload_catalogs)
 }
 
-pub fn logins(runtime: runtime_state.Runtime) -> List(oauth.Login) {
+pub fn logins(runtime: Runtime) -> List(oauth.Login) {
   extension.logins(installed(runtime))
 }
 
 pub fn model_names(
-  runtime: runtime_state.Runtime,
+  runtime: Runtime,
   provider: String,
   endpoint: Option(String),
 ) -> List(String) {
@@ -1159,7 +1134,7 @@ pub type ListedModel {
 }
 
 pub fn listed_models(
-  runtime: runtime_state.Runtime,
+  runtime: Runtime,
   provider: String,
   endpoint: Option(String),
 ) -> List(ListedModel) {
@@ -1177,7 +1152,7 @@ pub fn listed_models(
 
 /// The reasoning efforts the catalog publishes for a model at `endpoint`.
 pub fn model_efforts(
-  runtime: runtime_state.Runtime,
+  runtime: Runtime,
   model: String,
   endpoint: Option(String),
 ) -> List(String) {
@@ -1195,7 +1170,7 @@ fn efforts_in(
 }
 
 pub fn upstream(
-  runtime: runtime_state.Runtime,
+  runtime: Runtime,
   session: String,
   home: String,
   profile: String,
@@ -1262,8 +1237,8 @@ fn reader(info: Option(extension.ModelInfo)) -> Option(compaction.Reader) {
 
 /// Run the active strategy now, independent of its automatic threshold.
 pub fn compact_history_scoped(
-  runtime: runtime_state.Runtime,
-  session: runtime_state.Session,
+  runtime: Runtime,
+  session: Session,
   model: String,
   source: String,
   endpoint: Option(String),
@@ -1288,8 +1263,8 @@ pub fn compact_history_scoped(
 
 /// Prepare one provider request and its strategy-neutral inspection facts.
 pub fn prepare_view_scoped(
-  runtime: runtime_state.Runtime,
-  session: runtime_state.Session,
+  runtime: Runtime,
+  session: Session,
   model: String,
   source: String,
   endpoint: Option(String),
@@ -1318,8 +1293,8 @@ pub fn prepare_view_scoped(
 /// way `prepare_view_scoped` would send it, except that it never compacts:
 /// it writes nothing and calls no model.
 pub fn project_view_scoped(
-  runtime: runtime_state.Runtime,
-  session: runtime_state.Session,
+  runtime: Runtime,
+  session: Session,
   model: String,
   source: String,
   endpoint: Option(String),
@@ -1343,8 +1318,8 @@ pub fn project_view_scoped(
 }
 
 fn view_scoped(
-  runtime: runtime_state.Runtime,
-  session: runtime_state.Session,
+  runtime: Runtime,
+  session: Session,
   model: String,
   source: String,
   endpoint: Option(String),
@@ -1403,7 +1378,7 @@ fn view_scoped(
   }
 }
 
-pub fn inventory(host: runtime_state.Runtime) -> session_catalog.Inventory {
+pub fn inventory(host: Runtime) -> session_catalog.Inventory {
   session_catalog.Inventory(
     ledger(host),
     installed(host),
@@ -1416,7 +1391,7 @@ pub fn inventory(host: runtime_state.Runtime) -> session_catalog.Inventory {
 /// observed a few at a time: observation runs on the owner's worker slots, so
 /// a wider window would only queue calls until their timeouts ran out.
 pub fn needs_reload(
-  host: runtime_state.Runtime,
+  host: Runtime,
   home: String,
 ) -> Result(List(String), String) {
   loaded_sessions(host)
@@ -1429,7 +1404,7 @@ pub fn needs_reload(
 
 /// The ids in `window` that need a reload, observed concurrently.
 fn observe_window(
-  host: runtime_state.Runtime,
+  host: Runtime,
   home: String,
   window: List(String),
 ) -> Result(List(String), String) {
