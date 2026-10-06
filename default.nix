@@ -11,6 +11,7 @@
   bash,
   coreutils,
   makeWrapper,
+  chrome-headless-shell,
   wl-clipboard,
   xclip,
   zig,
@@ -148,7 +149,7 @@
       makeWrapper $out/lib/albedo/albedo/priv/bin/albedo-daemon $out/bin/albedo-daemon \
         --add-flags "$out/lib/albedo/entrypoint.sh run" \
         --set-default ALBEDO_BUILD $out/bin/albedo-daemon \
-        --prefix PATH : ${lib.makeBinPath [erlang python311 bash coreutils render]}
+        --prefix PATH : ${lib.makeBinPath [erlang python311 bash coreutils render chrome-headless-shell]}
       runHook postInstall
     '';
     meta = {

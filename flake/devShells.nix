@@ -24,6 +24,7 @@ _: {
           beamPackages.erlang
           (beamPackages.rebar3WithPlugins {plugins = [beamPackages.pc];})
           config.packages.glinter
+          config.packages.chrome-headless-shell
         ]
         ++ lib.attrValues config.treefmt.build.programs;
     };

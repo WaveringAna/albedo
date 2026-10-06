@@ -27,7 +27,7 @@ or embed the root at install time:
 go -C cli install -ldflags "-X main.buildRoot=$(pwd)" ./cmd/albedo
 ```
 
-The default Nix package includes the client, compiled server, and Python runtime:
+The default Nix package includes the client, compiled server, Python runtime, and Chrome Headless Shell for browser automation. The development shell also includes the browser:
 
 ```sh
 nix build .#albedo

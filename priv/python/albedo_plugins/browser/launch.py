@@ -49,7 +49,7 @@ async def _finish_cleanup(operation: Awaitable[_T]) -> _T:
     return result
 
 
-def _executable(requested: str | os.PathLike[str] | None) -> str:
+def _executable(requested: str | os.PathLike[str] | None, *, headless: bool) -> str:
     explicit = (
         requested
         or os.environ.get("ALBEDO_BROWSER_EXECUTABLE")
@@ -67,6 +67,16 @@ def _executable(requested: str | os.PathLike[str] | None) -> str:
             executable=candidate,
             recovery='Pass executable="/path/to/chrome" or install Chrome/Chromium in the kernel environment.',
         )
+    if headless:
+        home = Path(os.environ.get("ALBEDO_HOME") or "~/.albedo").expanduser()
+        # Full Chrome's headless launches still leave macOS recent-app Dock tiles.
+        for candidate in (
+            "chrome-headless-shell",
+            str(home / "browsers/chrome-headless-shell"),
+        ):
+            if found := shutil.which(candidate):
+                # The shell locates ICU and other resources beside its executable.
+                return str(Path(found).resolve())
     for name in (
         "chromium",
         "chromium-browser",
@@ -367,8 +377,9 @@ async def spawn(
 ) -> Browser:
     """Start a dedicated Chrome/Chromium and return a connected, process-owning Browser.
 
-    Auto-detects an installed executable. Uses headless mode, a temporary profile,
-    loopback CDP and an OS-assigned port by default; never downloads a browser or
+    Auto-detects an installed executable; headless launches prefer an installed
+    chrome-headless-shell to avoid macOS Dock tiles. Uses a temporary profile, loopback
+    CDP and an OS-assigned port by default; never downloads a browser or
     silently disables its sandbox. A supplied profile must be empty or previously
     created by albedo and is preserved on close. ``Browser.close()`` or
     ``async with await spawn()`` stops owned Chrome and removes temporary data.
@@ -390,7 +401,7 @@ async def spawn(
     ):
         raise ValueError("max_message_bytes must be an integer of at least 1024")
     extra = _extra_args(args)
-    binary = _executable(executable)
+    binary = _executable(executable, headless=headless)
     if sandbox and hasattr(os, "geteuid") and os.geteuid() == 0:
         raise LaunchError(
             "Chrome cannot use its sandbox as root. Run the kernel as an unprivileged user.",

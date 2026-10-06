@@ -20,6 +20,30 @@ later cells. The process-wide `builtins` module is unchanged. Plugin instances
 are owned by this kernel's API, not module-level singletons. This fallback is
 built once after plugins load and is not serialized with user state.
 
+## spawned browsers
+
+`priv/python/albedo_plugins/browser/launch.py` owns browser discovery and spawned
+processes. `browser.spawn()` uses a temporary profile and headless mode by default;
+`await b.close()` stops the owned process and removes that profile. Connecting to
+an external browser never takes ownership of its process.
+
+Automatic headless launches prefer `chrome-headless-shell` on PATH,
+then `$ALBEDO_HOME/browsers/chrome-headless-shell` (`~/.albedo` by default), before
+regular Chrome/Chromium. The Nix dev shell and packaged daemon put the shell on
+PATH, using nixpkgs' pinned Chrome for Testing binary without the Playwright
+runtime. Full Chrome's headless launches on macOS can leave duplicate recent-app
+Dock tiles even after they exit. Outside Nix, install the official
+[Chrome for Testing shell](https://developer.chrome.com/docs/automation-and-testing/headless-chrome-shell)
+with its support files and symlink its executable at that home path; discovery
+resolves the symlink so the shell can find its resources. No browser is downloaded
+by `spawn()`.
+
+`executable=`, `ALBEDO_BROWSER_EXECUTABLE`, `PRIME_BROWSER_EXECUTABLE`, and
+`CHROME_PATH` still override discovery. `headless=False` skips automatic shell
+selection. An absent shell falls back to Chrome/Chromium; a selected browser's
+startup failure is reported, not retried with another executable. Dock settings
+and the user's normal Chrome profile are never changed.
+
 ## background job observations
 
 `GET /sessions/{id}` exposes `kernel.live_job_count` and `kernel.running_jobs`
