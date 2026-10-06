@@ -7,7 +7,7 @@
 %% that fetches the payload (see types.ImageData). A packed row stores
 %% {stored_data, Hash, Size} (no fun), or the legacy bare Base64 binary.
 -module(albedo_images).
--export([referenced/2, externalize/2, attach/2, pack/1, pack_image/1, load/2, canonical/1, legacy/1, results/1, hashes/1, migrate/2, ensure_dir/1, backup_exists/1, decode_base64/1, decode_legacy_base64/1, encode_base64/1]).
+-export([referenced/2, externalize/2, attach/2, pack/1, pack_image/1, load/2, canonical/1, legacy/1, results/1, hashes/1, migrate/2, ensure_dir/1, backup_exists/1, decode_base64/1, decode_legacy_base64/1, encode_base64/1, jpeg_ends/1]).
 
 %% The same data-size limit the Gleam image owner guards with; a guard needs the macro.
 -define(MAX_DATA_BYTES, 6990508).
@@ -175,6 +175,10 @@ backup_exists(Path) -> filelib:is_regular(Path).
 
 %% A clean, canonical inline payload was validated before externalize/2.
 decode_base64(Data) -> base64:decode(Data).
+
+%% Whether a JPEG's bytes after its frame header hold the end-of-image marker
+%% (image.gleam). Entropy-coded data stuffs every 0xFF, so it never forges one.
+jpeg_ends(Bytes) -> binary:match(Bytes, <<16#FF, 16#D9>>) =/= nomatch.
 
 %% A damaged legacy row fails migration without discarding its original TEXT.
 decode_legacy_base64(Data) ->

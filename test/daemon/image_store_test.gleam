@@ -14,7 +14,7 @@ import gleam/option.{None}
 import gleeunit/should
 import sqlight
 
-const png = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAAD"
+const png = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAADCAIAAAA2iEnWAAAAAElFTkSuQmCC"
 
 @external(erlang, "albedo_runtime_test_support", "temporary_database")
 fn temporary_database() -> String
@@ -38,7 +38,7 @@ fn fingerprint(value: a) -> String
 fn legacy_fingerprint(value: a) -> Result(String, Nil)
 
 fn test_image() -> types.Image {
-  let assert Ok(value) = image.validate("image/png", png, 2, 3, 24)
+  let assert Ok(value) = image.validate("image/png", png, 2, 3, 45)
   value
 }
 
@@ -93,7 +93,7 @@ pub fn commit_keeps_one_payload_and_rows_load_references_test() -> Nil {
   count(ledger, "SELECT count(*) FROM images") |> should.equal(1)
   count(ledger, "SELECT count(*) FROM images WHERE typeof(data)='blob'")
   |> should.equal(1)
-  count(ledger, "SELECT length(data) FROM images") |> should.equal(24)
+  count(ledger, "SELECT length(data) FROM images") |> should.equal(45)
   count(
     ledger,
     "SELECT count(*) FROM transcript WHERE instr(payload,CAST('"
@@ -105,9 +105,9 @@ pub fn commit_keeps_one_payload_and_rows_load_references_test() -> Nil {
   let assert [types.UserImage("look", [first]), types.ToolOutput(_, _, [_, _])] =
     loaded(ledger, "s")
   let assert types.StoredData(_, size, read) = types.image_data(first)
-  size |> should.equal(24 + 8)
+  size |> should.equal(60)
   read() |> should.equal(Ok(png))
-  types.image_meta(first) |> should.equal(#("image/png", 2, 3, 24))
+  types.image_meta(first) |> should.equal(#("image/png", 2, 3, 45))
   cleanup(path)
 }
 
@@ -209,7 +209,7 @@ pub fn migration_converts_text_images_without_changing_references_test() -> Nil 
   exists(backup) |> should.be_true
   count(ledger, "SELECT count(*) FROM images WHERE typeof(data)='blob'")
   |> should.equal(1)
-  count(ledger, "SELECT length(data) FROM images") |> should.equal(24)
+  count(ledger, "SELECT length(data) FROM images") |> should.equal(45)
   let assert [types.UserImage(_, [migrated])] = loaded(ledger, "s")
   let assert types.StoredData(migrated_hash, _, read) =
     types.image_data(migrated)

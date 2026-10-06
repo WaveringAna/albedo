@@ -8,7 +8,7 @@ import unittest
 
 from remote_kernel_test import OwnerChannel
 
-PNG = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAAD"
+PNG = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAADCAIAAAA2iEnWAAAAAElFTkSuQmCC"
 IMAGE = f"show_image(__import__('base64').b64decode({PNG!r}))\n"
 INSPECT = """
 import __main__ as kernel

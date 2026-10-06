@@ -16,7 +16,8 @@ import gleam/option.{None, Some}
 import gleeunit/should
 import sqlight
 
-/// A PNG signature and IHDR header for a 2x3 image: enough for albedo to read.
+/// A PNG signature and IHDR header for a 2x3 image: enough for the header
+/// check a stored record gets on load.
 const png = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAAD"
 
 pub fn the_kernel_decoder_reads_images_at_the_boundary_test() -> Result(
@@ -37,9 +38,11 @@ pub fn the_kernel_decoder_reads_images_at_the_boundary_test() -> Result(
   // A kernel from before images sends no field at all.
   let assert Ok(plain) = json.parse(frame([]), python.outcome_decoder())
   #(plain.images, plain.image_errors) |> should.equal(#([], []))
-  let wide = "iVBORw0KGgoAAAANSUhEUgAAAAUAAAAD"
+  // Whole PNGs, IEND included: the daemon refuses an image cut short.
+  let small = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAADCAIAAAA2iEnWAAAAAElFTkSuQmCC"
+  let wide = "iVBORw0KGgoAAAANSUhEUgAAAAUAAAADCAIAAADUVFKvAAAAAElFTkSuQmCC"
   let images =
-    json.array([png, "bm90IGFuIGltYWdl", wide, "not base64!"], json.string)
+    json.array([small, "bm90IGFuIGltYWdl", wide, "not base64!"], json.string)
   let assert Ok(mixed) =
     json.parse(frame([#("images", images)]), python.outcome_decoder())
   // Both lists keep the order the cell showed its images in.

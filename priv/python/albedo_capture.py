@@ -172,11 +172,16 @@ class Capture:
         mime = image_type(data)
         if mime is None:
             raise ValueError("image must be PNG, JPEG, or WebP bytes")
-        size = image_size(data)
+        found = image_header(data)
         # A header this parser cannot read is left for the daemon to judge.
-        if size is not None and self.max_edge is not None:
-            _, width, height = size
-            if max(width, height) > self.max_edge:
+        if found is not None:
+            _, width, height, _ = found
+            if not image_complete(data, found):
+                raise ValueError(
+                    f"this {len(data)}-byte {mime} stops before its {IMAGE_ENDS[mime]}: "
+                    "the data was cut short, so read the whole file before showing it"
+                )
+            if self.max_edge is not None and max(width, height) > self.max_edge:
                 raise ValueError(
                     f"{width}x{height} image is over this model's {self.max_edge}px edge limit"
                 )
@@ -195,25 +200,54 @@ class Capture:
 
 
 def image_size(data: bytes) -> tuple[str, int, int] | None:
-    """MIME type, width and height from the header, or None. A port of
-    `dimensions/1` in albedo_image.erl, which stays the authority: the daemon
-    checks every image again, and image_header_parity_test holds the two equal."""
+    """MIME type, width and height of a whole image, or None. A port of
+    `inspect` in image.gleam, which stays the authority: the daemon checks
+    every image again, and image_header_parity_test holds the two equal."""
+    found = image_header(data)
+    if found is None or not image_complete(data, found):
+        return None
+    return found[:3]
+
+
+def image_header(data: bytes) -> tuple[str, int, int, int] | None:
+    """MIME type, width, height, and where image_complete looks for the end."""
     if data[:16] == b"\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR" and len(data) >= 24:
         width, height = struct.unpack(">II", data[16:24])
-        return ("image/png", width, height) if width > 0 and height > 0 else None
+        return ("image/png", width, height, 8) if width > 0 and height > 0 else None
     if data[:2] == b"\xff\xd8":
         return jpeg_size(data, 2)
     if data[:4] == b"RIFF" and data[8:12] == b"WEBP" and len(data) >= 12:
         if struct.unpack("<I", data[4:8])[0] + 8 == len(data):
-            return webp_size(data, 12)
+            size = webp_size(data, 12)
+            return None if size is None else (*size, len(data))
     return None
+
+
+IMAGE_ENDS = {"image/png": "IEND chunk", "image/jpeg": "end-of-image marker"}
+
+
+def image_complete(data: bytes, header: tuple[str, int, int, int]) -> bool:
+    """A PNG's chunks run whole up to IEND; a JPEG has its end-of-image marker
+    after the frame header (stuffed entropy data never forges one). WebP's
+    RIFF size already covers the whole file."""
+    mime, _, _, at = header
+    if mime == "image/png":
+        while at + 12 <= len(data):
+            size, kind = struct.unpack(">I4s", data[at : at + 8])
+            if size == 0 and kind == b"IEND":
+                return True
+            at += 12 + size
+        return False
+    if mime == "image/jpeg":
+        return data.find(b"\xff\xd9", at) >= 0
+    return True
 
 
 JPEG_FRAMES = {0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7}
 JPEG_FRAMES |= {0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF}
 
 
-def jpeg_size(data: bytes, at: int) -> tuple[str, int, int] | None:
+def jpeg_size(data: bytes, at: int) -> tuple[str, int, int, int] | None:
     while True:
         at = data.find(b"\xff", at)
         if at < 0:
@@ -238,7 +272,9 @@ def jpeg_size(data: bytes, at: int) -> tuple[str, int, int] | None:
             if len(frame) < 5:
                 return None
             height, width = struct.unpack(">HH", frame[1:5])
-            return ("image/jpeg", width, height) if width > 0 and height > 0 else None
+            if width > 0 and height > 0:
+                return ("image/jpeg", width, height, end)
+            return None
         if marker in (0xDA, 0xD9):
             return None
         at = end

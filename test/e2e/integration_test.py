@@ -186,7 +186,7 @@ class IntegrationTest(IntegrationScenario):
             with self.subTest(protocol=protocol):
                 app = self.app_for(protocol)
                 session = app.session()
-                png = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAAD"
+                png = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAADCAIAAAA2iEnWAAAAAElFTkSuQmCC"
                 with self.assertRaises(urllib.error.HTTPError) as caught:
                     app.api(
                         f"/sessions/{session}/inputs/{operation_id()}",
@@ -233,7 +233,7 @@ class IntegrationTest(IntegrationScenario):
                         image["height"],
                         image["original_bytes"],
                     ),
-                    ("image/png", 2, 3, 24),
+                    ("image/png", 2, 3, 45),
                 )
                 self.assertNotIn(png, json.dumps(image))
 

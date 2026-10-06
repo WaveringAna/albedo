@@ -5,7 +5,8 @@ import gleam/result
 import gleam/string
 
 /// Decode canonical base64 and derive MIME and dimensions from bounded headers.
-/// This verifies transport metadata, not the complete compressed image stream.
+/// This verifies transport metadata and that the stream reaches its end, not
+/// that the compressed image inside decodes.
 pub fn validate(
   mime_type: String,
   data: String,
@@ -47,10 +48,15 @@ const max_data_bytes = 6_990_508
 const header_chars = 65_536
 
 /// Inspect transport data without copying it to re-encode canonical base64.
+/// The stream must be whole too: an image cut short on its way in passes its
+/// header, and the provider would refuse it on every later request instead.
 pub fn inspect(data: String) -> Result(#(String, Int, Int, Int), Nil) {
   use size <- result.try(canonical_size(data))
-  use #(mime, width, height) <- result.try(dimensions(decode_base64(data)))
-  Ok(#(mime, width, height, size))
+  use #(mime, width, height, rest) <- result.try(header(decode_base64(data)))
+  case complete(mime, rest) {
+    True -> Ok(#(mime, width, height, size))
+    False -> Error(Nil)
+  }
 }
 
 /// Legacy inline rows are validated on every transcript load. Decode only a
@@ -160,33 +166,60 @@ fn base64_value(char: Int) -> Int {
 }
 
 fn dimensions(bytes: BitArray) -> Result(#(String, Int, Int), Nil) {
+  header(bytes)
+  |> result.map(fn(found) { #(found.0, found.1, found.2) })
+}
+
+/// MIME type and dimensions, and the bytes `complete` needs to see the rest.
+fn header(bytes: BitArray) -> Result(#(String, Int, Int, BitArray), Nil) {
   case bytes {
-    <<
-      0x89,
-      "PNG":utf8,
-      13,
-      10,
-      26,
-      10,
-      13:size(32),
-      "IHDR":utf8,
-      width:size(32),
-      height:size(32),
-      _:bytes,
-    >>
-      if width > 0 && height > 0
-    -> Ok(#("image/png", width, height))
+    <<0x89, "PNG":utf8, 13, 10, 26, 10, chunks:bytes>> ->
+      case chunks {
+        <<13:size(32), "IHDR":utf8, width:size(32), height:size(32), _:bytes>>
+          if width > 0 && height > 0
+        -> Ok(#("image/png", width, height, chunks))
+        _ -> Error(Nil)
+      }
     <<0xFF, 0xD8, rest:bytes>> -> jpeg(rest)
     <<"RIFF":utf8, size:little-size(32), "WEBP":utf8, chunks:bytes>> ->
       case size + 8 == bit_array.byte_size(bytes) {
-        True -> webp(chunks)
+        True ->
+          webp(chunks)
+          |> result.map(fn(found) { #(found.0, found.1, found.2, <<>>) })
         False -> Error(Nil)
       }
     _ -> Error(Nil)
   }
 }
 
-fn jpeg(bytes: BitArray) -> Result(#(String, Int, Int), Nil) {
+/// A PNG's chunks run whole up to IEND; a JPEG has its end-of-image marker
+/// after the frame header. WebP's RIFF size already covers the whole file.
+fn complete(mime: String, rest: BitArray) -> Bool {
+  case mime {
+    "image/png" -> png_ends(rest)
+    "image/jpeg" -> jpeg_ends(rest)
+    _ -> True
+  }
+}
+
+fn png_ends(chunks: BitArray) -> Bool {
+  case chunks {
+    <<0:size(32), "IEND":utf8, _:size(32), _:bytes>> -> True
+    <<
+      size:size(32),
+      _:bytes-size(4),
+      _:bytes-size(size),
+      _:size(32),
+      rest:bytes,
+    >> -> png_ends(rest)
+    _ -> False
+  }
+}
+
+@external(erlang, "albedo_images", "jpeg_ends")
+fn jpeg_ends(bytes: BitArray) -> Bool
+
+fn jpeg(bytes: BitArray) -> Result(#(String, Int, Int, BitArray), Nil) {
   case bytes {
     <<0xFF, rest:bytes>> -> jpeg_marker(rest)
     <<_, rest:bytes>> -> jpeg(rest)
@@ -194,7 +227,7 @@ fn jpeg(bytes: BitArray) -> Result(#(String, Int, Int), Nil) {
   }
 }
 
-fn jpeg_marker(bytes: BitArray) -> Result(#(String, Int, Int), Nil) {
+fn jpeg_marker(bytes: BitArray) -> Result(#(String, Int, Int, BitArray), Nil) {
   case bytes {
     <<0xFF, rest:bytes>> -> jpeg_marker(rest)
     <<marker, rest:bytes>>
@@ -220,7 +253,7 @@ fn jpeg_marker(bytes: BitArray) -> Result(#(String, Int, Int), Nil) {
               case payload {
                 <<_, height:size(16), width:size(16), _:bytes>>
                   if width > 0 && height > 0
-                -> Ok(#("image/jpeg", width, height))
+                -> Ok(#("image/jpeg", width, height, tail))
                 _ -> Error(Nil)
               }
             0xDA | 0xD9 -> Error(Nil)

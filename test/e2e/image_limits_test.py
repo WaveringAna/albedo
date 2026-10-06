@@ -270,6 +270,52 @@ class ImageLimitsTest(unittest.TestCase):
         finally:
             provider.close()
 
+    def test_an_image_cut_short_is_refused_where_it_is_attached(self):
+        # A PNG cut off by a capped read kept a readable header, so it was
+        # attached, and every later request carried an image the provider
+        # could not decode: the session failed until it was forked.
+        cut = png(2, 3, b"x" * 1000)[:500]
+        cut_data = base64.b64encode(cut).decode()
+
+        def reply(request):
+            if request["input"][-1].get("type") == "function_call_output":
+                return text("done")
+            return python(
+                "import base64\nshow_image(base64.b64decode('" + cut_data + "'))"
+            )
+
+        provider = Provider(reply)
+        self.addCleanup(provider.close)
+        with Albedo(provider, protocol="responses") as app:
+            session = app.session()
+            with self.assertRaises(urllib.error.HTTPError) as refused:
+                app.api(
+                    f"/sessions/{session}/inputs/{operation_id()}",
+                    {
+                        "kind": "message",
+                        "text": "look",
+                        "images": [{"mime_type": "image/png", "data": cut_data}],
+                    },
+                    method="PUT",
+                ).close()
+            self.assertEqual(refused.exception.code, 400)
+
+            app.prompt(session, "show").close()
+            app.idle(session)
+            request = provider.requests[-1]["request"]
+            output = next(
+                item
+                for item in request["input"]
+                if item.get("type") == "function_call_output"
+            )
+            result = cell_result(output)
+            self.assertEqual(result["status"], "error")
+            self.assertIn(
+                "ValueError: this 500-byte image/png stops before its IEND chunk",
+                result["output"],
+            )
+            self.assertNotIn("data:image/png", json.dumps(request))
+
     def test_a_remote_image_is_shown_under_the_same_limits(self):
         cell = (
             """import os

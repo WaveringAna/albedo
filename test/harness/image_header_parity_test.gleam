@@ -1,7 +1,8 @@
 //// The kernel reads image headers itself so `show_image` can refuse an image
-//// over the model's edge at the call, and the daemon reads them again as the
-//// authority. Two parsers in two languages drift apart silently, and E2E only
-//// ever sends one well-formed PNG, so these fixtures hold both to one answer.
+//// over the model's edge, or one cut short, at the call, and the daemon reads
+//// them again as the authority. Two parsers in two languages drift apart
+//// silently, and E2E only ever sends one well-formed PNG, so these fixtures
+//// hold both to one answer.
 
 import albedo/daemon/image
 import albedo/openai_api/types
@@ -20,9 +21,20 @@ import gleeunit/should
 const fixtures = [
   #(
     "png",
-    "iVBORw0KGgoAAAANSUhEUgAACQAAAAS8CAIAAAA=",
+    "iVBORw0KGgoAAAANSUhEUgAACQAAAAS8CAIAAABW4yLdAAAAAElFTkSuQmCC",
     Some(#("image/png", 2304, 1212)),
   ),
+  #(
+    "png bytes after iend",
+    "iVBORw0KGgoAAAANSUhEUgAACQAAAAS8CAIAAABW4yLdAAAAAElFTkSuQmCCdGFpbA==",
+    Some(#("image/png", 2304, 1212)),
+  ),
+  #(
+    "png stops before iend",
+    "iVBORw0KGgoAAAANSUhEUgAACQAAAAS8CAIAAABW4yLd",
+    None,
+  ),
+  #("png header only", "iVBORw0KGgoAAAANSUhEUgAACQAAAAS8CAIAAAA=", None),
   #("png zero width", "iVBORw0KGgoAAAANSUhEUgAAAAAAAAAFCAIAAAA=", None),
   #("png truncated", "iVBORw0KGgoAAAANSUhEUgAAAAM=", None),
   #(
@@ -30,11 +42,20 @@ const fixtures = [
     "/9j/4AAQSkZJRgABAQAAAQABAAD/wAAICAHgAoAD/9k=",
     Some(#("image/jpeg", 640, 480)),
   ),
-  #("jpeg progressive", "/9j/wgAICAu4D6AD", Some(#("image/jpeg", 4000, 3000))),
+  #(
+    "jpeg progressive",
+    "/9j/wgAICAu4D6AD/9k=",
+    Some(#("image/jpeg", 4000, 3000)),
+  ),
   #(
     "jpeg fill bytes and restart",
-    "/9j/0P///+AAEEpGSUYAAQEAAAEAAQAAAAD/wQAICAAJAAcD",
+    "/9j/0P///+AAEEpGSUYAAQEAAAEAAQAAAAD/wQAICAAJAAcD/9k=",
     Some(#("image/jpeg", 7, 9)),
+  ),
+  #(
+    "jpeg without end of image",
+    "/9j/4AAQSkZJRgABAQAAAQABAAD/wAAICAHgAoAD",
+    None,
   ),
   #("jpeg scan before frame", "/9j/2gAEAAD/wAAICAABAAED", None),
   #("jpeg truncated segment", "/9j/4QAWeHh4eHh4", None),
@@ -121,17 +142,19 @@ fn header_json(header: Option(#(String, Int, Int))) -> String {
 @external(erlang, "albedo_images", "encode_base64")
 fn encode_base64(bytes: BitArray) -> String
 
+/// A whole 2x3 PNG: signature, IHDR, and IEND, in 45 bytes.
+const png = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAADCAIAAAA2iEnWAAAAAElFTkSuQmCC"
+
 pub fn canonical_base64_and_metadata_must_agree_test() -> Nil {
-  let png = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAAD"
-  image.inspect(png <> "AA==") |> should.equal(Ok(#("image/png", 2, 3, 25)))
+  image.inspect(png <> "AA==") |> should.equal(Ok(#("image/png", 2, 3, 46)))
   image.inspect(png <> "AB==") |> should.equal(Error(Nil))
-  image.inspect(png <> "AAA=") |> should.equal(Ok(#("image/png", 2, 3, 26)))
+  image.inspect(png <> "AAA=") |> should.equal(Ok(#("image/png", 2, 3, 47)))
   image.inspect(png <> "AAB=") |> should.equal(Error(Nil))
   image.inspect(png <> "AA==AAAA") |> should.equal(Error(Nil))
-  image.valid_payload("image/png", png, 2, 3, 24) |> should.be_true
-  image.valid_payload("image/png", png, 2, 4, 24) |> should.be_false
-  image.valid_payload("image/jpeg", png, 2, 3, 24) |> should.be_false
-  image.valid_payload("image/png", png, 2, 3, 25) |> should.be_false
+  image.valid_payload("image/png", png, 2, 3, 45) |> should.be_true
+  image.valid_payload("image/png", png, 2, 4, 45) |> should.be_false
+  image.valid_payload("image/jpeg", png, 2, 3, 45) |> should.be_false
+  image.valid_payload("image/png", png, 2, 3, 46) |> should.be_false
 }
 
 pub fn late_jpeg_headers_and_webp_riff_sizes_require_full_decode_test() -> Nil {
@@ -179,21 +202,10 @@ pub fn late_jpeg_headers_and_webp_riff_sizes_require_full_decode_test() -> Nil {
 }
 
 pub fn canonical_payload_size_enforces_the_decoded_limit_test() -> Nil {
-  let tail = types.max_image_bytes - 24
-  let header = <<
-    0x89,
-    "PNG":utf8,
-    13,
-    10,
-    26,
-    10,
-    13:size(32),
-    "IHDR":utf8,
-    2:size(32),
-    3:size(32),
-  >>
+  let assert Ok(whole) = bit_array.base64_decode(png)
+  let tail = types.max_image_bytes - bit_array.byte_size(whole)
   let padding = bit_array.from_string(string.repeat("x", tail))
-  let bytes = <<header:bits, padding:bits>>
+  let bytes = <<whole:bits, padding:bits>>
   image.inspect(encode_base64(bytes))
   |> should.equal(Ok(#("image/png", 2, 3, types.max_image_bytes)))
   image.inspect(encode_base64(<<bytes:bits, 0>>)) |> should.equal(Error(Nil))
