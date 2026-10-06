@@ -337,6 +337,25 @@ class RemotePluginTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("rem.output.read(", notice["text"])
         self.assertNotIn("jobs[", notice["text"])
 
+    async def test_an_await_cut_short_leaves_the_job_waking_the_session(self):
+        rem = await self.connect()
+        self.addCleanup(rem.close)
+        # A cell deadline cancels the await here; the interrupt must reach the
+        # remote kernel's await too, or neither side ever sends the wake.
+        job = rem.run(sys.executable, "-c", "import time; time.sleep(1)")
+        for _ in range(100):
+            if job.id is not None:
+                break
+            await asyncio.sleep(0.05)
+        with self.assertRaises(asyncio.TimeoutError):
+            await asyncio.wait_for(job, 0.2)
+        for _ in range(100):
+            if notices:
+                break
+            await asyncio.sleep(0.05)
+        [notice] = notices
+        self.assertEqual([fact["id"] for fact in notice["jobs"]], [job.id])
+
     async def test_a_call_that_fails_unawaited_says_so_on_its_reference(self):
         rem = await self.connect()
         self.addCleanup(rem.close)

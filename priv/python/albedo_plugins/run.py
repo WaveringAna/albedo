@@ -12,8 +12,9 @@ but leaves its ProxyCommand in the group, and ending that ends the master.
 A job that finishes with its result unread wakes the session: the kernel tells
 the host, the host submits a user turn naming the job, and the model never has
 to poll or await. Reading the result (tail, poll, await, output.read) or
-stopping the job withdraws the wake, and a busy session is retried until it
-goes idle, so a notice can never overtake the read that satisfies it. Jobs
+stopping the job withdraws the wake; an await cut short by an interrupt or a
+deadline read nothing, so it leaves the wake owed. A busy session is retried
+until it goes idle, so a notice can never overtake the read that satisfies it. Jobs
 still owed when the retry lands share one notice, and so one turn.
 """
 
@@ -285,7 +286,8 @@ class Job:
         self.termination: albedo_proc.Termination | None = None
         self.capture: OutputCapture = capture_factory(self.id)
         self.ending: asyncio.Task[albedo_proc.Termination] | None = None
-        self._awaited = False  # someone awaited this job; its result reached them
+        self._awaited = False  # an await returned this job; its result reached them
+        self._waiters = 0  # awaits still waiting; one cut short leaves the wake owed
         self._read = False  # the finished result was read; no wake is owed
         self._remote = os.environ.get("ALBEDO_REMOTE_TARGET") or None
         self._starting = (
@@ -417,8 +419,7 @@ class Job:
                 }
             )
             release(self)
-            if host is not None and not self._awaited:
-                owe(self)
+            self._owe_unread()
         return self
 
     async def _drain(self, process: Command) -> int:
@@ -435,8 +436,21 @@ class Job:
             return process.returncode
 
     def __await__(self) -> Generator[object, None, Job]:
-        self._awaited = True
-        return asyncio.shield(self.task).__await__()
+        return self._wait().__await__()
+
+    async def _wait(self) -> Job:
+        """Wait for the job. An await cut short (an interrupted cell, a
+        wait_for deadline) never delivered the result, so the job still wakes
+        the session when it ends."""
+        self._waiters += 1
+        try:
+            await asyncio.shield(self.task)
+            self._awaited = True
+        finally:
+            self._waiters -= 1
+            if self.task.done():
+                self._owe_unread()
+        return self
 
     def poll(self):
         if self.exit_code is not None:
@@ -471,7 +485,12 @@ class Job:
     @property
     def _unreported(self) -> bool:
         """Finished, and its result has reached no one yet."""
-        return not self._read and not self._awaited
+        return not self._read and not self._awaited and not self._waiters
+
+    def _owe_unread(self) -> None:
+        """Queue the finished job's wake unless its result reached someone."""
+        if host is not None and self._unreported:
+            owe(self)
 
     def _facts(self) -> dict[str, object]:
         """What a wake notice says about this job."""

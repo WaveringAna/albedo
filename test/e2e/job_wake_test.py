@@ -6,7 +6,7 @@ import time
 import unittest
 import urllib.error
 
-from harness import Albedo, Provider, exclusive, python, release_fifo, text
+from harness import Albedo, Provider, Reply, exclusive, python, release_fifo, text
 
 # A daemon under this limit sweeps every half second, so the detached job
 # below outlives several sweeps.
@@ -54,6 +54,14 @@ class JobWakeCase(unittest.TestCase):
                     f"import sys\njob = run(sys.executable, '-c', {program!r})\njob.id"
                 )
                 return python(code)
+            if last.get("role") == "user" and "await a slow job past its cell" in user:
+                program = (
+                    f"open({str(self.job_gate)!r}, 'rb').read(1); print('wake-done')"
+                )
+                code = f"import sys\njob = run(sys.executable, '-c', {program!r})\nawait job"
+                return Reply(
+                    "python", tool_arguments={"code": code, "timeout_ms": 1500}
+                )
             return text("finished")
 
         def prepare(app):
@@ -139,11 +147,11 @@ class JobWakeTests(JobWakeCase):
         time.sleep(2.5)
         self.assertEqual(len(self.users()), 3)
 
-    def start_blocked_job(self):
+    def start_blocked_job(self, prompt="start a slow job"):
         session = self.app.session()
         self.job_gate = self.app.workspace / "job-release"
         os.mkfifo(self.job_gate)
-        self.app.prompt(session, "start a slow job").close()
+        self.app.prompt(session, prompt).close()
         self.app.idle(session)
         self.assertEqual(len(self.users()), 2)
         return session
@@ -209,6 +217,22 @@ class JobWakeTests(JobWakeCase):
         self.assertEqual(after["live_job_count"], 0)
         self.assertEqual(after["running_jobs"], [])
         self.assertEqual(self.jobs_resource(session)["items"], [])
+
+    def test_an_await_cut_short_by_the_cell_deadline_still_wakes(self):
+        session = self.start_blocked_job("await a slow job past its cell deadline")
+        statuses = [
+            json.loads(part["value"])["status"]
+            for entry in self.app.history(session)["items"]
+            if entry["kind"] == "tool_result"
+            for part in entry["content"]
+            if part["kind"] == "json" and part["field"] == "result"
+        ]
+        self.assertEqual(statuses, ["interrupted"])
+        gate = self.job_gate
+        assert gate is not None
+        wait_for(lambda: release_fifo(gate))
+        wait_for(lambda: len(self.users()) >= 3)
+        self.assertIn("background job finished", self.users()[2])
 
     def test_stopping_one_job_and_rejecting_unknown_job(self):
         session = self.start_blocked_job()

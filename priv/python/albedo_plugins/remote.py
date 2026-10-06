@@ -270,7 +270,8 @@ class RemoteRef:
         self._label = label
         self._settled: Any = _UNSET
         self._withdrawn: bool = False
-        self._awaited = False  # awaited here, so its result reaches this cell
+        self._awaited = False  # an await here returned, so its result reached this cell
+        self._waiters = 0  # awaits here still waiting on it
 
     # --- mirrored job state: sync, like the local handle ---
 
@@ -346,8 +347,9 @@ class RemoteRef:
 
     @property
     def _claimed(self) -> bool:
-        """Its result reached this side, so the job's wake is not owed."""
-        return self._awaited or self._withdrawn
+        """Its result reached this side, or an await here is about to take it,
+        so the job's wake is not owed."""
+        return self._awaited or self._waiters > 0 or self._withdrawn
 
     # --- the value surface: identical output to the local tool ---
 
@@ -423,10 +425,20 @@ class RemoteRef:
         )
 
     def __await__(self):
-        # Marked now, like a local job: the await crosses the connection only
-        # after the reply to the call, and a quick job is done before that.
-        self._awaited = True
-        return self._settle().__await__()
+        return self._wait().__await__()
+
+    async def _wait(self) -> Any:
+        # Counted now, like a local job: the await crosses the connection only
+        # after the reply to the call, and a quick job is done before that. An
+        # await cut short interrupts the remote one too, so the remote job owes
+        # its wake again and this reference no longer claims it.
+        self._waiters += 1
+        try:
+            result = await self._settle()
+            self._awaited = True
+        finally:
+            self._waiters -= 1
+        return result
 
     async def _settle(self) -> Any:
         """Resolve the in-flight call; awaiting a live object awaits the object."""
@@ -1090,8 +1102,10 @@ class FallbackJob:
         self.started: float = loop.time()
         self.duration: float | None = None
         self.capture = capture_factory(self.id)
-        self._awaited = False
+        self._awaited = False  # an await returned this job; its result reached them
+        self._waiters = 0  # awaits still waiting; one cut short leaves the wake owed
         self._read = False
+        self._announcer: asyncio.Task[None] | None = None
         self._connection = connection
         _fallback_live.add(self.id)
         _report_live()
@@ -1148,13 +1162,24 @@ class FallbackJob:
             self.duration = loop.time() - self.started
             _fallback_live.discard(self.id)
             _report_live()
-            if host_call is not None and not self._awaited:
-                _ = loop.create_task(self._announce())
+            self._owe_unread()
         return self
+
+    @property
+    def _unreported(self) -> bool:
+        """Finished, and its result has reached no one yet."""
+        return not self._read and not self._awaited and not self._waiters
+
+    def _owe_unread(self) -> None:
+        """Start the finished command's wake unless its result reached someone."""
+        if host_call is None or not self._unreported:
+            return
+        if self._announcer is None or self._announcer.done():
+            self._announcer = loop.create_task(self._announce())
 
     async def _announce(self) -> None:
         """Wake the session for this command, retrying while it runs."""
-        while not self._read and not self._awaited:
+        while self._unreported:
             try:
                 await host_call("jobs.completed", self._notice())
                 return
@@ -1206,8 +1231,19 @@ class FallbackJob:
             self.capture.write_bytes(chunk)
 
     def __await__(self):
-        self._awaited = True
-        return asyncio.shield(self._task).__await__()
+        return self._wait().__await__()
+
+    async def _wait(self) -> "FallbackJob":
+        """Wait for the command; an await cut short leaves its wake owed."""
+        self._waiters += 1
+        try:
+            await asyncio.shield(self._task)
+            self._awaited = True
+        finally:
+            self._waiters -= 1
+            if self._task.done():
+                self._owe_unread()
+        return self
 
     def poll(self) -> int | None:
         if self.exit_code is not None:
