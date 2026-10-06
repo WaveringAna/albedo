@@ -51,7 +51,6 @@ type LoginModel struct {
 	readCtx                      context.Context
 	cancelReads                  context.CancelFunc
 	closed                       bool
-	Styles                       Styles
 	Conn                         *daemon.Connection
 	openBrowser                  func(url string)
 	Removing                     removal
@@ -104,7 +103,6 @@ func NewLoginModel(conn *daemon.Connection, nameHint string, openBrowser func(st
 		Hint:        strings.TrimSpace(nameHint),
 		Draft:       config.Settings{Extension: "openai", BaseURL: "https://api.openai.com/v1", Protocol: "responses"},
 		TextInput:   newField(),
-		Styles:      DefaultStyles,
 		openBrowser: openBrowser,
 	}
 	m.buildChoosePicker()

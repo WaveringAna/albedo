@@ -33,9 +33,24 @@ func (m *ChatModel) rebuildSettledLines() {
 	m.userRows = nil
 	m.rebuilding = true
 	entries := m.History.Entries()
-	for i := range entries {
-		m.appendBlock(entries[:i], entries[i])
+	// Only a reader scrolled up keeps the blocks: each older page rebuilds
+	// everything retained, and reuses what the last rebuild rendered.
+	var kept map[settledKey]settledBlock
+	if !m.Follow {
+		kept = make(map[settledKey]settledBlock, len(entries))
 	}
+	for i := range entries {
+		key, named := m.settledKey(entries[:i], entries[i])
+		block, ok := m.settled[key]
+		if !named || !ok {
+			block.rows, block.head = m.Renderer.Settle(entries[:i], entries[i], m.Flags)
+		}
+		if named && kept != nil {
+			kept[key] = block
+		}
+		m.appendRows(entries[i], block)
+	}
+	m.settled = kept
 	m.rebuilding = false
 	m.settledOffset = len(m.headerLines())
 	m.scrollOffset = max(0, m.settledOffset+len(m.settledLines)-fromEnd)
@@ -49,11 +64,11 @@ func (m ChatModel) headerLines() []string {
 	var line string
 	switch {
 	case m.loadingOlder:
-		line = m.Styles.Faint.Render("↑ loading earlier messages…")
+		line = DefaultStyles.Faint.Render("↑ loading earlier messages…")
 	case m.hasOlder():
-		line = m.Styles.Faint.Render("↑ earlier messages load as you scroll up")
+		line = DefaultStyles.Faint.Render("↑ earlier messages load as you scroll up")
 	case m.History.TruncationNotice() != "":
-		line = m.Styles.Warning.Render(m.History.TruncationNotice())
+		line = DefaultStyles.Warning.Render(m.History.TruncationNotice())
 	default:
 		return nil
 	}
@@ -77,13 +92,63 @@ func (m ChatModel) olderCursor() (int64, bool) {
 	return before, more && before > 0
 }
 
+// settledBlock is an entry's settled rows, head indexing its own first one.
+type settledBlock struct {
+	rows []string
+	head int
+}
+
+// settledKey names what an entry's settled rows depend on: the entry, the
+// author and time before it, how it joins the entry above, and the burst it
+// ends, by the IDs at its ends and how it joins the entry above that.
+type settledKey struct {
+	workspace      string
+	id             string
+	burstFirst     string
+	burstLast      string
+	prior          prior
+	burst          int
+	epoch          int
+	width          int
+	follows        lane
+	burstFollows   lane
+	flags          DisplayFlags
+	separated      bool
+	burstSeparated bool
+}
+
+// settledKey is false for an entry, or a burst end, without an ID to name.
+func (m ChatModel) settledKey(before []HistoryEntry, entry HistoryEntry) (settledKey, bool) {
+	key := settledKey{id: entry.ID, prior: priorOf(before), epoch: m.burstEpoch, width: m.Renderer.BodyWidth, workspace: m.Renderer.Workspace, flags: m.Flags}
+	if entry.ID == "" || Compact(entry, m.Flags) {
+		return key, false
+	}
+	if n := len(before); n > 0 {
+		key.follows, key.separated = laneOf(before[n-1]), Separated(&before[n-1], entry, m.Flags)
+	}
+	burst := trailingBurst(before, m.Flags)
+	if len(burst) == 0 {
+		return key, true
+	}
+	key.burstFirst, key.burstLast, key.burst = burst[0].ID, burst[len(burst)-1].ID, len(burst)
+	if n := len(before) - len(burst); n > 0 {
+		key.burstFollows, key.burstSeparated = laneOf(before[n-1]), Separated(&before[n-1], burst[0], m.Flags)
+	}
+	return key, key.burstFirst != "" && key.burstLast != ""
+}
+
 // appendBlock settles entry after the entries before it.
 func (m *ChatModel) appendBlock(before []HistoryEntry, entry HistoryEntry) {
-	rows, head := m.Renderer.Settle(before, entry, m.Flags)
+	var block settledBlock
+	block.rows, block.head = m.Renderer.Settle(before, entry, m.Flags)
+	m.appendRows(entry, block)
+}
+
+func (m *ChatModel) appendRows(entry HistoryEntry, block settledBlock) {
 	if entry.Kind == EntryUser && (entry.Source == "" || entry.Source == "chat") {
-		m.userRows = append(m.userRows, len(m.settledLines)+head)
+		m.userRows = append(m.userRows, len(m.settledLines)+block.head)
 	}
-	for _, row := range rows {
+	for _, row := range block.rows {
 		m.settledLines = append(m.settledLines, row)
 		m.settledLinesBytes += int64(len(row))
 	}
@@ -191,6 +256,7 @@ func (m *ChatModel) refreshViewportContent() int {
 		// Reading older history stretched both caps; at the end they return.
 		m.History.Trim()
 		m.trimSettledLines()
+		m.settled = nil
 	}
 	allLines := m.headerLines()
 	if !m.Follow {
@@ -229,7 +295,7 @@ func (m *ChatModel) refreshViewportContent() int {
 		action = m.renderProgress()
 	case m.ThoughtProgressText != "" && !m.Flags.Thinking:
 		width := max(1, m.Renderer.BodyWidth-railWidth)
-		action = markChrome + m.Styles.Faint.Render(ansi.Truncate(m.ThoughtProgressText, width, "…"))
+		action = markChrome + DefaultStyles.Faint.Render(ansi.Truncate(m.ThoughtProgressText, width, "…"))
 	}
 	if action != "" {
 		if len(allLines) > 0 && !stacks {
@@ -256,12 +322,7 @@ func (m *ChatModel) refreshViewportContent() int {
 			visibleSlice = allLines[m.scrollOffset:end]
 		}
 	}
-	m.Viewport.SetContent(strings.Join(visibleSlice, "\n"))
-	if m.Follow {
-		m.Viewport.GotoBottom()
-	} else {
-		m.Viewport.GotoTop()
-	}
+	m.Viewport.rows = visibleSlice
 	return maxScroll
 }
 

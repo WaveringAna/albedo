@@ -49,7 +49,7 @@ func TestModelChangeRetainsConfirmedSelectionWhenCapFails(t *testing.T) {
 				}
 			}
 			updated, cmd := app.Update(msg)
-			app = updated.(AppModel)
+			app = updated.(*AppModel)
 			if cmd != nil || requests != 3 {
 				t.Fatalf("cap failure caused another operation: requests=%d command=%v", requests, cmd != nil)
 			}
@@ -80,7 +80,7 @@ func TestModelChangeFailureDoesNotApplySelectionOrRaiseCap(t *testing.T) {
 			raise := true
 			msg := app.changeModelCmd("requested", "provider", "", &raise, app.ModelGen, "provider/cap")().(modelChangedMsg)
 			updated, cmd := app.Update(msg)
-			app = updated.(AppModel)
+			app = updated.(*AppModel)
 			if msg.Err == nil || msg.Selection != nil || requests != 1 || cmd != nil {
 				t.Fatalf("failed switch proceeded to cap or invented confirmation: %+v requests=%d", msg, requests)
 			}
@@ -107,7 +107,7 @@ func TestModelChangeIgnoresStaleSessionOrGeneration(t *testing.T) {
 				Selection: &daemon.ModelSelection{Model: "stale"},
 				Err:       errors.New("stale failure"), SessionID: scenario.sessionID, Gen: scenario.generation,
 			})
-			app = updated.(AppModel)
+			app = updated.(*AppModel)
 			if cmd != nil || app.ActiveSession.Model != "old" || app.Chat.Model != "old" || app.State != AppStateModelPicker || !app.ModelPicker.Saving || app.ModelPicker.Error != "" || len(app.Chat.Notices) != 0 {
 				t.Fatal("stale result changed current session, picker, or notices")
 			}
@@ -122,7 +122,7 @@ func TestModelChangePreservesScreenAfterLeavingPicker(t *testing.T) {
 	updated, cmd := app.Update(modelChangedMsg{
 		Selection: &daemon.ModelSelection{Model: "confirmed"}, SessionID: "session", Gen: 1,
 	})
-	app = updated.(AppModel)
+	app = updated.(*AppModel)
 	if cmd != nil || app.ActiveSession.Model != "confirmed" || app.Chat.Model != "confirmed" || app.State != AppStateSessionPicker {
 		t.Fatal("confirmed switch failed to update its session or changed an unrelated screen")
 	}

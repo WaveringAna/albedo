@@ -68,14 +68,14 @@ func (m LoginModel) View() string {
 		b.WriteString(s)
 		b.WriteByte('\n')
 	}
-	line(titleRule(m.Width, brand("albedo")+" "+m.Styles.Muted.Render("/login"), m.Styles.Faint.Render(m.Name)))
+	line(titleRule(m.Width, brand("albedo")+" "+DefaultStyles.Muted.Render("/login"), DefaultStyles.Faint.Render(m.Name)))
 	location := "Provider configuration stored in " + config.HomeDir()
 	if m.Width > 0 && ansi.StringWidth(location) > m.Width && ansi.StringWidth(config.HomeDir()) <= m.Width {
 		location = "Provider configuration stored in\n" + config.HomeDir()
 	}
-	line(m.Styles.Faint.Render(ansi.Wrap(location, m.Width, "")))
+	line(DefaultStyles.Faint.Render(ansi.Wrap(location, m.Width, "")))
 	if m.Error != "" {
-		line(m.Styles.Error.Render(ansi.Wrap(m.Error, m.Width, "")))
+		line(DefaultStyles.Error.Render(ansi.Wrap(m.Error, m.Width, "")))
 	}
 
 	switch m.Step {
@@ -88,11 +88,11 @@ func (m LoginModel) View() string {
 		b.WriteString(m.ConfirmPicker.View())
 	case StepModels, StepOAuthModels:
 		if m.Catalog == nil {
-			b.WriteString(m.Styles.Faint.Render("loading models…"))
+			b.WriteString(DefaultStyles.Faint.Render("loading models…"))
 			break
 		}
 		if m.CatalogNote != "" {
-			line(m.Styles.Faint.Render(m.CatalogNote))
+			line(DefaultStyles.Faint.Render(m.CatalogNote))
 		}
 		b.WriteString(m.ModelPicker.View())
 	case StepOAuthFields:
@@ -103,7 +103,7 @@ func (m LoginModel) View() string {
 			} else {
 				line(field.Label)
 				if field.Description != "" {
-					line(m.Styles.Faint.Render(field.Description))
+					line(DefaultStyles.Faint.Render(field.Description))
 				}
 				line(m.TextInput.View())
 				b.WriteString(keyHints(hint{"enter", "continue"}, hint{"esc", "cancel"}))
@@ -112,20 +112,20 @@ func (m LoginModel) View() string {
 	case StepOAuth:
 		line(cmp.Or(m.Status, "starting sign-in…"))
 		if m.LoginInstructions != "" {
-			line(m.Styles.Faint.Render(ansi.Wrap(m.LoginInstructions, m.Width, "")))
+			line(DefaultStyles.Faint.Render(ansi.Wrap(m.LoginInstructions, m.Width, "")))
 		}
 		if m.SignInURL != "" {
-			line(m.Styles.Faint.Render(ansi.Hardwrap(m.SignInURL, m.Width, true)))
+			line(DefaultStyles.Faint.Render(ansi.Hardwrap(m.SignInURL, m.Width, true)))
 		}
 		b.WriteString("Callback URL or code: ")
 		line(m.TextInput.View())
-		b.WriteString(ansi.Wrap(m.Styles.Faint.Render("Browser sign-in completes automatically")+m.Styles.Decor.Render(" · ")+keyHints(hint{"enter", "submit code"}, hint{"esc", "cancel"}), m.Width, ""))
+		b.WriteString(ansi.Wrap(DefaultStyles.Faint.Render("Browser sign-in completes automatically")+DefaultStyles.Decor.Render(" · ")+keyHints(hint{"enter", "submit code"}, hint{"esc", "cancel"}), m.Width, ""))
 	case StepSaving:
 		state := "saving provider…"
 		if m.Removing.Kind != "" {
 			state = "removing " + m.Removing.Kind + "…"
 		}
-		b.WriteString(m.Styles.Faint.Render(state))
+		b.WriteString(DefaultStyles.Faint.Render(state))
 	default:
 		stepLabels := map[LoginStep]string{
 			StepName: "provider name", StepBaseURL: "API base URL",

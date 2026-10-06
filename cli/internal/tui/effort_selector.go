@@ -55,11 +55,11 @@ func (m ChatModel) effortSelectorView() string {
 	for i := left; i < right; i++ {
 		style := m.effortTierStyle(m.effortOptions[i])
 		if i == selected {
-			style = style.Inherit(m.Styles.Selected).Bold(true)
+			style = style.Inherit(DefaultStyles.Selected).Bold(true)
 		}
 		parts = append(parts, style.Render(label(i)))
 	}
-	decor := m.Styles.Decor.Render
+	decor := DefaultStyles.Decor.Render
 	prefix, suffix := "", ""
 	if left > 0 {
 		prefix = decor("‹ ")
@@ -73,16 +73,16 @@ func (m ChatModel) effortSelectorView() string {
 func (m ChatModel) effortTierStyle(level string) lipgloss.Style {
 	switch level {
 	case "low":
-		return m.Styles.EffortLow
+		return DefaultStyles.EffortLow
 	case "medium":
-		return m.Styles.EffortMedium
+		return DefaultStyles.EffortMedium
 	case "high":
-		return m.Styles.EffortHigh
+		return DefaultStyles.EffortHigh
 	case "xhigh":
-		return m.Styles.EffortXHigh
+		return DefaultStyles.EffortXHigh
 	case "max":
-		return m.Styles.EffortMax
+		return DefaultStyles.EffortMax
 	default:
-		return m.Styles.Muted
+		return DefaultStyles.Muted
 	}
 }

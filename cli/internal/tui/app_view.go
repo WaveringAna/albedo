@@ -8,7 +8,7 @@ import (
 
 // View captures the mouse only in chat, where it scrolls and selects; every
 // other screen leaves it to the terminal.
-func (m AppModel) View() tea.View {
+func (m *AppModel) View() tea.View {
 	v := tea.NewView(m.content())
 	v.MouseMode = tea.MouseModeNone
 	if m.State == AppStateChat {
@@ -17,7 +17,7 @@ func (m AppModel) View() tea.View {
 	return v
 }
 
-func (m AppModel) content() string {
+func (m *AppModel) content() string {
 	switch m.State {
 	case AppStateChat:
 		return m.Chat.View()

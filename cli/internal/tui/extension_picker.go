@@ -31,7 +31,6 @@ type extensionToggledMsg struct {
 }
 
 type ExtensionPickerModel struct {
-	Styles     Styles
 	Conn       *daemon.Connection
 	SessionID  string
 	Extensions []ExtensionItem
@@ -49,7 +48,6 @@ func NewExtensionPickerModel(conn *daemon.Connection, sessionID string) Extensio
 		Conn:      conn,
 		SessionID: sessionID,
 		page:      page{Loading: true, Generation: nextPageGeneration()},
-		Styles:    DefaultStyles,
 	}
 }
 
@@ -240,9 +238,9 @@ func (m ExtensionPickerModel) View() string {
 	if m.Session {
 		scope, note = "this session", "Changes here affect only this session · g to edit global defaults"
 	}
-	b.WriteString(titleRule(m.Width, brand("albedo")+" "+m.Styles.Muted.Render("/extensions"), m.Styles.Faint.Render(scope)))
+	b.WriteString(titleRule(m.Width, brand("albedo")+" "+DefaultStyles.Muted.Render("/extensions"), DefaultStyles.Faint.Render(scope)))
 	b.WriteByte('\n')
-	b.WriteString(m.Styles.Faint.Render(inkWrap(note, m.Width)))
+	b.WriteString(DefaultStyles.Faint.Render(inkWrap(note, m.Width)))
 	b.WriteByte('\n')
 	warning := "Global defaults apply when sessions reload."
 	if m.Session {
@@ -261,7 +259,7 @@ func (m ExtensionPickerModel) View() string {
 	}
 
 	if m.Loading {
-		b.WriteString(m.Styles.Faint.Render("loading extensions…\n"))
+		b.WriteString(DefaultStyles.Faint.Render("loading extensions…\n"))
 		return b.String()
 	}
 
@@ -270,7 +268,7 @@ func (m ExtensionPickerModel) View() string {
 			b.WriteString(keyHints(hint{"r", "retry"}, hint{"esc", "return to chat"}))
 			b.WriteByte('\n')
 		} else {
-			b.WriteString(m.Styles.Faint.Render("No extensions are available for this session."))
+			b.WriteString(DefaultStyles.Faint.Render("No extensions are available for this session."))
 			b.WriteByte('\n')
 			b.WriteString(inkWrap(keyHints(hint{"↑↓", "select"}, hint{"enter/space", "toggle"}, hint{"esc", "return to chat"}), m.Width))
 		}
@@ -331,15 +329,15 @@ func (m ExtensionPickerModel) View() string {
 		case on:
 			status = DefaultStyles.Success.Render("on ")
 		default:
-			status = m.Styles.Faint.Render("off")
+			status = DefaultStyles.Faint.Render("off")
 		}
-		line := status + "  " + ext.Name + m.Styles.Faint.Render(scope)
+		line := status + "  " + ext.Name + DefaultStyles.Faint.Render(scope)
 		if ext.Description != "" {
 			line += DefaultStyles.Faint.Render("  " + ext.Description)
 		}
 		lines[i] = line
 	}
-	b.WriteString(selectableRows(lines, m.Cursor, m.Height, m.Height, m.Width, m.Styles))
+	b.WriteString(selectableRows(lines, m.Cursor, m.Height, m.Height, m.Width))
 	b.WriteByte('\n')
 
 	// Current item details
@@ -357,11 +355,11 @@ func (m ExtensionPickerModel) View() string {
 			}
 			return strings.Join(items, sep)
 		}
-		b.WriteString(m.Styles.Faint.Render("plugins: " + joinOr(current.Plugins, ", ", "not reported")))
+		b.WriteString(DefaultStyles.Faint.Render("plugins: " + joinOr(current.Plugins, ", ", "not reported")))
 		b.WriteByte('\n')
-		b.WriteString(m.Styles.Faint.Render("capabilities: " + joinOr(m.capabilitiesList(current), " · ", "not reported")))
+		b.WriteString(DefaultStyles.Faint.Render("capabilities: " + joinOr(m.capabilitiesList(current), " · ", "not reported")))
 		b.WriteByte('\n')
-		b.WriteString(m.Styles.Faint.Render("requires: " + joinOr(current.Requires, ", ", "none")))
+		b.WriteString(DefaultStyles.Faint.Render("requires: " + joinOr(current.Requires, ", ", "none")))
 		b.WriteByte('\n')
 		if current.Quarantined != "" {
 			b.WriteString(DefaultStyles.Error.Render(inkWrap("quarantined: "+current.Quarantined, m.Width)))
@@ -379,9 +377,9 @@ func (m ExtensionPickerModel) View() string {
 		if m.Session {
 			status = "Reloading %s…"
 		}
-		b.WriteString(m.Styles.Faint.Render(fmt.Sprintf(status, currName)))
+		b.WriteString(DefaultStyles.Faint.Render(fmt.Sprintf(status, currName)))
 	} else if m.Confirming {
-		b.WriteString(m.Styles.Faint.Render("waiting for confirmation"))
+		b.WriteString(DefaultStyles.Faint.Render("waiting for confirmation"))
 	} else {
 		keys := []hint{{"↑↓", "select"}, {"enter/space", "toggle"}}
 		if !m.Session {

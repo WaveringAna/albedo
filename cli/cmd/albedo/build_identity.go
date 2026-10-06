@@ -97,13 +97,16 @@ func digestTree(appDir string) string {
 	}
 	sort.Strings(paths)
 	hasher := sha256.New()
+	// One buffer for every file: io.Copy from an *os.File allocates its own
+	// for each, and a build tree has hundreds.
+	buf := make([]byte, 32*1024)
 	for _, rel := range paths {
 		hasher.Write([]byte(rel))
 		file, err := os.Open(filepath.Join(appDir, rel))
 		if err != nil {
 			return ""
 		}
-		_, err = io.Copy(hasher, file)
+		_, err = io.CopyBuffer(hasher, struct{ io.Reader }{file}, buf)
 		file.Close()
 		if err != nil {
 			return ""

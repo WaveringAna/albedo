@@ -47,7 +47,7 @@ func (m PageViewModel) list(width, height int) []string {
 
 func (m PageViewModel) listLines(width, height int) []string {
 	if len(m.Doc.Rows) == 0 {
-		return []string{m.Styles.Faint.Render("   " + m.Doc.Empty)}
+		return []string{DefaultStyles.Faint.Render("   " + m.Doc.Empty)}
 	}
 	idW := 0
 	for _, row := range m.Doc.Rows {
@@ -110,7 +110,7 @@ func rowID(row PageRow) string {
 // row is one page row in the sessions view's grammar: bar, a glyph in the
 // row's tone, the title, then its id right-aligned in idW columns.
 func (m PageViewModel) row(row PageRow, selected bool, width, idW int) string {
-	glyph, glyphStyle := "· ", m.Styles.Faint
+	glyph, glyphStyle := "· ", DefaultStyles.Faint
 	switch {
 	case selected:
 		glyph, glyphStyle = "◆ ", DefaultStyles.Agent
@@ -124,7 +124,7 @@ func (m PageViewModel) row(row PageRow, selected bool, width, idW int) string {
 	case selected:
 		textStyle = DefaultStyles.Bold
 	case row.Tone == ToneMuted:
-		textStyle = m.Styles.Faint
+		textStyle = DefaultStyles.Faint
 	}
 	textW := width - 4
 	if idW > 0 {
@@ -137,7 +137,7 @@ func (m PageViewModel) row(row PageRow, selected bool, width, idW int) string {
 	}
 	line := marker + glyphStyle.Render(glyph) + " " + textStyle.Render(svCell(row.Text, textW, false))
 	if idW > 0 {
-		line += "  " + m.Styles.Faint.Render(svCell(rowID(row), idW, true))
+		line += "  " + DefaultStyles.Faint.Render(svCell(rowID(row), idW, true))
 	}
 	if selected {
 		return selectedLine(line, width)
@@ -151,7 +151,7 @@ func (m PageViewModel) row(row PageRow, selected bool, width, idW int) string {
 func (m PageViewModel) detail(width, height int) []string {
 	lines := m.detailLines(width)
 	if len(lines) > height && height > 0 {
-		lines = append(lines[:height-1], m.Styles.Faint.Render("···"))
+		lines = append(lines[:height-1], DefaultStyles.Faint.Render("···"))
 	}
 	return paneBox(lines, max(1, width-2), width, height)
 }
@@ -166,9 +166,9 @@ func (m PageViewModel) detailLines(width int) []string {
 	for _, l := range svWrap(row.Text, inner, 2) {
 		lines = append(lines, DefaultStyles.Bold.Render(l))
 	}
-	meta := []string{toneStyle(row.Tone, m.Styles).Render(row.Badge)}
+	meta := []string{toneStyle(row.Tone).Render(row.Badge)}
 	if id := rowID(*row); id != "" {
-		meta = append(meta, m.Styles.Faint.Render(id))
+		meta = append(meta, DefaultStyles.Faint.Render(id))
 	}
 	lines = append(lines, strings.Join(meta, DefaultStyles.Decor.Render(" · ")), DefaultStyles.Decor.Render(strings.Repeat("─", inner)))
 	for paragraph := range strings.SplitSeq(row.Detail, "\n\n") {
@@ -180,14 +180,14 @@ func (m PageViewModel) detailLines(width int) []string {
 }
 
 // toneStyle is the color a badge wears for its tone.
-func toneStyle(tone PageTone, styles Styles) lipgloss.Style {
+func toneStyle(tone PageTone) lipgloss.Style {
 	switch tone {
 	case ToneActive:
 		return DefaultStyles.Success
 	case ToneWarning:
 		return DefaultStyles.Warning
 	case ToneMuted:
-		return styles.Faint
+		return DefaultStyles.Faint
 	}
 	return DefaultStyles.Muted
 }
@@ -206,9 +206,9 @@ func (m PageViewModel) View() string {
 	width, height := cmp.Or(m.Width, 80), cmp.Or(m.Height, 24)
 	summary := ""
 	if m.Doc != nil {
-		summary = m.Styles.Faint.Render(m.Doc.Summary)
+		summary = DefaultStyles.Faint.Render(m.Doc.Summary)
 	}
-	lines := []string{" " + titleRule(width-1, brand("albedo")+" "+m.Styles.Muted.Render(m.Command), summary), ""}
+	lines := []string{" " + titleRule(width-1, brand("albedo")+" "+DefaultStyles.Muted.Render(m.Command), summary), ""}
 	tail := []string{m.prompt(), m.footer(width)}
 	body := max(1, height-len(lines)-len(tail))
 	switch m.Doc {
@@ -217,7 +217,7 @@ func (m PageViewModel) View() string {
 		if m.Error != "" {
 			note = "r retry · esc back"
 		}
-		lines = append(lines, " "+m.Styles.Faint.Render(note))
+		lines = append(lines, " "+DefaultStyles.Faint.Render(note))
 		lines = append(lines, make([]string, max(0, body-1))...)
 	default:
 		l := m.layout(body, m.listed(body))
@@ -276,7 +276,7 @@ func (m PageViewModel) prompt() string {
 	case modeChoice:
 		var choice strings.Builder
 		choice.WriteByte(' ')
-		choice.WriteString(m.Styles.Prompt.Render(act.Label + target))
+		choice.WriteString(DefaultStyles.Prompt.Render(act.Label + target))
 		choice.WriteByte(' ')
 		choice.WriteString(promptLead())
 		for i, opt := range m.fieldChoices() {
@@ -288,7 +288,7 @@ func (m PageViewModel) prompt() string {
 		}
 		return choice.String()
 	case modeText:
-		return " " + m.Styles.Prompt.Render(act.Label+target+" · "+cmp.Or(m.currentField().Label, act.Label)) + " " + promptLead() + m.TextInput.View()
+		return " " + DefaultStyles.Prompt.Render(act.Label+target+" · "+cmp.Or(m.currentField().Label, act.Label)) + " " + promptLead() + m.TextInput.View()
 	}
 	return ""
 }
@@ -350,7 +350,7 @@ func (m PageViewModel) footer(width int) string {
 	case m.Error != "":
 		right = DefaultStyles.Error.Render(m.Error)
 	case m.Notice != "":
-		right = m.Styles.Faint.Render(m.Notice)
+		right = DefaultStyles.Faint.Render(m.Notice)
 	}
 	room := width - 1
 	if right != "" {

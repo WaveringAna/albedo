@@ -47,7 +47,6 @@ type treeForkedMsg struct {
 }
 
 type TreePickerModel struct {
-	Styles      Styles
 	Conn        *daemon.Connection
 	NextCursor  *int
 	SessionID   string
@@ -68,7 +67,6 @@ func NewTreePickerModel(conn *daemon.Connection, sessionID string) TreePickerMod
 		Cursors:   []int{0},
 		PageIndex: 0,
 		page:      page{Loading: true, Generation: nextPageGeneration()},
-		Styles:    DefaultStyles,
 	}
 }
 
@@ -186,9 +184,9 @@ func (m TreePickerModel) Update(msg tea.Msg) (TreePickerModel, tea.Cmd) {
 func (m TreePickerModel) View() string {
 	var b strings.Builder
 
-	b.WriteString(titleRule(m.Width, brand("albedo")+" "+m.Styles.Muted.Render("/tree"), m.Styles.Faint.Render("branch history")))
+	b.WriteString(titleRule(m.Width, brand("albedo")+" "+DefaultStyles.Muted.Render("/tree"), DefaultStyles.Faint.Render("branch history")))
 	b.WriteByte('\n')
-	b.WriteString(m.Styles.Faint.Render(inkWrap("Choose where the new session should branch from.", m.Width)))
+	b.WriteString(DefaultStyles.Faint.Render(inkWrap("Choose where the new session should branch from.", m.Width)))
 	b.WriteByte('\n')
 
 	if m.Error != "" {
@@ -203,7 +201,7 @@ func (m TreePickerModel) View() string {
 			if m.Loading {
 				msg = "loading history…"
 			}
-			b.WriteString(m.Styles.Faint.Render(msg))
+			b.WriteString(DefaultStyles.Faint.Render(msg))
 			b.WriteByte('\n')
 		}
 		b.WriteString(keyHints(hint{"enter", "confirm"}, hint{"esc", "cancel"}))
@@ -214,13 +212,13 @@ func (m TreePickerModel) View() string {
 	for i, cp := range m.Checkpoints {
 		lines[i] = DefaultStyles.Faint.Render(fmt.Sprintf("%-9s", cp.Type)) + " " + readablePreview(cp.Preview)
 	}
-	b.WriteString(selectableRows(lines, m.Cursor, m.Height, m.Height, m.Width, m.Styles))
+	b.WriteString(selectableRows(lines, m.Cursor, m.Height, m.Height, m.Width))
 	b.WriteByte('\n')
 
 	if m.Confirming && m.Cursor < len(m.Checkpoints) {
 		current := m.Checkpoints[m.Cursor]
 		b.WriteByte('\n')
-		b.WriteString(m.Styles.Faint.Render(inkWrap("This creates a new session with a fresh Python namespace. Workspace files stay unchanged.", m.Width)))
+		b.WriteString(DefaultStyles.Faint.Render(inkWrap("This creates a new session with a fresh Python namespace. Workspace files stay unchanged.", m.Width)))
 		b.WriteByte('\n')
 		b.WriteString(DefaultStyles.Warning.Render(fmt.Sprintf("Branch after %s · %s?", current.Type, readablePreview(current.Preview))))
 		b.WriteByte('\n')
@@ -231,7 +229,7 @@ func (m TreePickerModel) View() string {
 	}
 
 	if m.Forking {
-		b.WriteString(m.Styles.Faint.Render("Creating the new session…"))
+		b.WriteString(DefaultStyles.Faint.Render("Creating the new session…"))
 	} else if m.Confirming {
 		confirm := hint{"enter", "confirm"}
 		if m.ForkError != "" {

@@ -44,7 +44,7 @@ func (m ChatModel) chips() []chip {
 }
 
 func (m ChatModel) imageChip(n int, image pastedImage) chip {
-	content := []string{"", m.Styles.Faint.Render("image")}
+	content := []string{"", DefaultStyles.Faint.Render("image")}
 	if image.thumb != nil {
 		content = placeholderRows(*image.thumb)
 	}
@@ -65,7 +65,7 @@ func (m ChatModel) pasteChip(n int, text string) chip {
 	for _, line := range lines[:min(len(lines), thumbRows)] {
 		line = ansi.Truncate(strings.ReplaceAll(line, "\t", "  "), thumbCols, "")
 		// padded to the full width, so the card keeps the lines left-aligned
-		content = append(content, m.Styles.Faint.Render(line+strings.Repeat(" ", thumbCols-ansi.StringWidth(line))))
+		content = append(content, DefaultStyles.Faint.Render(line+strings.Repeat(" ", thumbCols-ansi.StringWidth(line))))
 	}
 	return chip{title: "paste #" + strconv.Itoa(n), caption: caption, content: content}
 }
@@ -90,7 +90,7 @@ func (m ChatModel) chipStrip(width int) []string {
 		}
 	}
 	if hidden := len(chips) - max(0, shown); hidden > 0 {
-		rows[chipRows/2] += m.Styles.Faint.Render(" +" + strconv.Itoa(hidden))
+		rows[chipRows/2] += DefaultStyles.Faint.Render(" +" + strconv.Itoa(hidden))
 	}
 	return rows
 }
@@ -101,11 +101,11 @@ func (m ChatModel) card(c chip) []string {
 	edge := func(left, label, right string) string {
 		label = ansi.Truncate(label, thumbCols-2, "…")
 		fill := thumbCols - ansi.StringWidth(label) - 2
-		return m.Styles.Decor.Render(left+strings.Repeat("─", fill-fill/2)+" ") +
-			m.Styles.Muted.Render(label) +
-			m.Styles.Decor.Render(" "+strings.Repeat("─", fill/2)+right)
+		return DefaultStyles.Decor.Render(left+strings.Repeat("─", fill-fill/2)+" ") +
+			DefaultStyles.Muted.Render(label) +
+			DefaultStyles.Decor.Render(" "+strings.Repeat("─", fill/2)+right)
 	}
-	side := m.Styles.Decor.Render("│")
+	side := DefaultStyles.Decor.Render("│")
 	rows := []string{edge("╭", c.title, "╮")}
 	top := (thumbRows - len(c.content)) / 2
 	for r := range thumbRows {

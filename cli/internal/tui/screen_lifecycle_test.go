@@ -137,7 +137,7 @@ func TestClosedLoginCancelsLateStartupWithoutOpeningBrowser(t *testing.T) {
 	releaseProvider()
 	result := awaitCommandSignal(t, delivered).(signInStartedMsg)
 	updated, cleanup := app.Update(result)
-	app = updated.(AppModel)
+	app = updated.(*AppModel)
 	if cleanup != nil {
 		t.Fatal("completed cleanup was scheduled a second time")
 	}
@@ -166,7 +166,7 @@ func TestLateProviderMutationKeepsUncertaintyWithoutSelectingReplacementFlow(t *
 		t.Fatalf("missing uncertainty: %v", result.Err)
 	}
 	updated, followup := app.Update(result)
-	app = updated.(AppModel)
+	app = updated.(*AppModel)
 	if followup != nil || app.Login.Name != "" || app.State != AppStateLogin || len(app.Notices) == 0 {
 		t.Fatal("late mutation was hidden or selected the replacement login flow")
 	}

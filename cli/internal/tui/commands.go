@@ -46,16 +46,13 @@ var AppCommands = []ChatCommand{
 }
 
 type CommandMenuModel struct {
-	Styles    Styles
 	Dismissed string
 	Catalog   []daemon.SessionCommand
 	Selected  int
 }
 
 func NewCommandMenuModel() CommandMenuModel {
-	return CommandMenuModel{
-		Styles: DefaultStyles,
-	}
+	return CommandMenuModel{}
 }
 
 func (m CommandMenuModel) Matches(input string) []ChatCommand {
@@ -134,7 +131,7 @@ func (m CommandMenuModel) View(input string) string {
 	var b strings.Builder
 	for i := start; i < end; i++ {
 		cmd := matches[i]
-		desc := cmd.Name + "  " + m.Styles.Faint.Render(cmd.Description)
+		desc := cmd.Name + "  " + DefaultStyles.Faint.Render(cmd.Description)
 		if i == idx {
 			b.WriteString(selectedLine(selectBar()+" "+desc, 0))
 		} else {

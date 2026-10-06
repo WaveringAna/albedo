@@ -22,7 +22,6 @@ type PickerSelectMsg struct {
 type PickerCancelMsg struct{}
 
 type PickerModel struct {
-	Styles      Styles
 	Title       string
 	Items       []PickerItem
 	Filtered    []PickerItem
@@ -44,7 +43,6 @@ func NewPickerModel(title string, items []PickerItem, withSearch bool, initialSe
 		Items:       items,
 		WithSearch:  withSearch,
 		SearchInput: ti,
-		Styles:      DefaultStyles,
 	}
 	m.applyFilter()
 
@@ -104,7 +102,7 @@ func inkWrap(text string, width int) string {
 
 // selectableRows is a bottom-anchored list window with the selected row on
 // the selection surface.
-func selectableRows(lines []string, selected, height, limit, width int, styles Styles) string {
+func selectableRows(lines []string, selected, height, limit, width int) string {
 	if height <= 0 {
 		height = 24
 	}
@@ -114,7 +112,7 @@ func selectableRows(lines []string, selected, height, limit, width int, styles S
 	available := max(1, min(limit, height-8))
 	first := min(max(0, selected-available+1), max(0, len(lines)-available))
 	if len(lines) == 0 {
-		return styles.Faint.Render("no matches")
+		return DefaultStyles.Faint.Render("no matches")
 	}
 	var b strings.Builder
 	bar := selectBar() + " "
@@ -199,7 +197,7 @@ func (m PickerModel) View() string {
 	for i, item := range m.Filtered {
 		lines[i] = pickerRow(item)
 	}
-	b.WriteString(selectableRows(lines, m.Cursor, m.Height, m.Height, m.Width, m.Styles))
+	b.WriteString(selectableRows(lines, m.Cursor, m.Height, m.Height, m.Width))
 	b.WriteByte('\n')
 	if m.WithSearch {
 		b.WriteString(promptLead())

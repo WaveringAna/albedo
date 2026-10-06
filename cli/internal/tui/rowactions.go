@@ -85,6 +85,7 @@ func (m *ChatModel) toggleFold(key string, row int) bool {
 		m.Renderer.Open = map[string]bool{}
 	}
 	m.Renderer.Open[key] = !m.Renderer.Open[key]
+	m.settled = nil // kept blocks were drawn with the fold as it was
 	fresh, _ := m.Renderer.Block(entries[:at], entries[at], m.Flags)
 	from := row - m.settledOffset - (len(old) - 1)
 	if from < 0 || from+len(old) > len(m.settledLines) || m.settledLines[from+len(old)-1] != old[len(old)-1] {
@@ -135,6 +136,7 @@ func (m *ChatModel) toggleLookup(key string, row int) {
 		m.Renderer.Open = map[string]bool{}
 	}
 	m.Renderer.Open[key] = !m.Renderer.Open[key]
+	m.settled = nil // kept blocks were drawn with the fold as it was
 	fresh := m.Renderer.BurstBlock(before, burst, m.Flags)
 	clicked, screen := fold(old), row-m.scrollOffset
 	if end < len(entries) {
@@ -172,6 +174,7 @@ func (m *ChatModel) toggleBurst(key string, row int) {
 		m.Renderer.Open = map[string]bool{}
 	}
 	m.Renderer.Open[key] = !m.Renderer.Open[key]
+	m.settled = nil // kept blocks were drawn with the fold as it was
 	fresh := m.Renderer.BurstBlock(before, burst, m.Flags)
 	// the summary sits after the same separator in both
 	head := slices.IndexFunc(fresh, func(line string) bool {

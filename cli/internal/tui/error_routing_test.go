@@ -21,9 +21,9 @@ func TestCatalogFailureUsesErrorIdentity(t *testing.T) {
 		{fmt.Errorf("catalog: %w", &daemon.UpgradeRequiredError{Feature: "for commands"}), true},
 		{errors.New("unrelated service needs an update"), false},
 	} {
-		m := AppModel{}
+		m := &AppModel{}
 		next, _ := m.Update(commandCatalogLoadedMsg{Err: tc.err})
-		if next.(AppModel).Notices.HasError() != tc.show {
+		if next.(*AppModel).Notices.HasError() != tc.show {
 			t.Fatalf("catalog failure was routed using its wording: %v", tc.err)
 		}
 	}

@@ -120,14 +120,14 @@ func (m ChatModel) glanceRows(g PageGlance, limit int) []string {
 	if len(g.Rows) > shown {
 		shown = limit - 2
 	}
-	rows := []string{m.Styles.Faint.Render(fmt.Sprintf("%s · %d", g.Title, len(g.Rows)))}
+	rows := []string{DefaultStyles.Faint.Render(fmt.Sprintf("%s · %d", g.Title, len(g.Rows)))}
 	for _, item := range g.Rows[:shown] {
-		mark, style := "○", m.Styles.Faint
+		mark, style := "○", DefaultStyles.Faint
 		switch item.Tone {
 		case ToneActive:
-			mark, style = "●", m.Styles.Success
+			mark, style = "●", DefaultStyles.Success
 		case ToneWarning:
-			mark, style = "!", m.Styles.Warning
+			mark, style = "!", DefaultStyles.Warning
 		case ToneMuted:
 			mark = "✓"
 		}
@@ -138,7 +138,7 @@ func (m ChatModel) glanceRows(g PageGlance, limit int) []string {
 		rows = append(rows, style.Render(mark)+" "+ansi.Truncate(label, max(1, m.sidebarWidth()-2), "…"))
 	}
 	if shown < len(g.Rows) {
-		rows = append(rows, m.Styles.Faint.Render(fmt.Sprintf("+%d more", len(g.Rows)-shown)))
+		rows = append(rows, DefaultStyles.Faint.Render(fmt.Sprintf("+%d more", len(g.Rows)-shown)))
 	}
 	return rows
 }
@@ -176,7 +176,7 @@ func (m ChatModel) renderFooter() string {
 func (m ChatModel) contextStat() (full, short string) {
 	usage := m.Usage
 	if usage == nil || usage.Model != "" && m.Model != "" && usage.Model != m.Model {
-		return m.Styles.Faint.Render("—/— cached"), m.Styles.Faint.Render("—/—")
+		return DefaultStyles.Faint.Render("—/— cached"), DefaultStyles.Faint.Render("—/—")
 	}
 	count := func(n *int) string {
 		if n == nil || *n < 0 {
@@ -184,17 +184,17 @@ func (m ChatModel) contextStat() (full, short string) {
 		}
 		return shortCount(*n)
 	}
-	ratio := m.Styles.Muted.Render(count(cachedNow(usage, time.Now())) + "/" + count(usage.PromptTokens))
+	ratio := DefaultStyles.Muted.Render(count(cachedNow(usage, time.Now())) + "/" + count(usage.PromptTokens))
 	share := ""
 	if total := contextTokens(usage); total != nil && m.window != nil && m.windowModel != nil && *m.windowModel == usage.Model {
 		pct := int(math.Round(100 * float64(*total) / float64(*m.window)))
-		style := m.Styles.Faint
+		style := DefaultStyles.Faint
 		if pct >= 90 {
-			style = m.Styles.Warning
+			style = DefaultStyles.Warning
 		}
 		share = " " + style.Render(fmt.Sprintf("(%d%%)", pct))
 	}
-	return ratio + m.Styles.Faint.Render(" cached") + share, ratio + share
+	return ratio + DefaultStyles.Faint.Render(" cached") + share, ratio + share
 }
 
 // cachedNow is what a request would read from cache at now: the measured

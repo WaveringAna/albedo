@@ -188,10 +188,42 @@ func markdownPiece(prev, block string, width int, finished bool) (string, bool) 
 	return piece, true
 }
 
-func renderMarkdown(text string, width int) string {
+// rendererKey is what a glamour renderer is built for.
+type rendererKey struct {
+	ink   ink
+	width int
+}
+
+// renderers keeps the glamour renderer for the widths in use: building one
+// costs more than most renders it does. A resize adds a width, so the map is
+// emptied once it holds a handful.
+var renderers = struct {
+	sync.Mutex
+	byKey map[rendererKey]*glamour.TermRenderer
+}{byKey: map[rendererKey]*glamour.TermRenderer{}}
+
+func markdownRenderer(width int) (*glamour.TermRenderer, error) {
+	key := rendererKey{ink: transcriptInk, width: width}
+	if renderer, ok := renderers.byKey[key]; ok {
+		return renderer, nil
+	}
 	renderer, err := glamour.NewTermRenderer(
 		glamour.WithStyles(markdownStyle()), glamour.WithWordWrap(width), glamour.WithPreservedNewLines(),
 	)
+	if err != nil {
+		return nil, err
+	}
+	if len(renderers.byKey) >= 4 {
+		clear(renderers.byKey)
+	}
+	renderers.byKey[key] = renderer
+	return renderer, nil
+}
+
+func renderMarkdown(text string, width int) string {
+	renderers.Lock()
+	defer renderers.Unlock()
+	renderer, err := markdownRenderer(width)
 	if err != nil {
 		return text
 	}

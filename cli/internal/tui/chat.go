@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"charm.land/bubbles/v2/textarea"
-	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 )
@@ -94,8 +93,6 @@ type liveRowsKey struct {
 const liveFrame = 33 * time.Millisecond
 
 type ChatModel struct {
-	Styles Styles
-
 	streamCtx        context.Context
 	Usage            *daemon.Usage
 	progressByCallID map[string]*daemon.ToolProgress
@@ -147,6 +144,9 @@ type ChatModel struct {
 	// text grows it is rendered again at most once per liveInterval, a few
 	// times what the last rendering took, so a long reply cannot spend the
 	// whole stream re-rendering itself; liveDue is a later redraw on its way.
+	// settled is each named entry's rows from the last rebuild while reading
+	// older history; see rebuildSettledLines.
+	settled      map[settledKey]settledBlock
 	liveRows     []string
 	liveRowsKey  liveRowsKey
 	liveDrawn    time.Time
@@ -162,7 +162,7 @@ type ChatModel struct {
 	layoutSidebar int
 	frameLines    []string
 	CommandMenu   CommandMenuModel
-	Viewport      viewport.Model
+	Viewport      pane
 
 	transcript         transcriptState
 	TextArea           textarea.Model
@@ -245,8 +245,7 @@ func NewChatModel(session *daemon.Session, client *daemon.ChatClient) ChatModel 
 	ta.SetStyles(st)
 	ta.Focus()
 
-	vp := viewport.New(viewport.WithWidth(80), viewport.WithHeight(20))
-	vp.YPosition = 0
+	vp := pane{width: 80, height: 20}
 
 	bh := NewBoundedHistory(500, 2*1024*1024)
 
@@ -265,13 +264,12 @@ func NewChatModel(session *daemon.Session, client *daemon.ChatClient) ChatModel 
 		Glances:      session.Glances,
 		client:       client,
 		History:      bh,
-		Renderer:     TranscriptRenderer{Styles: DefaultStyles, Workspace: session.Workspace},
+		Renderer:     TranscriptRenderer{Workspace: session.Workspace},
 		Viewport:     vp,
 		TextArea:     ta,
 		CommandMenu:  NewCommandMenuModel(),
 		Flags:        DisplayFlags{},
 		Follow:       true,
-		Styles:       DefaultStyles,
 		transcript:   newTranscriptState(),
 		streamCtx:    ctx,
 		streamCancel: cancel,

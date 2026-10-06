@@ -103,14 +103,14 @@ func (m ChatModel) renderProgress() string {
 			row += text
 		}
 	}
-	return markChrome + m.Styles.Faint.Render(ansi.Truncate(row, width, "…"))
+	return markChrome + DefaultStyles.Faint.Render(ansi.Truncate(row, width, "…"))
 }
 
 // renderThought follows the newest line while the thought streams.
 func (m ChatModel) renderThought() string {
 	header := cmp.Or(thinkingLine(m.transcript.activeText), "thinking")
 	width := max(1, m.Renderer.BodyWidth-railWidth)
-	return markChrome + m.Styles.Faint.Render(ansi.Truncate(header+"…", width, "…"))
+	return markChrome + DefaultStyles.Faint.Render(ansi.Truncate(header+"…", width, "…"))
 }
 
 func (m ChatModel) statusLine() string {
@@ -255,16 +255,16 @@ func (m ChatModel) header(width int) string {
 		if lipgloss.Width(left)+lipgloss.Width(right)+l.rule+2 > width {
 			continue
 		}
-		place := m.Styles.Muted.Render(l.place)
+		place := DefaultStyles.Muted.Render(l.place)
 		if host != "" {
-			place = m.hostSegment(host) + m.Styles.Muted.Render(":"+l.place)
+			place = m.hostSegment(host) + DefaultStyles.Muted.Render(":"+l.place)
 		}
 		if l.brand {
-			return titleRule(width, brand(m.AgentName)+m.Styles.Faint.Render(" on ")+place, m.Styles.Faint.Render(right))
+			return titleRule(width, brand(m.AgentName)+DefaultStyles.Faint.Render(" on ")+place, DefaultStyles.Faint.Render(right))
 		}
-		return titleRule(width, place, m.Styles.Faint.Render(right))
+		return titleRule(width, place, DefaultStyles.Faint.Render(right))
 	}
-	return m.Styles.Faint.Render(ansi.Truncate(model, width, "…"))
+	return DefaultStyles.Faint.Render(ansi.Truncate(model, width, "…"))
 }
 
 // hostSegment is the header's host in its own color once the kernel there is
@@ -272,9 +272,9 @@ func (m ChatModel) header(width int) string {
 func (m ChatModel) hostSegment(host string) string {
 	switch m.Status.KernelLink {
 	case "booting", "reattaching":
-		return m.Styles.Faint.Render(host)
+		return DefaultStyles.Faint.Render(host)
 	case "lost":
-		return m.Styles.Error.Render(host)
+		return DefaultStyles.Error.Render(host)
 	}
 	return hostStyle(host).Render(host)
 }
@@ -297,30 +297,30 @@ func (m ChatModel) View() string {
 		if n.Error {
 			rows = append(rows, m.Renderer.errorRow(n.Message))
 		} else {
-			rows = append(rows, m.Styles.Faint.Render(n.Message))
+			rows = append(rows, DefaultStyles.Faint.Render(n.Message))
 		}
 	}
 	if len(m.Notices) > 0 {
 		rows = append(rows, "")
 	}
 
-	view := m.Viewport.View()
+	shown := m.Viewport
 	if m.History.Len() == 0 && len(m.pendingUsers) == 0 && m.transcript.activeText == "" && m.toolLabel() == "" {
 		textWidth := max(1, min(m.Renderer.BodyWidth, m.Viewport.Width())-railWidth)
-		var emptyRows []string
+		shown.rows = nil
 		for _, line := range wrapOrChunkLine("What would you like to work on?", textWidth) {
-			emptyRows = append(emptyRows, m.Renderer.rail(laneNone)+m.Styles.Faint.Render(line))
+			shown.rows = append(shown.rows, m.Renderer.rail(laneNone)+DefaultStyles.Faint.Render(line))
 		}
-		view = strings.Join(emptyRows, "\n")
 	}
+	content := shown.lines()
 	if m.sidebarWidth() > 0 {
-		view = lipgloss.JoinHorizontal(lipgloss.Top, view, "  ", m.renderGlances())
+		// the transcript keeps its full width, so the sidebar holds its column
+		for i, line := range content {
+			content[i] = line + strings.Repeat(" ", max(0, shown.width-ansi.StringWidth(line)))
+		}
+		joined := lipgloss.JoinHorizontal(lipgloss.Top, strings.Join(content, "\n"), "  ", m.renderGlances())
+		content = pane{rows: strings.Split(joined, "\n"), height: shown.height}.lines()
 	}
-	content := strings.Split(view, "\n")
-	for len(content) < m.Viewport.Height() {
-		content = append(content, "")
-	}
-	content = content[:min(len(content), m.Viewport.Height())]
 	if m.dragAnchor != nil {
 		// the selection is in transcript rows; the viewport shows from scrollOffset
 		anchor, head := *m.dragAnchor, m.dragHead
@@ -339,7 +339,7 @@ func (m ChatModel) View() string {
 		if m.Width > 0 {
 			status = ansi.Truncate(status, max(1, m.chatWidth()-ansi.StringWidth(face)-1), "…")
 		}
-		status = m.Styles.Faint.Render(status) + " " + m.Styles.Agent.Render(face)
+		status = DefaultStyles.Faint.Render(status) + " " + DefaultStyles.Agent.Render(face)
 	}
 	if !m.Follow {
 		status = fmt.Sprintf("history · %d rows below · pgdn", max(0, m.scrollLimit-m.scrollOffset))
@@ -347,24 +347,24 @@ func (m ChatModel) View() string {
 	if m.CopyStatus != "" {
 		status = m.CopyStatus
 	}
-	statusStyle := m.Styles.Faint
+	statusStyle := DefaultStyles.Faint
 	if m.TurnFailed || m.Notices.HasError() {
-		statusStyle = m.Styles.Error
+		statusStyle = DefaultStyles.Error
 	}
 	rows = append(rows, statusStyle.Render(status))
 	if len(m.effortOptions) == 0 {
 		rows = append(rows, m.chipStrip(width)...)
 	}
-	rows = append(rows, m.Styles.Decor.Render(strings.Repeat("─", width)))
+	rows = append(rows, DefaultStyles.Decor.Render(strings.Repeat("─", width)))
 	if len(m.effortOptions) > 0 {
-		rows = append(rows, "", m.Styles.Bold.Render(ansi.Truncate("Reasoning effort", width, "")), m.effortSelectorView(), m.Styles.Faint.Render(ansi.Truncate("← → choose  ·  enter apply  ·  esc cancel", width, "")))
+		rows = append(rows, "", DefaultStyles.Bold.Render(ansi.Truncate("Reasoning effort", width, "")), m.effortSelectorView(), DefaultStyles.Faint.Render(ansi.Truncate("← → choose  ·  enter apply  ·  esc cancel", width, "")))
 	} else {
 		rows = append(rows, strings.Split(strings.TrimSuffix(m.composerView(), "\n"), "\n")...)
 		if menu := m.CommandMenu.View(m.TextArea.Value()); menu != "" {
 			rows = append(rows, strings.Split(strings.TrimSuffix(menu, "\n"), "\n")...)
 		}
 	}
-	rows = append(rows, m.Styles.Decor.Render(strings.Repeat("─", width)))
+	rows = append(rows, DefaultStyles.Decor.Render(strings.Repeat("─", width)))
 	rows = append(rows, m.renderFooter())
 	for i, row := range rows {
 		rows[i] = pad + row

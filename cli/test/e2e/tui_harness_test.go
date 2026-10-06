@@ -23,7 +23,7 @@ import (
 // stepping Bubble Tea commands synchronously in place of the event loop.
 type tuiDriver struct {
 	t   *testing.T
-	App tui.AppModel
+	App *tui.AppModel
 }
 
 // newTUIDriver opens a fresh daemon session in a temp workspace.
@@ -76,7 +76,7 @@ func daemonSession(t *testing.T, id string) daemon.Session {
 func (d *tuiDriver) Update(msg tea.Msg) tea.Cmd {
 	d.t.Helper()
 	updated, cmd := d.App.Update(msg)
-	d.App = updated.(tui.AppModel)
+	d.App = updated.(*tui.AppModel)
 	return cmd
 }
 

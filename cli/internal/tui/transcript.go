@@ -25,7 +25,6 @@ type DisplayFlags struct {
 }
 
 type TranscriptRenderer struct {
-	Styles Styles
 	// Workspace roots the paths trace rows name.
 	Workspace string
 	BodyWidth int
@@ -34,7 +33,7 @@ type TranscriptRenderer struct {
 }
 
 func NewTranscriptRenderer() TranscriptRenderer {
-	return TranscriptRenderer{Styles: DefaultStyles}
+	return TranscriptRenderer{}
 }
 
 func formatClock(timestamp int64) string {
@@ -96,9 +95,9 @@ func (r TranscriptRenderer) nameplate(entry HistoryEntry, flags DisplayFlags, be
 	if !flags.Tools && who == before.speaker && entry.MailKind == "" {
 		return ""
 	}
-	style := r.Styles.Agent
+	style := DefaultStyles.Agent
 	if entry.Kind == EntryUser && (entry.Source == "" || entry.Source == "chat") {
-		style = r.Styles.You
+		style = DefaultStyles.You
 	}
 	var meta []string
 	if entry.MailKind != "" {
@@ -118,7 +117,7 @@ func (r TranscriptRenderer) nameplate(entry HistoryEntry, flags DisplayFlags, be
 	}
 	plate := markChrome + style.Render(strings.ToLower(who))
 	if len(meta) > 0 {
-		plate += r.Styles.Faint.Render(" · " + strings.Join(meta, " · "))
+		plate += DefaultStyles.Faint.Render(" · " + strings.Join(meta, " · "))
 	}
 	return plate
 }
@@ -126,17 +125,17 @@ func (r TranscriptRenderer) nameplate(entry HistoryEntry, flags DisplayFlags, be
 // errorRow marks only the label red. Long red text tires the eye, and the
 // message reads best in the prose color.
 func (r TranscriptRenderer) errorRow(text string) string {
-	return r.Styles.Error.Render("error:") + " " + text
+	return DefaultStyles.Error.Render("error:") + " " + text
 }
 
 // signoff closes a turn: a face for how it ended, then how long it took.
 func (r TranscriptRenderer) signoff(entry HistoryEntry) string {
-	style := r.Styles.Agent
+	style := DefaultStyles.Agent
 	switch entry.Mood {
 	case moodFailed:
-		style = r.Styles.Error
+		style = DefaultStyles.Error
 	case moodStopped:
-		style = r.Styles.Warning
+		style = DefaultStyles.Warning
 	}
 	var meta []string
 	if entry.Mood == moodStopped {
@@ -154,9 +153,9 @@ func (r TranscriptRenderer) signoff(entry HistoryEntry) string {
 	}
 	row := markChrome + rowAction{verbCopy, entryKey(entry)}.mark() + style.Render(entry.Mood.face(entry.Timestamp))
 	if len(meta) > 0 {
-		row += " " + r.Styles.Faint.Render(strings.Join(meta, " · "))
+		row += " " + DefaultStyles.Faint.Render(strings.Join(meta, " · "))
 	}
-	return row + r.Styles.Faint.Render(" · ") + r.Styles.Muted.Render("⧉")
+	return row + DefaultStyles.Faint.Render(" · ") + DefaultStyles.Muted.Render("⧉")
 }
 
 var diffHunk = regexp.MustCompile(`^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@`)
@@ -183,7 +182,7 @@ func (r TranscriptRenderer) renderDiffPath(diff, path string, width int) string 
 		}, text)
 	}
 	row := func(gutter, content, bg string, syntax bool) {
-		body := keepBackground(r.Styles.Faint.Render(content))
+		body := keepBackground(DefaultStyles.Faint.Render(content))
 		if syntax {
 			body = keepBackground(HighlightCode(content, lang))
 		}
@@ -213,13 +212,13 @@ func (r TranscriptRenderer) renderDiffPath(diff, path string, width int) string 
 		}
 		switch line[0] {
 		case '+':
-			row(gutter(r.Styles.Success, newLine, "+"), clean(line[1:]), add, true)
+			row(gutter(DefaultStyles.Success, newLine, "+"), clean(line[1:]), add, true)
 			newLine++
 		case '-':
-			row(gutter(r.Styles.Error, oldLine, "-"), clean(line[1:]), remove, true)
+			row(gutter(DefaultStyles.Error, oldLine, "-"), clean(line[1:]), remove, true)
 			oldLine++
 		case ' ':
-			row(gutter(r.Styles.Decor, newLine, " "), clean(line[1:]), panel, true)
+			row(gutter(DefaultStyles.Decor, newLine, " "), clean(line[1:]), panel, true)
 			newLine++
 			oldLine++
 		default:
@@ -413,7 +412,7 @@ func toolRowParts(entry HistoryEntry, failed bool, clock string) (string, string
 }
 
 func (r TranscriptRenderer) diffCounts(change daemon.FileChange) string {
-	return r.Styles.Success.Render(fmt.Sprintf("+%d", change.Added)) + " " + r.Styles.Error.Render(fmt.Sprintf("−%d", change.Removed))
+	return DefaultStyles.Success.Render(fmt.Sprintf("+%d", change.Added)) + " " + DefaultStyles.Error.Render(fmt.Sprintf("−%d", change.Removed))
 }
 
 func (r TranscriptRenderer) RenderToolTrace(trace *daemon.ToolTrace, flags DisplayFlags, width int) string {
@@ -433,22 +432,22 @@ func (r TranscriptRenderer) RenderToolTrace(trace *daemon.ToolTrace, flags Displ
 		if slices.ContainsFunc(trace.Activities, func(a daemon.ToolActivity) bool { return a.Kind == "run" }) {
 			verb = "executed"
 		}
-		rows = append(rows, r.Styles.Bold.Render(verb))
+		rows = append(rows, DefaultStyles.Bold.Render(verb))
 	}
 	for _, act := range trace.Activities {
 		if !flags.Tools && act.Kind == "read" && edits(act.Target) {
 			continue
 		}
-		label, style := act.Kind, r.Styles.Faint
+		label, style := act.Kind, DefaultStyles.Faint
 		if flags.Tools {
 			rows = append(rows, "  "+r.traceLine(style.Render(label), act.Target, isPath(act), width-2))
 		} else {
 			rows = append(rows, style.Render(r.traceLine(label, act.Target, isPath(act), width)))
 		}
 	}
-	changeStyle := r.Styles.Faint
+	changeStyle := DefaultStyles.Faint
 	if flags.Tools {
-		changeStyle = r.Styles.Bold
+		changeStyle = DefaultStyles.Bold
 	}
 	for _, change := range trace.Changes {
 		label := "edited"
@@ -465,7 +464,7 @@ func (r TranscriptRenderer) RenderToolTrace(trace *daemon.ToolTrace, flags Displ
 			if change.Kind == "diff" {
 				rows = append(rows, r.renderDiffPath(change.Diff, change.Path, width))
 			} else {
-				rows = append(rows, r.Styles.Faint.Render(change.Reason))
+				rows = append(rows, DefaultStyles.Faint.Render(change.Reason))
 			}
 		}
 	}
@@ -474,7 +473,7 @@ func (r TranscriptRenderer) RenderToolTrace(trace *daemon.ToolTrace, flags Displ
 		if flags.Tools {
 			notice = "Some activity was not captured; this list is incomplete"
 		}
-		rows = append(rows, r.Styles.Faint.Render(notice))
+		rows = append(rows, DefaultStyles.Faint.Render(notice))
 	}
 	return strings.Join(rows, "\n")
 }
@@ -506,7 +505,7 @@ func (r TranscriptRenderer) faintRows(rendered string, width int) []string {
 	var rows []string
 	for line := range strings.SplitSeq(rendered, "\n") {
 		for _, wrapped := range wrapOrChunkLine(line, width) {
-			rows = append(rows, r.Styles.Faint.Render(ansi.Strip(wrapped)))
+			rows = append(rows, DefaultStyles.Faint.Render(ansi.Strip(wrapped)))
 		}
 	}
 	return rows
@@ -540,7 +539,7 @@ func (r TranscriptRenderer) RenderAfter(before prior, entry HistoryEntry, flags 
 		}
 		rows = append(rows, body)
 	case EntryThinking:
-		rows = []string{markChrome + r.Styles.Faint.Render("thinking")}
+		rows = []string{markChrome + DefaultStyles.Faint.Render("thinking")}
 		if flags.Thinking {
 			render := RenderMarkdownAnsi
 			if entry.Live {
@@ -554,14 +553,14 @@ func (r TranscriptRenderer) RenderAfter(before prior, entry HistoryEntry, flags 
 		failed := toolFailed(entry)
 		if !hasTrace || flags.Tools || failed {
 			// a glance in normal mode, read in full in verbose mode
-			style := r.Styles.Faint
+			style := DefaultStyles.Faint
 			clock := ""
 			if flags.Tools {
 				style = lipgloss.NewStyle()
 				clock = formatClock(entry.Timestamp)
 			}
 			if failed {
-				style = r.Styles.Error
+				style = DefaultStyles.Error
 			}
 			rows = append(rows, markChrome+style.Render(toolRow(entry, failed, clock, width)))
 		}
@@ -582,7 +581,7 @@ func (r TranscriptRenderer) RenderAfter(before prior, entry HistoryEntry, flags 
 	case EntryTurnEnd:
 		rows = []string{r.signoff(entry)}
 	case EntryNote:
-		rows = []string{r.Styles.Faint.Render(entry.Text)}
+		rows = []string{DefaultStyles.Faint.Render(entry.Text)}
 	case EntryError:
 		rows = []string{r.errorRow(entry.Text)}
 	case EntryCompacted:
@@ -591,7 +590,7 @@ func (r TranscriptRenderer) RenderAfter(before prior, entry HistoryEntry, flags 
 			action = "hide"
 		}
 		verb, noun := compactionWords(entry.Strategy)
-		rows = []string{markChrome + r.Styles.Faint.Render(fmt.Sprintf("compaction done · %d items %s · ctrl+k %s %s", entry.Evicted, verb, action, noun))}
+		rows = []string{markChrome + DefaultStyles.Faint.Render(fmt.Sprintf("compaction done · %d items %s · ctrl+k %s %s", entry.Evicted, verb, action, noun))}
 		if flags.Compaction {
 			rows = append(rows, r.faintMarkdownRows(entry.Text, width)...)
 		}
@@ -623,7 +622,7 @@ func (r TranscriptRenderer) foldUser(entry HistoryEntry, body string) string {
 }
 
 func (r TranscriptRenderer) foldRow(key, label string) string {
-	return markChrome + rowAction{verbMore, key}.mark() + r.Styles.Faint.Render(label)
+	return markChrome + rowAction{verbMore, key}.mark() + DefaultStyles.Faint.Render(label)
 }
 
 // compactionWords names what a strategy did with the evicted items and what
@@ -699,11 +698,11 @@ func joint(above, below lane) lane {
 func (r TranscriptRenderer) rail(l lane) string {
 	switch l {
 	case laneYou:
-		return r.Styles.You.Render("│") + " "
+		return DefaultStyles.You.Render("│") + " "
 	case laneAgent:
-		return r.Styles.Agent.Render("│") + " "
+		return DefaultStyles.Agent.Render("│") + " "
 	case laneBusy:
-		return r.Styles.Busy.Render("│") + " "
+		return DefaultStyles.Busy.Render("│") + " "
 	}
 	return strings.Repeat(" ", railWidth)
 }

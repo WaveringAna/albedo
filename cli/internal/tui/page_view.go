@@ -61,7 +61,6 @@ const (
 )
 
 type PageViewModel struct {
-	Styles        Styles
 	Conn          *daemon.Connection
 	Doc           *PageDocument
 	CurrentAction *PageAction
@@ -85,7 +84,6 @@ func NewPageViewModel(conn *daemon.Connection, sessionID, command string) PageVi
 		TextInput: newField(),
 		page:      page{Generation: nextPageGeneration()},
 		Busy:      true,
-		Styles:    DefaultStyles,
 	}
 }
 

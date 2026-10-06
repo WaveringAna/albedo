@@ -54,12 +54,12 @@ func TestPartialDeletionKeepsUndeletedSessionAndOutcomeAfterRefresh(t *testing.T
 	app.updateSessionPickerItems()
 	result := daemon.DeletionResult{State: "partial", Deleted: 1, Remaining: 1, DeletedIDs: []string{"deleted"}, Message: "Deleted 1 sessions; 1 remain. root: kernel teardown failed"}
 	updated, command := app.Update(sessionDeletedMsg{ID: "root", Result: &result})
-	app = updated.(AppModel)
+	app = updated.(*AppModel)
 	if command == nil || len(app.Sessions) != 1 || app.Sessions[0].ID != "root" || app.SessionPicker.notice != result.Message {
 		t.Fatalf("partial deletion invented completion: command nil=%v rows=%d id=%q notice=%q wanted=%q", command == nil, len(app.Sessions), app.Sessions[0].ID, app.SessionPicker.notice, result.Message)
 	}
 	updated, _ = app.Update(sessionsLoadedMsg{Gen: app.SessionGen, Sessions: app.Sessions, Notice: result.Message})
-	app = updated.(AppModel)
+	app = updated.(*AppModel)
 	if app.SessionPicker.notice != result.Message {
 		t.Fatal("refresh erased the partial operation outcome")
 	}
@@ -99,7 +99,7 @@ func TestModelChangeCapturesProviderAndCapBeforeExecution(t *testing.T) {
 				_ = json.NewEncoder(w).Encode(testwire.SettingsChange(group, settings[group]))
 			})
 			session := &daemon.Session{ID: "original", Provider: "old", ETag: "\"session-a\""}
-			app := AppModel{Conn: conn, ActiveSession: session, Profiles: config.Profiles{ETag: "\"providers-a\"", Providers: map[string]config.Settings{"new": {Protocol: "responses"}}}, SettingsETags: map[string]string{"models": "\"models-a\""}}
+			app := &AppModel{Conn: conn, ActiveSession: session, Profiles: config.Profiles{ETag: "\"providers-a\"", Providers: map[string]config.Settings{"new": {Protocol: "responses"}}}, SettingsETags: map[string]string{"models": "\"models-a\""}}
 			raised := true
 			cmd := app.changeModelCmd("chosen", "new", "high", &raised, 7, "provider/cap")
 			session.ID, session.Provider = "changed", "new"
@@ -149,7 +149,7 @@ func TestSessionCommandKeepsSessionWhileRequestIsRunning(t *testing.T) {
 	})
 	t.Cleanup(releaseRequest)
 	session := &daemon.Session{ID: "original", Model: "current"}
-	app := AppModel{Conn: conn, ActiveSession: session}
+	app := &AppModel{Conn: conn, ActiveSession: session}
 	cmd := app.executeCommandCmd("/effort", "", 9)
 	done := make(chan tea.Msg, 1)
 	go func() { done <- cmd() }()
@@ -186,16 +186,16 @@ func TestStatusAndGlancesUseOneCapturedSessionSnapshot(t *testing.T) {
 	}
 	chat.SessionID = "original"
 	chat.Glances = []PageGlance{{Title: "confirmed"}}
-	app := AppModel{ActiveSession: &daemon.Session{ID: "original"}, Chat: chat}
+	app := &AppModel{ActiveSession: &daemon.Session{ID: "original"}, Chat: chat}
 	updated, refresh := app.Update(PageViewChangedMsg{})
-	app = updated.(AppModel)
+	app = updated.(*AppModel)
 	updated, _ = app.Update(msg)
-	app = updated.(AppModel)
+	app = updated.(*AppModel)
 	if refresh == nil || len(app.Chat.Glances) != 1 || app.Chat.Glances[0].Title != "confirmed" {
 		t.Fatal("an earlier state read overwrote the acknowledged page change")
 	}
 	updated, _ = app.Update(refresh().(ChatStatusMsg))
-	app = updated.(AppModel)
+	app = updated.(*AppModel)
 	if len(app.Chat.Glances) != 2 {
 		t.Fatal("the state read after the page change was discarded")
 	}
@@ -227,7 +227,7 @@ func TestUIPatchCapturesValuesAndObservedValidator(t *testing.T) {
 					writeSessionChange(w, "original", "current", "provider")
 				}
 			})
-			app := AppModel{Conn: conn}
+			app := &AppModel{Conn: conn}
 			app.SessionPicker.prefs.ETag = "\"seen\""
 			first, second := true, false
 			patch := daemon.UIPreferencesPatch{Thinking: &first, Tools: &second}

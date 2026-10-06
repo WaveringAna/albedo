@@ -96,11 +96,11 @@ func (m *AppModel) newChatModel(session *daemon.Session) ChatModel {
 }
 
 // NewAppModel requires an established daemon connection and panics if conn is nil.
-func NewAppModel(conn *daemon.Connection, profiles config.Profiles, initialSession *daemon.Session, workspace string, needsLogin bool, openBrowser func(string)) AppModel {
+func NewAppModel(conn *daemon.Connection, profiles config.Profiles, initialSession *daemon.Session, workspace string, needsLogin bool, openBrowser func(string)) *AppModel {
 	if conn == nil {
 		panic("tui.NewAppModel requires a daemon connection")
 	}
-	m := AppModel{
+	m := &AppModel{
 		Conn:          conn,
 		Profiles:      profiles,
 		ActiveSession: initialSession,
@@ -127,7 +127,7 @@ func NewAppModel(conn *daemon.Connection, profiles config.Profiles, initialSessi
 }
 
 // NewLoginAppModel starts the standalone login flow, which exits when finished.
-func NewLoginAppModel(conn *daemon.Connection, profiles config.Profiles, workspace, nameHint string, openBrowser func(string)) AppModel {
+func NewLoginAppModel(conn *daemon.Connection, profiles config.Profiles, workspace, nameHint string, openBrowser func(string)) *AppModel {
 	m := NewAppModel(conn, profiles, nil, workspace, false, openBrowser)
 	m.State = AppStateLogin
 	m.StandaloneLogin = true
@@ -135,7 +135,7 @@ func NewLoginAppModel(conn *daemon.Connection, profiles config.Profiles, workspa
 	return m
 }
 
-func (m AppModel) Init() tea.Cmd {
+func (m *AppModel) Init() tea.Cmd {
 	return tea.Batch(m.initScreen(), m.loadSettingsCmd(m.SettingsGen))
 }
 
@@ -162,7 +162,7 @@ func (m *AppModel) ClearNotices() {
 	}
 }
 
-func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if cmd, handled := m.handleCommandInvocation(msg); handled {
 		return m, cmd
 	}

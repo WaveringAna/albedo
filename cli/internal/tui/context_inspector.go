@@ -59,7 +59,6 @@ type ContextInspectorModel struct {
 	SessionID string
 	Snapshot  *daemon.ContextSnapshot
 	Detail    *ContextDetail
-	Styles    Styles
 	page
 }
 
@@ -68,7 +67,6 @@ func NewContextInspectorModel(conn *daemon.Connection, sessionID string) Context
 		Conn:      conn,
 		SessionID: sessionID,
 		page:      page{Loading: true, Generation: nextPageGeneration()},
-		Styles:    DefaultStyles,
 	}
 }
 
@@ -222,10 +220,10 @@ func contextCount(n int, unit string) string {
 func (m ContextInspectorModel) View() string {
 	var b strings.Builder
 	line := func(text string) { b.WriteString(text); b.WriteByte('\n') }
-	faint := func(text string) { line(m.Styles.Faint.Render(text)) }
+	faint := func(text string) { line(DefaultStyles.Faint.Render(text)) }
 	if m.Detail != nil {
 		sec, d := m.Detail.Section, m.Detail
-		line(titleRule(m.Width, brand("albedo")+" "+m.Styles.Muted.Render("/context"), m.Styles.Faint.Render(sec.Label)))
+		line(titleRule(m.Width, brand("albedo")+" "+DefaultStyles.Muted.Render("/context"), DefaultStyles.Faint.Render(sec.Label)))
 		faint(fmt.Sprintf("%s · page %d/%d · %s", sec.Source, d.Page+1, sec.Pages, contextCount(sec.ByteCount, "byte")))
 		if d.Error != "" {
 			line(DefaultStyles.Error.Render(d.Error))
@@ -248,7 +246,7 @@ func (m ContextInspectorModel) View() string {
 		line(keyHints(hint{"↑↓", "scroll"}, hint{"pgup/pgdn", "jump"}, hint{"←→", "page"}, hint{"esc", "sections"}))
 		return strings.TrimSuffix(b.String(), "\n")
 	}
-	line(titleRule(m.Width, brand("albedo")+" "+m.Styles.Muted.Render("/context"), m.Styles.Faint.Render("prepared request")))
+	line(titleRule(m.Width, brand("albedo")+" "+DefaultStyles.Muted.Render("/context"), DefaultStyles.Faint.Render("prepared request")))
 	faint(inkWrap("read-only · durable transcript and request-only context are separate", m.Width))
 	if m.Error != "" {
 		line(DefaultStyles.Error.Render(m.Error))

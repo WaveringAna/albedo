@@ -106,7 +106,7 @@ func TestUncertainCommandKeepsSessionAndEffort(t *testing.T) {
 	m := NewAppModel(conn, config.Profiles{}, session, "", false, nil)
 	t.Cleanup(m.Chat.Close)
 	updated, cmd := m.Update(commandExecutedMsg{Name: "/effort", Effort: "high", Err: &daemon.UncertainOutcomeError{Operation: "command", Cause: io.EOF}})
-	m = updated.(AppModel)
+	m = updated.(*AppModel)
 	if cmd != nil || m.ActiveSession != session || m.ActiveSession.Effort != "low" || m.Chat.Effort != "low" || m.State != AppStateChat {
 		t.Fatal("uncertain command applied an unconfirmed result or resubmitted the command")
 	}
@@ -139,7 +139,7 @@ func TestInvalidSessionSnapshotKeepsConfirmedGlances(t *testing.T) {
 		SessionID: m.Chat.SessionID, Generation: m.Chat.Generation,
 		Err: invalidResponseOutcome("/work", "page", errors.New("missing page")),
 	})
-	m = updated.(AppModel)
+	m = updated.(*AppModel)
 	if len(m.Chat.Glances) != 1 || m.Chat.Glances[0].Title != "confirmed" {
 		t.Fatal("invalid snapshot replaced confirmed glances")
 	}

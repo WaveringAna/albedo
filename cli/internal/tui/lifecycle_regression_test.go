@@ -118,25 +118,25 @@ func TestChatHistoryAndWindowCompletionsSurviveModal(t *testing.T) {
 	defer chat.Close()
 	chat.SetSize(80, 24)
 	chat.loadingOlder = true
-	model := AppModel{ActiveSession: session, Chat: chat, State: AppStateContextInspector}
+	model := &AppModel{ActiveSession: session, Chat: chat, State: AppStateContextInspector}
 	updated, _ := model.Update(ChatOlderLoadedMsg{SessionID: "other", Generation: chat.Generation, Page: &daemon.HistoryPage{}})
-	model = updated.(AppModel)
+	model = updated.(*AppModel)
 	if !model.Chat.loadingOlder {
 		t.Fatal("another session completed the active history request")
 	}
 	updated, _ = model.Update(ChatOlderLoadedMsg{SessionID: "s", Generation: chat.Generation - 1, Page: &daemon.HistoryPage{}})
-	model = updated.(AppModel)
+	model = updated.(*AppModel)
 	if !model.Chat.loadingOlder {
 		t.Fatal("stale generation completed the active history request")
 	}
 	updated, _ = model.Update(ChatOlderLoadedMsg{SessionID: "s", Generation: chat.Generation, Page: &daemon.HistoryPage{Before: 10, More: true}})
-	model = updated.(AppModel)
+	model = updated.(*AppModel)
 	if model.Chat.loadingOlder || !model.Chat.olderMore {
 		t.Fatal("modal lost history completion")
 	}
 	tokens := 123456
 	updated, _ = model.Update(ChatWindowMsg{SessionID: "s", Generation: chat.Generation, Model: "model", Tokens: &tokens})
-	model = updated.(AppModel)
+	model = updated.(*AppModel)
 	if model.Chat.window == nil || *model.Chat.window != tokens {
 		t.Fatal("modal lost context window completion")
 	}
@@ -153,9 +153,9 @@ func TestDelayedForkCompletionCannotReplaceReopenedTree(t *testing.T) {
 	if old.Forking || cmd == nil {
 		t.Fatal("current fork did not complete")
 	}
-	model := AppModel{State: AppStateTreePicker, TreePicker: NewTreePickerModel(nil, "s"), ActiveSession: &daemon.Session{ID: "s"}}
+	model := &AppModel{State: AppStateTreePicker, TreePicker: NewTreePickerModel(nil, "s"), ActiveSession: &daemon.Session{ID: "s"}}
 	updated, next := model.Update(cmd())
-	model = updated.(AppModel)
+	model = updated.(*AppModel)
 	if model.ActiveSession.ID != "s" || next != nil {
 		t.Fatal("discarded tree completion changed session")
 	}

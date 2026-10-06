@@ -123,6 +123,30 @@ func (m ChatModel) chipHeight() int {
 	return chipRows
 }
 
+// pane is the transcript's window: its size and the rows it shows. The rows
+// arrive wrapped to the width, so drawing it only joins them.
+type pane struct {
+	rows          []string
+	width, height int
+}
+
+func (p pane) Width() int       { return p.width }
+func (p pane) Height() int      { return p.height }
+func (p *pane) SetWidth(w int)  { p.width = w }
+func (p *pane) SetHeight(h int) { p.height = h }
+
+// lines is exactly height rows: the shown ones, then blank ones.
+func (p pane) lines() []string {
+	lines := make([]string, p.height)
+	copy(lines, p.rows)
+	return lines
+}
+
+// View is the pane as one string, as tests and a sidebar join read it.
+func (p pane) View() string {
+	return strings.Join(p.lines(), "\n")
+}
+
 func (m ChatModel) chromeRows() int {
 	return m.inputRows() + m.Notices.ChromeRows()
 }

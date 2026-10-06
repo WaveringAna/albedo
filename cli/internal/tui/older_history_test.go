@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -111,5 +112,40 @@ func TestEvictedHistoryResumesAfterItsNewestRow(t *testing.T) {
 	h.Prepend([]HistoryEntry{{Kind: EntryUser, Text: "old", Seq: 4}})
 	if h.EvictedThrough() != 0 || h.Entries()[0].Text != "old" {
 		t.Fatal("prepend did not take over the cursor")
+	}
+}
+
+func TestOlderPagesReuseBlocksExactlyAsAFreshRebuildDrawsThem(t *testing.T) {
+	// Kept blocks are an invariant across every kind of entry and burst
+	// boundary; an e2e sees only the screen, not which rows were reused.
+	page := func(from int) []daemon.StreamEvent {
+		var events []daemon.StreamEvent
+		for i := from; i < from+6; i++ {
+			id := fmt.Sprint(i)
+			at := int64(1_000_000 + i*60_000)
+			events = append(events,
+				daemon.StreamEvent{Type: daemon.EventUser, EntryID: "u" + id, Position: int64(i), Text: "ask " + id, Timestamp: &at},
+				daemon.StreamEvent{Type: daemon.EventThinking, EntryID: "k" + id, Position: int64(i), Text: "think " + id},
+				daemon.StreamEvent{Type: daemon.EventTool, EntryID: "t" + id, Position: int64(i), ToolName: "python", ToolArgs: map[string]any{"code": "print(" + id + ")"}, ToolResult: id},
+				daemon.StreamEvent{Type: daemon.EventMessage, EntryID: "a" + id, Position: int64(i), Text: "**answer** " + id, Timestamp: &at},
+				daemon.StreamEvent{Type: daemon.EventTurnCompleted, Source: "done"},
+			)
+		}
+		return events
+	}
+	m := newTestChatModel(t, &daemon.Session{ID: "s"})
+	m.SetSize(100, 30)
+	for _, event := range page(100) {
+		m.handleStreamEvent(event)
+	}
+	for from := 94; from >= 70; from -= 6 {
+		m.Follow, m.scrollOffset, m.loadingOlder = false, 0, true
+		m = m.showOlder(ChatOlderLoadedMsg{SessionID: m.SessionID, Generation: m.Generation, Page: &daemon.HistoryPage{Events: page(from), Before: int64(from), More: true}})
+		reused := slices.Clone(m.settledLines)
+		m.settled = nil
+		m.rebuildSettledLines()
+		if !slices.Equal(reused, m.settledLines) {
+			t.Fatalf("after the page from %d, reused rows differ from a fresh rebuild", from)
+		}
 	}
 }

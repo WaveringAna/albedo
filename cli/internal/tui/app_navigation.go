@@ -7,7 +7,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 )
 
-func (m AppModel) initScreen() tea.Cmd {
+func (m *AppModel) initScreen() tea.Cmd {
 	switch m.State {
 	case AppStateChat:
 		return tea.Batch(m.Chat.Init(), m.loadCommandCatalogCmd(m.CatalogGen), m.recordOpenCmd(m.ActiveSession.ID))

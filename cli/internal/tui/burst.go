@@ -295,7 +295,7 @@ func (r TranscriptRenderer) summary(b burst, width int, n namer) string {
 	}
 	tail := ""
 	if n := len(b.failed); n > 0 {
-		tail += r.Styles.Error.Render(fmt.Sprintf(" · %d failed", n))
+		tail += DefaultStyles.Error.Render(fmt.Sprintf(" · %d failed", n))
 	}
 	if b.added+b.removed > 0 {
 		tail += "  " + r.diffCounts(daemon.FileChange{Added: b.added, Removed: b.removed})
@@ -305,7 +305,7 @@ func (r TranscriptRenderer) summary(b burst, width int, n namer) string {
 	room := width - ansi.StringWidth(tail)
 	for ansi.StringWidth(line()) > room && shorten(clauses) {
 	}
-	return fit(r.Styles.Faint.Render(line()), tail, width)
+	return fit(DefaultStyles.Faint.Render(line()), tail, width)
 }
 
 // queries names each search by its query, quoted, on one line.
@@ -386,7 +386,7 @@ func (r TranscriptRenderer) RenderBurst(entries []HistoryEntry, flags DisplayFla
 		if open {
 			toggle = toggleOpen
 		}
-		head += rowAction{verbOpen, key}.mark() + r.Styles.Faint.Render(toggle)
+		head += rowAction{verbOpen, key}.mark() + DefaultStyles.Faint.Render(toggle)
 		room -= ansi.StringWidth(toggle)
 	}
 	rows := []string{head + r.summary(b, room, n)}
@@ -397,7 +397,7 @@ func (r TranscriptRenderer) RenderBurst(entries []HistoryEntry, flags DisplayFla
 		}
 	} else {
 		for _, entry := range b.failed {
-			rows = append(rows, markChrome+r.Styles.Error.Render(toolRow(entry, true, "", width)))
+			rows = append(rows, markChrome+DefaultStyles.Error.Render(toolRow(entry, true, "", width)))
 		}
 	}
 	for _, look := range b.looked {
@@ -408,7 +408,7 @@ func (r TranscriptRenderer) RenderBurst(entries []HistoryEntry, flags DisplayFla
 			if change.Kind == "diff" {
 				rows = append(rows, r.renderDiffPath(change.Diff, change.Path, width))
 			} else {
-				rows = append(rows, r.Styles.Faint.Render(n.name(prepareTarget(change.Path))+": "+change.Reason))
+				rows = append(rows, DefaultStyles.Faint.Render(n.name(prepareTarget(change.Path))+": "+change.Reason))
 			}
 		}
 	}
@@ -425,15 +425,15 @@ func (r TranscriptRenderer) steps(entries []HistoryEntry, width int) []string {
 		}
 		trace := entry.ToolTrace
 		if trace == nil || len(trace.Activities)+len(trace.Changes) == 0 {
-			failed, style := toolFailed(entry), r.Styles.Faint
+			failed, style := toolFailed(entry), DefaultStyles.Faint
 			if failed {
-				style = r.Styles.Error
+				style = DefaultStyles.Error
 			}
 			rows = append(rows, style.Render(toolRow(entry, failed, "", width)))
 			continue
 		}
 		for _, act := range trace.Activities {
-			style := r.Styles.Faint
+			style := DefaultStyles.Faint
 			rows = append(rows, style.Render(r.traceLine(stepLabel(act.Kind), act.Target, isPath(act), width)))
 		}
 		for _, change := range trace.Changes {
@@ -442,7 +442,7 @@ func (r TranscriptRenderer) steps(entries []HistoryEntry, width int) []string {
 				counts = "  " + r.diffCounts(change)
 			}
 			line := r.traceLine(stepLabel("edit"), change.Path, true, width-ansi.StringWidth(counts))
-			rows = append(rows, fit(r.Styles.Faint.Render(line), counts, width))
+			rows = append(rows, fit(DefaultStyles.Faint.Render(line), counts, width))
 		}
 	}
 	return rows

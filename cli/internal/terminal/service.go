@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime/debug"
 	"slices"
 	"strings"
 
@@ -86,12 +87,13 @@ func (t *Service) Open(ctx context.Context, prepared app.PreparedOpen) error {
 	if err := tui.DetectInk(); err != nil {
 		return err
 	}
+	leanHeap()
 	appModel := tui.NewAppModel(prepared.Connection, prepared.Providers, prepared.Selected, prepared.Workspace, prepared.LoginRequired, t.OpenBrowser)
-	p := tea.NewProgram(appModel, tea.WithFPS(120), tea.WithInput(t.In), tea.WithOutput(t.Out))
+	p := tea.NewProgram(appModel, tea.WithInput(t.In), tea.WithOutput(t.Out))
 	stopCancellation := context.AfterFunc(ctx, func() { p.Send(tea.Quit()) })
 	defer stopCancellation()
 	final, err := p.Run()
-	closed, ok := final.(tui.AppModel)
+	closed, ok := final.(*tui.AppModel)
 	if !ok {
 		closed = appModel
 	}
@@ -104,7 +106,7 @@ func (t *Service) Open(ctx context.Context, prepared app.PreparedOpen) error {
 	if err != nil {
 		return err
 	}
-	if m, ok := final.(tui.AppModel); ok && m.ActiveSession != nil {
+	if m, ok := final.(*tui.AppModel); ok && m.ActiveSession != nil {
 		_, err = fmt.Fprintf(t.Out, "To reopen this session, run albedo resume %s\n", m.ActiveSession.ID)
 	}
 	return err
@@ -117,12 +119,13 @@ func (t *Service) Login(ctx context.Context, prepared app.PreparedOpen, workspac
 	if err := tui.DetectInk(); err != nil {
 		return err
 	}
+	leanHeap()
 	model := tui.NewLoginAppModel(prepared.Connection, prepared.Providers, workspace, name, t.OpenBrowser)
-	program := tea.NewProgram(model, tea.WithFPS(120), tea.WithInput(t.In), tea.WithOutput(t.Out))
+	program := tea.NewProgram(model, tea.WithInput(t.In), tea.WithOutput(t.Out))
 	stopCancellation := context.AfterFunc(ctx, func() { program.Send(tea.Quit()) })
 	defer stopCancellation()
 	final, err := program.Run()
-	closed, ok := final.(tui.AppModel)
+	closed, ok := final.(*tui.AppModel)
 	if !ok {
 		closed = model
 	}
@@ -150,4 +153,14 @@ func (t *Service) ConfirmCleanup(sessions bool) (bool, error) {
 		return false, err
 	}
 	return Confirmed(answer), nil
+}
+
+// leanHeap lets the heap grow half past what it holds before collecting,
+// not the default doubling: a terminal UI idles at a few kilobytes a second,
+// so the extra collections cost nothing a person would see and the resident
+// size drops by a sixth. A GOGC set in the environment still wins.
+func leanHeap() {
+	if os.Getenv("GOGC") == "" {
+		debug.SetGCPercent(50)
+	}
 }
