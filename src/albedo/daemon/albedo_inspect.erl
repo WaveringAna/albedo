@@ -12,7 +12,7 @@
 %% ALBEDO_INSPECT_EVERY=N also appends a report to $ALBEDO_HOME/inspect.log
 %% every N seconds. Unset, start/1 does nothing and nothing here runs.
 -module(albedo_inspect).
--export([start/1, label/2, report/0, report/1, anatomy/1, peak/1, sharing/0, cpu/1]).
+-export([start/1, label/2, report/0, report/1, anatomy/1, peak/1, sharing/0, cpu/1, stacks/0]).
 
 -define(MB(B), io_lib:format("~.1f MB", [(B) / 1048576])).
 -define(WORD, erlang:system_info(wordsize)).
@@ -246,6 +246,19 @@ cpu(Seconds) ->
         "processes by reductions (now running)\n",
         [io_lib:format("  ~10b  ~s  ~s~n", [R, name(Pid, label(Pid)), running(Pid)]) || {R, Pid} <- Top, R > 0]
     ]).
+
+%% Where each albedo process (and any process with mail waiting) is right now:
+%% its queue length and the frames it is running, for a daemon that hangs.
+stacks() ->
+    Rows = [{Pid, label(Pid), Q, Stack}
+            || Pid <- erlang:processes(),
+               [{message_queue_len, Q}, {current_stacktrace, Stack}] <-
+                   [erlang:process_info(Pid, [message_queue_len, current_stacktrace])],
+               Q > 0 orelse is_tuple(label(Pid))],
+    iolist_to_binary(
+        [[io_lib:format("~s  mq ~b~n", [name(Pid, L), Q]),
+          [io_lib:format("    ~s~n", [frame(F)]) || F <- lists:sublist(Stack, 8)]]
+         || {Pid, L, Q, Stack} <- Rows]).
 
 reductions() ->
     maps:from_list([{Pid, R} || Pid <- erlang:processes(), {reductions, R} <- [erlang:process_info(Pid, reductions)]]).

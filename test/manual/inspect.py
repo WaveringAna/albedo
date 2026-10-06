@@ -3,6 +3,7 @@
 Start the daemon with ALBEDO_INSPECT=1 first. Then:
   python3 test/manual/inspect.py cpu [seconds]    where the VM's work goes (default 30)
   python3 test/manual/inspect.py report           memory by process, binary and session
+  python3 test/manual/inspect.py stacks          where every albedo process is waiting now
   python3 test/manual/inspect.py peak [ms]        memory high-water mark (default 5000)
   python3 test/manual/inspect.py eval EXPRESSION  any expression run on the daemon; it is
                                                   printed with ~p unless it is iodata
@@ -38,6 +39,8 @@ def expression(argv: list[str]) -> tuple[str, int]:
             return f"albedo_inspect:cpu({seconds})", seconds + 30
         case ["report"]:
             return "albedo_inspect:report()", 60
+        case ["stacks"]:
+            return "albedo_inspect:stacks()", 60
         case ["peak", *rest]:
             ms = int(rest[0]) if rest else 5000
             return f"albedo_inspect:peak({ms})", ms // 1000 + 30

@@ -47,6 +47,7 @@
 start({boot, Owner, Python, Bridge, Cwd, Host, Modules, Link, RunDir, Kernel, Token, Grace, OutSeq, Owned, Fresh, Remote}) ->
     Parent = self(), Ref = make_ref(),
     {Pid, Mon} = spawn_monitor(fun() ->
+        albedo_inspect:label(<<"albedo_kernel">>, Kernel),
         process_flag(trap_exit, true),
         monitor(process, Owner),
         %% What the record says the kernel owned, so a kernel found dead at
@@ -115,7 +116,11 @@ open_relay(S = #{python := Python, bridge := Bridge, run_dir := RunDir}, Mode) -
         attach -> none
     end,
     Socket = <<RunDir/binary, "/", ?SOCKET>>,
-    Relay = spawn(fun() -> relay(Owner, Launch, Socket) end),
+    Kernel = maps:get(kernel, S),
+    Relay = spawn(fun() ->
+        albedo_inspect:label(<<"albedo_relay">>, Kernel),
+        relay(Owner, Launch, Socket)
+    end),
     {ok, handshake(S#{bundle => bundle_digest(filename:dirname(Bridge))}, Relay, [])}.
 
 handshake(S, Port, First) ->
