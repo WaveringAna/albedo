@@ -14,7 +14,6 @@ pub opaque type Parser {
     bom_handled: Bool,
     name: String,
     data: List(String),
-    data_lines: Int,
     event_bytes: Int,
     limit: Int,
   )
@@ -36,6 +35,11 @@ fn newline(bytes: BitArray) -> Int
 @external(erlang, "albedo_sse_bytes", "compact")
 fn compact(bytes: BitArray) -> BitArray
 
+/// A completed line as a string; the UTF-8 check runs natively rather than
+/// one codepoint per call, as `bit_array.to_string` does.
+@external(erlang, "albedo_sse_bytes", "utf8")
+fn utf8(bytes: BitArray) -> Result(String, Nil)
+
 fn field(line: String) -> #(String, String) {
   // Only these fields are consumed. Byte prefixes also match a colon followed
   // by a combining mark, which grapheme-aware string splitting would skip.
@@ -55,7 +59,7 @@ pub fn new(max_event_bytes: Int) -> Parser {
     True -> panic as "max_event_bytes must be >= 1"
     False -> Nil
   }
-  Parser([], 0, False, <<>>, False, "", [], 0, 0, max_event_bytes)
+  Parser([], 0, False, <<>>, False, "", [], 0, max_event_bytes)
 }
 
 pub fn feed(
@@ -158,78 +162,45 @@ fn complete_line(
   parser: Parser,
   events: List(Event),
 ) -> Result(#(Parser, List(Event)), Error) {
-  let is_comment = case list.last(parser.fragments) {
-    Ok(<<58, _:bytes>>) -> True
-    _ -> False
-  }
-  use _ <- result.try(
-    case
-      parser.line_bytes > 0
-      && !is_comment
-      && parser.event_bytes + parser.line_bytes > parser.limit
-    {
-      True -> Error(EventTooLarge)
-      False -> Ok(Nil)
-    },
-  )
   use line <- result.try(
     parser.fragments
     |> list.reverse
     |> bit_array.concat
-    |> bit_array.to_string
-    |> result.map_error(fn(_) { InvalidUtf8 }),
+    |> utf8
+    |> result.replace_error(InvalidUtf8),
   )
-  let length = parser.line_bytes
+  // Comments are free; every other line counts toward the event budget.
+  let bytes = parser.event_bytes + parser.line_bytes
   let parser = Parser(..parser, fragments: [], line_bytes: 0, pending_cr: False)
   case line {
     "" -> Ok(dispatch(parser, events))
-    _ ->
-      case string.starts_with(line, ":") {
-        True -> Ok(#(parser, events))
-        False -> {
-          let bytes = parser.event_bytes + length
-          case bytes > parser.limit {
-            True -> Error(EventTooLarge)
-            False -> {
-              let parser = Parser(..parser, event_bytes: bytes)
-              let #(name, value) = field(line)
-              case name {
-                "data" ->
-                  case parser.data_lines + 1 > parser.limit {
-                    True -> Error(EventTooLarge)
-                    False ->
-                      Ok(#(
-                        Parser(
-                          ..parser,
-                          data: [value, ..parser.data],
-                          data_lines: parser.data_lines + 1,
-                        ),
-                        events,
-                      ))
-                  }
-                "event" ->
-                  case string.contains(value, "\u{0000}") {
-                    True -> Error(Malformed("invalid SSE field: event"))
-                    False -> Ok(#(Parser(..parser, name: value), events))
-                  }
-                _ -> Ok(#(parser, events))
-              }
-            }
+    ":" <> _ -> Ok(#(parser, events))
+    _ if bytes > parser.limit -> Error(EventTooLarge)
+    _ -> {
+      let parser = Parser(..parser, event_bytes: bytes)
+      case field(line) {
+        #("data", value) ->
+          Ok(#(Parser(..parser, data: [value, ..parser.data]), events))
+        #("event", value) ->
+          case string.contains(value, "\u{0000}") {
+            True -> Error(Malformed("invalid SSE field: event"))
+            False -> Ok(#(Parser(..parser, name: value), events))
           }
-        }
+        _ -> Ok(#(parser, events))
       }
+    }
   }
 }
 
 fn dispatch(parser: Parser, events: List(Event)) -> #(Parser, List(Event)) {
-  let events = case parser.data_lines > 0 {
-    True -> [
-      Event(parser.name, parser.data |> list.reverse |> string.join("\n")),
+  let events = case parser.data {
+    [] -> events
+    data -> [
+      Event(parser.name, data |> list.reverse |> string.join("\n")),
       ..events
     ]
-    False -> events
   }
-  #(Parser(..parser, name: "", data: [], data_lines: 0, event_bytes: 0), events)
+  #(Parser(..parser, name: "", data: [], event_bytes: 0), events)
 }
 
 /// EOF flushes a final unterminated event; reducers still require a terminal event.

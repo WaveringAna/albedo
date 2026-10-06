@@ -7,6 +7,7 @@ import gleam/json.{type Json}
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/set
 import gleam/string
 import gleam/string_tree.{type StringTree}
 
@@ -148,11 +149,11 @@ fn validate(request: Request) -> Result(Nil, Error) {
 }
 
 fn validate_tools(tools: List(Tool)) -> Result(Nil, Error) {
-  list.try_fold(tools, [], fn(seen, tool) {
-    case string.is_empty(tool.name), list.contains(seen, tool.name) {
+  list.try_fold(tools, set.new(), fn(seen, tool) {
+    case string.is_empty(tool.name), set.contains(seen, tool.name) {
       True, _ -> Error(InvalidRequest("tool name must not be empty"))
       _, True -> Error(InvalidRequest("duplicate tool name: " <> tool.name))
-      _, _ -> Ok([tool.name, ..seen])
+      _, _ -> Ok(set.insert(seen, tool.name))
     }
   })
   |> result.replace(Nil)

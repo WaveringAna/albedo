@@ -63,8 +63,7 @@ pub fn feed(
   state: State,
   data: String,
 ) -> Result(#(State, List(types.Event), Option(types.Turn)), types.Error) {
-  let State(_, _, _, _, _, _, _, terminal) = state
-  case terminal, data {
+  case state.terminal, data {
     True, _ -> Error(types.InvalidEvent("chat chunk after [DONE]"))
     False, "[DONE]" -> finish(state)
     False, _ -> {

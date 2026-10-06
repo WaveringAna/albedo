@@ -44,4 +44,4 @@ Claude and Antigravity event and replay decoding preserve JSON error categories 
 
 `albedo/clock` distinguishes wall timestamps from monotonic deadlines; shared-helper rules live in [runtime](runtime.md#clocks). Request records, quota reset times, and persisted expiry values use system time. Session, family, deletion, and transport deadlines use monotonic time rather than durable timestamps. Codex model-cache freshness retains its OS-clock source through `os_system_ms`.
 
-SSE framing keeps native binary search and sub-binary compaction. Gleam owns field splitting and joins reversed fragments once per completed line.
+SSE framing keeps native binary search (a single-byte search each for LF and CR), sub-binary compaction, and native UTF-8 validation of each completed line; `bit_array.to_string` would walk one codepoint per call. Gleam owns field splitting and joins reversed fragments once per completed line. `gleam run -m manual/stream_benchmark` times framing, reduction, and request encoding offline.
