@@ -31,4 +31,4 @@ A state file that belongs to no session the store knows about is an orphan, and 
 
 
 `priv/python/albedo_state.py` owns serialization and definition capture.
-`priv/python/albedo_kernel.py` owns the live namespace and release/restore lifecycle.
+`priv/python/albedo_cells.py` owns the live namespace and release/restore lifecycle.

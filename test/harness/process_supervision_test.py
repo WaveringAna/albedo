@@ -14,7 +14,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 sys.path.insert(0, os.path.join(ROOT, "priv", "python"))
 
 import albedo_api  # noqa: E402
-import albedo_kernel  # noqa: E402
+import albedo_cells  # noqa: E402
 import albedo_proc  # noqa: E402
 from albedo_plugins import run as plugin  # noqa: E402
 
@@ -33,8 +33,8 @@ def install() -> None:
                 RuntimeError("no host in tests")
             ),
             HostError=RuntimeError,
-            capture=albedo_kernel.background_capture,
-            preview=albedo_kernel.PREVIEW,
+            capture=albedo_cells.background_capture,
+            preview=albedo_cells.PREVIEW,
             send=EVENTS.append,
             on_shutdown=lambda close: None,
             background_handle=lambda _: None,

@@ -1,6 +1,7 @@
 # the detached kernel
 
-a session's python kernel (`priv/python/albedo_kernel.py`) is its own process,
+a session's python kernel (`priv/python/albedo_kernel.py`, which runs
+`albedo_cells.py` as `__main__` so its bytecode comes from the cache) is its own process,
 detached from the daemon: it outlives a dropped connection and a daemon
 restart, keeping its namespace and its background jobs. the daemon connects
 to it directly, or through a bridge when it runs on another host, and every message between the two travels through a small
@@ -8,7 +9,7 @@ session layer that neither loses nor repeats a message across a reconnect.
 
 ## tool bindings
 
-Cells also see the common standard-library modules (`asyncio base64 collections datetime functools hashlib itertools json math os re shutil sys textwrap time`, and `Path`) without importing them; these live in the same session-private builtins, so they are not saved as user variables. `import albedo` and `from albedo import files` answer the injected bindings (`albedo_kernel.Bindings`).
+Cells also see the common standard-library modules (`asyncio base64 collections datetime functools hashlib itertools json math os re shutil sys textwrap time`, and `Path`) without importing them; these live in the same session-private builtins, so they are not saved as user variables. `import albedo` and `from albedo import files` answer the injected bindings (`albedo_cells.Bindings`).
 
 A cell may not block the kernel with `time.sleep` of a second or more: `albedo_shell` refuses it through the same audit hook that refuses raw subprocess calls, and says to start the work with `run()` and do other useful work while it runs, and when nothing else is left to give the user a status report first, then wait with `await asyncio.sleep(n)`. Job timeouts are seconds, at most a day (`albedo_api.check_timeout`): a job outlives the cell that started it, so it is not held to the cell's hour.
 

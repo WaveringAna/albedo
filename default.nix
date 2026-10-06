@@ -134,6 +134,11 @@
       runHook preInstall
       mkdir -p $out/lib/albedo $out/bin
       cp -R build/erlang-shipment/. $out/lib/albedo/
+      # Kernels import this python from the read-only store, where Python
+      # cannot cache bytecode, so each would compile it again (megabytes per
+      # kernel). Hash-checked, because the store resets every mtime.
+      ${python311}/bin/python3 -m compileall -q --invalidation-mode checked-hash \
+        $out/lib/albedo/albedo/priv/python
       mkdir -p $out/lib/albedo/albedo/priv/bin
       ln -s ${render}/bin/albedo-render $out/lib/albedo/albedo/priv/bin/albedo-render
       ln -s ${usageCore}/bin/usage $out/lib/albedo/albedo/priv/bin/usage

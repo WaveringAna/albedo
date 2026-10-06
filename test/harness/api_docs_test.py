@@ -13,7 +13,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "priv" / "python"))
-import albedo_kernel as kernel  # noqa: E402
+import albedo_cells as kernel  # noqa: E402
 from albedo_api import PythonApi  # noqa: E402
 
 # Plumbing the kernel or the remote relay calls; not part of the model's API.
