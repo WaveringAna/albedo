@@ -7,7 +7,7 @@
 %%     -eval "io:put_chars(rpc:call('albedo_<ospid>@$(hostname -s)', albedo_inspect, report, [])), halt()."
 %%
 %% The daemon prints its node name at startup ("inspect: node ..."), and
-%% test/manual/inspect.py finds it and runs report, cpu or any expression.
+%% test/manual/inspect_daemon.py finds it and runs report, cpu or any expression.
 %%
 %% ALBEDO_INSPECT_EVERY=N also appends a report to $ALBEDO_HOME/inspect.log
 %% every N seconds. Unset, start/1 does nothing and nothing here runs.

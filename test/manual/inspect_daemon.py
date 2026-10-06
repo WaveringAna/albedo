@@ -1,11 +1,11 @@
 """Run albedo_inspect against the live daemon.
 
 Start the daemon with ALBEDO_INSPECT=1 first. Then:
-  python3 test/manual/inspect.py cpu [seconds]    where the VM's work goes (default 30)
-  python3 test/manual/inspect.py report           memory by process, binary and session
-  python3 test/manual/inspect.py stacks          where every albedo process is waiting now
-  python3 test/manual/inspect.py peak [ms]        memory high-water mark (default 5000)
-  python3 test/manual/inspect.py eval EXPRESSION  any expression run on the daemon; it is
+  python3 test/manual/inspect_daemon.py cpu [seconds]    where the VM's work goes (default 30)
+  python3 test/manual/inspect_daemon.py report           memory by process, binary and session
+  python3 test/manual/inspect_daemon.py stacks          where every albedo process is waiting now
+  python3 test/manual/inspect_daemon.py peak [ms]        memory high-water mark (default 5000)
+  python3 test/manual/inspect_daemon.py eval EXPRESSION  any expression run on the daemon; it is
                                                   printed with ~p unless it is iodata
 
 $ALBEDO_HOME (default ~/.albedo) says which daemon.
