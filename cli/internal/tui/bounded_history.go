@@ -163,7 +163,7 @@ func (h *BoundedHistory) Replace(entry HistoryEntry) bool {
 }
 
 // Prepend puts older entries before the retained ones. It does not evict:
-// they were asked for, and the next Append trims as usual.
+// they were asked for, and Trim or the next Append restores the bounds.
 func (h *BoundedHistory) Prepend(older []HistoryEntry) {
 	if len(older) == 0 {
 		return
@@ -187,6 +187,11 @@ func (h *BoundedHistory) Prepend(older []HistoryEntry) {
 	}
 	h.entries = slices.Concat(unique, h.entries)
 	h.evictedThrough = 0
+}
+
+// Trim evicts the oldest entries past the bounds Prepend stretched.
+func (h *BoundedHistory) Trim() {
+	h.enforceBounds()
 }
 
 func (h *BoundedHistory) enforceBounds() {

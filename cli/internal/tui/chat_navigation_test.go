@@ -236,3 +236,29 @@ func TestAGrowingReplyRedrawsAtMostOncePerIntervalAndShowsItsLastTokens(t *testi
 		t.Fatalf("the deferred redraw lost the last tokens: %q", ansi.Strip(m.Viewport.View()))
 	}
 }
+
+func TestReturningToTheEndTrimsHistoryLoadedWhileReading(t *testing.T) {
+	// Older pages stretch both caps while you read; only the scroll back to
+	// the end restores them, and no daemon event marks that moment.
+	m := newTestChatModel(t, &daemon.Session{ID: "s"})
+	m.SetSize(80, 20)
+	m.History = NewBoundedHistory(10, 1<<20)
+	for i := range 10 {
+		m.appendSettledEntry(HistoryEntry{ID: fmt.Sprint("new", i), Seq: int64(100 + i), Kind: EntryAssistant, Text: "newer"})
+	}
+	m.Follow, m.scrollOffset, m.loadingOlder = false, 0, true
+	var older []daemon.StreamEvent
+	for i := range 30 {
+		older = append(older, daemon.StreamEvent{Type: daemon.EventMessage, EntryID: fmt.Sprint("old", i), Position: int64(i + 1), Text: "older"})
+	}
+	m = m.showOlder(ChatOlderLoadedMsg{SessionID: m.SessionID, Generation: m.Generation, Page: &daemon.HistoryPage{Events: older, Before: 1}})
+	if m.History.Len() <= 10 {
+		t.Fatalf("an older page was not kept while reading: %d entries", m.History.Len())
+	}
+	for !m.Follow {
+		m.scrollBy(20)
+	}
+	if m.History.Len() != 10 {
+		t.Fatalf("back at the end, history kept %d entries past its cap of 10", m.History.Len())
+	}
+}

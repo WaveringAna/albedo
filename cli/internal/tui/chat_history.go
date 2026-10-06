@@ -187,6 +187,11 @@ func (m *ChatModel) refreshViewportContent() int {
 		m.SetSize(m.Width, m.Height)
 		return m.scrollLimit
 	}
+	if m.Follow {
+		// Reading older history stretched both caps; at the end they return.
+		m.History.Trim()
+		m.trimSettledLines()
+	}
 	allLines := m.headerLines()
 	if !m.Follow {
 		// a header growing or shrinking above must not move what you read
@@ -362,6 +367,7 @@ func (m *ChatModel) scrollBy(rows int) {
 	maxScroll := m.refreshViewportContent()
 	if rows > 0 && m.scrollOffset >= maxScroll {
 		m.Follow = true
+		m.refreshViewportContent()
 	}
 }
 
