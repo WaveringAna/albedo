@@ -331,7 +331,7 @@ func (r TranscriptRenderer) foldLookup(look lookup, width int) []string {
 	for i := range rows {
 		rows[i] = markChrome + "  " + rows[i]
 	}
-	if len(rows) <= lookupRows+userFoldSlack {
+	if len(rows) <= lookupRows+foldSlack {
 		return rows
 	}
 	if r.Open[look.key] {

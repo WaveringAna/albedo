@@ -97,6 +97,14 @@ begin with a reset. A second protocol failure ends automatic recovery; reopening
 the session starts a new attachment. Pending submissions and drafts remain
 available, and a stream failure does not claim that model execution finished.
 
+## Notes in the transcript
+
+The TUI renders daemon notes as faint plain text, wrapping each line before
+styling it. Never style a whole multi-line note as one Lip Gloss block: that
+pads every short line to the longest line, which can span thousands of columns
+in a capability update. Long notes use the same click-to-expand fold as user
+messages. Folding changes only the display, not the stored or model-facing text.
+
 ## Loaded sessions and unloading
 
 A session is loaded while its actor runs; only a loaded session has a stream

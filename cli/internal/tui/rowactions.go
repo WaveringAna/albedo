@@ -19,8 +19,8 @@ const (
 	verbCopy = "copy"
 	// verbOpen lists or hides the steps of a burst.
 	verbOpen = "open"
-	// verbMore shows or folds the rest of a long message of yours, or of a
-	// web search's answer.
+	// verbMore shows or folds the rest of a long message of yours, of a
+	// note, or of a web search's answer.
 	verbMore = "more"
 )
 
@@ -71,10 +71,12 @@ func (m *ChatModel) actAt(row int) tea.Cmd {
 // the last row of its block. Only that block renders again and is spliced into
 // the settled rows. The clicked row keeps its place on screen: expanding opens
 // the text below it, and folding brings the new fold row to where it was.
-// It reports false when key names no message of yours.
+// It reports false when key names no message of yours and no note.
 func (m *ChatModel) toggleFold(key string, row int) bool {
 	entries := m.History.Entries()
-	at := slices.IndexFunc(entries, func(e HistoryEntry) bool { return e.Kind == EntryUser && entryKey(e) == key })
+	at := slices.IndexFunc(entries, func(e HistoryEntry) bool {
+		return (e.Kind == EntryUser || e.Kind == EntryNote) && entryKey(e) == key
+	})
 	if at < 0 {
 		return false
 	}

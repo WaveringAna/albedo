@@ -26,11 +26,11 @@ type DisplayFlags struct {
 }
 
 type TranscriptRenderer struct {
+	// Open holds the keys of expanded bursts, messages, and notes.
+	Open map[string]bool
 	// Workspace roots the paths trace rows name.
 	Workspace string
 	BodyWidth int
-	// Open holds the keys of bursts drawn with every step listed.
-	Open map[string]bool
 }
 
 func NewTranscriptRenderer() TranscriptRenderer {
@@ -78,8 +78,8 @@ func priorOf(entries []HistoryEntry) prior {
 // recent is as much of the end of entries as priorOf and a separator read:
 // back to the newest entry with a speaker.
 func recent(entries []HistoryEntry) []HistoryEntry {
-	for i := len(entries) - 1; i >= 0; i-- {
-		if speaker(entries[i]) != "" {
+	for i, entry := range slices.Backward(entries) {
+		if speaker(entry) != "" {
 			return entries[i:]
 		}
 	}
@@ -495,7 +495,7 @@ func (r TranscriptRenderer) faintMarkdownRows(text string, width int) []string {
 	return r.faintRows(RenderMarkdownAnsi(text, width), width)
 }
 
-// faintRows is rendered markdown greyed out and wrapped to width.
+// faintRows wraps text to width and greys out each row.
 func (r TranscriptRenderer) faintRows(rendered string, width int) []string {
 	var rows []string
 	for line := range strings.SplitSeq(rendered, "\n") {
@@ -530,7 +530,7 @@ func (r TranscriptRenderer) RenderAfter(before prior, entry HistoryEntry, flags 
 		}
 		body := render(entry.Text, width)
 		if entry.Kind == EntryUser && (entry.Source == "" || entry.Source == "chat") {
-			body = r.foldUser(entry, body)
+			body = r.foldTall(entry, body)
 		}
 		rows = append(rows, body)
 	case EntryThinking:
@@ -576,7 +576,8 @@ func (r TranscriptRenderer) RenderAfter(before prior, entry HistoryEntry, flags 
 	case EntryTurnEnd:
 		rows = []string{r.signoff(entry)}
 	case EntryNote:
-		rows = []string{DefaultStyles.Faint.Render(entry.Text)}
+		// Styling the whole note pads short rows to its longest line.
+		rows = []string{r.foldTall(entry, strings.Join(r.faintRows(entry.Text, width), "\n"))}
 	case EntryError:
 		rows = []string{r.errorRow(entry.Text)}
 	case EntryCompacted:
@@ -593,27 +594,27 @@ func (r TranscriptRenderer) RenderAfter(before prior, entry HistoryEntry, flags 
 	return strings.Join(rows, "\n")
 }
 
-// A message of yours taller than userFoldRows plus userFoldSlack shows its
-// first userFoldRows rows and a click target for the rest; the slack keeps
-// a fold from hiding only a line or two.
+// A message of yours, or a note, taller than foldRows plus foldSlack shows
+// its first foldRows rows and a click target for the rest; the slack keeps a
+// fold from hiding only a line or two.
 const (
-	userFoldRows  = 10
-	userFoldSlack = 2
+	foldRows  = 10
+	foldSlack = 2
 )
 
-// foldUser is body, a settled message's rendered rows, cut to its first rows
-// until the message's key is in Open.
-func (r TranscriptRenderer) foldUser(entry HistoryEntry, body string) string {
+// foldTall is body, a settled entry's rendered rows, cut to its first rows
+// until the entry's key is in Open.
+func (r TranscriptRenderer) foldTall(entry HistoryEntry, body string) string {
 	rows := strings.Split(body, "\n")
-	if len(rows) <= userFoldRows+userFoldSlack {
+	if len(rows) <= foldRows+foldSlack {
 		return body
 	}
 	key := entryKey(entry)
 	if r.Open[key] {
 		return body + "\n" + r.foldRow(key, toggleOpen+"show less")
 	}
-	label := fmt.Sprintf("%s%d more lines · click to expand", toggleClosed, len(rows)-userFoldRows)
-	return strings.Join(rows[:userFoldRows], "\n") + "\n" + r.foldRow(key, label)
+	label := fmt.Sprintf("%s%d more lines · click to expand", toggleClosed, len(rows)-foldRows)
+	return strings.Join(rows[:foldRows], "\n") + "\n" + r.foldRow(key, label)
 }
 
 func (r TranscriptRenderer) foldRow(key, label string) string {

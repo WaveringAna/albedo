@@ -195,3 +195,52 @@ func TestClickingAWebSearchShowsItsWholeAnswer(t *testing.T) {
 		t.Fatalf("clicking again does not fold the answer:\n%s", text)
 	}
 }
+
+// Capability notes must not pad short rows to thousands of columns.
+func TestALongNoteWrapsRowByRowAndFolds(t *testing.T) {
+	m := newTestChatModel(t, &daemon.Session{ID: "s"})
+	m.SetSize(100, 30)
+	lines := []string{"Session capabilities changed.", strings.Repeat("instructions ", 200)}
+	for i := range 20 {
+		lines = append(lines, fmt.Sprintf("- **`dir%02d/`** — a short bullet", i))
+	}
+	m.appendSettledEntry(HistoryEntry{Kind: EntryNote, Source: "capabilities changed", Text: strings.Join(lines, "\n"), Timestamp: 1})
+	m.appendSettledEntry(HistoryEntry{Kind: EntryAssistant, Text: "done", Timestamp: 2})
+	m.refreshViewportContent()
+	bounded := func() {
+		t.Helper()
+		for _, row := range m.settledLines {
+			if ansi.StringWidth(row) > 100 {
+				t.Fatalf("a note row is wider than the screen: %d columns", ansi.StringWidth(row))
+			}
+			if plain := ansi.Strip(row); strings.TrimSpace(plain) != "" && strings.HasSuffix(plain, "  ") {
+				t.Fatalf("a note row is padded to a wider row: %q", plain)
+			}
+		}
+	}
+	spliced := func() {
+		t.Helper()
+		got := slices.Clone(m.settledLines)
+		m.rebuildSettledLines()
+		if !slices.Equal(got, m.settledLines) {
+			t.Fatal("expanding or folding the note disagrees with a rebuild")
+		}
+		m.refreshViewportContent()
+		bounded()
+	}
+	shown := func() string { return ansi.Strip(strings.Join(m.frameLines, "\n")) }
+	bounded()
+	if text := shown(); strings.Contains(text, "dir19/") || !strings.Contains(text, "more lines · click to expand") {
+		t.Fatalf("a long note is not folded:\n%s", text)
+	}
+	m.actAt(rowWith(t, m.frameLines, "click to expand"))
+	spliced()
+	if text := shown(); !strings.Contains(text, "**`dir19/`**") || !strings.Contains(text, "show less") {
+		t.Fatalf("clicking does not show the rest of the plain-text note:\n%s", text)
+	}
+	m.actAt(rowWith(t, m.frameLines, "show less"))
+	spliced()
+	if text := shown(); strings.Contains(text, "dir19/") || !strings.Contains(text, "click to expand") {
+		t.Fatalf("clicking again does not fold the note:\n%s", text)
+	}
+}
