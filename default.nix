@@ -161,7 +161,7 @@
     src = clientSource;
     modRoot = "cli";
     subPackages = ["cmd/albedo"];
-    vendorHash = "sha256-7V9AkN7h4vCEYy9rwOYLv1vzuP8O117V8M4D1noGAbw=";
+    vendorHash = "sha256-Pl+bXHakJyxncOSWMI1FVpNui/LI/zgKg74nvjCwSKU=";
     nativeBuildInputs = [python311];
     ALBEDO_NO_BROWSER = "1";
     meta = {
