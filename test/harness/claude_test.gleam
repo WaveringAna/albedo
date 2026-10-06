@@ -27,12 +27,13 @@ const png = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAAD"
 
 const no_files_home = "/nonexistent"
 
-const subscription = wire.Subscription(
-  "token",
-  "11111111-2222-4333-8444-555555555555",
-  "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-  "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
-)
+const subscription =
+  wire.Subscription(
+    "token",
+    "11111111-2222-4333-8444-555555555555",
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+  )
 
 pub fn claude_tool_schemas_flatten_only_top_level_combiners_test() -> Result(
   Dynamic,

@@ -20,7 +20,8 @@ import gleam/result
 import gleam/string
 import sqlight
 
-const schema = "CREATE TABLE IF NOT EXISTS compaction_notes(session TEXT PRIMARY KEY,users INTEGER NOT NULL CHECK(users >= 0),fingerprint TEXT NOT NULL,text TEXT NOT NULL);"
+const schema =
+  "CREATE TABLE IF NOT EXISTS compaction_notes(session TEXT PRIMARY KEY,users INTEGER NOT NULL CHECK(users >= 0),fingerprint TEXT NOT NULL,text TEXT NOT NULL);"
 
 const default_budget_tokens = 2000
 

@@ -172,7 +172,8 @@ pub type ChildCreation {
   )
 }
 
-const creation_schema = "CREATE TABLE IF NOT EXISTS session_creation(session_id TEXT PRIMARY KEY,submitted TEXT,resolved TEXT,decided_at INTEGER,deleted_at INTEGER); CREATE INDEX IF NOT EXISTS session_creation_deleted ON session_creation(deleted_at) WHERE deleted_at IS NOT NULL;"
+const creation_schema =
+  "CREATE TABLE IF NOT EXISTS session_creation(session_id TEXT PRIMARY KEY,submitted TEXT,resolved TEXT,decided_at INTEGER,deleted_at INTEGER); CREATE INDEX IF NOT EXISTS session_creation_deleted ON session_creation(deleted_at) WHERE deleted_at IS NOT NULL;"
 
 pub fn creation(
   ledger: store.Store,
@@ -693,7 +694,8 @@ pub fn assign_session_provider(
 
 /// What `info_decoder` reads. A name someone gave the session outranks the
 /// title its latest message suggests.
-pub const info_columns = "id,COALESCE(NULLIF(name,''),NULLIF(title,''),'new session'),cwd,COALESCE(provider,''),model,protocol,stage,last_assistant_at,effort"
+pub const info_columns =
+  "id,COALESCE(NULLIF(name,''),NULLIF(title,''),'new session'),cwd,COALESCE(provider,''),model,protocol,stage,last_assistant_at,effort"
 
 /// Decodes `info_columns`.
 pub fn info_decoder() -> decode.Decoder(Info) {

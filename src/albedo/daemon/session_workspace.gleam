@@ -79,7 +79,8 @@ pub fn pending_in(
   Ok(list.first(rows) |> option.from_result)
 }
 
-const descendants = "WITH RECURSIVE descendants(id) AS (SELECT ? UNION SELECT f.session FROM session_family f JOIN descendants d ON f.parent=d.id) "
+const descendants =
+  "WITH RECURSIVE descendants(id) AS (SELECT ? UNION SELECT f.session FROM session_family f JOIN descendants d ON f.parent=d.id) "
 
 pub fn record(
   ledger: store.Store,

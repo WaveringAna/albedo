@@ -60,13 +60,17 @@ const args_bytes = 8192
 /// Cached frames unreferenced this long are pruned at startup.
 const frame_retention_ms = 2_592_000_000
 
-const frame_schema = "CREATE TABLE IF NOT EXISTS snapcompact_frames(key TEXT PRIMARY KEY,hash TEXT NOT NULL,data TEXT NOT NULL,width INTEGER NOT NULL,height INTEGER NOT NULL,bytes INTEGER NOT NULL,created_at INTEGER NOT NULL);"
+const frame_schema =
+  "CREATE TABLE IF NOT EXISTS snapcompact_frames(key TEXT PRIMARY KEY,hash TEXT NOT NULL,data TEXT NOT NULL,width INTEGER NOT NULL,height INTEGER NOT NULL,bytes INTEGER NOT NULL,created_at INTEGER NOT NULL);"
 
-const archive_schema = "CREATE TABLE IF NOT EXISTS snapcompact_archive(session TEXT PRIMARY KEY,users INTEGER NOT NULL CHECK(users >= 0),fingerprint TEXT NOT NULL,text TEXT NOT NULL,dropped INTEGER NOT NULL CHECK(dropped >= 0));"
+const archive_schema =
+  "CREATE TABLE IF NOT EXISTS snapcompact_archive(session TEXT PRIMARY KEY,users INTEGER NOT NULL CHECK(users >= 0),fingerprint TEXT NOT NULL,text TEXT NOT NULL,dropped INTEGER NOT NULL CHECK(dropped >= 0));"
 
-const truncation_note = "The conversation above this message was truncated; its earlier history could not be archived."
+const truncation_note =
+  "The conversation above this message was truncated; its earlier history could not be archived."
 
-const description = "History archived as rendered bitmap frames the vision stack reads directly"
+const description =
+  "History archived as rendered bitmap frames the vision stack reads directly"
 
 /// U+2588 FULL BLOCK: the cell that stands for a newline in the archive.
 const newline_cell = "\u{2588}"

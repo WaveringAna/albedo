@@ -2,15 +2,16 @@
   perSystem = {
     pkgs,
     beamPackages,
+    gleam,
     ...
   }: {
     packages = rec {
       glinter = pkgs.callPackage ./glinter.nix {
-        inherit beamPackages;
+        inherit beamPackages gleam;
         src = inputs.glinter;
       };
       albedo = pkgs.callPackage ../default.nix {
-        inherit beamPackages;
+        inherit beamPackages gleam;
         inherit (inputs) usage-core;
       };
       albedo-client = albedo.client;

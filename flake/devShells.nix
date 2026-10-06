@@ -4,6 +4,7 @@ _: {
     lib,
     pkgs,
     beamPackages,
+    gleam,
     ...
   }: {
     devShells.default = pkgs.mkShell {
@@ -11,7 +12,6 @@ _: {
         (with pkgs; [
           go
           gopls
-          gleam
           python311
           pre-commit
           ruff
@@ -20,6 +20,7 @@ _: {
           rustc
         ])
         ++ [
+          gleam
           beamPackages.erlang
           (beamPackages.rebar3WithPlugins {plugins = [beamPackages.pc];})
           config.packages.glinter

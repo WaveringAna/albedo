@@ -222,7 +222,8 @@ fn record_decoder() -> decode.Decoder(Record) {
   ))
 }
 
-const columns = "session,kernel,token,run_dir,cwd,modules,out_seq,json_object('pid',pid,'pgid',pgid,'leader',leader,'groups',json(groups))"
+const columns =
+  "session,kernel,token,run_dir,cwd,modules,out_seq,json_object('pid',pid,'pgid',pgid,'leader',leader,'groups',json(groups))"
 
 /// A strict observation for destructive lifecycle decisions.
 pub fn lookup(

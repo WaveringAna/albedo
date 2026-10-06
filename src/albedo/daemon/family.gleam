@@ -82,7 +82,8 @@ pub const max_depth = 3
 /// Open children one parent may have at once.
 const max_children = 12
 
-const schema = "
+const schema =
+  "
 CREATE TABLE IF NOT EXISTS session_family (
  session TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
  parent TEXT NOT NULL REFERENCES sessions(id),
@@ -371,7 +372,8 @@ pub fn available_in(
   }
 }
 
-const deletion_membership = "WITH RECURSIVE captured(id) AS (SELECT ? UNION SELECT f.session FROM session_family f JOIN captured c ON f.parent=c.id WHERE ?=1) "
+const deletion_membership =
+  "WITH RECURSIVE captured(id) AS (SELECT ? UNION SELECT f.session FROM session_family f JOIN captured c ON f.parent=c.id WHERE ?=1) "
 
 pub fn claim_deletion(
   ledger: store.Store,

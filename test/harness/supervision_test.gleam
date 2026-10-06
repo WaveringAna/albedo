@@ -8,7 +8,8 @@ import gleeunit/should
 
 /// A group and the descendant that outlived the command must become
 /// absent. Permission errors do not prove termination.
-const reaped_probe = "import os, time\nstate = 'alive'\nfor _ in range(50):\n"
+const reaped_probe =
+  "import os, time\nstate = 'alive'\nfor _ in range(50):\n"
   <> "    reachable = 0\n"
   <> "    for probe in (lambda: os.killpg(job.group.pgid, 0), lambda: os.kill(grandchild, 0)):\n"
   <> "        try:\n            probe()\n            reachable += 1\n"
@@ -18,9 +19,11 @@ const reaped_probe = "import os, time\nstate = 'alive'\nfor _ in range(50):\n"
 
 /// Parent programs for a job, as `program`: each prints the pid of a sleeping
 /// child that stays in the job's group, then waits for it or leaves it behind.
-const waits_on_a_sleeper = "program = 'import subprocess; child = subprocess.Popen([\"sleep\", \"30\"]); print(child.pid, flush=True); child.wait()'\n"
+const waits_on_a_sleeper =
+  "program = 'import subprocess; child = subprocess.Popen([\"sleep\", \"30\"]); print(child.pid, flush=True); child.wait()'\n"
 
-const leaves_a_sleeper = "program = 'import subprocess; child = subprocess.Popen([\"sleep\", \"30\"]); print(child.pid, flush=True)'\n"
+const leaves_a_sleeper =
+  "program = 'import subprocess; child = subprocess.Popen([\"sleep\", \"30\"]); print(child.pid, flush=True)'\n"
 
 pub fn deadline_ends_the_group_and_reports_it_test() -> Nil {
   let assert Ok(store) = work.start(":memory:")

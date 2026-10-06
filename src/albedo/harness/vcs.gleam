@@ -97,45 +97,42 @@ pub fn plan(jj: Bool, preview: Bool) -> List(Command) {
   }
 }
 
-const git_status = Command(
-  "git",
-  ["--no-optional-locks", "status", "--porcelain=v2", "--branch", "-z"],
-  AtRoot,
-)
+const git_status =
+  Command(
+    "git",
+    ["--no-optional-locks", "status", "--porcelain=v2", "--branch", "-z"],
+    AtRoot,
+  )
 
-const git_head = Command(
-  "git",
-  ["--no-optional-locks", "log", "-1", "--format=%h%x09%ct"],
-  AtRoot,
-)
+const git_head =
+  Command(
+    "git",
+    ["--no-optional-locks", "log", "-1", "--format=%h%x09%ct"],
+    AtRoot,
+  )
 
-const git_tracked = Command(
-  "git",
-  ["--no-optional-locks", "ls-files", "-z"],
-  AtDir,
-)
+const git_tracked =
+  Command("git", ["--no-optional-locks", "ls-files", "-z"], AtDir)
 
-const jj_at = Command(
-  "jj",
-  [
-    "log",
-    "-r",
-    "@",
-    "--no-graph",
-    "-T",
-    "change_id.shortest(4) ++ \"\\t\" ++ self.diff().files().len() ++ \"\\t\" ++ committer.timestamp().format(\"%s\")",
-    ..jj_flags
-  ],
-  AtRoot,
-)
+const jj_at =
+  Command(
+    "jj",
+    [
+      "log",
+      "-r",
+      "@",
+      "--no-graph",
+      "-T",
+      "change_id.shortest(4) ++ \"\\t\" ++ self.diff().files().len() ++ \"\\t\" ++ committer.timestamp().format(\"%s\")",
+      ..jj_flags
+    ],
+    AtRoot,
+  )
 
 const jj_tracked = Command("jj", ["file", "list", ".", ..jj_flags], AtDir)
 
-const jj_changes = Command(
-  "jj",
-  ["diff", "-r", "@", "--name-only", ..jj_flags],
-  AtRoot,
-)
+const jj_changes =
+  Command("jj", ["diff", "-r", "@", "--name-only", ..jj_flags], AtRoot)
 
 /// After every jj subcommand: never snapshot, never page, never colour.
 const jj_flags = ["--ignore-working-copy", "--no-pager", "--color=never"]

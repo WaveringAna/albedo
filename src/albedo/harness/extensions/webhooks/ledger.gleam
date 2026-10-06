@@ -80,7 +80,8 @@ pub type Delivery {
   )
 }
 
-const schema = "
+const schema =
+  "
 CREATE TABLE IF NOT EXISTS webhook_permissions (
  session TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
  agent_manage INTEGER NOT NULL DEFAULT 0 CHECK(agent_manage IN (0,1)),
@@ -162,7 +163,8 @@ fn letter(delivery: Delivery) -> mail.Letter {
   )
 }
 
-const columns = "id,session,name,enabled,signature_header,signature_prefix,revision"
+const columns =
+  "id,session,name,enabled,signature_header,signature_prefix,revision"
 
 fn decoder() -> decode.Decoder(Hook) {
   use id <- decode.field(0, decode.string)
@@ -628,7 +630,8 @@ fn receipt_decoder() -> decode.Decoder(Receipt) {
   ))
 }
 
-const receipt_columns = "d.id,d.hook,d.session,d.received_at,COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ',m.delivered_at/1000.0,'unixepoch'),d.delivered_at),COALESCE(m.attempts,d.attempts),COALESCE(m.last_error,d.last_error)"
+const receipt_columns =
+  "d.id,d.hook,d.session,d.received_at,COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ',m.delivered_at/1000.0,'unixepoch'),d.delivered_at),COALESCE(m.attempts,d.attempts),COALESCE(m.last_error,d.last_error)"
 
 /// Historical rows do not depend on the hook still existing.
 pub fn receipts(

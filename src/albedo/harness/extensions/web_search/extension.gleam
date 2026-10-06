@@ -59,7 +59,8 @@ pub fn extension(providers: List(web_search.Provider)) -> extension.Extension {
   )
 }
 
-const instructions = "await web_search(query, limit=8) searches the web. It returns a record with answer (a written answer, possibly empty) and sources, each with title, url, snippet, and published; printing it shows both. Use it for anything that may have changed since you were trained: releases, docs, changelogs, errors other people hit."
+const instructions =
+  "await web_search(query, limit=8) searches the web. It returns a record with answer (a written answer, possibly empty) and sources, each with title, url, snippet, and published; printing it shows both. Use it for anything that may have changed since you were trained: releases, docs, changelogs, errors other people hit."
 
 fn handle(
   providers: List(web_search.Provider),

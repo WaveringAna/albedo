@@ -10,7 +10,8 @@ import gleeunit/should
 
 /// Cells may not spawn processes themselves, but a library they call may:
 /// this defines one, `spawn`, compiled outside any cell.
-const library_spawn = "library = {}\nexec(compile('import subprocess\\ndef spawn(*args, **kwargs):\\n    return subprocess.Popen(*args, **kwargs)', 'fixture_library.py', 'exec'), library)\nspawn = library['spawn']\n"
+const library_spawn =
+  "library = {}\nexec(compile('import subprocess\\ndef spawn(*args, **kwargs):\\n    return subprocess.Popen(*args, **kwargs)', 'fixture_library.py', 'exec'), library)\nspawn = library['spawn']\n"
 
 pub fn owner_death_still_ends_reported_job_groups_test() -> Nil {
   let assert Ok(store) = work.start(":memory:")

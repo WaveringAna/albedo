@@ -23,7 +23,8 @@ pub type Job {
   )
 }
 
-const schema = "
+const schema =
+  "
 CREATE TABLE IF NOT EXISTS schedules (
  id INTEGER PRIMARY KEY AUTOINCREMENT,
  session TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
@@ -65,7 +66,8 @@ fn decoder() -> decode.Decoder(Job) {
   ))
 }
 
-const columns = "id,session,kind,prompt,next_at,every_seconds,revision,created_at,updated_at"
+const columns =
+  "id,session,kind,prompt,next_at,every_seconds,revision,created_at,updated_at"
 
 pub fn list(db: store.Store, session: String) -> Result(List(Job), String) {
   store.read(

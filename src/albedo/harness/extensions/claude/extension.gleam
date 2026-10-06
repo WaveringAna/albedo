@@ -26,7 +26,8 @@ const endpoint = "https://api.anthropic.com"
 
 const client_id = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 
-const scope = "org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload"
+const scope =
+  "org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload"
 
 pub fn extension() -> extension.Extension {
   extension.Extension(

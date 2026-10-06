@@ -106,7 +106,8 @@ fn address(value: String) -> Result(String, String) {
   }
 }
 
-const alphanumeric = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+const alphanumeric =
+  "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 
 fn normalise(path: String) -> String {
   let parts =

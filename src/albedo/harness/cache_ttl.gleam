@@ -144,7 +144,8 @@ type Config {
 
 const remote_file = "cache-ttl-remote.json"
 
-const default_url = "https://api.next.tangled.org/xrpc/org.tangled.temp.git.getBlob?repo=did%3Aplc%3Al7hhzcbqqvpcquau5waryzdu&ref=main&path=priv%2Fcache-ttl.json"
+const default_url =
+  "https://api.next.tangled.org/xrpc/org.tangled.temp.git.getBlob?repo=did%3Aplc%3Al7hhzcbqqvpcquau5waryzdu&ref=main&path=priv%2Fcache-ttl.json"
 
 const defaults = Config(Some(default_url), 24)
 

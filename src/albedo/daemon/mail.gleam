@@ -60,7 +60,8 @@ const pending_limit = 1000
 /// The largest body, matching the largest chat message.
 const body_limit = 1_048_576
 
-const schema = "
+const schema =
+  "
 CREATE TABLE IF NOT EXISTS mail (
  id TEXT PRIMARY KEY,
  recipient TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,

@@ -422,7 +422,8 @@ fn forced(model: Model, choice: Option(types.ToolChoice)) -> Option(String) {
   }
 }
 
-const forced_directive = "TOOL-ONLY TURN. This turn accepts a tool call and nothing else; a text reply here is discarded unread and you will be re-prompted. Emit the tool call now.\n"
+const forced_directive =
+  "TOOL-ONLY TURN. This turn accepts a tool call and nothing else; a text reply here is discarded unread and you will be re-prompted. Emit the tool call now.\n"
 
 /// The antigravity/hub client numbers each agent step within a trajectory.
 /// Deriving it from history keeps it stable across daemon restarts.

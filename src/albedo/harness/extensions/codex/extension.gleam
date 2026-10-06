@@ -23,7 +23,8 @@ const base_url = "https://chatgpt.com/backend-api"
 
 const client_id = "app_EMoamEEZ73f0CkXaXp7hrann"
 
-const scope = "openid profile email offline_access api.connectors.read api.connectors.invoke"
+const scope =
+  "openid profile email offline_access api.connectors.read api.connectors.invoke"
 
 type Access {
   Access(token: String, account_id: String)

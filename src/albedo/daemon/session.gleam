@@ -53,19 +53,22 @@ import gleam/string
 
 /// What a turn resumed after a daemon restart tells the model, and the
 /// transcript's marker for the restart.
-const restart_text = "albedo restarted while this turn was running. Tool calls that were in flight are marked interrupted with an unknown outcome; check their effects before retrying anything, then continue the task."
+const restart_text =
+  "albedo restarted while this turn was running. Tool calls that were in flight are marked interrupted with an unknown outcome; check their effects before retrying anything, then continue the task."
 
-const restart_note = Submission(
-  restart_text,
-  restart_text,
-  "daemon",
-  turn.Note("daemon restart"),
-  [],
-  None,
-  None,
-)
+const restart_note =
+  Submission(
+    restart_text,
+    restart_text,
+    "daemon",
+    turn.Note("daemon restart"),
+    [],
+    None,
+    None,
+  )
 
-const continue_prompt = "<system-notice>
+const continue_prompt =
+  "<system-notice>
 continue your unfinished task, by resuming the most recent intent.
 if interrupted mid-step, just pick it back up from where it stopped.
 never pause to summarize progress, re-confirm the plan, or ask whether to proceed.

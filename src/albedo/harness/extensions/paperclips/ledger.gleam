@@ -65,7 +65,8 @@ pub fn initialise(ledger: Store) -> Result(Nil, String) {
   storage.query(ledger, storage.exec(_, schema))
 }
 
-const schema = "
+const schema =
+  "
 CREATE TABLE IF NOT EXISTS paperclips (
  id INTEGER PRIMARY KEY AUTOINCREMENT,
  topic TEXT NOT NULL CHECK(topic IN ('harness','workflow','bug','user','other')),
@@ -84,7 +85,8 @@ CREATE TABLE IF NOT EXISTS paperclips (
 );
 "
 
-const columns = "id,title,topic,message,suggestion,reply,status,session,cwd,created_at,resolution,resolved_by,revision,updated_at"
+const columns =
+  "id,title,topic,message,suggestion,reply,status,session,cwd,created_at,resolution,resolved_by,revision,updated_at"
 
 pub fn topic_name(topic: Topic) -> String {
   case topic {

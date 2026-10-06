@@ -56,7 +56,8 @@ pub fn close(store: Store) -> Nil {
   storage.close(store)
 }
 
-const schema = "
+const schema =
+  "
 PRAGMA journal_mode=WAL;
 PRAGMA synchronous=FULL;
 PRAGMA foreign_keys=ON;
@@ -78,7 +79,8 @@ CREATE INDEX IF NOT EXISTS work_parent ON work(parent);
 CREATE INDEX IF NOT EXISTS work_session ON work(session);
 "
 
-const columns = "id,title,notes,status,parent,session,run,revision,cwd,created_at,updated_at"
+const columns =
+  "id,title,notes,status,parent,session,run,revision,cwd,created_at,updated_at"
 
 const legacy_cwd = "__albedo_legacy__"
 

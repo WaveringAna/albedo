@@ -547,7 +547,8 @@ pub type Sample {
   )
 }
 
-const schema = "
+const schema =
+  "
 CREATE TABLE IF NOT EXISTS quota_sample (
  id INTEGER PRIMARY KEY AUTOINCREMENT,
  account TEXT NOT NULL,
@@ -672,7 +673,8 @@ fn insert(db: sqlight.Connection, row: Row) -> Result(Nil, String) {
   )
 }
 
-const sample_columns = "id, account, provider, plan, limit_id, label, used_percent, window_label, window_seconds, resets_at, scope, status, error, observed_at, source"
+const sample_columns =
+  "id, account, provider, plan, limit_id, label, used_percent, window_label, window_seconds, resets_at, scope, status, error, observed_at, source"
 
 fn sample_decoder() -> decode.Decoder(Sample) {
   use id <- decode.field(0, decode.int)

@@ -14,7 +14,8 @@ import gleam/list
 import gleam/result
 import sqlight
 
-pub const schema = "CREATE TABLE IF NOT EXISTS images(hash TEXT PRIMARY KEY,data BLOB NOT NULL); CREATE TABLE IF NOT EXISTS migrations(name TEXT PRIMARY KEY,applied_at INTEGER NOT NULL);"
+pub const schema =
+  "CREATE TABLE IF NOT EXISTS images(hash TEXT PRIMARY KEY,data BLOB NOT NULL); CREATE TABLE IF NOT EXISTS migrations(name TEXT PRIMARY KEY,applied_at INTEGER NOT NULL);"
 
 /// Fetches a stored payload. Never call the result from inside `store.query`:
 /// the read is itself a store query, and the store runs one at a time.

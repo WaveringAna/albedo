@@ -119,7 +119,8 @@ pub fn context(session: String) -> Context {
 @external(erlang, "albedo_commands", "call")
 fn state_call(session: String, op: StateOp) -> Result(json.Json, String)
 
-const identifier_characters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_"
+const identifier_characters =
+  "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_"
 
 const digits = "0123456789"
 

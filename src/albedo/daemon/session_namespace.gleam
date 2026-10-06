@@ -13,7 +13,8 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 
-pub const lost_notice = "<system-note>The python kernel got reset and all variables are lost</system-note>"
+pub const lost_notice =
+  "<system-note>The python kernel got reset and all variables are lost</system-note>"
 
 pub type KernelObservation {
   KernelObservation(
@@ -103,7 +104,8 @@ fn preparation_stage(workspace: String, preparing: Bool) -> Option(String) {
   }
 }
 
-const lost_text = "python kernel restarted; earlier variables are gone, the transcript is intact"
+const lost_text =
+  "python kernel restarted; earlier variables are gone, the transcript is intact"
 
 /// An idle release can use the full budget; shutdown must not wait on a large namespace.
 pub const state_timeout = 30_000
@@ -345,7 +347,8 @@ fn resumed(
 
 /// What an ended cell's journal records: the swap stopped its kernel, so it
 /// can never deliver its own result.
-const interrupted_text = "[cell ended when its kernel was replaced; effects unknown]"
+const interrupted_text =
+  "[cell ended when its kernel was replaced; effects unknown]"
 
 /// Journal the session's started cells that never recorded an end as
 /// interrupted: the old kernel is stopped, so they ended with it. The pair

@@ -18,7 +18,8 @@ import gleam/set
 import gleam/string
 
 /// What a model that searches is asked to do with the query.
-pub const instructions = "Search the web to answer the question. Answer directly first, then the evidence: exact versions, dates, figures, and names, from primary sources where they exist. Say when sources disagree or the answer is uncertain. Cite every claim inline with its link."
+pub const instructions =
+  "Search the web to answer the question. Answer directly first, then the evidence: exact versions, dates, figures, and names, from primary sources where they exist. Say when sources disagree or the answer is uncertain. Cite every claim inline with its link."
 
 pub type Query {
   Query(

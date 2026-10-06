@@ -43,7 +43,8 @@ fn response(status: Int, body: String) -> Result(catalog.Response, Nil) {
   Ok(catalog.Response(status, [#("etag", "one")], bit_array.from_string(body)))
 }
 
-const upstream = "{\"models\":[{\"slug\":\"reasoner\",\"display_name\":\"Reasoner\",\"context_window\":200000,\"max_context_window\":400000,\"input_modalities\":[\"text\",false,\"image\"],\"supported_reasoning_levels\":[{\"effort\":\"high\"},{\"effort\":4},{\"effort\":\"low\"}],\"priority\":7},{\"slug\":\"\"},{\"slug\":false},{\"slug\":\"reasoner\",\"display_name\":\"\",\"context_window\":-4,\"max_context_window\":\"wrong\",\"input_modalities\":{},\"visibility\":null,\"priority\":\"wrong\"}]}"
+const upstream =
+  "{\"models\":[{\"slug\":\"reasoner\",\"display_name\":\"Reasoner\",\"context_window\":200000,\"max_context_window\":400000,\"input_modalities\":[\"text\",false,\"image\"],\"supported_reasoning_levels\":[{\"effort\":\"high\"},{\"effort\":4},{\"effort\":\"low\"}],\"priority\":7},{\"slug\":\"\"},{\"slug\":false},{\"slug\":\"reasoner\",\"display_name\":\"\",\"context_window\":-4,\"max_context_window\":\"wrong\",\"input_modalities\":{},\"visibility\":null,\"priority\":\"wrong\"}]}"
 
 pub fn upstream_rows_keep_valid_duplicates_and_independent_facts_test() -> Bool {
   let assert Ok(rows) =

@@ -10,7 +10,8 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 
-const default_base_url = "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1"
+const default_base_url =
+  "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1"
 
 pub fn catalog() -> extension.ModelCatalog {
   extension.ModelCatalog(

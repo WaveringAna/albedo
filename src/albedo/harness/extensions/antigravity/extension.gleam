@@ -53,11 +53,12 @@ pub type Endpoints {
   Endpoints(token: String, userinfo: String, cloud_code: String)
 }
 
-const google = Endpoints(
-  "https://oauth2.googleapis.com/token",
-  "https://www.googleapis.com/oauth2/v1/userinfo?alt=json",
-  catalog.endpoint,
-)
+const google =
+  Endpoints(
+    "https://oauth2.googleapis.com/token",
+    "https://www.googleapis.com/oauth2/v1/userinfo?alt=json",
+    catalog.endpoint,
+  )
 
 /// The Antigravity IDE's Google sign-in. Its loopback port is not allowlisted
 /// per port, so a busy 51121 moves to an ephemeral one.
