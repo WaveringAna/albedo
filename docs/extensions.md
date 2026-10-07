@@ -19,6 +19,16 @@ Plugins are typed contribution points and an extension can provide several kinds
 
 On installation/startup the host calls each extension’s initializer and applies schema migrations. When a session’s enabled extensions are composed, their plugins supply the context, tools, commands, strategies, and other session-facing capabilities. Services and model-provider capabilities are used by daemon-level code rather than being ordinary per-session tools.
 
+## Activation and reload
+
+For implementation and review rules, see [extension boundaries](../robot-docs/extensions.md#boundaries-to-preserve).
+
+Each extension activates as a complete bundle. A failed context loader, managed preparation, or capability collision removes all of that extension's contributions. Extensions that require it also become inactive. The runtime closes rejected managed resources; unrelated extensions keep working.
+
+Saving preferences changes the desired selection. Reload applies it to the session. If application fails, the desired choice remains saved for retry. A matching Python module set keeps the current kernel and rebinds its routes; a changed set stages a replacement and restores its namespace before retiring the old kernel. Failures before shutdown retain the old kernel. Failures after shutdown clear its handle instead of claiming rollback.
+
+Host routes accept a `host.Context` and request string. The context contains the store, session ID, and search providers from the loaded active composition. Global HTTP services use globally enabled extensions instead of session overrides. Search preferences rank or exclude eligible providers without enabling an inactive extension.
+
 ## Managed Plugins
 A managed plugin has a prepare function that receives the store (the daemon’s durable SQLite-backed store), session id, and workspace, and it returns a `Managed` value. That value can contribute context, instructions, tools, Python modules, routes, commands, and warnings, plus an event observer and a close callback.
 
@@ -35,7 +45,9 @@ pub fn extension() -> harness_extension.Extension {
     ["python"],
     [
       harness_extension.ToolPlugin(instructions, [], ["run"], [
-        #("jobs", route),
+        #("jobs", fn(context: host.Context, request) {
+          route(context.store, context.session, request)
+        }),
       ]),
     ],
     harness_extension.no_initialise,

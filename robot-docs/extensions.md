@@ -7,13 +7,37 @@ an extension is a named bundle of plugins. it can contribute any number of conte
 
 ## select extensions
 
-open `/extensions` in a session to inspect installed extensions and enable or disable them. selection is saved per session. enabling a compaction strategy disables the previously selected strategy in the same reload. to replace the active strategy, enable the new one; disabling the only active strategy is rejected. required extensions must stay enabled, and changes require an idle session.
+open `/extensions` in a session to inspect installed extensions and enable or disable them. selection is saved per session. enabling a compaction strategy disables the previously selected strategy in the same reload. to replace the active strategy, enable the new one; disabling the only active strategy is rejected. required extensions must stay enabled. applying changes requires an idle session.
 
-confirming a change reloads that session's workers, context, model tools, python bindings, and host routes. it does not restart the daemon or rewrite the conversation. changing the prompt prefix/tools busts prompt-cache reuse. python variables are saved and restored where possible; values that cannot be saved may be lost. the viewer warns before applying a change.
+Saving preferences changes the desired selection. Reload applies that selection to the session without restarting the daemon or rewriting the conversation. A failed apply leaves the desired choices saved for retry. The catalog reports desired and loaded revisions separately.
+
+The runtime keeps the Python kernel when its workspace and modules match, replacing its host routes with the new composition. Otherwise it snapshots the namespace, stages and restores a replacement, then shuts down the old kernel and publishes the new one. Snapshot or restore failure retains the old kernel. Individual values that cannot be serialized are reported as warnings. Failure after shutdown clears the dead kernel handle and loaded revision; the next open reconciles durable kernel records before booting again. Prompt and tool changes still update the session's prompt-cache policy.
 
 ## installed and enabled
 
 `extensions.Config(installed, default_enabled)` separates installed extensions from their default selection. multiple compaction strategies may be installed, but at most one can be enabled for a session. built-in sessions start with `rolling`; custom hosts can omit compaction. `runtime.start_with_config(database, config)` uses this selection; `runtime.start_with_extensions(database, installed)` enables every supplied extension.
+
+## boundaries to preserve
+
+Use these rules when adding or changing an extension:
+
+| Owner | Responsibilities |
+| --- | --- |
+| Daemon | HTTP admission, durable settings publication, session coordination, and client invalidation |
+| Runtime | Discovery, composition, kernel reuse or replacement, and managed-resource cleanup |
+| Session actor | Turn admission and execution, prompt-cache policy, and ordered extension events |
+| Extension | Its declared capabilities, bounded preparation, and cleanup of resources it allocates |
+
+- Add capabilities through typed plugins. Use the command state bridge or the supplied `Session` callbacks to reach session behavior; do not mutate session state from an extension.
+- Distinguish installed, desired, and loaded-active extensions. Installation controls schema setup and deletion cleanup. Global selection controls services. The loaded session composition controls its tools, commands, routes, observers, and compaction contributions.
+- Resolve cross-extension capabilities from the applicable active selection. Do not capture the whole registry in a handler at startup. Host routes receive their dependencies through `host.Context`; services receive daemon facts and callbacks through `extension.Daemon`.
+- Keep composition preparation and kernel lifecycle in the runtime. Call `apply_change` or `apply_desired` when the caller owns a live session, and adopt the surviving kernel from both success and failure. Do not add another snapshot-and-replace sequence in daemon handlers.
+- Preserve whole-extension activation and dependency closure. A failed bundle must not leave callable tools or managed resources behind. Initial open may omit broken bundles; explicit reload must report failure.
+- Keep saved intent after an apply failure. Before shutdown, the old live kernel may survive. After shutdown, clear its handle and reconcile durable records; a database transaction cannot roll back process termination.
+- Keep discovery read-only. Reading a catalog must not boot Python, prepare plugins, execute commands, or contact remote providers. HTTP encoding belongs in daemon adapters, outside runtime discovery.
+- Add an actor only for a real ordering, concurrency, or resource-lifetime requirement. An extension or plugin declaration alone does not need its own process.
+
+Before submitting a change, trace which selection its handlers use, who closes each allocated resource, and what state survives a failed reload. Cover externally visible behavior through `test/e2e`; use synthetic registry or deterministic fault tests only for cases the daemon API cannot reach. Update these rules when an intentional boundary change is part of the task.
 
 ## contribute plugins
 
@@ -41,9 +65,9 @@ A command may also be an extension's own **page**: set `page: True` and, run wit
 
 A command that tells the agent about a user's change uses the `Note(origin, display, text)` state operation: the note waits in the session's queue, reaches the model at its next step if a run is active or ahead of the user's next message if not, and never starts a turn by itself.
 
-`ManagedPlugin` prepares session-owned contributions together: context, tool instructions, tools, python modules, host routes, and commands. preparation returns a close callback. a failed replacement releases its prepared resources and leaves the old selection active; successful replacement releases the old resources after the swap. use this for connections or an immutable catalog shared by context and tools.
+`ManagedPlugin` prepares session-owned contributions together: context, tool instructions, tools, python modules, host routes, and commands. preparation returns a close callback. a failed preparation releases its resources and leaves the loaded composition active; successful replacement releases the old resources after application. use this for connections or an immutable catalog shared by context and tools.
 
-preparation runs inside the daemon-wide runtime actor, which every session's open, command catalog, refresh, and reload goes through, so `prepare` must stay local and fast. anything that has to reach another host answers from what it already knows and connects in the background, then calls `refresh(reason)` if what it contributes turned out different. [`mcp`](mcp.md) does this with saved catalogues; its Python binding is documented there.
+preparation runs in workers admitted by the runtime actor, so slow preparation does not block unrelated runtime observations. Keep `prepare` bounded and release partially allocated resources before returning an error. anything that has to reach another host answers from what it already knows and connects in the background, then calls `refresh(reason)` if what it contributes turned out different. [`mcp`](mcp.md) does this with saved catalogues; its Python binding is documented there.
 
 a managed contribution also hears its session through `observe(session, event)`, which runs inside the session actor and so must only send and return; it keeps hearing it after the idle sweep releases the kernel, since the composition stays prepared for the next open. events arrive in order: `CallSent` for each successful turn call as it went out (request, prefix identity, usage, cache marks, profile, endpoint, protocol, timing), `TurnEnded(cancelled)`, `Compacted` after a forced compaction, `Stirred` for any new activity, and `Restored(call, pings)` when an idle session that still waits on work comes back after a daemon restart with its last turn call rebuilt (robot-docs/cache-warming.md). the `extension.Session` handle it comes with names the session and offers `call(request, prefix)`: any `types.Request`, sent on the session's upstream as exclusive work that queues submissions behind it, records a provider request row of kind `background` under `prefix`, and never reaches the transcript or the stream. it blocks its caller until the call ends and fails at once while another run holds the session or its kernel is released. `extension.empty()` is the contribution with nothing in it, for record updates; `awaited()` answers whether work that will wake the session is under way: a background job not started with `run(..., service=True)`, or an open child (or one beneath it) in a turn or idle on such a job of its own; a job a kernel cannot list does not count. [`warm`](cache-warming.md) is built on these seams alone. `refresh(reason)` asks the session to prepare its extensions again and records `reason` as a note, with the same capability-changed turn a `/reload` leaves; it answers at once and the session declines while a turn runs, so an extension asks again when `TurnEnded` arrives. [`mcp`](mcp.md) uses it to bring back a server that was offline, or one whose catalogue changed.
 
@@ -51,7 +75,11 @@ a managed contribution also hears its session through `observe(session, event)`,
 
 the daemon starts without an extension it cannot run and says so. `extension.install` quarantines one whose name is blank or already taken, whose requirement is not installed (cascading to what needed it), whose initialiser or schema callback fails or raises, or that the default selection cannot run (a requirement it does not enable, duplicate capabilities, a second compaction strategy). only storage the host owns stops the boot. a quarantined extension is in no session's selection, is listed by `/extensions` with its reason in the `quarantined` field, and any attempt to enable it is refused with that reason.
 
-a broken extension loses only itself. a context plugin that will not load, a managed plugin that fails or raises while preparing, and a contribution whose tool, command, python module, or route another extension already claims are all left out of the session with a warning the client shows as a note; `extension.inactive(composition)` names them. enabling one of them explicitly still fails, with the same reason, and leaves the previous selection running. observers run inside the session actor and close callbacks run at teardown, so both are guarded: a crash is logged against its extension and the session carries on.
+An extension activates as a complete bundle. If its context fails, a managed plugin cannot prepare, or its capabilities collide, none of its contributions remain active. Dependents also become inactive until every requirement works. Unrelated extensions continue running. Registry order decides which complete bundle wins a collision; accepted contributions retain static-before-managed order.
+
+Initial session opening tolerates failed bundles and reports their warnings. Explicit reload requires every selected extension to work. `composition.inactive` reports failed bundles, while `composition.extensions` returns only active ones and `composition.requested` retains the selection used for preparation. Rejected resources close exactly once, in reverse preparation order within each cleanup. Observers and close callbacks are guarded so a crash does not prevent other callbacks from running.
+
+Host routes receive `host.Context(store, session, searches)` and the request string. The runtime captures eligible search providers from the loaded active composition; handlers do not read the registry to bypass session selection. Native discovery and composition revision calculation live in `harness/runtime/catalog`; HTTP encoders stay in the daemon.
 
 `ModelsPlugin` supplies catalogued model facts and provider model lists. `ModelProviderPlugin` declares its models.dev namespace and resolves a tagged saved profile into an `Upstream`: a `stream` function over albedo's request, event, and turn types, plus the endpoint, replay protocol, and an `explain` for failures. A provider with its own wire format encodes an `openai_api.Exchange` and passes it with its own `stream.Reducer` to `openai_api.exchange`, which keeps HTTP, SSE framing, limits, and callbacks shared; `antigravity` does this. `LoginPlugin` supplies a browser sign-in that the daemon runs for every client; see [model authentication](auth.md#sign-in-api).
 
@@ -80,7 +108,7 @@ Fixed-length and chunked uploads are supported. Invalid lengths or ambiguous
 framing return `400`; bodies above the applicable limit return `413`.
 Refusals before body consumption close the connection.
 
-`extension.Daemon` gives the service `home`, `upstream(profile, model, session)` to resolve a saved profile outside any session, catalog `models`, and the daemon's `sessions`. Set `ALBEDO_PORT` in the daemon's environment to pin its port so a service has a stable base url; the default is a free port chosen at start. Built-in dependencies keep these layers explicit: `codex -> openai -> models`. See [models](models.md) and [model authentication](auth.md).
+`extension.Daemon` gives the service `home`, `upstream(profile, model, session)` to resolve a saved profile outside any session, catalog `models`, the daemon's `sessions`, and `searches()` to resolve eligible global search providers. Set `ALBEDO_PORT` in the daemon's environment to pin its port so a service has a stable base url; the default is a free port chosen at start. Built-in dependencies keep these layers explicit: `codex -> openai -> models`. See [models](models.md) and [model authentication](auth.md).
 
 `CompactionPlugin` supplies a history strategy; `FoldPlugin` supplies stored folds any strategy reads through `context.prior`; see [compaction](compaction.md). one enabled compaction strategy owns the request-history view in a built-in session. a strategy receives chronological history and must preserve tool call/result associations; it must not replace the durable transcript.
 
