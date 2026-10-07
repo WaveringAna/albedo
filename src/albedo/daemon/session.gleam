@@ -3130,7 +3130,7 @@ fn start_queued(state: State) -> State {
     Some(_) -> state
     None ->
       case
-        state.blocked_until != 0 && clock.monotonic_ms() < state.blocked_until
+        session_state.retry_pending(state.blocked_until, clock.monotonic_ms())
       {
         True -> state
         False -> start_waiting(state)

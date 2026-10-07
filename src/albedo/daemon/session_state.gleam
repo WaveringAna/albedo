@@ -268,8 +268,16 @@ fn announce_status(state: State(message)) -> State(message) {
   }
 }
 
+/// A zero deadline means no retry wait, even when monotonic time is negative.
+pub fn retry_pending(deadline: Int, monotonic_now: Int) -> Bool {
+  deadline != 0 && monotonic_now < deadline
+}
+
 pub fn current_status(state: State(message)) -> session_activity.Status {
-  let blocking = case state.blocked_until > usage.now(), state.steering {
+  let blocking = case
+    retry_pending(state.blocked_until, clock.monotonic_ms()),
+    state.steering
+  {
     True, [first, ..] ->
       option.then(first.operation_id, fn(id) {
         operations.input_outcome(runtime.ledger(state.host), id)

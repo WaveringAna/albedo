@@ -473,6 +473,12 @@ class BlockedOperationsTests(InputScenario):
             time.sleep(0.03)
         else:
             self.fail("waiting inputs were never blocked")
+        with self.app.api(f"/sessions/{session}?tail=0") as response:
+            snapshot = json.load(response)
+        self.assertEqual(
+            snapshot["status"]["blocking_reason"]["detail"],
+            self.receipt(session, inputs[0][0])["blocking_reason"]["detail"],
+        )
         rejected_id = operation_id()
         rejected = {"kind": "message", "text": "blocked overflow"}
         with self.assertRaises(urllib.error.HTTPError) as failure:
