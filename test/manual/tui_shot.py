@@ -4,8 +4,13 @@ TUI tests write what a view draws to $ALBEDO_SHOT_DIR/<name>.ans (see shot in
 cli/internal/tui/shot_test.go). This turns every .ans in a directory, or the
 files named, into a .svg and a .png beside it. Needs rsvg-convert.
 
-    ALBEDO_SHOT_DIR=/tmp/shots go -C cli test ./internal/tui -run TestShot
+    ALBEDO_SHOT_DIR=/tmp/shots go -C cli test ./internal/tui -run TestShotGallery
     python3 test/manual/tui_shot.py /tmp/shots
+
+For a directory it also makes contact sheets per screen, sheet-<screen>-<page>.png,
+six states to a sheet so a model can read them (images over 2000px a side are
+refused). The screen is the file name up to the first "-". Screens register
+their states with registerShots in the tests.
 """
 
 import html
@@ -16,6 +21,8 @@ import unicodedata
 from pathlib import Path
 
 BG, FG = "#1e1e2e", "#cdd6f4"
+SHEET_TILES = 6  # two columns of three: a sheet stays under a model's 2000px edge limit
+FONTS = ["/System/Library/Fonts/Menlo.ttc", "/System/Library/Fonts/Monaco.ttf"]
 BASIC = {
     30: "#45475a", 31: "#f38ba8", 32: "#a6e3a1", 33: "#f9e2af",
     34: "#89b4fa", 35: "#cba6f7", 36: "#94e2d5", 37: "#bac2de",
@@ -147,11 +154,35 @@ def main(args: list[str]) -> int:
     if not sources:
         print(__doc__, file=sys.stderr)
         return 2
+    sheets: dict[tuple[Path, str], list[Path]] = {}
     for source in sources:
         svg, png = source.with_suffix(".svg"), source.with_suffix(".png")
-        svg.write_text(to_svg(source.read_text(encoding="utf-8")), encoding="utf-8")
-        subprocess.run(["rsvg-convert", str(svg), "-o", str(png)], check=True)
-        print(png)
+        if not png.exists() or png.stat().st_mtime < source.stat().st_mtime:
+            svg.write_text(to_svg(source.read_text(encoding="utf-8")), encoding="utf-8")
+            subprocess.run(["rsvg-convert", str(svg), "-o", str(png)], check=True)
+        screen = re.split("-", source.stem, maxsplit=1)[0]
+        sheets.setdefault((source.parent, screen), []).append(png)
+    for (folder, screen), pngs in sheets.items():
+        font = next((f for f in FONTS if Path(f).exists()), None)
+        montage = ["magick", "montage", "-pointsize", "16", "-fill", "#cdd6f4"]
+        montage += ["-font", font, "-label", "%t"] if font else ["-label", ""]
+        montage += [
+            "-background",
+            "#11111b",
+            "-tile",
+            "2x3",
+            "-geometry",
+            "970x>+12+12",
+            "-depth",
+            "8",
+        ]
+        for page, start in enumerate(range(0, len(pngs), SHEET_TILES), 1):
+            sheet = folder / f"sheet-{screen}-{page}.png"
+            subprocess.run(
+                [*montage, *map(str, pngs[start : start + SHEET_TILES]), str(sheet)],
+                check=True,
+            )
+            print(sheet)
     return 0
 
 

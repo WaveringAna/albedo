@@ -4,8 +4,10 @@
 package tui
 
 import (
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 )
 
@@ -46,17 +48,48 @@ func shot(t *testing.T, name, view string) {
 	}
 }
 
-func TestShotExtensions(t *testing.T) {
+// A shot size is a terminal to draw every state in.
+type shotSize struct {
+	name          string
+	width, height int
+}
+
+var shotSizes = []shotSize{{"wide", 120, 30}, {"narrow", 70, 20}}
+
+// A shot state is one situation of a screen: how it draws in a terminal of
+// the given size.
+type shotState struct {
+	name string
+	view func(width, height int) string
+}
+
+var shotScreens = map[string][]shotState{}
+
+// registerShots lists the states a screen can be in, from an init in the
+// screen's shot_<screen>_test.go, so the gallery draws all of them in every
+// size. Cover what a person would want to look at: the list, a filter typed,
+// each confirmation, loading, empty, failure, a notice, a form open.
+func registerShots(screen string, states ...shotState) {
+	shotScreens[screen] = append(shotScreens[screen], states...)
+}
+
+// TestShotGallery draws every registered state at every size to
+// $ALBEDO_SHOT_DIR/<screen>--<state>--<size>.ans. Without the variable it
+// still draws them, which keeps each state buildable. Run one screen with
+// -run TestShotGallery/<screen>.
+func TestShotGallery(t *testing.T) {
 	shotTerminal(t)
-	m := NewExtensionPickerModel(nil, "s")
-	m.SetSize(120, 28)
-	m, _ = m.Update(extensionsLoadedMsg{Gen: m.Generation, Extensions: []ExtensionItem{
-		{Name: "view", Description: "show the model its changes as highlighted images", Enabled: true, Overridden: true, Plugins: []string{"tool"}, Tools: []string{"view_diff"}},
-		{Name: "bash", Description: "run shell commands", Enabled: true, GlobalEnabled: true, Plugins: []string{"tool", "context"}, Context: true},
-		{Name: "webhooks", Description: "signed inbound requests wake a session"},
-		{Name: "mcp", Description: "tool servers", GlobalEnabled: true, Quarantined: "failed to start"},
-	}})
-	shot(t, "extensions-wide", m.View())
-	m.SetSize(70, 20)
-	shot(t, "extensions-narrow", m.View())
+	for _, screen := range slices.Sorted(maps.Keys(shotScreens)) {
+		t.Run(screen, func(t *testing.T) {
+			for _, state := range shotScreens[screen] {
+				for _, size := range shotSizes {
+					view := state.view(size.width, size.height)
+					if view == "" {
+						t.Errorf("%s/%s drew nothing at %s", screen, state.name, size.name)
+					}
+					shot(t, screen+"--"+state.name+"--"+size.name, view)
+				}
+			}
+		})
+	}
 }
