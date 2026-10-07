@@ -28,6 +28,7 @@ import (
 
 	"albedo/cli/internal/config"
 	"albedo/cli/internal/daemon"
+	"albedo/cli/internal/localdaemon"
 )
 
 // suite is the process-wide fixture: one daemon, one provider server, one
@@ -143,7 +144,7 @@ func bootSuite() (func() (string, bool), error) {
 		return teardown, err
 	}
 	suite.conn, err = daemon.Attach(context.Background(), snap, func(ctx context.Context) (daemon.ConnectionSnapshot, error) {
-		return daemon.Rediscover(ctx, home)
+		return localdaemon.Rediscover(ctx, home)
 	})
 	if err != nil {
 		return teardown, err

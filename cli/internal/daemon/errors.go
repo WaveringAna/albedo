@@ -40,9 +40,9 @@ func (e *APIError) Error() string {
 
 func (e *APIError) Unwrap() error { return e.Cause }
 
-// daemonRestarting reports whether the daemon refused because it is going
+// DaemonRestarting reports whether the daemon refused because it is going
 // away or not serving yet, so the one that serves next may answer.
-func (e *APIError) daemonRestarting() bool {
+func (e *APIError) DaemonRestarting() bool {
 	return e.Code == "daemon_stopping" || e.Code == "daemon_unavailable"
 }
 

@@ -1,6 +1,7 @@
-package daemon
+package localdaemon
 
 import (
+	"albedo/cli/internal/daemon"
 	"context"
 	"encoding/json"
 	"errors"
@@ -31,8 +32,8 @@ const (
 
 type Discovery struct {
 	Kind     DiscoveryKind
-	Snapshot ConnectionSnapshot
-	Server   ServerInfo
+	Snapshot daemon.ConnectionSnapshot
+	Server   daemon.ServerInfo
 }
 
 type LocalOptions struct {
@@ -90,7 +91,7 @@ func Discover(ctx context.Context, homeDir string) (Discovery, error) {
 	if len(data) > 64*1024 {
 		return fail(InvalidDiscovery, errors.New("daemon.json exceeds 64 KiB"))
 	}
-	var snapshot ConnectionSnapshot
+	var snapshot daemon.ConnectionSnapshot
 	if err := json.Unmarshal(data, &snapshot); err != nil {
 		return fail(InvalidDiscovery, err)
 	}
@@ -98,8 +99,8 @@ func Discover(ctx context.Context, homeDir string) (Discovery, error) {
 		return fail(InvalidDiscovery, errors.New("daemon.json requires a positive PID, valid port, token and protocol version"))
 	}
 	probeCtx, cancel := context.WithTimeout(ctx, discoveryProbeTimeout)
-	connection := NewConnection(snapshot, nil)
-	server, err := ProbeServer(probeCtx, connection)
+	connection := daemon.NewConnection(snapshot, nil)
+	server, err := daemon.ProbeServer(probeCtx, connection)
 	connection.HTTPClient().CloseIdleConnections()
 	cancel()
 	if err != nil {
@@ -109,16 +110,16 @@ func Discover(ctx context.Context, homeDir string) (Discovery, error) {
 		if !processAlive(snapshot.Pid) && endpointRefused(err) {
 			return Discovery{Kind: Stale, Snapshot: snapshot}, nil
 		}
-		if api, ok := errors.AsType[*APIError](err); ok {
+		if api, ok := errors.AsType[*daemon.APIError](err); ok {
 			if api.StatusCode == http.StatusUnauthorized || api.StatusCode == http.StatusForbidden {
 				return fail(AuthenticationFailed, err)
 			}
-			if api.StatusCode == http.StatusNotFound && snapshot.Version != ProtocolVersion {
-				return fail(IncompatibleDaemon, &CompatibilityError{Version: snapshot.Version})
+			if api.StatusCode == http.StatusNotFound && snapshot.Version != daemon.ProtocolVersion {
+				return fail(IncompatibleDaemon, &daemon.CompatibilityError{Version: snapshot.Version})
 			}
 			return fail(UnhealthyDaemon, err)
 		}
-		if _, ok := errors.AsType[*ProtocolError](err); ok {
+		if _, ok := errors.AsType[*daemon.ProtocolError](err); ok {
 			return fail(UnhealthyDaemon, err)
 		}
 		return fail(UnreachableDaemon, err)
@@ -132,11 +133,11 @@ func Discover(ctx context.Context, homeDir string) (Discovery, error) {
 	}
 	snapshot.InstanceID, snapshot.Digest = server.InstanceID, server.Digest
 	discovery := Discovery{Kind: Running, Snapshot: snapshot, Server: server}
-	return discovery, CheckCompatible(server)
+	return discovery, daemon.CheckCompatible(server)
 }
 
 // Rediscover waits for a verified replacement endpoint without starting one.
-func Rediscover(ctx context.Context, homeDir string) (ConnectionSnapshot, error) {
+func Rediscover(ctx context.Context, homeDir string) (daemon.ConnectionSnapshot, error) {
 	for range 20 {
 		discovery, err := Discover(ctx, homeDir)
 		if err == nil && discovery.Kind == Running {
@@ -145,25 +146,25 @@ func Rediscover(ctx context.Context, homeDir string) (ConnectionSnapshot, error)
 		if err != nil {
 			var local *LocalError
 			if !errors.As(err, &local) || (local.Kind != UnreachableDaemon && local.Kind != UnhealthyDaemon) {
-				return ConnectionSnapshot{}, err
+				return daemon.ConnectionSnapshot{}, err
 			}
-			var api *APIError
-			if errors.As(err, &api) && !api.daemonRestarting() {
-				return ConnectionSnapshot{}, err
+			var api *daemon.APIError
+			if errors.As(err, &api) && !api.DaemonRestarting() {
+				return daemon.ConnectionSnapshot{}, err
 			}
-			if _, ok := errors.AsType[*ProtocolError](err); ok {
-				return ConnectionSnapshot{}, err
+			if _, ok := errors.AsType[*daemon.ProtocolError](err); ok {
+				return daemon.ConnectionSnapshot{}, err
 			}
 		}
 		timer := time.NewTimer(100 * time.Millisecond)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			return ConnectionSnapshot{}, ctx.Err()
+			return daemon.ConnectionSnapshot{}, ctx.Err()
 		case <-timer.C:
 		}
 	}
-	return ConnectionSnapshot{}, &LocalError{Kind: UnreachableDaemon, HomeDir: homeDir, Cause: errors.New("could not rediscover a ready daemon; check whether it is running")}
+	return daemon.ConnectionSnapshot{}, &LocalError{Kind: UnreachableDaemon, HomeDir: homeDir, Cause: errors.New("could not rediscover a ready daemon; check whether it is running")}
 }
 
 func resolveDaemonExecutable(path string) (string, error) {
@@ -263,16 +264,16 @@ func acquireLauncher(ctx context.Context, homeDir string) (*os.File, error) {
 }
 
 // Launch serializes local startup without weakening the daemon's home lock.
-func Launch(parent context.Context, options LocalOptions) (*Connection, error) {
+func Launch(parent context.Context, options LocalOptions) (*daemon.Connection, error) {
 	return launchLocal(parent, options, nil)
 }
 
 // Upgrade stops only the exact authenticated protocol 3 daemon approved by the caller.
-func Upgrade(parent context.Context, options LocalOptions, approved ConnectionSnapshot) (*Connection, error) {
+func Upgrade(parent context.Context, options LocalOptions, approved daemon.ConnectionSnapshot) (*daemon.Connection, error) {
 	return launchLocal(parent, options, &approved)
 }
 
-func launchLocal(parent context.Context, options LocalOptions, approved *ConnectionSnapshot) (*Connection, error) {
+func launchLocal(parent context.Context, options LocalOptions, approved *daemon.ConnectionSnapshot) (*daemon.Connection, error) {
 	ctx, cancel := context.WithTimeout(parent, startupTimeout)
 	defer cancel()
 	if err := ctx.Err(); err != nil {
@@ -302,21 +303,21 @@ func launchLocal(parent context.Context, options LocalOptions, approved *Connect
 			return nil, discoveryErr
 		}
 		if discovery.Kind == Running {
-			return Attach(ctx, discovery.Snapshot, func(ctx context.Context) (ConnectionSnapshot, error) { return Rediscover(ctx, home) })
+			return daemon.Attach(ctx, discovery.Snapshot, func(ctx context.Context) (daemon.ConnectionSnapshot, error) { return Rediscover(ctx, home) })
 		}
 	} else {
-		var compatible *CompatibilityError
+		var compatible *daemon.CompatibilityError
 		if discoveryErr != nil && !errors.As(discoveryErr, &compatible) {
 			return nil, discoveryErr
 		}
 		if discovery.Kind != Running || discovery.Snapshot != *approved {
 			return nil, &LocalError{Kind: TargetChanged, HomeDir: home, Cause: errors.New("the daemon changed after approval; review the current daemon before restarting")}
 		}
-		if discovery.Server.Protocol != ProtocolVersion {
-			return nil, &CompatibilityError{Version: discovery.Server.Protocol}
+		if discovery.Server.Protocol != daemon.ProtocolVersion {
+			return nil, &daemon.CompatibilityError{Version: discovery.Server.Protocol}
 		}
-		connection := NewConnection(discovery.Snapshot, nil)
-		stopErr := StopDaemon(ctx, connection)
+		connection := daemon.NewConnection(discovery.Snapshot, nil)
+		stopErr := daemon.StopDaemon(ctx, connection)
 		connection.HTTPClient().CloseIdleConnections()
 		if stopErr != nil {
 			return nil, stopErr
@@ -337,7 +338,7 @@ func launchLocal(parent context.Context, options LocalOptions, approved *Connect
 	return startLocal(ctx, cmd, options)
 }
 
-func startLocal(ctx context.Context, cmd *exec.Cmd, options LocalOptions) (*Connection, error) {
+func startLocal(ctx context.Context, cmd *exec.Cmd, options LocalOptions) (*daemon.Connection, error) {
 	logPath := filepath.Join(options.HomeDir, "daemon.log")
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 	if err != nil {
@@ -362,13 +363,13 @@ func startLocal(ctx context.Context, cmd *exec.Cmd, options LocalOptions) (*Conn
 	for {
 		discovery, err := Discover(ctx, options.HomeDir)
 		if err == nil && discovery.Kind == Running {
-			return Attach(ctx, discovery.Snapshot, func(ctx context.Context) (ConnectionSnapshot, error) { return Rediscover(ctx, options.HomeDir) })
+			return daemon.Attach(ctx, discovery.Snapshot, func(ctx context.Context) (daemon.ConnectionSnapshot, error) { return Rediscover(ctx, options.HomeDir) })
 		}
 		if err != nil && ctx.Err() == nil {
 			var local *LocalError
-			var api *APIError
+			var api *daemon.APIError
 			unreachable := errors.As(err, &local) && local.Kind == UnreachableDaemon
-			starting := errors.As(err, &api) && api.daemonRestarting()
+			starting := errors.As(err, &api) && api.DaemonRestarting()
 			if !unreachable && !starting {
 				return nil, err
 			}

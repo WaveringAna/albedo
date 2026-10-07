@@ -21,6 +21,7 @@ import (
 
 	"albedo/cli/internal/app"
 	"albedo/cli/internal/daemon"
+	"albedo/cli/internal/localdaemon"
 	"albedo/cli/internal/tui"
 )
 
@@ -274,7 +275,7 @@ func TestCoreAuthenticationRefusalRecoversBeforeCreation(t *testing.T) {
 	snapshot := conn(t).Snapshot()
 	snapshot.Token = "expired-client-token"
 	stale := daemon.NewConnection(snapshot, func(ctx context.Context) (daemon.ConnectionSnapshot, error) {
-		return daemon.Rediscover(ctx, suite.home)
+		return localdaemon.Rediscover(ctx, suite.home)
 	})
 	t.Cleanup(stale.HTTPClient().CloseIdleConnections)
 	workspace := t.TempDir()

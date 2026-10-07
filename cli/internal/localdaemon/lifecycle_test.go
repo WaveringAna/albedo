@@ -1,8 +1,9 @@
 // Discovery must distinguish an unsafe live endpoint from an absent daemon.
 // Malformed records and deliberate health failures require controlled peers.
-package daemon
+package localdaemon
 
 import (
+	"albedo/cli/internal/daemon"
 	"context"
 	"encoding/json"
 	"errors"
@@ -17,7 +18,9 @@ import (
 	"time"
 )
 
-func writeDiscovery(t *testing.T, home string, snapshot ConnectionSnapshot) {
+const readyServer = `{"instance_id":"instance-a","protocol":3,"state":"ready","capabilities":{"durable_inputs":1,"session_replay":2,"collection_invalidation":1,"tool_progress":1},"build":"verified-build","digest":"verified-digest","extensions":[],"quota":[],"notices":[]}`
+
+func writeDiscovery(t *testing.T, home string, snapshot daemon.ConnectionSnapshot) {
 	t.Helper()
 	data, err := json.Marshal(snapshot)
 	if err != nil {
@@ -54,7 +57,7 @@ func TestUpgradeCancellationAfterShutdownDoesNotLaunchReplacement(t *testing.T) 
 		}
 	}))
 	defer server.Close()
-	snapshot := ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port, Pid: os.Getpid(), Token: "token", Version: ProtocolVersion, Build: "verified-build", Digest: "verified-digest", InstanceID: "instance-a"}
+	snapshot := daemon.ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port, Pid: os.Getpid(), Token: "token", Version: daemon.ProtocolVersion, Build: "verified-build", Digest: "verified-digest", InstanceID: "instance-a"}
 	writeDiscovery(t, home, snapshot)
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
@@ -103,7 +106,7 @@ func TestDiscoveryPreservesUnsafeRecordAndLiveHealthFailures(t *testing.T) {
 		}))
 		defer server.Close()
 		home := t.TempDir()
-		snapshot := ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port, Pid: os.Getpid(), Token: "token", Version: ProtocolVersion, Build: "verified-build", InstanceID: "instance-a"}
+		snapshot := daemon.ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port, Pid: os.Getpid(), Token: "token", Version: daemon.ProtocolVersion, Build: "verified-build", InstanceID: "instance-a"}
 		writeDiscovery(t, home, snapshot)
 		// The live resource supplies verified build metadata missing from the record.
 		snapshot.Digest = "verified-digest"
@@ -124,7 +127,7 @@ func TestDiscoveryPreservesUnsafeRecordAndLiveHealthFailures(t *testing.T) {
 			}))
 			defer server.Close()
 			home := t.TempDir()
-			writeDiscovery(t, home, ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port, Pid: os.Getpid(), Token: "token", Version: ProtocolVersion})
+			writeDiscovery(t, home, daemon.ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port, Pid: os.Getpid(), Token: "token", Version: daemon.ProtocolVersion})
 			_, err := Discover(t.Context(), home)
 			failure, ok := errors.AsType[*LocalError](err)
 			expected := UnhealthyDaemon
@@ -135,10 +138,10 @@ func TestDiscoveryPreservesUnsafeRecordAndLiveHealthFailures(t *testing.T) {
 				t.Fatalf("health failure was treated as absence: %v", err)
 			}
 			if status == http.StatusOK {
-				if _, ok := errors.AsType[*ProtocolError](err); !ok {
+				if _, ok := errors.AsType[*daemon.ProtocolError](err); !ok {
 					t.Fatalf("malformed health lost its protocol failure: %v", err)
 				}
-			} else if api, ok := errors.AsType[*APIError](err); !ok || api.StatusCode != status {
+			} else if api, ok := errors.AsType[*daemon.APIError](err); !ok || api.StatusCode != status {
 				t.Fatalf("health failure lost its HTTP status: %v", err)
 			}
 		})
@@ -160,7 +163,7 @@ func TestDiscoveryRejectsChangedBuildDigest(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 	home := t.TempDir()
-	writeDiscovery(t, home, ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port, Pid: os.Getpid(), Token: "token", Version: ProtocolVersion, Build: "verified-build", Digest: "different-digest"})
+	writeDiscovery(t, home, daemon.ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port, Pid: os.Getpid(), Token: "token", Version: daemon.ProtocolVersion, Build: "verified-build", Digest: "different-digest"})
 	found, err := Discover(t.Context(), home)
 	local, ok := errors.AsType[*LocalError](err)
 	if !ok || local.Kind != InvalidDiscovery || found.Kind == Running {
@@ -181,7 +184,7 @@ func TestDiscoveryExplainsOlderProtocolWithoutTreatingItAsReady(t *testing.T) {
 			}))
 			t.Cleanup(server.Close)
 			home := t.TempDir()
-			snapshot := ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port, Pid: os.Getpid(), Token: "token", Version: 2}
+			snapshot := daemon.ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port, Pid: os.Getpid(), Token: "token", Version: 2}
 			writeDiscovery(t, home, snapshot)
 			found, err := Discover(t.Context(), home)
 			failure, ok := errors.AsType[*LocalError](err)
@@ -196,15 +199,54 @@ func TestDiscoveryExplainsOlderProtocolWithoutTreatingItAsReady(t *testing.T) {
 				t.Fatalf("old discovery record authorized attachment or lost its failure: %+v, %v", found, err)
 			}
 			if status == http.StatusNotFound {
-				compatibility, ok := errors.AsType[*CompatibilityError](err)
+				compatibility, ok := errors.AsType[*daemon.CompatibilityError](err)
 				if !ok || compatibility.Version != 2 || !strings.Contains(err.Error(), "matching client (albedo daemon --stop)") {
 					t.Fatalf("missing actionable protocol mismatch: %v", err)
 				}
 			}
 			data, readErr := os.ReadFile(filepath.Join(home, "daemon.json"))
-			var retained ConnectionSnapshot
+			var retained daemon.ConnectionSnapshot
 			if readErr != nil || json.Unmarshal(data, &retained) != nil || retained != snapshot {
 				t.Fatal("discovery changed the old daemon record")
+			}
+		})
+	}
+}
+
+func TestDiscoveryAndLauncherWaitHonorCancellation(t *testing.T) {
+	for _, health := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stalled_health_%t", health), func(t *testing.T) {
+			home := t.TempDir()
+			var operation func(context.Context) error
+			if health {
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { <-r.Context().Done() }))
+				defer server.Close()
+				writeDiscovery(t, home, daemon.ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port, Pid: os.Getpid(), Token: "t", Version: daemon.ProtocolVersion})
+				operation = func(ctx context.Context) error { _, err := Discover(ctx, home); return err }
+			} else {
+				if processAlive(0) {
+					t.Skip("advisory locking requires Unix")
+				}
+				executable := filepath.Join(t.TempDir(), "unused-daemon")
+				if err := os.WriteFile(executable, []byte("#!/bin/sh\nexit 99\n"), 0700); err != nil {
+					t.Fatal(err)
+				}
+				t.Setenv("ALBEDO_DAEMON", executable)
+				lock, err := acquireLauncher(t.Context(), home)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer lock.Close()
+				operation = func(ctx context.Context) error { _, err := Launch(ctx, LocalOptions{HomeDir: home}); return err }
+			}
+			ctx, cancel := context.WithTimeout(t.Context(), 30*time.Millisecond)
+			defer cancel()
+			started := time.Now()
+			if err := operation(ctx); !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("deadline lost: %v", err)
+			}
+			if time.Since(started) > 300*time.Millisecond {
+				t.Fatal("discovery or launcher wait ignored caller deadline")
 			}
 		})
 	}

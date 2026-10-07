@@ -15,6 +15,7 @@ import (
 	"albedo/cli/internal/cli"
 	"albedo/cli/internal/config"
 	"albedo/cli/internal/daemon"
+	"albedo/cli/internal/localdaemon"
 	"albedo/cli/internal/storage"
 	"albedo/cli/internal/terminal"
 )
@@ -36,8 +37,8 @@ func run(args []string) error {
 	if os.Getenv("ALBEDO_NO_BROWSER") == "" {
 		term.OpenBrowser = config.OpenBrowser
 	}
-	options := daemon.LocalOptions{HomeDir: home, ProjectRoot: findProjectRoot()}
-	rediscover := func(ctx context.Context) (daemon.ConnectionSnapshot, error) { return daemon.Rediscover(ctx, home) }
+	options := localdaemon.LocalOptions{HomeDir: home, ProjectRoot: findProjectRoot()}
+	rediscover := func(ctx context.Context) (daemon.ConnectionSnapshot, error) { return localdaemon.Rediscover(ctx, home) }
 	var chosen *daemon.Connection
 	application := &app.Service{
 		Connect: func(ctx context.Context) (*daemon.Connection, error) {
@@ -47,14 +48,14 @@ func run(args []string) error {
 			if chosen != nil {
 				return chosen, nil
 			}
-			found, err := daemon.Discover(ctx, home)
+			found, err := localdaemon.Discover(ctx, home)
 			if err != nil {
-				if _, compatibleFailure := errors.AsType[*daemon.CompatibilityError](err); !compatibleFailure || found.Kind != daemon.Running {
+				if _, compatibleFailure := errors.AsType[*daemon.CompatibilityError](err); !compatibleFailure || found.Kind != localdaemon.Running {
 					return nil, err
 				}
 			}
-			if found.Kind != daemon.Running {
-				chosen, err = daemon.Launch(ctx, options)
+			if found.Kind != localdaemon.Running {
+				chosen, err = localdaemon.Launch(ctx, options)
 				return chosen, err
 			}
 			// An unknown protocol cannot safely authorize the shutdown operation.
@@ -72,20 +73,20 @@ func run(args []string) error {
 					return nil, err
 				}
 				if restart {
-					return daemon.Upgrade(ctx, options, found.Snapshot)
+					return localdaemon.Upgrade(ctx, options, found.Snapshot)
 				}
 			}
 			chosen, err = daemon.Attach(ctx, found.Snapshot, rediscover)
 			return chosen, err
 		},
 		Existing: func(ctx context.Context) (*daemon.Connection, error) {
-			found, err := daemon.Discover(ctx, home)
+			found, err := localdaemon.Discover(ctx, home)
 			if err != nil {
-				if _, compatibleFailure := errors.AsType[*daemon.CompatibilityError](err); !compatibleFailure || found.Kind != daemon.Running {
+				if _, compatibleFailure := errors.AsType[*daemon.CompatibilityError](err); !compatibleFailure || found.Kind != localdaemon.Running {
 					return nil, err
 				}
 			}
-			if found.Kind != daemon.Running {
+			if found.Kind != localdaemon.Running {
 				return nil, nil
 			}
 			if found.Server.Protocol != daemon.ProtocolVersion {
@@ -96,15 +97,15 @@ func run(args []string) error {
 	}
 	store := &storage.Service{
 		Command: func(ctx context.Context, args ...string) (*exec.Cmd, error) {
-			return daemon.LocalCommand(ctx, options, args...)
+			return localdaemon.LocalCommand(ctx, options, args...)
 		},
 		Home: home, Now: time.Now,
 		Running: func() (bool, error) {
-			found, err := daemon.Discover(ctx, home)
-			if _, compatibilityFailure := errors.AsType[*daemon.CompatibilityError](err); compatibilityFailure && found.Kind == daemon.Running {
+			found, err := localdaemon.Discover(ctx, home)
+			if _, compatibilityFailure := errors.AsType[*daemon.CompatibilityError](err); compatibilityFailure && found.Kind == localdaemon.Running {
 				return true, nil
 			}
-			return found.Kind == daemon.Running, err
+			return found.Kind == localdaemon.Running, err
 		},
 		DeleteSessions: application.DeleteSessions,
 		OnlineReport:   application.StorageReport,

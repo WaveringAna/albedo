@@ -1,6 +1,6 @@
 //go:build unix
 
-package daemon
+package localdaemon
 
 import (
 	"errors"

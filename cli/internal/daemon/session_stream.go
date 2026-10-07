@@ -142,7 +142,7 @@ func (c *ChatClient) readStream(ctx context.Context, scanner *bufio.Scanner, onB
 				return streamFailure(StreamProtocol, fieldError("failure reason"))
 			}
 			failure := &APIError{Code: reason.Code, Message: reason.Detail}
-			if failure.daemonRestarting() {
+			if failure.DaemonRestarting() {
 				// older daemons end streams this way while they shut down
 				return streamFailure(StreamTransient, failure)
 			}
