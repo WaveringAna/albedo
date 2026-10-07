@@ -6,6 +6,7 @@ Run commands from the repository root inside `nix develop`.
 
 | Tool | Invocation and prerequisites | Result |
 | --- | --- | --- |
+| TUI screenshots | `ALBEDO_SHOT_DIR=/tmp/shots go -C cli test ./internal/tui -run TestShot`, then `python3 test/manual/tui_shot.py /tmp/shots` | Needs `rsvg-convert`. Draws each `TestShot*` screen (what the real `View()` emits, in a catppuccin terminal's colors) as a PNG beside its `.ans`, to look at before and after a layout change. Add a screen by calling `shot(t, name, view)` from a test after `shotTerminal(t)`. |
 | Packaged binary | `python3 test/manual/nix_package_smoke.py /absolute/path/to/bin/albedo` | Checks the installed client and daemon outside the checkout with a restricted PATH. Fails on an invalid package. |
 | Remote kernel | `python3 test/manual/remote_ssh.py user@host` | Requires key authentication and remote Python 3.11 or newer. Exercises staging, kernel boot, tool calls, and connection reuse. |
 | Kernel memory | `python3 test/manual/kernel_memory_benchmark.py --scale 1 10 --output /tmp/kernel-memory.json` | Measures boot and workload memory. Writes measurements for comparison, rather than imposing a universal memory threshold. |
