@@ -1,3 +1,4 @@
+import albedo/openai_api/fields
 import albedo/openai_api/reasoning
 import albedo/openai_api/replay
 import albedo/openai_api/types
@@ -73,27 +74,79 @@ pub fn feed(
           types.InvalidEvent("invalid chat JSON: " <> string.inspect(error))
         }),
       )
-      let error_decoder =
-        decode.optionally_at(
-          ["error", "message"],
-          None,
-          decode.map(decode.string, Some),
-        )
-      case decode.run(value, error_decoder) {
-        Ok(Some(message)) -> Error(types.ProviderError(message))
-        _ -> {
-          use chunk <- result.try(
-            decode.run(value, chunk_decoder())
-            |> result.map_error(fn(error) {
-              types.InvalidEvent(
-                "invalid chat completion chunk: " <> string.inspect(error),
-              )
-            }),
-          )
-          apply_chunk(state, chunk)
-        }
-      }
+      use chunk <- result.try(case text_chunk(value) {
+        Ok(chunk) -> Ok(chunk)
+        Error(Nil) -> decode_chunk(value)
+      })
+      apply_chunk(state, chunk)
     }
+  }
+}
+
+fn decode_chunk(value: dynamic.Dynamic) -> Result(Chunk, types.Error) {
+  let error_decoder =
+    decode.optionally_at(
+      ["error", "message"],
+      None,
+      decode.map(decode.string, Some),
+    )
+  case decode.run(value, error_decoder) {
+    Ok(Some(message)) -> Error(types.ProviderError(message))
+    _ ->
+      decode.run(value, chunk_decoder())
+      |> result.map_error(fn(error) {
+        types.InvalidEvent(
+          "invalid chat completion chunk: " <> string.inspect(error),
+        )
+      })
+  }
+}
+
+/// The chunk most of a stream is, read without the decoders: one choice at
+/// index 0, no finish, usage or error, and a delta of only text, refusal
+/// and reasoning text. Error(Nil) for anything else, which they then read.
+fn text_chunk(value: dynamic.Dynamic) -> Result(Chunk, Nil) {
+  use <- require(
+    fields.missing(value, "error") && fields.missing(value, "usage"),
+  )
+  use id <- result.try(fields.optional_string(value, "id"))
+  use choices <- result.try(fields.list(value, "choices"))
+  use choice <- result.try(case choices {
+    [choice] -> Ok(choice)
+    _ -> Error(Nil)
+  })
+  use index <- result.try(fields.int(choice, "index"))
+  use <- require(index == 0 && fields.missing(choice, "finish_reason"))
+  use delta <- result.try(fields.object(choice, "delta"))
+  use <- require(fields.empty_except(delta, text_fields))
+  use role <- result.try(fields.optional_string(delta, "role"))
+  use <- require(role == None || role == Some("assistant"))
+  use content <- result.try(fields.optional_string(delta, "content"))
+  use refusal <- result.try(fields.optional_string(delta, "refusal"))
+  use reasoning <- result.map(reasoning.read_text(delta))
+  let delta = Delta(role, non_empty(content), non_empty(refusal), reasoning, [])
+  Chunk(id, [Choice(0, delta, None)], None)
+}
+
+const text_fields = [
+  "role",
+  "content",
+  "refusal",
+  "reasoning",
+  "reasoning_content",
+]
+
+fn require(condition: Bool, next: fn() -> Result(a, Nil)) -> Result(a, Nil) {
+  case condition {
+    True -> next()
+    False -> Error(Nil)
+  }
+}
+
+fn non_empty(value: Option(String)) -> Option(String) {
+  case value {
+    Some("") -> None
+    other -> other
   }
 }
 
@@ -165,13 +218,7 @@ fn object_fields(
 ) -> Result(Dict(String, dynamic.Dynamic), Dict(String, dynamic.Dynamic))
 
 fn non_empty_string() -> decode.Decoder(Option(String)) {
-  decode.optional(decode.string)
-  |> decode.map(fn(value) {
-    case value {
-      Some("") -> None
-      other -> other
-    }
-  })
+  decode.optional(decode.string) |> decode.map(non_empty)
 }
 
 fn tool_fragment_decoder() -> decode.Decoder(ToolFragment) {

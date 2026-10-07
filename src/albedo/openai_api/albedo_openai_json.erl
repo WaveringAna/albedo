@@ -1,5 +1,8 @@
 -module(albedo_openai_json).
 -export([encode/1, null/0, flatten/1, data_url/2, base64_string/1, semantically_empty/1, object_fields/1]).
+-export([event/1, string_field/2, optional_string_field/2, int_field/2,
+         optional_int_field/2, int_field_or/3, list_field/2, object_field/2,
+         missing/2, empty_except/2]).
 
 encode(Value) -> json:encode(Value).
 
@@ -74,3 +77,84 @@ base64_clean(<<C, Rest/binary>>)
     base64_clean(Rest);
 base64_clean(<<>>) -> true;
 base64_clean(_) -> false.
+
+%% Field reads over objects json:decode produced, whose strings are already
+%% valid UTF-8. Each answers {error, nil} for any shape its decode equivalent
+%% would not take as is; the caller then runs that decoder for the verdict.
+
+%% An event object and its string `type`.
+event(Data) ->
+    try json:decode(Data) of
+        #{<<"type">> := Kind} = Event when is_binary(Kind) -> {ok, {Kind, Event}};
+        _ -> {error, nil}
+    catch
+        error:_ -> {error, nil}
+    end.
+
+string_field(Object, Key) ->
+    case Object of
+        #{Key := Value} when is_binary(Value) -> {ok, Value};
+        _ -> {error, nil}
+    end.
+
+int_field(Object, Key) ->
+    case Object of
+        #{Key := Value} when is_integer(Value) -> {ok, Value};
+        _ -> {error, nil}
+    end.
+
+list_field(Object, Key) ->
+    case Object of
+        #{Key := Value} when is_list(Value) -> {ok, Value};
+        _ -> {error, nil}
+    end.
+
+object_field(Object, Key) ->
+    case Object of
+        #{Key := Value} when is_map(Value) -> {ok, Value};
+        _ -> {error, nil}
+    end.
+
+%% An absent or null field is none.
+optional_string_field(Object, Key) when is_map(Object) ->
+    case Object of
+        #{Key := null} -> {ok, none};
+        #{Key := Value} when is_binary(Value) -> {ok, {some, Value}};
+        #{Key := _} -> {error, nil};
+        _ -> {ok, none}
+    end;
+optional_string_field(_, _) -> {error, nil}.
+
+optional_int_field(Object, Key) when is_map(Object) ->
+    case Object of
+        #{Key := null} -> {ok, none};
+        #{Key := Value} when is_integer(Value) -> {ok, {some, Value}};
+        #{Key := _} -> {error, nil};
+        _ -> {ok, none}
+    end;
+optional_int_field(_, _) -> {error, nil}.
+
+%% An absent field is Default; a present one must be an integer.
+int_field_or(Object, Key, Default) when is_map(Object) ->
+    case Object of
+        #{Key := Value} when is_integer(Value) -> {ok, Value};
+        #{Key := _} -> {error, nil};
+        _ -> {ok, Default}
+    end;
+int_field_or(_, _, _) -> {error, nil}.
+
+missing(Object, Key) ->
+    case Object of
+        #{Key := null} -> true;
+        #{Key := _} -> false;
+        _ -> true
+    end.
+
+%% Whether every field outside Keys is null or an empty list.
+empty_except(Object, Keys) when is_map(Object) ->
+    maps:fold(fun
+        (_, null, Empty) -> Empty;
+        (_, [], Empty) -> Empty;
+        (Key, _, Empty) -> Empty andalso lists:member(Key, Keys)
+    end, true, Object);
+empty_except(_, _) -> false.

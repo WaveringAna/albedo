@@ -1,3 +1,4 @@
+import albedo/openai_api/fields
 import albedo/openai_api/replay
 import albedo/openai_api/types
 import gleam/dict.{type Dict}
@@ -50,17 +51,18 @@ pub fn feed(
   let State(terminal:, ..) = state
   case terminal {
     True -> Error(types.InvalidEvent("response event after terminal event"))
-    False -> {
-      use envelope <- result.try(
-        json.parse(data, envelope_decoder())
-        |> result.map_error(fn(error) {
-          types.InvalidEvent(
-            "invalid Responses event: " <> string.inspect(error),
-          )
-        }),
-      )
-      dispatch(state, envelope)
-    }
+    False ->
+      case fields.event(data) {
+        Ok(#(kind, value)) -> dispatch(state, Envelope(kind, value))
+        Error(Nil) ->
+          json.parse(data, envelope_decoder())
+          |> result.map_error(fn(error) {
+            types.InvalidEvent(
+              "invalid Responses event: " <> string.inspect(error),
+            )
+          })
+          |> result.try(dispatch(state, _))
+      }
   }
 }
 
@@ -137,7 +139,13 @@ fn text_delta(
     decode.success(#(output_index, item_id, content_index, delta))
   }
   let context = "response.output_text.delta"
-  use #(output_index, item_id, content_index, delta) <- result.try(run(
+  let fast = {
+    use #(output_index, item_id, delta) <- result.try(delta_fields(value))
+    use content_index <- result.map(fields.int_or(value, "content_index", 0))
+    #(output_index, item_id, content_index, delta)
+  }
+  use #(output_index, item_id, content_index, delta) <- result.try(read(
+    fast,
     value,
     decoder,
     context,
@@ -165,10 +173,26 @@ fn arguments_delta(
     decode.success(#(output_index, item_id, delta))
   }
   let context = "response.function_call_arguments.delta"
-  use #(output_index, item_id, delta) <- result.try(run(value, decoder, context))
+  use #(output_index, item_id, delta) <- result.try(read(
+    delta_fields(value),
+    value,
+    decoder,
+    context,
+  ))
   use index <- result.try(resolve_index(state, output_index, item_id, context))
   let name = dict.get(state.call_names, index) |> result.unwrap("")
   Ok(#(state, [types.ArgumentsDelta(index, name, delta)], None))
+}
+
+/// A delta event's `output_index`, `item_id` and `delta`, read without a
+/// decoder when they have the types the delta decoders require.
+fn delta_fields(
+  value: dynamic.Dynamic,
+) -> Result(#(Option(Int), Option(String), String), Nil) {
+  use output_index <- result.try(fields.optional_int(value, "output_index"))
+  use item_id <- result.try(fields.optional_string(value, "item_id"))
+  use delta <- result.map(fields.string(value, "delta"))
+  #(output_index, item_id, delta)
 }
 
 /// A function call's item opens with its name, before any of its arguments.
@@ -295,7 +319,8 @@ fn reasoning_delta(
     use delta <- decode.field("delta", decode.string)
     decode.success(types.ThinkingDelta(delta))
   }
-  use event <- result.try(run(value, decoder, context))
+  let fast = fields.string(value, "delta") |> result.map(types.ThinkingDelta)
+  use event <- result.try(read(fast, value, decoder, context))
   Ok(#(state, [event], None))
 }
 
@@ -431,6 +456,19 @@ fn run(
   |> result.map_error(fn(error) {
     types.InvalidEvent(context <> ": " <> string.inspect(error))
   })
+}
+
+/// `fast` when it read the event, else what `decoder` makes of it.
+fn read(
+  fast: Result(a, Nil),
+  value: dynamic.Dynamic,
+  decoder: decode.Decoder(a),
+  context: String,
+) -> Result(a, types.Error) {
+  case fast {
+    Ok(read) -> Ok(read)
+    Error(Nil) -> run(value, decoder, context)
+  }
 }
 
 fn record_id(

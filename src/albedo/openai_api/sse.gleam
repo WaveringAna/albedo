@@ -162,13 +162,12 @@ fn complete_line(
   parser: Parser,
   events: List(Event),
 ) -> Result(#(Parser, List(Event)), Error) {
-  use line <- result.try(
-    parser.fragments
-    |> list.reverse
-    |> bit_array.concat
-    |> utf8
-    |> result.replace_error(InvalidUtf8),
-  )
+  // A line that arrived in one chunk, as most do, is used without a copy.
+  let bytes = case parser.fragments {
+    [fragment] -> fragment
+    fragments -> fragments |> list.reverse |> bit_array.concat
+  }
+  use line <- result.try(utf8(bytes) |> result.replace_error(InvalidUtf8))
   // Comments are free; every other line counts toward the event budget.
   let bytes = parser.event_bytes + parser.line_bytes
   let parser = Parser(..parser, fragments: [], line_bytes: 0, pending_cr: False)
@@ -195,6 +194,7 @@ fn complete_line(
 fn dispatch(parser: Parser, events: List(Event)) -> #(Parser, List(Event)) {
   let events = case parser.data {
     [] -> events
+    [data] -> [Event(parser.name, data), ..events]
     data -> [
       Event(parser.name, data |> list.reverse |> string.join("\n")),
       ..events

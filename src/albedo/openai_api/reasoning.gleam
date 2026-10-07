@@ -1,5 +1,6 @@
 //// Compatible-provider reasoning fields. Preserve their names and opaque metadata.
 
+import albedo/openai_api/fields
 import albedo/openai_api/types
 import gleam/dict.{type Dict}
 import gleam/dynamic.{type Dynamic}
@@ -48,6 +49,22 @@ pub fn decoder() -> decode.Decoder(Delta) {
       |> decode.map(option.unwrap(_, [])),
   )
   decode.success(Delta(text, details))
+}
+
+/// What `decoder` reads from an object without `reasoning_details`, read
+/// directly; Error(Nil) when a text field is neither a string nor null.
+pub fn read_text(object: Dynamic) -> Result(Delta, Nil) {
+  use reasoning <- result.try(fields.optional_string(object, "reasoning"))
+  use content <- result.map(fields.optional_string(object, "reasoning_content"))
+  let text =
+    [#("reasoning", reasoning), #("reasoning_content", content)]
+    |> list.fold(dict.new(), fn(text, field) {
+      case field {
+        #(key, Some(value)) -> dict.insert(text, key, value)
+        #(_, None) -> text
+      }
+    })
+  Delta(text, [])
 }
 
 fn detail_decoder() -> decode.Decoder(DetailDelta) {

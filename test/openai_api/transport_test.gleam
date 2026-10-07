@@ -1,7 +1,10 @@
-//// Hard process death cannot execute callback cleanup; real socket ownership
-//// and receive deadlines require native transport probes beyond daemon output.
+//// Hard process death cannot execute callback cleanup; real socket ownership,
+//// receive deadlines, and responses split at every byte require native
+//// transport probes beyond daemon output.
 
 import albedo/openai_api/transport
+import gleam/bit_array
+import gleam/list
 import gleam/string_tree
 import gleeunit/should
 
@@ -11,6 +14,8 @@ type Owner
 
 type Mode {
   CloseDelimited
+  ChunkedTrickle
+  ContentLength
 }
 
 @external(erlang, "albedo_openai_transport_test_server", "start")
@@ -41,10 +46,32 @@ pub fn close_delimited_transport_releases_owned_sockets_test() -> Nil {
   let idle = start(CloseDelimited)
   let assert Ok(connection) =
     transport.open(url(idle), [], string_tree.new(), 2000)
-  let assert Ok(transport.Headers(200, _, False)) =
+  let assert Ok(#(transport.Headers(200, _, False), connection)) =
     transport.receive(connection)
   transport.receive(connection) |> should.equal(Error(transport.TimedOut))
   transport.close(connection)
   await_closed(idle) |> should.be_true
   stop(idle)
+}
+
+pub fn plain_http_bodies_end_where_their_framing_says_test() -> Nil {
+  use mode <- list.each([ChunkedTrickle, ContentLength])
+  let fixture = start(mode)
+  let assert Ok(connection) =
+    transport.open(url(fixture), [], string_tree.new(), 2000)
+  let assert Ok(#(transport.Headers(200, _, False), connection)) =
+    transport.receive(connection)
+  body(connection, <<>>) |> should.equal(<<"hello world, all">>)
+  transport.close(connection)
+  stop(fixture)
+}
+
+fn body(connection: transport.Connection, read: BitArray) -> BitArray {
+  let assert Ok(#(transport.Data(bytes, final), connection)) =
+    transport.receive(connection)
+  let read = bit_array.append(read, bytes)
+  case final {
+    True -> read
+    False -> body(connection, read)
+  }
 }

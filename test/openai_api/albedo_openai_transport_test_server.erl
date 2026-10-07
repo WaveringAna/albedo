@@ -37,7 +37,7 @@ owner_after_headers(Fixture) ->
     Parent = self(),
     {Owner, Monitor} = spawn_monitor(fun() ->
         {ok, Connection} = albedo_openai_transport:open(url(Fixture), [], <<>>, 2000),
-        {ok, {headers, 200, _, false}} =
+        {ok, {{headers, 200, _, false}, _}} =
             albedo_openai_transport:receive_message(Connection),
         Parent ! {transport_owner_ready, self()},
         receive stop -> albedo_openai_transport:close(Connection) end
@@ -124,6 +124,19 @@ respond(Socket, stream, Owner) ->
     ]),
     receive after 40 -> ok end,
     ok = gen_tcp:send(Socket, <<"3\r\ntwo\r\n0\r\n\r\n">>),
+    wait_for_close(Socket, Owner);
+respond(Socket, chunked_trickle, Owner) ->
+    ok = inet:setopts(Socket, [{nodelay, true}]),
+    Response = <<"HTTP/1.1 100 Continue\r\n\r\n",
+        "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n",
+        "Transfer-Encoding: chunked\r\n\r\n",
+        "5;name=value\r\nhello\r\n1\r\n \r\nA\r\nworld, all\r\n",
+        "0\r\nx-trailer: yes\r\n\r\n">>,
+    [begin ok = gen_tcp:send(Socket, <<Byte>>), receive after 1 -> ok end end
+     || <<Byte>> <= Response],
+    wait_for_close(Socket, Owner);
+respond(Socket, content_length, Owner) ->
+    ok = gen_tcp:send(Socket, <<"HTTP/1.1 200 OK\r\ncontent-length: 16\r\n\r\nhello world, all">>),
     wait_for_close(Socket, Owner);
 respond(Socket, close_delimited, Owner) ->
     ok = gen_tcp:send(Socket, [

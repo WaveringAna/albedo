@@ -23,9 +23,10 @@ pub fn open(
   timeout_ms: Int,
 ) -> Result(Connection, Error)
 
-/// Wait for the next response headers or body chunk.
+/// Wait for the next response headers or body chunk; the connection it
+/// returns reads the one after.
 @external(erlang, "albedo_openai_transport", "receive_message")
-pub fn receive(connection: Connection) -> Result(Message, Error)
+pub fn receive(connection: Connection) -> Result(#(Message, Connection), Error)
 
 /// Close the connection and discard only its pending transport messages.
 @external(erlang, "albedo_openai_transport", "close")
