@@ -106,27 +106,14 @@ fn swap(ranked: List(Ranked), index: Int) -> List(Ranked) {
 }
 
 fn save(ranked: List(Ranked)) -> Result(Nil, String) {
-  let home = settings.home()
-  use _ <- result.try(set_entry(
-    home,
-    "web-search",
-    "order",
-    list.map(ranked, fn(entry) { entry.provider.name }),
-  ))
-  set_entry(
-    home,
-    "web-search",
-    "off",
-    ranked
-      |> list.filter(fn(entry) { !entry.on })
-      |> list.map(fn(entry) { entry.provider.name }),
+  save_selection(
+    settings.home(),
+    list.map(ranked, fn(entry) { #(entry.provider.name, entry.on) }),
   )
 }
 
-@external(erlang, "albedo_extension_settings", "set_entry")
-fn set_entry(
+@external(erlang, "albedo_web_search_settings", "save")
+fn save_selection(
   home: String,
-  section: String,
-  key: String,
-  value: List(String),
+  selected: List(#(String, Bool)),
 ) -> Result(Nil, String)

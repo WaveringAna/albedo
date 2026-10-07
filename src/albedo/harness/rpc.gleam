@@ -1,7 +1,7 @@
 //// The kernel's host-call envelope: a request `{"method", "args"}` in, and
 //// `{"ok": true, "value"}` or `{"ok": false, "code", "message"}` out.
 
-import albedo/daemon/store
+import albedo/harness/host
 import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
 import gleam/json.{type Json}
@@ -11,9 +11,8 @@ import gleam/string
 
 /// Hands each call to the route whose namespace prefixes its method.
 pub fn handle(
-  routes: List(#(String, fn(store.Store, String, String) -> String)),
-  store: store.Store,
-  session: String,
+  routes: List(host.Route),
+  context: host.Context,
   request: String,
 ) -> String {
   let found = {
@@ -24,7 +23,7 @@ pub fn handle(
     list.find(routes, fn(route) { string.starts_with(method, route.0 <> ".") })
   }
   case found {
-    Ok(#(_, run)) -> run(store, session, request)
+    Ok(#(_, run)) -> run(context, request)
     Error(_) -> refuse("unavailable", "extension capability unavailable")
   }
 }

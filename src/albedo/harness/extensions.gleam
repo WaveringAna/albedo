@@ -34,17 +34,13 @@ import albedo/harness/extensions/warm/extension as warm
 import albedo/harness/extensions/web_search/extension as web_search
 import albedo/harness/extensions/webhooks/extension as webhooks
 import albedo/harness/extensions/work/extension as work
-import gleam/list
 
 pub type Config {
   Config(extensions: List(extension.Extension), default_enabled: List(String))
 }
 
 pub fn defaults() -> Config {
-  let config = installed()
-  // Web search runs on what the other extensions can search with.
-  let search = web_search.extension(extension.searches(config.extensions))
-  Config(..config, extensions: list.append(config.extensions, [search]))
+  installed()
 }
 
 fn installed() -> Config {
@@ -91,6 +87,7 @@ fn installed() -> Config {
       webhooks.extension(),
       warm.extension(),
       exa.extension(),
+      web_search.extension(),
     ],
     [
       "python", "run", "work", "mail", "agents", "schedule", "files", "memory",

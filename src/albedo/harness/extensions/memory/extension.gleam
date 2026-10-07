@@ -5,6 +5,7 @@
 //// A workspace writes only its own memory and reads its whole link group.
 
 import albedo/harness/extension
+import albedo/harness/host
 import albedo/harness/links
 import albedo/harness/rpc
 import gleam/dynamic/decode
@@ -39,7 +40,8 @@ pub fn extension() -> extension.Extension {
         use context <- result.try(load(links.group(store, workspace)))
         Ok(
           extension.Managed(..extension.empty(), context: context, routes: [
-            #("memory", fn(store, _, request) {
+            #("memory", fn(context: host.Context, request) {
+              let store = context.store
               handle(workspace, links.group(store, workspace), request)
             }),
           ]),

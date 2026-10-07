@@ -498,6 +498,7 @@ fn daemon(
     },
     fn(provider, endpoint) { runtime.model_names(host, provider, endpoint) },
     fn() { actor.call(registry, 5000, List) },
+    fn() { runtime.global(host) |> result.map(extension.searches) },
   )
 }
 

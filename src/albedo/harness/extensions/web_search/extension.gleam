@@ -7,6 +7,7 @@ import albedo/harness/command
 import albedo/harness/extension
 import albedo/harness/extensions/web_search/order
 import albedo/harness/extensions/web_search/service
+import albedo/harness/host
 import albedo/harness/rpc
 import albedo/harness/web_search
 import gleam/bool
@@ -17,15 +18,15 @@ import gleam/list
 import gleam/result
 import gleam/string
 
-pub fn extension(providers: List(web_search.Provider)) -> extension.Extension {
+pub fn extension() -> extension.Extension {
   extension.Extension(
     "web-search",
     "Web search for the model through the signed-in providers, in the order chosen on /web-search",
     ["python"],
     [
       extension.ToolPlugin(instructions, [], ["web_search"], [
-        #("web_search", fn(_, session, request) {
-          handle(providers, session, request)
+        #("web_search", fn(context: host.Context, request) {
+          handle(context.searches, context.session, request)
         }),
       ]),
       extension.CommandPlugin([
@@ -51,7 +52,9 @@ pub fn extension(providers: List(web_search.Provider)) -> extension.Extension {
       extension.ServicePlugin(
         extension.Service(
           fn(_, _) { extension.Admission(extension.DaemonToken, 4096) },
-          fn(_, path, req, _) { service.handle(providers, path, req) },
+          fn(daemon, path, req, _) {
+            service.handle(daemon.searches(), path, req)
+          },
         ),
       ),
     ],

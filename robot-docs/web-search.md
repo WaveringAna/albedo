@@ -23,7 +23,9 @@ each search notes a `web` activity in the cell's trace: the query as its `target
 
 ## order
 
-the `web-search` extension collects every installed `SearchPlugin` when the daemon composes its extensions (`extensions.defaults`), so a provider is offered whether or not its extension is enabled; a signed-out one simply fails and is passed over. the order is a preference with fallback, not a race: the top provider searches alone, and the query falls back to the next one only when it fails or finds nothing (signed out, rate limited, an error, or an answer that never searched). providers below one that answered are never called. when every provider that is on fails, the call raises with every reason, `name: reason`, in order.
+Session searches use the `SearchPlugin` contributions of the loaded active extensions. Saving a different selection takes effect after reload. The daemon's `/web-search` page lists globally enabled providers. Session overrides can select a different provider set. Quarantined or inactive extensions cannot supply providers.
+
+The order is a preference within that eligible set. The top provider searches alone; the query falls back to the next one only when it fails or finds nothing. Providers below one that answered are never called. When every eligible provider that is on fails, the call raises with each reason in order.
 
 the order is global, in `extensions.json`:
 
@@ -31,6 +33,6 @@ the order is global, in `extensions.json`:
 { "web-search": { "order": ["claude", "codex", "antigravity", "exa"], "off": ["exa"] } }
 ```
 
-names `order` leaves out follow it in registry order; names in `off` are never tried. `/web-search` is the page for it: `u` and `d` move the selected provider, `t` turns it on or off, and each change writes both lists. the service is `GET /extensions/web-search/providers` and `POST /extensions/web-search/providers/{name}` with `{"change": "up" | "down" | "toggle"}`; a move past either end changes nothing. see [OpenAPI](../docs/openapi.yaml).
+names `order` leaves out follow it in registry order; names in `off` are never tried. `/web-search` is the page for it: `u` and `d` move the selected provider, `t` turns it on or off, and each change writes both lists under one settings lock. Providers hidden by extension selection keep their saved positions and exclusions. the service is `GET /extensions/web-search/providers` and `POST /extensions/web-search/providers/{name}` with `{"change": "up" | "down" | "toggle"}`; a move past either end changes nothing. see [OpenAPI](../docs/openapi.yaml).
 
 tests: `test/e2e/web_search_test.py`.

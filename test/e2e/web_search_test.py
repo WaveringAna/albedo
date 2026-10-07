@@ -132,6 +132,57 @@ class WebSearchTests(unittest.TestCase):
         with app.api(f"{COLLECTION}/{name}", {"change": change}) as response:
             return json.load(response)["resource"]["value"]
 
+    def patch(self, app, route, body):
+        with app.api(route) as response:
+            etag = response.headers["ETag"]
+        with app.api(
+            route, body, method="PATCH", headers={"If-Match": etag}
+        ) as response:
+            return json.load(response)
+
+    def test_session_provider_selection_is_loaded_and_isolated(self):
+        app = self.start([FAILING, SEARCH, SEARCH])
+        disabled = app.session()
+        self.patch(
+            app,
+            f"/sessions/{disabled}?view=configuration",
+            {"selection": {"extensions": {"exa": False}}},
+        )
+        with app.api(f"/sessions/{disabled}/reload", {"target": "session"}) as response:
+            self.assertEqual(json.load(response)["session"]["state"], "applied")
+        app.prompt(disabled, "search without exa").close()
+        app.idle(disabled)
+        self.assertIn("raised:", last_output(app, disabled))
+        self.assertEqual(self.exa.requests, [])
+        self.ask(app, "another session can use exa")
+        self.assertEqual(len(self.exa.requests), 1)
+        self.patch(
+            app,
+            f"/sessions/{disabled}?view=configuration",
+            {"selection": {"extensions": {"exa": True}}},
+        )
+        with app.api(f"/sessions/{disabled}/reload", {"target": "session"}) as response:
+            self.assertEqual(json.load(response)["session"]["state"], "applied")
+        app.prompt(disabled, "search after applying exa").close()
+        app.idle(disabled)
+        self.assertEqual(len(self.exa.requests), 2)
+
+    def test_global_eligibility_preserves_hidden_provider_preferences(self):
+        app = self.start([])
+        self.change(app, "exa", "up")
+        self.change(app, "exa", "toggle")
+        before = json.loads((app.home / "extensions.json").read_text())["web-search"]
+        self.patch(app, "/settings?group=extensions", {"defaults": {"exa": False}})
+        self.assertNotIn("exa", [entry["name"] for entry in self.providers(app)[0]])
+        self.change(app, "codex", "toggle")
+        saved = json.loads((app.home / "extensions.json").read_text())["web-search"]
+        self.assertEqual(saved["order"], before["order"])
+        self.assertIn("exa", saved["off"])
+        self.patch(app, "/settings?group=extensions", {"defaults": {"exa": True}})
+        exa = next(entry for entry in self.providers(app)[0] if entry["name"] == "exa")
+        self.assertFalse(exa["enabled"])
+        self.assertEqual(exa["position"], before["order"].index("exa") + 1)
+
     def test_search_passes_over_signed_out_providers_to_exa(self):
         app = self.start([SEARCH])
         session, output = self.ask(app, "search the web")

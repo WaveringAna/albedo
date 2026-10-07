@@ -62,7 +62,7 @@ pub fn extension_at(home: String) -> harness_extension.Extension {
             instructions: instructions,
             python_modules: ["skills"],
             routes: [
-              #("skills", fn(_, _, request) { rpc.handle(snapshot, request) }),
+              #("skills", fn(_, request) { rpc.handle(snapshot, request) }),
             ],
             commands: list.map(catalog.commands(snapshot), skill_command(
               snapshot,

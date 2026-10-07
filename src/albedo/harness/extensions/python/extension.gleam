@@ -10,6 +10,7 @@ import albedo/harness/extensions/python/migrations/cell_images
 import albedo/harness/extensions/python/migrations/kernel_links
 import albedo/harness/extensions/python/place
 import albedo/harness/extensions/python/rpc as cells
+import albedo/harness/host
 import albedo/openai_api/types
 import gleam/dict
 import gleam/dynamic/decode
@@ -184,12 +185,16 @@ pub fn extension() -> extension.Extension {
         "Python cells automatically background after 60 seconds; the session wakes when they finish, so do not poll or sleep. Python has a persistent namespace, top-level await, cells.read/info/trace and cells.run for saved-source repair (all async), and output.read/output.list for bounded retained output (synchronous; awaiting them also works). cells.last_id is the id of the latest cell, and await cells.list(limit=20) lists this session's cells newest first with their status and first line, even after their output has rolled out. output.read(id, offset=0, limit=4000) returns up to limit characters, at most 65536 per call (page with offset); offset and limit may be positional, and job.tail()/job.head() answer awaitably too. output.list() names every retained channel, which is also how to find earlier cells: cells, background jobs, and 'native' for bytes written to fd 1/2 while no cell was running. show_image(source) returns a PNG, JPEG, or WebP (bytes or a file path) to you with this cell's result, so you see it after the cell ends; at most 4 images and 5 MiB per cell.",
         [extension.Tool(definition(), invoke, recover)],
         [],
-        [#("cells", cells.handle)],
+        [
+          #("cells", fn(context: host.Context, request) {
+            cells.handle(context.store, context.session, request)
+          }),
+        ],
       ),
       extension.ManagedPlugin(fn(_, _, workspace) {
         Ok(
           extension.Managed(..extension.empty(), routes: [
-            #("session", fn(_, _, request) { cells.session(workspace, request) }),
+            #("session", fn(_, request) { cells.session(workspace, request) }),
           ]),
         )
       }),

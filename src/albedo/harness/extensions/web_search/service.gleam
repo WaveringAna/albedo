@@ -21,11 +21,20 @@ import mist
 pub const collection = "/extensions/web-search/providers"
 
 pub fn handle(
-  providers: List(web_search.Provider),
+  providers: Result(List(web_search.Provider), String),
   path: List(String),
   req: request.Request(BitArray),
 ) -> response.Response(mist.ResponseData) {
-  case dispatch(providers, path, req) {
+  let response = {
+    use providers <- result.try(
+      providers
+      |> result.map_error(fn(error) {
+        api.Failure(503, "settings_failed", error)
+      }),
+    )
+    dispatch(providers, path, req)
+  }
+  case response {
     Ok(response) -> response
     Error(error) -> api.fail(error)
   }

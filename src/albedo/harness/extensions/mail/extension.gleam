@@ -4,6 +4,7 @@
 import albedo/daemon/mail
 import albedo/daemon/store
 import albedo/harness/extension
+import albedo/harness/host
 import albedo/harness/rpc
 import gleam/dynamic/decode
 import gleam/json
@@ -19,7 +20,11 @@ pub fn extension() -> extension.Extension {
         "await mail.submit(to, body) sends a letter as this session. `to` is \"parent\", the name of a child or sibling, an agent handle, or any session id; names outside your family do not resolve, so use the id. It returns a receipt (id, to, name, status): \"delivered\" was accepted by an idle recipient (its kernel may still be booting), \"queued\" waits behind its running turn, \"pending\" is stored and arrives once that session is running. There is no mail.read: letters to you arrive in your conversation as <mail> blocks. Bodies over 1 MiB fail; write big results to a file and send the path.",
         [],
         ["mail"],
-        [#("mail", handle)],
+        [
+          #("mail", fn(context: host.Context, request) {
+            handle(context.store, context.session, request)
+          }),
+        ],
       ),
     ],
     mail.initialise,

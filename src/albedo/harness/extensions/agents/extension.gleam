@@ -10,6 +10,7 @@ import albedo/daemon/family
 import albedo/daemon/store
 import albedo/harness/extension
 import albedo/harness/extensions/agents/sessions
+import albedo/harness/host
 import albedo/harness/rpc
 import albedo/harness/search
 import albedo/harness/tool
@@ -31,7 +32,11 @@ pub fn extension() -> extension.Extension {
     "Spawn child agents, watch your family, and close children you are done with.",
     ["python", "mail"],
     [
-      extension.ToolPlugin(instructions, [], ["agents"], [#("agents", handle)]),
+      extension.ToolPlugin(instructions, [], ["agents"], [
+        #("agents", fn(context: host.Context, request) {
+          handle(context.store, context.session, request)
+        }),
+      ]),
       // A child learns who it is and how to answer; a root needs no context.
       extension.ManagedPlugin(fn(db, session, _) {
         Ok(

@@ -1,10 +1,12 @@
 //// Kernel plumbing for the runtime actor: opening, resuming, and ending a
 //// session's Python kernel, and the routes a kernel's host calls come in on.
 
+import albedo/harness/extension
 import albedo/harness/extension/composition
 import albedo/harness/extensions/python/kernel as python
 import albedo/harness/extensions/python/link
 import albedo/harness/extensions/work/ledger as work
+import albedo/harness/host
 import albedo/harness/rpc
 import albedo/harness/runtime/state as runtime_state
 import gleam/dict
@@ -69,7 +71,13 @@ pub fn kernel_routes(
   // Partial application captures its expressions, not just their results.
   // Keep only this session's routes: the callback is copied for every RPC.
   let routes = composition.routes(composed)
-  rpc.handle(routes, owner, id, _)
+  let context =
+    host.Context(
+      owner,
+      id,
+      extension.searches(composition.extensions(composed)),
+    )
+  rpc.handle(routes, context, _)
 }
 
 /// Boot a kernel over one composition. A failed boot keeps the composition:

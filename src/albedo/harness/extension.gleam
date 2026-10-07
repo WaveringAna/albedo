@@ -7,6 +7,7 @@ import albedo/harness/client_api
 import albedo/harness/command
 import albedo/harness/compaction
 import albedo/harness/extensions/python/kernel as python
+import albedo/harness/host
 import albedo/harness/oauth
 import albedo/harness/page
 import albedo/harness/protect
@@ -41,7 +42,7 @@ pub type Context {
 
 /// A host route: calls whose method starts with `namespace.` reach its handler.
 pub type Route =
-  #(String, fn(store.Store, String, String) -> String)
+  host.Route
 
 pub type Tool {
   Tool(
@@ -368,6 +369,7 @@ pub type Daemon {
     /// Catalog model ids for a provider extension and endpoint.
     models: fn(String, Option(String)) -> List(String),
     sessions: fn() -> List(conversation.Info),
+    searches: fn() -> Result(List(web_search.Provider), String),
   )
 }
 

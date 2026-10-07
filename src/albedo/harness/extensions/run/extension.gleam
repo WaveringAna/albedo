@@ -6,6 +6,7 @@ import albedo/harness/command.{Data}
 import albedo/harness/extension as harness_extension
 import albedo/harness/extensions/python/kernel
 import albedo/harness/extensions/run/service
+import albedo/harness/host
 import albedo/harness/rpc
 import gleam/dynamic/decode
 import gleam/json
@@ -31,7 +32,9 @@ pub fn extension() -> harness_extension.Extension {
         service.handle,
       )),
       harness_extension.ToolPlugin(instructions, [], ["run"], [
-        #("jobs", route),
+        #("jobs", fn(context: host.Context, request) {
+          route(context.store, context.session, request)
+        }),
       ]),
       harness_extension.CommandPlugin([command()]),
     ],

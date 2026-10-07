@@ -8,6 +8,7 @@ import albedo/harness/extensions/paperclips/migrations/revision
 import albedo/harness/extensions/paperclips/migrations/scope
 import albedo/harness/extensions/paperclips/migrations/title
 import albedo/harness/extensions/paperclips/rpc
+import albedo/harness/host
 import gleam/http
 import gleam/json
 import gleam/option.{Some}
@@ -82,8 +83,8 @@ pub fn extension() -> harness_extension.Extension {
       harness_extension.ManagedPlugin(fn(_, _, workspace) {
         Ok(
           harness_extension.Managed(..harness_extension.empty(), routes: [
-            #("paperclips", fn(store, session, request) {
-              rpc.handle(store, workspace, session, request)
+            #("paperclips", fn(context: host.Context, request) {
+              rpc.handle(context.store, workspace, context.session, request)
             }),
           ]),
         )

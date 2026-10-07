@@ -7,8 +7,8 @@
 //// inside that actor must never run a command: its state calls would deadlock
 //// against the actor it is running in.
 
-import albedo/daemon/store
 import albedo/harness/extensions/python/kernel
+import albedo/harness/host
 import albedo/harness/protect
 import albedo/harness/rpc
 import gleam/dict.{type Dict}
@@ -455,19 +455,16 @@ pub fn context_block(commands: List(Command)) -> String {
 /// Aggregate `commands.*` kernel routes over one materialized command list.
 /// `commands.list` answers from the captured list alone, so it can serve kernel
 /// boot; `commands.run` executes outside any session actor.
-pub fn routes(
-  commands: List(Command),
-) -> List(#(String, fn(store.Store, String, String) -> String)) {
+pub fn routes(commands: List(Command)) -> List(host.Route) {
   [
-    #("commands", fn(store, session, request) {
-      respond(commands, store, session, request)
+    #("commands", fn(context: host.Context, request) {
+      respond(commands, context.session, request)
     }),
   ]
 }
 
 fn respond(
   commands: List(Command),
-  _store: store.Store,
   session: String,
   request: String,
 ) -> String {
