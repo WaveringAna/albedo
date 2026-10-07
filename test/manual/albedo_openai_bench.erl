@@ -15,7 +15,6 @@ text(Bytes) when Bytes > 0 ->
 text(_) -> nil.
 
 measure(Run) ->
-    {ok, _} = application:ensure_all_started(gun),
     Owner = self(),
     Baseline = erlang:memory(binary),
     {Pid, Ref} = spawn_monitor(fun() ->

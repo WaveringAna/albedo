@@ -1,5 +1,5 @@
 -module(albedo_openai_rate_bench).
--export([env/2, token/0, measure/3]).
+-export([env/2, token/0, measure/3, trust/1]).
 
 %% Helpers for manual/stream_rate_benchmark: one stream against
 %% test/manual/mock_openai_server.py, measured from the calling process.
@@ -10,6 +10,12 @@ env(Name, Default) ->
         Value -> unicode:characters_to_binary(Value)
     end.
 
+%% Trusts the CA in File for this run, for a mock serving https.
+trust(<<>>) -> nil;
+trust(File) ->
+    ok = public_key:cacerts_load(File),
+    nil.
+
 %% Called from the stream callback for every text delta.
 token() ->
     put(arrivals, [os:system_time(nanosecond) | get(arrivals)]),
@@ -18,8 +24,7 @@ token() ->
 %% Runs Run in a fresh process; returns {Result, Metrics} where Metrics is a
 %% list of {Name, Number} pairs. VM CPU is microstate accounting over every
 %% scheduler and thread, so the connection process and the poller count too.
-measure(Port, Tokens, Run) ->
-    {ok, _} = application:ensure_all_started(gun),
+measure(Origin, Tokens, Run) ->
     Owner = self(),
     erlang:garbage_collect(),
     {Reductions0, _} = statistics(reductions),
@@ -45,7 +50,7 @@ measure(Port, Tokens, Run) ->
             {Reductions1, _} = statistics(reductions),
             demonitor(Ref, [flush]),
             Received = length(Arrivals),
-            Latency = latency(Port, lists:reverse(Arrivals)),
+            Latency = latency(Origin, lists:reverse(Arrivals)),
             Per = fun(X) -> X / max(1, Tokens) end,
             {Result, [{Name, float(Value)} || {Name, Value} <- [
                 {<<"tokens">>, Received},
@@ -63,9 +68,10 @@ measure(Port, Tokens, Run) ->
     end.
 
 %% Send-to-callback latency per token, from the mock's send times.
-latency(Port, Arrivals) ->
-    Sent = timings(Port),
+latency(Origin, Arrivals) ->
+    Sent = timings(Origin),
     case length(Sent) =:= length(Arrivals) of
+        _ when Arrivals =:= [] -> [];
         false -> [{<<"latency_mismatch">>, length(Sent)}];
         true ->
             Sorted = lists:sort([(A - S) / 1000 || {S, A} <- lists:zip(Sent, Arrivals)]),
@@ -75,15 +81,27 @@ latency(Port, Arrivals) ->
 
 pct(Sorted, P) -> lists:nth(max(1, round(P * length(Sorted))), Sorted).
 
-timings(Port) ->
-    {ok, Socket} = gen_tcp:connect({127, 0, 0, 1}, Port, [binary, {active, false}]),
-    ok = gen_tcp:send(Socket, <<"GET /timings HTTP/1.1\r\nhost: mock\r\n\r\n">>),
-    Response = read_all(Socket, []),
-    [_, Body] = binary:split(Response, <<"\r\n\r\n">>),
+timings(Origin) ->
+    #{scheme := Scheme, host := Host, port := Port} = uri_string:parse(Origin),
+    Options = [binary, {active, false}],
+    {Module, {ok, Socket}} = case Scheme of
+        <<"https">> -> {ssl, ssl:connect(binary_to_list(Host), Port, [{verify, verify_none} | Options])};
+        <<"http">> -> {gen_tcp, gen_tcp:connect(binary_to_list(Host), Port, Options)}
+    end,
+    ok = Module:send(Socket, <<"GET /timings HTTP/1.1\r\nhost: mock\r\n\r\n">>),
+    Body = response_body(Module, Socket, <<>>),
+    Module:close(Socket),
     json:decode(Body).
 
-read_all(Socket, Acc) ->
-    case gen_tcp:recv(Socket, 0, 5000) of
-        {ok, Data} -> read_all(Socket, [Data | Acc]);
-        {error, closed} -> iolist_to_binary(lists:reverse(Acc))
+response_body(Module, Socket, Read) ->
+    {ok, Bytes} = Module:recv(Socket, 0, 5000),
+    Response = <<Read/binary, Bytes/binary>>,
+    case binary:split(Response, <<"\r\n\r\n">>) of
+        [Head, Body] ->
+            {match, [Length]} = re:run(Head, <<"content-length: (\\d+)">>, [caseless, {capture, all_but_first, binary}]),
+            case byte_size(Body) >= binary_to_integer(Length) of
+                true -> Body;
+                false -> response_body(Module, Socket, Response)
+            end;
+        [_] -> response_body(Module, Socket, Response)
     end.

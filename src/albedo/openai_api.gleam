@@ -18,9 +18,9 @@
 //// Supports text, image input, and function tools. Audio and custom tools are
 //// unsupported. Function arguments must be validated before execution.
 //// Requires Erlang/OTP 27+ for native JSON. The bounded incremental parser owns
-//// SSE framing. Plain HTTP/1.1 is read straight from a socket the caller
-//// owns; Gun owns HTTPS (HTTP/2, flow control, TLS verification). Requests
-//// stay as iodata.
+//// SSE framing. HTTP/1.1 is read straight from a socket the caller owns,
+//// verified TLS for https, and kept alive between requests to the same host.
+//// Requests stay as iodata.
 
 import albedo/clock
 
@@ -165,7 +165,7 @@ pub fn exchange(
     |> result.map_error(transport_error),
   )
   use <- transport.with_connection(connection)
-  use #(first, connection) <- result.try(receive(connection))
+  use first <- result.try(receive(connection))
   case first {
     transport.Headers(status, headers, final) if status >= 200 && status < 300 -> {
       case event_stream(headers) || !exchange.require_event_stream, final {
@@ -248,7 +248,7 @@ fn pump(
   thinking: Thinking,
   on_event: fn(Event) -> Control,
 ) -> Result(Turn, Error) {
-  use #(message, connection) <- result.try(receive(connection))
+  use message <- result.try(receive(connection))
   case message {
     transport.Data(bytes, final) -> {
       let now = clock.monotonic_ms()
@@ -358,7 +358,7 @@ fn elapsed(thinking: Thinking, now: Int) -> Int {
 
 fn receive(
   connection: transport.Connection,
-) -> Result(#(transport.Message, transport.Connection), Error) {
+) -> Result(transport.Message, Error) {
   transport.receive(connection) |> result.map_error(transport_error)
 }
 
@@ -396,7 +396,7 @@ fn http_error(
       Error(types.HttpError(status, body))
     }
     False -> {
-      use #(message, connection) <- result.try(receive(connection))
+      use message <- result.try(receive(connection))
       case message {
         transport.Data(bytes, final) -> {
           let remaining = 65_536 - size

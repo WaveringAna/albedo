@@ -23,15 +23,17 @@ pub fn open(
   timeout_ms: Int,
 ) -> Result(Connection, Error)
 
-/// Wait for the next response headers or body chunk; the connection it
-/// returns reads the one after.
+/// Wait for the next response headers or body chunk.
 @external(erlang, "albedo_openai_transport", "receive_message")
-pub fn receive(connection: Connection) -> Result(#(Message, Connection), Error)
+pub fn receive(connection: Connection) -> Result(Message, Error)
 
-/// Close the connection and discard only its pending transport messages.
+/// Close the connection, or keep it for the next request to the same host
+/// when its whole response was read, and discard its pending messages.
 @external(erlang, "albedo_openai_transport", "close")
 pub fn close(connection: Connection) -> Nil
 
-/// Run a callback and close the connection whether it returns or raises.
+/// Run a callback and close the connection whether it returns or raises. A
+/// callback that returns Ok keeps the connection for the next request even
+/// when the response's last bytes have not been read yet.
 @external(erlang, "albedo_openai_transport", "with_connection")
 pub fn with_connection(connection: Connection, run: fn() -> value) -> value

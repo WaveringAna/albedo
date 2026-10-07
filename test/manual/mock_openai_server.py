@@ -1,15 +1,18 @@
 """A local OpenAI-compatible streaming server for transport benchmarks.
 
-Run explicitly: python3 test/manual/mock_openai_server.py [port]
+Run explicitly: python3 test/manual/mock_openai_server.py [port] [cert key]
 The base URL picks the stream: http://127.0.0.1:PORT/<rate>/<tokens>/v1
 streams <tokens> text deltas at <rate> tokens per second (0 for as fast as
 the socket takes them), one SSE event per write, over HTTP/1.1 chunked
-encoding. GET /timings returns the send time (ns, CLOCK_REALTIME) of every
-delta of the last stream, so a client can compute per-token latency.
+encoding on kept-alive connections. With a certificate and key it serves
+https instead. Any request to /timings returns the send time (ns,
+CLOCK_REALTIME) of every delta of the last stream, so a client can compute
+per-token latency.
 """
 
 import asyncio
 import json
+import ssl
 import sys
 import time
 
@@ -158,7 +161,7 @@ async def stream(writer: asyncio.StreamWriter, path: str) -> None:
     _, rate, count, *_ = path.split("/")
     tokens = [WORDS[i % len(WORDS)] for i in range(int(count))]
     events = chat(tokens) if path.endswith("/chat/completions") else responses(tokens)
-    head = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n"
+    head = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ntransfer-encoding: chunked\r\n\r\n"
     writer.write(head.encode())
     timings.clear()
     interval = 1 / float(rate) if float(rate) > 0 else 0.0
@@ -178,33 +181,37 @@ async def stream(writer: asyncio.StreamWriter, path: str) -> None:
 
 async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
     try:
-        request = (await reader.readuntil(b"\r\n")).decode()
-        method, path, _ = request.split(" ", 2)
-        length = 0
-        while (line := await reader.readuntil(b"\r\n")) != b"\r\n":
-            name, _, value = line.decode().partition(":")
-            if name.strip().lower() == "content-length":
-                length = int(value)
-        await reader.readexactly(length)
-        if method == "GET" and path == "/timings":
-            body = json.dumps(timings).encode()
-            head = f"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {len(body)}\r\nconnection: close\r\n\r\n"
-            writer.write(head.encode() + body)
-        else:
-            await stream(writer, path)
-        await writer.drain()
+        while request := (await reader.readuntil(b"\r\n")).decode():
+            _, path, _ = request.split(" ", 2)
+            length = 0
+            while (line := await reader.readuntil(b"\r\n")) != b"\r\n":
+                name, _, value = line.decode().partition(":")
+                if name.strip().lower() == "content-length":
+                    length = int(value)
+            await reader.readexactly(length)
+            if path.endswith("/timings"):
+                body = json.dumps(timings).encode()
+                head = f"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {len(body)}\r\n\r\n"
+                writer.write(head.encode() + body)
+            else:
+                await stream(writer, path)
+            await writer.drain()
     except (ConnectionError, asyncio.IncompleteReadError):
         pass
     finally:
         writer.close()
 
 
-async def main(port: int) -> None:
-    server = await asyncio.start_server(handle, "127.0.0.1", port)
-    print(f"listening on http://127.0.0.1:{port}", flush=True)
+async def main(port: int, tls: list[str]) -> None:
+    context = None
+    if tls:
+        context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+        context.load_cert_chain(*tls)
+    server = await asyncio.start_server(handle, "127.0.0.1", port, ssl=context)
+    print(f"listening on {'https' if tls else 'http'}://127.0.0.1:{port}", flush=True)
     async with server:
         await server.serve_forever()
 
 
 if __name__ == "__main__":
-    asyncio.run(main(int(sys.argv[1]) if len(sys.argv) > 1 else 8765))
+    asyncio.run(main(int(sys.argv[1]) if len(sys.argv) > 1 else 8765, sys.argv[2:4]))

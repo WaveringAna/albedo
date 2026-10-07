@@ -1,6 +1,7 @@
 //// Run explicitly with: gleam run -m manual/stream_rate_benchmark
-//// Streams from test/manual/mock_openai_server.py (start it first; port from
-//// ALBEDO_BENCH_PORT, default 8765) through the real transport, at 500
+//// Streams from test/manual/mock_openai_server.py (start it first; its origin
+//// from ALBEDO_BENCH_ORIGIN, default http://127.0.0.1:8765, and for https the
+//// CA to trust from ALBEDO_BENCH_CA) through the real transport, at 500
 //// tokens/s and unthrottled, and prints VM CPU and reductions per token and
 //// send-to-callback latency. Run with the daemon's ERL_FLAGS (the
 //// vm_defaults in priv/bin/albedo-daemon: two schedulers, no busy waiting),
@@ -25,9 +26,12 @@ fn env(name: String, default: String) -> String
 @external(erlang, "albedo_openai_rate_bench", "token")
 fn token() -> Nil
 
+@external(erlang, "albedo_openai_rate_bench", "trust")
+fn trust(ca_file: String) -> Nil
+
 @external(erlang, "albedo_openai_rate_bench", "measure")
 fn measure(
-  port: Int,
+  origin: String,
   tokens: Int,
   run: fn() -> Result(types.Turn, types.Error),
 ) -> #(Result(types.Turn, types.Error), List(#(String, Float)))
@@ -35,7 +39,8 @@ fn measure(
 const runs = 3
 
 pub fn main() -> Nil {
-  let assert Ok(port) = int.parse(env("ALBEDO_BENCH_PORT", "8765"))
+  let origin = env("ALBEDO_BENCH_ORIGIN", "http://127.0.0.1:8765")
+  trust(env("ALBEDO_BENCH_CA", ""))
   let only = env("ALBEDO_BENCH_PROTOCOL", "")
   let unthrottled = env("ALBEDO_BENCH_UNTHROTTLED", "1") == "1"
   [types.Responses, types.ChatCompletions]
@@ -43,18 +48,22 @@ pub fn main() -> Nil {
     only == "" || only == types.protocol_name(protocol)
   })
   |> list.each(fn(protocol) {
-    bench(port, protocol, 500, 2000)
+    bench(origin, protocol, 500, 2000)
     case unthrottled {
-      True -> bench(port, protocol, 0, 20_000)
+      True -> bench(origin, protocol, 0, 20_000)
       False -> Nil
     }
   })
 }
 
-fn bench(port: Int, protocol: types.Protocol, rate: Int, tokens: Int) -> Nil {
+fn bench(
+  origin: String,
+  protocol: types.Protocol,
+  rate: Int,
+  tokens: Int,
+) -> Nil {
   let base =
-    "http://127.0.0.1:"
-    <> int.to_string(port)
+    origin
     <> "/"
     <> int.to_string(rate)
     <> "/"
@@ -62,12 +71,12 @@ fn bench(port: Int, protocol: types.Protocol, rate: Int, tokens: Int) -> Nil {
     <> "/v1"
   let client = openai.client(protocol, base, "")
   let request = openai.request("mock", [types.User("go")])
-  // one warm-up run loads modules and opens nothing persistent
-  let _ = measure(port, tokens, fn() { stream(client, request) })
+  // one warm-up run loads modules and opens the connection the runs reuse
+  let _ = measure(origin, tokens, fn() { stream(client, request) })
   let results =
     list.repeat(Nil, runs)
     |> list.map(fn(_) {
-      measure(port, tokens, fn() { stream(client, request) })
+      measure(origin, tokens, fn() { stream(client, request) })
     })
   let label =
     types.protocol_name(protocol)
