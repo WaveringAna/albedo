@@ -252,7 +252,7 @@ func paneTitle(name, description string, width int) []string {
 // factRows is one labelled fact of a detail pane; a long value wraps under
 // itself.
 func factRows(label, value string, width int) []string {
-	const labelW = 9
+	const labelW = 10
 	var lines []string
 	for i, l := range svWrap(value, max(1, width-labelW), 4) {
 		cell := strings.Repeat(" ", labelW)

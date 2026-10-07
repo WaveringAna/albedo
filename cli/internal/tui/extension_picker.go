@@ -244,7 +244,8 @@ func (m ExtensionPickerModel) Update(msg tea.Msg) (ExtensionPickerModel, tea.Cmd
 		switch {
 		case m.confirm.asking() && !m.Saving:
 			if m.confirm.key(msg) {
-				return m, m.save()
+				cmd := m.save()
+				return m, cmd
 			}
 			if !m.confirm.asking() {
 				m.Error = ""
@@ -265,7 +266,7 @@ func (m ExtensionPickerModel) Update(msg tea.Msg) (ExtensionPickerModel, tea.Cmd
 			if ext.Overridden {
 				m.askToggle(scopeInherit)
 			}
-		case "ctrl+o":
+		case "ctrl+w":
 			if ext.Name == "webhooks" && ext.Enabled {
 				return m, func() tea.Msg { return ChatOpenWebhooksPageMsg{} }
 			}
@@ -274,11 +275,13 @@ func (m ExtensionPickerModel) Update(msg tea.Msg) (ExtensionPickerModel, tea.Cmd
 			m.Generation = nextPageGeneration()
 			return m, m.loadExtensionsCmd(m.Generation)
 		default:
-			return m, m.listView.update(msg)
+			cmd := m.listView.update(msg)
+			return m, cmd
 		}
 		return m, nil
 	}
-	return m, m.listView.update(msg)
+	cmd := m.listView.update(msg)
+	return m, cmd
 }
 
 
@@ -355,7 +358,7 @@ func (m ExtensionPickerModel) footer(width int) string {
 		hints = append(hints, hint{"ctrl+x", "follow global"})
 	}
 	if ext.Name == "webhooks" && ext.Enabled {
-		hints = append(hints, hint{"ctrl+o", "webhooks"})
+		hints = append(hints, hint{"ctrl+w", "webhooks"})
 	}
 	if len(m.Extensions) == 0 && m.Error != "" {
 		hints = append(hints, hint{"ctrl+r", "retry"})
