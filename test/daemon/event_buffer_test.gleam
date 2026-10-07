@@ -30,7 +30,8 @@ pub fn replay_is_ordered_and_only_a_gap_requires_reset_test() -> Nil {
 }
 
 pub fn byte_budget_evicts_oldest_without_splitting_unicode_test() -> Nil {
-  let large = json.string(string.repeat("é", 1_048_575))
+  // Two of these fit the budget; a third event evicts the oldest.
+  let large = json.string(string.repeat("é", buffer.budget / 4 - 1))
   let events =
     buffer.new()
     |> buffer.push(1, large)
@@ -47,7 +48,7 @@ pub fn byte_budget_evicts_oldest_without_splitting_unicode_test() -> Nil {
 pub fn oversized_event_leaves_a_replay_gap_until_the_client_resets_test() -> Nil {
   let events = buffer.new() |> buffer.push(1, json.string("before"))
   let events =
-    buffer.push(events, 2, json.string(string.repeat("x", 4_194_305)))
+    buffer.push(events, 2, json.string(string.repeat("x", buffer.budget)))
   buffer.since(events, 1, 2) |> should.equal(Error(Nil))
   buffer.since(events, 2, 2) |> should.equal(Ok([]))
   let events = buffer.push(events, 3, json.string("after"))

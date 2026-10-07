@@ -197,6 +197,7 @@ fn publish_committed(
   replace_live: Bool,
   publish_rows: Bool,
 ) -> session_state.State(message) {
+  let state = session_state.flush_output(state)
   let ids = case replace_live {
     True -> active_output.ids(state.active_output)
     False -> []

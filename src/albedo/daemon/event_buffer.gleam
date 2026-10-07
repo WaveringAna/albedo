@@ -6,6 +6,10 @@ import gleam/int
 import gleam/json
 import gleam/string
 
+/// Every replay must fit one response (1 MiB) with room for the batch's own
+/// fields, so the window keeps no more bytes than this.
+pub const budget = 1_015_808
+
 pub opaque type Buffer {
   Buffer(oldest: Int, entries: Dict(Int, #(json.Json, Int)), bytes: Int)
 }
@@ -19,7 +23,7 @@ pub fn push(buffer: Buffer, sequence: Int, event: json.Json) -> Buffer {
   // Kept encoded: one binary is a fraction of the iodata tree it came as.
   let event = encoded(event)
   let size = string.byte_size(json.to_string(event))
-  case size > 4_194_304 {
+  case size > budget {
     // An unretained event is a gap: even a client one event behind must reset.
     True -> Buffer(sequence + 1, dict.new(), 0)
     False ->
@@ -32,7 +36,7 @@ pub fn push(buffer: Buffer, sequence: Int, event: json.Json) -> Buffer {
 }
 
 fn trim(buffer: Buffer) -> Buffer {
-  case dict.size(buffer.entries) > 256 || buffer.bytes > 4_194_304 {
+  case dict.size(buffer.entries) > 256 || buffer.bytes > budget {
     False -> buffer
     True -> {
       let assert Ok(#(_, size)) = dict.get(buffer.entries, buffer.oldest)

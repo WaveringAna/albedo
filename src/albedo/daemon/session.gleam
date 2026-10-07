@@ -232,6 +232,8 @@ pub type Message {
   ToolProgressReset(String, Int, Subject(Nil))
   ToolProgressFinish(String, String, Subject(Nil))
   ProgressFlush(Int)
+  /// The frame's held text and thinking deltas are due.
+  PublishOutput
   Commit(
     String,
     List(types.Input),
@@ -378,6 +380,10 @@ pub fn start(
           captured.current_request,
         ),
         announced_status: None,
+        pending_output: [],
+        output_timer: None,
+        output_published_at: clock.monotonic_ms(),
+        publish_output: PublishOutput,
       )
     // Background jobs and cells wake through their kernel host routes; the
     // registered closure lands a completion notice as an ordinary submit, so
@@ -1007,42 +1013,21 @@ fn capture_state(state: State) -> Result(Unobserved, String) {
 }
 
 fn publish_active(state: State, event: view.Event) -> State {
-  let #(projection, event) = case event {
-    view.Text(run_id, message_id, text) -> {
-      let id = active_output.namespace(state.active_output, message_id)
-      #(
-        active_output.observe(
-          state.active_output,
-          run_id,
-          id,
-          "text",
-          text,
-          None,
+  case event {
+    // A retry starts new message identities; deltas of the failed attempt
+    // are published under the old ones first.
+    view.Retry(..) -> {
+      let state = session_state.flush_output(state)
+      session_state.emit(
+        session_state.State(
+          ..state,
+          active_output: active_output.retry(state.active_output),
         ),
-        view.Text(run_id, id, text),
+        event,
       )
     }
-    view.Thinking(run_id, message_id, text, elapsed) -> {
-      let id = active_output.namespace(state.active_output, message_id)
-      #(
-        active_output.observe(
-          state.active_output,
-          run_id,
-          id,
-          "thinking",
-          text,
-          elapsed,
-        ),
-        view.Thinking(run_id, id, text, elapsed),
-      )
-    }
-    view.Retry(..) -> #(active_output.retry(state.active_output), event)
-    _ -> #(state.active_output, event)
+    _ -> session_state.emit(state, event)
   }
-  session_state.emit(
-    session_state.State(..state, active_output: projection),
-    event,
-  )
 }
 
 fn cleanup_registrations(id: String) -> Nil {
@@ -1492,6 +1477,10 @@ fn handle(
     ToolProgressFinish(id, progress_id, reply) ->
       tool_progress_finish(state, id, progress_id, reply)
     ProgressFlush(token) -> tool_progress_flush(state, token)
+    PublishOutput ->
+      actor.continue(session_state.flush_output(
+        session_state.State(..state, output_timer: None),
+      ))
     Commit(id, inputs, stage, thought_ms, reply) ->
       case turn.owner(state.activity, id) {
         Some(_) -> {
@@ -2844,7 +2833,7 @@ fn finish_turn(
         },
       ),
     )
-  let state = clear_tool_progress(state)
+  let state = clear_tool_progress(session_state.flush_output(state))
   let state =
     session_state.State(
       ..state,

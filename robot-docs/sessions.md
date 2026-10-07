@@ -67,6 +67,14 @@ durable commit. Expired references return `410 active_output_expired` and cause
 the client to capture a new snapshot. Do not add compatibility readers for
 snapshots without active output.
 
+Text and thinking deltas reach subscribers at most once a frame (16 ms):
+`session_state.emit` publishes a delta after a quiet frame at once and holds
+later ones until the frame ends, merging neighbours of one message into one
+event. Any other event, a commit, a retry, and the end of a turn publish the
+held deltas first, so the stream keeps its order and active output never lags
+a commit. The replay window keeps at most 256 events and less than one
+response's bytes, so any replay fits a single batch.
+
 Session subscribers receive coalesced wake notifications. Event payloads stay
 in the session's existing replay buffer; a successful frame acknowledges its
 cursor before another wake is issued. A subscriber's death removes its watch

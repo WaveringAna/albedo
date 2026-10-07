@@ -6,7 +6,7 @@ import unittest
 import urllib.error
 
 from inspect_support import Inspection
-from harness import Albedo, Provider, ROOT, exclusive, text
+from harness import Albedo, Provider, ROOT, Reply, exclusive, text
 
 
 def restart_actor(app, session):
@@ -14,6 +14,19 @@ def restart_actor(app, session):
     result = inspection.call("restart", f"[<<{json.dumps(session)}>>]")
     if result != "actor_stopped":
         raise AssertionError(result)
+
+
+def interleaved(pairs):
+    for _ in range(pairs):
+        for delta in [{"reasoning_content": "thought "}, {"content": "answer "}]:
+            yield {
+                "id": "fixture",
+                "choices": [{"index": 0, "delta": delta, "finish_reason": None}],
+            }
+    yield {
+        "id": "fixture",
+        "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+    }
 
 
 class StreamReplayTest(unittest.TestCase):
@@ -151,18 +164,19 @@ class StreamReplayTest(unittest.TestCase):
             session = app.session()
             self.turn(app, session, "oldest prompt")
             old = app.stream_page(session)
-            # A long streamed answer evicts the count-limited replay window.
-            self.provider.script = lambda _: text("long answer " * 600)
+            # Alternating thinking and text never merge into one event, so a
+            # long interleaved answer evicts the count-limited replay window.
+            self.provider.script = lambda _: Reply("text", events=interleaved(150))
             self.turn(app, session, "newest prompt")
             replay = app.stream_page(session, old)
             self.assertEqual(replay["generation"], old["generation"])
             self.assert_reset_history(replay, ["oldest prompt", "newest prompt"])
-            initial = app.stream_page(session, tail=2)
+            initial = app.stream_page(session, tail=3)
             self.assert_reset_history(initial, ["newest prompt"])
             history = initial["snapshot"]["history"]
             self.assertIsNotNone(history["older"])
             with app.api(
-                f"/sessions/{session}/history?limit=2&next={history['older']}"
+                f"/sessions/{session}/history?limit=3&next={history['older']}"
             ) as response:
                 older = json.load(response)
             self.assertEqual(

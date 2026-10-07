@@ -2,6 +2,7 @@
 
 import gleam/bit_array
 import gleam/int
+import gleam/string
 
 pub fn length(text: String) -> Int {
   count(<<text:utf8>>, 0)
@@ -27,7 +28,11 @@ pub fn drop(text: String, count: Int) -> String {
 }
 
 pub fn tail(text: String, count: Int) -> String {
-  drop(text, int.max(0, length(text) - int.max(0, count)))
+  // A scalar is at least a byte, so text this short is already its own tail.
+  case string.byte_size(text) <= count {
+    True -> copy_text(text)
+    False -> drop(text, int.max(0, length(text) - int.max(0, count)))
+  }
 }
 
 fn skip(bytes: BitArray, count: Int) -> BitArray {
@@ -38,11 +43,10 @@ fn skip(bytes: BitArray, count: Int) -> BitArray {
   }
 }
 
-// A bounded preview must not keep its source binary alive.
+// A bounded preview must not keep its source binary alive. The bytes are a
+// slice of valid text at scalar boundaries, so the copy is valid text too.
 @external(erlang, "binary", "copy")
-fn copy(bytes: BitArray) -> BitArray
+fn copied_text(bytes: BitArray) -> String
 
-fn copied_text(bytes: BitArray) -> String {
-  let assert Ok(text) = bit_array.to_string(copy(bytes))
-  text
-}
+@external(erlang, "binary", "copy")
+fn copy_text(text: String) -> String

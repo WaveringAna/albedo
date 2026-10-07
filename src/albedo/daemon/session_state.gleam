@@ -1,5 +1,6 @@
 //// Actor-owned session data and its bounded event stream.
 
+import albedo/clock
 import albedo/daemon/active_output
 import albedo/daemon/bus
 import albedo/daemon/context_snapshot
@@ -17,6 +18,7 @@ import albedo/daemon/usage
 import albedo/harness/loop
 import albedo/harness/runtime
 import gleam/erlang/process.{type Subject}
+import gleam/int
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -63,45 +65,174 @@ pub type State(message) {
     progress_timer: Option(process.Timer),
     live_activity: session_activity.Projection,
     announced_status: Option(session_activity.Status),
+    /// Text and thinking deltas held for the end of the frame, newest first,
+    /// the timer that publishes them, when output was last published, and
+    /// the actor's own message that publishes them.
+    pending_output: List(view.Event),
+    output_timer: Option(process.Timer),
+    output_published_at: Int,
+    publish_output: message,
   )
 }
 
-/// Streaming clients are woken as each event is published, so a model delta
-/// reaches a terminal without waiting for a polling interval.
+/// Deltas reach a client at most once a frame; a terminal draws no faster.
+const frame_ms = 16
+
+/// Streaming clients are woken as each event is published. A text or thinking
+/// delta after a quiet frame goes out at once; later ones wait for the frame
+/// to end and go out merged. Every other event publishes the waiting deltas
+/// first, so the stream keeps its order.
 pub fn emit(state: State(message), event: view.Event) -> State(message) {
   case event {
     // Internal worker signals never receive public SSE sequence numbers.
     view.Checkpoint | view.ProviderStarted -> state
-    view.Text(run_id, message_id, text) ->
-      list.fold(chunks(text), announce(state), fn(state, text) {
-        publish(state, view.Text(run_id, message_id, text))
-      })
-    view.Thinking(run_id, message_id, text, elapsed) -> {
-      let pieces = chunks(text)
-      let last = list.length(pieces) - 1
-      pieces
-      |> list.index_map(fn(text, index) { #(index, text) })
-      |> list.fold(announce(state), fn(state, piece) {
-        let #(index, text) = piece
-        publish(
-          state,
-          view.Thinking(run_id, message_id, text, case index == last {
-            True -> elapsed
-            False -> None
-          }),
-        )
-      })
-    }
+    view.Text(..) | view.Thinking(..) -> hold(state, event)
     view.Status(status) ->
-      publish(State(..state, announced_status: Some(status)), event)
+      publish(
+        State(..flush_output(state), announced_status: Some(status)),
+        event,
+      )
     _ -> publish(announce(state), event)
   }
 }
 
+fn hold(state: State(message), event: view.Event) -> State(message) {
+  let event = case event {
+    view.Text(run_id, message_id, text) ->
+      view.Text(
+        run_id,
+        active_output.namespace(state.active_output, message_id),
+        text,
+      )
+    view.Thinking(run_id, message_id, text, elapsed) ->
+      view.Thinking(
+        run_id,
+        active_output.namespace(state.active_output, message_id),
+        text,
+        elapsed,
+      )
+    _ -> event
+  }
+  let now = clock.monotonic_ms()
+  case state.pending_output, now - state.output_published_at >= frame_ms {
+    [], True -> publish_output(State(..state, output_published_at: now), event)
+    pending, _ -> {
+      let timer = case state.output_timer {
+        Some(timer) -> timer
+        None ->
+          process.send_after(
+            state.self,
+            int.max(0, state.output_published_at + frame_ms - now),
+            state.publish_output,
+          )
+      }
+      State(
+        ..state,
+        pending_output: [event, ..pending],
+        output_timer: Some(timer),
+      )
+    }
+  }
+}
+
+/// Publish the deltas held for the frame, consecutive ones of the same kind
+/// and message merged. Call it before anything that reads or retires the
+/// active output.
+pub fn flush_output(state: State(message)) -> State(message) {
+  case state.pending_output {
+    [] -> state
+    pending -> {
+      let _ = option.map(state.output_timer, process.cancel_timer)
+      let state =
+        State(
+          ..state,
+          pending_output: [],
+          output_timer: None,
+          output_published_at: clock.monotonic_ms(),
+        )
+      list.fold(merge(pending, []), state, publish_output)
+    }
+  }
+}
+
+/// Newest-first deltas, oldest first with neighbours of one message merged.
+fn merge(
+  newest: List(view.Event),
+  merged: List(view.Event),
+) -> List(view.Event) {
+  case newest, merged {
+    [], _ -> merged
+    [view.Text(run, id, text), ..rest], [view.Text(r, i, later), ..others]
+      if r == run && i == id
+    -> merge(rest, [view.Text(run, id, text <> later), ..others])
+    [view.Thinking(run, id, text, elapsed), ..rest],
+      [view.Thinking(r, i, later, closed), ..others]
+      if r == run && i == id
+    ->
+      merge(rest, [
+        view.Thinking(run, id, text <> later, option.or(closed, elapsed)),
+        ..others
+      ])
+    [event, ..rest], _ -> merge(rest, [event, ..merged])
+  }
+}
+
+fn publish_output(state: State(message), event: view.Event) -> State(message) {
+  case event {
+    view.Text(run_id, message_id, text) -> {
+      let output =
+        active_output.observe(
+          state.active_output,
+          run_id,
+          message_id,
+          "text",
+          text,
+          None,
+        )
+      list.fold(
+        chunks(text),
+        announce_status(State(..state, active_output: output)),
+        fn(state, text) { publish(state, view.Text(run_id, message_id, text)) },
+      )
+    }
+    view.Thinking(run_id, message_id, text, elapsed) -> {
+      let output =
+        active_output.observe(
+          state.active_output,
+          run_id,
+          message_id,
+          "thinking",
+          text,
+          elapsed,
+        )
+      let pieces = chunks(text)
+      let last = list.length(pieces) - 1
+      pieces
+      |> list.index_map(fn(text, index) { #(index, text) })
+      |> list.fold(
+        announce_status(State(..state, active_output: output)),
+        fn(state, piece) {
+          let #(index, text) = piece
+          publish(
+            state,
+            view.Thinking(run_id, message_id, text, case index == last {
+              True -> elapsed
+              False -> None
+            }),
+          )
+        },
+      )
+    }
+    _ -> publish(state, event)
+  }
+}
+
+/// Text in pieces of at most 32768 scalars; one piece when it has no more
+/// bytes than that.
 fn chunks(text: String) -> List(String) {
-  case string.to_utf_codepoints(text) {
-    [] -> [""]
-    scalars -> scalar_chunks(scalars, []) |> list.reverse
+  case string.byte_size(text) <= 32_768 {
+    True -> [text]
+    False -> scalar_chunks(string.to_utf_codepoints(text), []) |> list.reverse
   }
 }
 
@@ -122,6 +253,10 @@ fn scalar_chunks(
 /// A status transition is observed at the same owner boundary as the event
 /// that caused it. Repeated deltas do not allocate repeated status events.
 pub fn announce(state: State(message)) -> State(message) {
+  announce_status(flush_output(state))
+}
+
+fn announce_status(state: State(message)) -> State(message) {
   let status = current_status(state)
   case state.announced_status {
     Some(previous) if previous == status -> state

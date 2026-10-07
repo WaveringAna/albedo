@@ -78,7 +78,7 @@ and each kernel's host callback captures only its routes, store handle, and sess
 id—not a snapshot of the other agents. run waits on process-exit notifications,
 not periodic exit checks; descendant cleanup and deadlines still apply.
 
-session replay retains at most 256 events or 4 mib, evicting incrementally rather
+session replay retains at most 256 events or 992 kib, evicting incrementally rather
 than copying the full window per token. missing events require a transcript reset.
 the orchestrator feed batches every 100 ms and skips activity serialization when
 nobody is watching.

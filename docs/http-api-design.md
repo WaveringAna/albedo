@@ -1090,7 +1090,7 @@ The session checks generation equality before consulting numeric replay
 bounds. Missing or different generation, or an unavailable sequence, requires
 a durable snapshot reset. Malformed cursor components return `400` before
 headers. A well-formed future or evicted cursor resets. The replay buffer
-retains at most 256 events or 4 MiB, whichever bound is reached first.
+retains at most 256 events or 992 KiB, whichever bound is reached first.
 An oversized event is represented by bounded history references.
 
 Registration and state capture serialize with session publication. A reset
