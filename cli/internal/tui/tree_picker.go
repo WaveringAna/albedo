@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -13,14 +14,20 @@ import (
 
 var whitespaceRegex = regexp.MustCompile(`[\p{Cc}\p{Cf}\p{Z}]+`)
 
-func readablePreview(value string) string {
+// previewText is a checkpoint's preview on one line, whole.
+func previewText(value string) string {
 	clean := strings.TrimSpace(whitespaceRegex.ReplaceAllString(value, " "))
 	if clean == "" {
 		return "(empty)"
 	}
-	runes := []rune(clean)
+	return clean
+}
+
+// readablePreview is previewText cut short for a question.
+func readablePreview(value string) string {
+	runes := []rune(previewText(value))
 	if len(runes) <= 96 {
-		return clean
+		return string(runes)
 	}
 	return string(runes[:95]) + "…"
 }
@@ -46,6 +53,8 @@ type treeForkedMsg struct {
 	Gen     int
 }
 
+// TreePickerModel lists a session's checkpoints. Enter asks, and a second
+// enter branches the session from the checkpoint under the cursor.
 type TreePickerModel struct {
 	Conn        *daemon.Connection
 	NextCursor  *int
@@ -53,22 +62,31 @@ type TreePickerModel struct {
 	ForkError   string
 	Cursors     []int
 	Checkpoints []daemon.TreeCheckpoint
-	page
-	PageIndex  int
-	HasMore    bool
-	Confirming bool
-	Forking    bool
+	pageStatus
+	listView
+	confirm
+	PageIndex int
+	HasMore   bool
+	Forking   bool
 }
 
 func NewTreePickerModel(conn *daemon.Connection, sessionID string) TreePickerModel {
 	return TreePickerModel{
-		Conn:      conn,
-		SessionID: sessionID,
-		Cursors:   []int{0},
-		PageIndex: 0,
-		page:      startPage(true),
+		Conn:       conn,
+		SessionID:  sessionID,
+		Cursors:    []int{0},
+		pageStatus: newPageStatus(true),
+		listView:   newListView("Search checkpoints"),
 	}
 }
+
+func (m *TreePickerModel) SetSize(width, height int) {
+	m.pageStatus.SetSize(width, height)
+	m.listView.setSize(width, height)
+}
+
+// Confirming reports a question waiting for enter or esc.
+func (m TreePickerModel) Confirming() bool { return m.confirm.asking() }
 
 func (m TreePickerModel) Init() tea.Cmd {
 	return m.loadTreeCmd(0, m.Generation)
@@ -109,14 +127,64 @@ func (m TreePickerModel) forkCmd(checkpointID string, gen int) tea.Cmd {
 	}
 }
 
+// current is the checkpoint under the cursor.
+func (m TreePickerModel) current() (daemon.TreeCheckpoint, bool) {
+	row, ok := m.highlighted()
+	if !ok {
+		return daemon.TreeCheckpoint{}, false
+	}
+	i := slices.IndexFunc(m.Checkpoints, func(cp daemon.TreeCheckpoint) bool { return cp.ID == row.key })
+	if i < 0 {
+		return daemon.TreeCheckpoint{}, false
+	}
+	return m.Checkpoints[i], true
+}
+
+func (m *TreePickerModel) setCheckpoints(items []daemon.TreeCheckpoint) {
+	m.Checkpoints = items
+	rows := make([]listEntry, len(items))
+	for i, cp := range items {
+		rows[i] = listEntry{
+			key:    cp.ID,
+			lead:   DefaultStyles.Faint.Render(cp.Type),
+			name:   previewText(cp.Preview),
+			search: []string{cp.Type},
+			detail: func(width int) []string { return checkpointDetails(cp, width) },
+		}
+	}
+	m.setRows(rows)
+}
+
+// checkpointDetails is the pane: the checkpoint's type and whole preview,
+// and what branching from it does.
+func checkpointDetails(cp daemon.TreeCheckpoint, width int) []string {
+	lines := paneTitle(previewText(cp.Preview), "", width)
+	lines = append(lines, factRows("type", cp.Type, width)...)
+	lines = append(lines, "")
+	return append(lines, paneNote("This creates a new session with a fresh Python namespace. Workspace files stay unchanged.", width)...)
+}
+
+// fork branches the session from the checkpoint the question named.
+func (m *TreePickerModel) fork() tea.Cmd {
+	cp, ok := m.current()
+	if !ok || cp.ID != m.confirm.target {
+		m.confirm.dismiss()
+		return nil
+	}
+	m.Forking, m.ForkError, m.Error = true, "", ""
+	m.Generation = nextPageGeneration()
+	return m.forkCmd(cp.ID, m.Generation)
+}
+
 func (m TreePickerModel) Update(msg tea.Msg) (TreePickerModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case treeLoadedMsg:
 		if !m.settle(msg.Gen, msg.Err, &m.Loading) {
 			return m, nil
 		}
-		m.Checkpoints, m.NextCursor, m.HasMore = msg.Items, msg.NextCursor, msg.HasMore
-		m.Cursor, m.Confirming = 0, false
+		m.setCheckpoints(msg.Items)
+		m.NextCursor, m.HasMore = msg.NextCursor, msg.HasMore
+		m.confirm.dismiss()
 		m.ForkError, m.Error = "", ""
 		return m, nil
 
@@ -126,119 +194,94 @@ func (m TreePickerModel) Update(msg tea.Msg) (TreePickerModel, tea.Cmd) {
 		}
 		m.Forking = false
 		if msg.Err != nil {
+			// The question stays open, so enter retries.
 			m.ForkError = operationError(msg.Err, "", "Branch may have been created; check the session list before branching again.")
 			return m, nil
 		}
 		return m, func() tea.Msg { return TreeForkSuccessMsg{Session: msg.Session, Generation: msg.Gen} }
 
 	case tea.KeyPressMsg:
-		if msg.String() == "esc" || msg.String() == "ctrl+c" || msg.String() == "ctrl+d" {
-			if m.Confirming {
-				m.Confirming, m.Error = false, ""
-				return m, nil
-			}
-			return m, func() tea.Msg { return TreeCancelMsg{} }
-		}
+		return m.key(msg)
+	}
+	cmd := m.listView.update(msg)
+	return m, cmd
+}
 
-		if m.Forking || m.Loading {
-			return m, nil
+func (m TreePickerModel) key(msg tea.KeyPressMsg) (TreePickerModel, tea.Cmd) {
+	key := msg.String()
+	switch {
+	case m.confirm.asking() && !m.Forking:
+		if m.confirm.key(msg) {
+			cmd := m.fork()
+			return m, cmd
 		}
+		if !m.confirm.asking() {
+			m.ForkError = ""
+		}
+		return m, nil
+	case key == "esc" || key == "ctrl+c" || key == "ctrl+d":
+		return m, func() tea.Msg { return TreeCancelMsg{} }
+	case m.Forking || m.Loading:
+		return m, nil
+	}
 
-		if m.Confirming {
-			if msg.String() == "enter" && len(m.Checkpoints) > m.Cursor {
-				cp := m.Checkpoints[m.Cursor]
-				m.Forking = true
-				m.ForkError, m.Error = "", ""
-				m.Generation = nextPageGeneration()
-				return m, m.forkCmd(cp.ID, m.Generation)
-			}
-			return m, nil
+	switch key {
+	case "enter":
+		if cp, ok := m.current(); ok {
+			m.ForkError = ""
+			m.confirm.ask("branch", cp.ID, "branch", fmt.Sprintf("Branch after %s · %s?", cp.Type, readablePreview(cp.Preview)))
 		}
-
-		if m.step(msg.String(), len(m.Checkpoints)) {
-			return m, nil
+		return m, nil
+	case "ctrl+r":
+		return m.loadPage(m.Cursors[m.PageIndex])
+	case "pgdown":
+		// Past the last row, paging moves on to the next server page.
+		if m.HasMore && m.NextCursor != nil && m.Cursor >= len(m.shown)-1 {
+			next := *m.NextCursor
+			m.Cursors = append(m.Cursors[:m.PageIndex+1], next)
+			m.PageIndex++
+			return m.loadPage(next)
 		}
-		switch msg.String() {
-		case "left", "pgup":
-			if m.PageIndex > 0 {
-				m.PageIndex--
-				return m.loadPage(m.Cursors[m.PageIndex])
-			}
-		case "right", "pgdown":
-			if m.HasMore && m.NextCursor != nil {
-				next := *m.NextCursor
-				m.Cursors = append(m.Cursors[:m.PageIndex+1], next)
-				m.PageIndex++
-				return m.loadPage(next)
-			}
-		case "enter":
-			if len(m.Checkpoints) > 0 && m.Cursor < len(m.Checkpoints) {
-				m.ForkError = ""
-				m.Confirming = true
-			}
+	case "pgup":
+		if m.PageIndex > 0 && m.Cursor == 0 {
+			m.PageIndex--
+			return m.loadPage(m.Cursors[m.PageIndex])
 		}
 	}
-	return m, nil
+	cmd := m.listView.update(msg)
+	return m, cmd
+}
+
+func (m TreePickerModel) footer(width int) string {
+	if m.confirm.asking() && !m.Forking {
+		return m.confirm.footer(width, m.ForkError)
+	}
+	hints := []hint{{"↑↓", "move"}, {"enter", "branch"}, {"esc", "back"}, {"pgup/pgdn", "page"}, {"ctrl+r", "refresh"}}
+	if m.Error != "" {
+		hints = []hint{{"ctrl+r", "retry"}, {"esc", "back"}}
+	}
+	var status string
+	urgent := true
+	switch {
+	case m.Forking:
+		status = DefaultStyles.Busy.Render("branching…")
+	case m.Loading:
+		status, urgent = DefaultStyles.Faint.Render("loading…"), false
+	case m.Error != "":
+		status = DefaultStyles.Error.Render(m.Error)
+	}
+	return footerLine(width, hints, status, urgent)
 }
 
 func (m TreePickerModel) View() string {
-	var b strings.Builder
-
-	b.WriteString(titleRule(m.Width, brand("albedo")+" "+DefaultStyles.Muted.Render("/tree"), DefaultStyles.Faint.Render("branch history")))
-	b.WriteByte('\n')
-	b.WriteString(DefaultStyles.Faint.Render(inkWrap("Choose where the new session should branch from.", m.Width)))
-	b.WriteByte('\n')
-
-	if m.Error != "" {
-		b.WriteString(DefaultStyles.Error.Render("error:"))
-		b.WriteByte(' ')
-		b.WriteString(m.Error)
-		b.WriteByte('\n')
+	lv := m.listView
+	lv.Empty = "No history checkpoints available to branch from."
+	if m.Loading {
+		lv.Empty = "loading history…"
 	}
-	if m.Loading || len(m.Checkpoints) == 0 {
-		if m.Error == "" {
-			msg := "No history checkpoints available to branch from."
-			if m.Loading {
-				msg = "loading history…"
-			}
-			b.WriteString(DefaultStyles.Faint.Render(msg))
-			b.WriteByte('\n')
-		}
-		b.WriteString(keyHints(hint{"enter", "confirm"}, hint{"esc", "cancel"}))
-		return b.String()
-	}
-
-	lines := make([]string, len(m.Checkpoints))
-	for i, cp := range m.Checkpoints {
-		lines[i] = DefaultStyles.Faint.Render(fmt.Sprintf("%-9s", cp.Type)) + " " + readablePreview(cp.Preview)
-	}
-	b.WriteString(selectableRows(lines, m.Cursor, m.Height, m.Height, m.Width))
-	b.WriteByte('\n')
-
-	if m.Confirming && m.Cursor < len(m.Checkpoints) {
-		current := m.Checkpoints[m.Cursor]
-		b.WriteByte('\n')
-		b.WriteString(DefaultStyles.Faint.Render(inkWrap("This creates a new session with a fresh Python namespace. Workspace files stay unchanged.", m.Width)))
-		b.WriteByte('\n')
-		b.WriteString(DefaultStyles.Warning.Render(fmt.Sprintf("Branch after %s · %s?", current.Type, readablePreview(current.Preview))))
-		b.WriteByte('\n')
-		if m.ForkError != "" {
-			b.WriteString(DefaultStyles.Error.Render(m.ForkError))
-			b.WriteByte('\n')
-		}
-	}
-
-	if m.Forking {
-		b.WriteString(DefaultStyles.Faint.Render("Creating the new session…"))
-	} else if m.Confirming {
-		confirm := hint{"enter", "confirm"}
-		if m.ForkError != "" {
-			confirm = hint{"enter", "retry"}
-		}
-		b.WriteString(keyHints(confirm, hint{"esc", "cancel"}))
-	} else {
-		b.WriteString(inkWrap(keyHints(hint{"↑↓", "select"}, hint{"←→/pgup/pgdn", "page"}, hint{"enter", "branch"}, hint{"esc", "return to chat"}), m.Width))
-	}
-
-	return b.String()
+	title := brand("albedo") + " " + DefaultStyles.Muted.Render("/tree")
+	f := lv.frame(title, DefaultStyles.Faint.Render("branch history"), m.footer(max(1, m.Width)))
+	// Without the pane's room, the branch note still reads as one line.
+	f.summary = "this creates a new session with a fresh Python namespace"
+	return f.view(m.Width, m.Height)
 }

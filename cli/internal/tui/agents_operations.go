@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"time"
@@ -106,19 +107,33 @@ func (m AgentsViewModel) resolveAgentOperation(pending agentPendingOperation) te
 	}
 }
 
+// askDelete asks before deleting an agent, and says what goes with it.
+func (m *AgentsViewModel) askDelete(id string) {
+	what := m.label(id, "")
+	switch below := m.below(id); {
+	case below == 1:
+		what += " and the agent below it"
+	case below > 1:
+		what += fmt.Sprintf(" and the %d agents below it", below)
+	}
+	m.confirm.ask("delete", id, "delete", "Their transcripts and work will also be deleted. Delete "+what+"?")
+}
+
 func (m AgentsViewModel) key(msg tea.KeyPressMsg) (AgentsViewModel, tea.Cmd) {
 	s, empty := msg.String(), m.input.Value() == ""
 	if m.rename.active() {
 		return m, m.rename.key(msg)
 	}
-	if m.confirm != "" {
-		id := m.confirm
-		m.confirm = ""
-		if s == "y" {
+	if m.confirm.asking() {
+		id := m.confirm.target
+		if m.confirm.key(msg) {
+			m.confirm.dismiss()
 			m.say("deleting " + m.label(id, "") + "…")
 			return m, m.deleteCmd(id)
 		}
-		m.say("kept")
+		if !m.confirm.asking() {
+			m.say("kept")
+		}
 		return m, nil
 	}
 	switch {
@@ -138,7 +153,7 @@ func (m AgentsViewModel) key(msg tea.KeyPressMsg) (AgentsViewModel, tea.Cmd) {
 		case n.id == m.SessionID:
 			m.say("this is the session you opened the view from; delete it from the session browser")
 		default:
-			m.confirm = n.id
+			m.askDelete(n.id)
 		}
 		return m, nil
 	case s == "esc" || s == "ctrl+c" || s == "ctrl+o":

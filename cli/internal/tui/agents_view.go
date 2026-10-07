@@ -162,7 +162,7 @@ type AgentsViewModel struct {
 	selected          string
 
 	notice    string
-	confirm   string // the agent waiting for y to delete it
+	confirm   confirm // the delete waiting for enter; esc keeps the agent
 	packets   []agentPacket
 	floats    []agentFloat
 	order     []string
@@ -287,8 +287,8 @@ func (m AgentsViewModel) update(msg tea.Msg) (AgentsViewModel, tea.Cmd) {
 		if m.nodes[m.selected] == nil {
 			m.selected = m.root
 		}
-		if m.nodes[m.confirm] == nil {
-			m.confirm = ""
+		if m.nodes[m.confirm.target] == nil {
+			m.confirm.dismiss()
 		}
 		if m.nodes[m.rename.id] == nil {
 			m.rename = renameField{}

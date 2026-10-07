@@ -57,7 +57,7 @@ func TestReopenedScreensRejectPreviousRequestReplies(t *testing.T) {
 		})
 		t.Run("context", func(t *testing.T) {
 			old := NewContextInspectorModel(nil, "s")
-			old, _ = old.Update(tea.KeyPressMsg{Code: 'r', Text: "r"})
+			old, _ = old.Update(tea.KeyPressMsg{Code: 'r', Mod: tea.ModCtrl})
 			current := NewContextInspectorModel(nil, "s")
 			current.Detail = &ContextDetail{Section: daemon.ContextSection{ID: "history"}}
 			current, _ = current.Update(contextSnapshotLoadedMsg{Gen: old.Generation, Err: replyErr, Snapshot: &daemon.ContextSnapshot{State: "ready"}})
@@ -69,7 +69,7 @@ func TestReopenedScreensRejectPreviousRequestReplies(t *testing.T) {
 		t.Run("webhooks", func(t *testing.T) {
 			old := NewWebhooksPageModel(nil, "s")
 			old.Loading = false
-			old, _ = old.Update(tea.KeyPressMsg{Code: 'r', Text: "r"})
+			old, _ = old.Update(tea.KeyPressMsg{Code: 'r', Mod: tea.ModCtrl})
 			current := NewWebhooksPageModel(nil, "s")
 			current.Saving = true
 			current, _ = current.Update(webhooksLoadedMsg{Gen: old.Generation, Err: replyErr})

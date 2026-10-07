@@ -5,7 +5,9 @@
 //     a running one must resume them exactly once (wasted CPU, double speed);
 //   - normalized replacement windows must survive interleaved calls without
 //     settling another call's live preview into history;
-//   - a pending delete confirm must not outlive the agent it names;
+//   - a pending delete confirm must not outlive the agent it names, and a
+//     stray key must neither delete nor keep it by accident (the confirm
+//     answers enter and esc only);
 //   - a failed history seed must retry on the next selection, and a late
 //     error from an older generation must not unseed the live node;
 //   - overflow during a blocked mutation must preserve its later outcome and draft.
@@ -115,21 +117,21 @@ func TestAgentsDeleteConfirmDropsWithTheAgent(t *testing.T) {
 	m := agentsFixture(t)
 	m.selected = "coder"
 	m, _ = m.key(tea.KeyPressMsg{Code: 'x', Mod: tea.ModCtrl})
-	if m.confirm != "coder" {
+	if m.confirm.target != "coder" {
 		t.Fatal("ctrl+x should ask before deleting coder")
 	}
 	m, _ = m.Update(agentsEventsMsg{Gen: 1, Events: []daemon.AgentEvent{
 		{Type: "gone", Session: "coder"},
 	}})
-	if m.confirm != "" {
+	if m.confirm.asking() {
 		t.Fatalf("the confirm prompt outlived the agent it named:\n%s", ansi.Strip(m.View()))
 	}
-	if strings.Contains(ansi.Strip(m.View()), "delete coder") {
+	if strings.Contains(ansi.Strip(m.View()), "Delete coder") {
 		t.Fatal("the view still offers to delete a vanished agent")
 	}
 	m.selected = "tests"
 	m, _ = m.key(tea.KeyPressMsg{Code: 'x', Mod: tea.ModCtrl})
-	if m.confirm != "tests" {
+	if m.confirm.target != "tests" {
 		t.Fatal("ctrl+x stopped working after the prompt was dropped")
 	}
 }
@@ -299,5 +301,29 @@ func TestAgentsTerminalEventsCannotReviveObsoleteCode(t *testing.T) {
 				t.Fatalf("%s revived obsolete code or lost the fresh result: %q", kind, got)
 			}
 		})
+	}
+}
+
+// Delete is enter and esc only: a stray key that deleted, or cancelled, on
+// the way past would lose or keep an agent without the question being read.
+func TestAgentsDeleteAsksWithEnterAndEsc(t *testing.T) {
+	m := agentsFixture(t)
+	m.selected = "coder"
+	m, _ = m.key(tea.KeyPressMsg{Code: 'x', Mod: tea.ModCtrl})
+	if !strings.Contains(ansi.Strip(m.View()), "Delete coder and the agent below it?") || !strings.Contains(ansi.Strip(m.View()), "esc cancel") {
+		t.Fatalf("ctrl+x should show the shared confirm:\n%s", ansi.Strip(m.View()))
+	}
+	m, cmd := m.key(tea.KeyPressMsg{Code: 'y', Text: "y"})
+	if cmd != nil || m.confirm.target != "coder" {
+		t.Fatal("a stray key answered the delete question")
+	}
+	m, cmd = m.key(tea.KeyPressMsg{Code: tea.KeyEscape})
+	if cmd != nil || m.confirm.asking() || !strings.Contains(m.notice, "kept") {
+		t.Fatalf("esc should keep the agent: notice %q", m.notice)
+	}
+	m, _ = m.key(tea.KeyPressMsg{Code: 'x', Mod: tea.ModCtrl})
+	m, cmd = m.key(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if cmd == nil || m.confirm.asking() {
+		t.Fatal("enter should delete the agent the question named")
 	}
 }

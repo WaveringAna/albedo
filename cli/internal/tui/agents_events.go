@@ -62,8 +62,8 @@ func (m *AgentsViewModel) apply(event daemon.AgentEvent) bool {
 		if m.rename.id == id {
 			m.rename = renameField{}
 		}
-		if m.confirm == id {
-			m.confirm = ""
+		if m.confirm.target == id {
+			m.confirm.dismiss()
 		}
 		if m.selected == id {
 			m.selected = m.root

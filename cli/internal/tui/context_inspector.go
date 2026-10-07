@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -14,12 +15,16 @@ import (
 	"golang.org/x/text/message"
 )
 
+// ContextDetail is one section's content, read a page at a time and scrolled
+// line by line.
 type ContextDetail struct {
 	Value   *daemon.ContextPage
 	Error   string
 	Section daemon.ContextSection
 	Page    int
 	Scroll  int
+	// visible is the body rows the last frame drew; page jumps move by it.
+	visible int
 	// wrapped is wrappedFrom's content at wrappedWidth, kept because every
 	// scroll step reads it and a page can be long.
 	wrapped      []string
@@ -38,6 +43,46 @@ func (d *ContextDetail) rows(width int) []string {
 	return d.wrapped
 }
 
+// scroll moves the content by lines, within the rows the last frame showed.
+func (d *ContextDetail) scroll(by int) {
+	d.Scroll = min(max(0, d.Scroll+by), max(0, len(d.wrapped)-d.visible))
+}
+
+// list is the reader's body at exactly width × height: where the page comes
+// from, any warning, then the scrolled rows.
+func (d *ContextDetail) list(width, height int) []string {
+	sec := d.Section
+	head := []string{DefaultStyles.Faint.Render(fmt.Sprintf("%s · page %d/%d · %s", sec.Source, d.Page+1, sec.Pages, contextCount(sec.ByteCount, "byte")))}
+	var rows []string
+	switch {
+	case d.Error != "":
+		head = append(head, DefaultStyles.Error.Render(d.Error))
+	case d.Value == nil:
+		head = append(head, DefaultStyles.Faint.Render("loading inspectable prepared content…"))
+	default:
+		if d.Value.Omitted != "" {
+			head = append(head, DefaultStyles.Warning.Render("omitted: "+d.Value.Omitted))
+		}
+		head = append(head, "")
+		rows = d.rows(max(1, width-2))
+	}
+	room := max(0, height-len(head))
+	d.visible = room
+	d.Scroll = min(d.Scroll, max(0, len(rows)-room))
+
+	out := make([]string, 0, height)
+	for _, line := range head {
+		out = append(out, "  "+line)
+	}
+	for _, row := range rows[d.Scroll:min(len(rows), d.Scroll+room)] {
+		out = append(out, "  "+row)
+	}
+	for len(out) < height {
+		out = append(out, "")
+	}
+	return out
+}
+
 type ContextDoneMsg struct{}
 
 type contextSnapshotLoadedMsg struct {
@@ -54,20 +99,29 @@ type contextPageLoadedMsg struct {
 	Gen       int
 }
 
+// ContextInspectorModel lists the sections of the prepared request beside
+// the highlighted section's facts. Enter reads a section's content.
 type ContextInspectorModel struct {
 	Conn      *daemon.Connection
 	SessionID string
 	Snapshot  *daemon.ContextSnapshot
 	Detail    *ContextDetail
-	page
+	pageStatus
+	listView
 }
 
 func NewContextInspectorModel(conn *daemon.Connection, sessionID string) ContextInspectorModel {
 	return ContextInspectorModel{
-		Conn:      conn,
-		SessionID: sessionID,
-		page:      startPage(true),
+		Conn:       conn,
+		SessionID:  sessionID,
+		pageStatus: newPageStatus(true),
+		listView:   newListView("Search sections"),
 	}
+}
+
+func (m *ContextInspectorModel) SetSize(width, height int) {
+	m.pageStatus.SetSize(width, height)
+	m.listView.setSize(width, height)
 }
 
 func (m ContextInspectorModel) Init() tea.Cmd {
@@ -105,6 +159,162 @@ func (m ContextInspectorModel) loadPageCmd(sectionID string, page int, gen int) 
 	}
 }
 
+// current is the section under the cursor.
+func (m ContextInspectorModel) current() (daemon.ContextSection, bool) {
+	row, ok := m.highlighted()
+	if !ok || m.Snapshot == nil {
+		return daemon.ContextSection{}, false
+	}
+	i := slices.IndexFunc(m.Snapshot.Sections, func(sec daemon.ContextSection) bool { return sec.ID == row.key })
+	if i < 0 {
+		return daemon.ContextSection{}, false
+	}
+	return m.Snapshot.Sections[i], true
+}
+
+func (m *ContextInspectorModel) setSections() {
+	var rows []listEntry
+	if m.Snapshot != nil {
+		rows = make([]listEntry, len(m.Snapshot.Sections))
+		for i, sec := range m.Snapshot.Sections {
+			rows[i] = sectionEntry(i, sec)
+		}
+	}
+	m.setRows(rows)
+}
+
+func sectionEntry(i int, sec daemon.ContextSection) listEntry {
+	tag := DefaultStyles.Faint.Render("no content")
+	if sec.Pages > 0 {
+		tag = DefaultStyles.Muted.Render(contextCount(sec.Pages, "page"))
+	}
+	return listEntry{
+		key:    sec.ID,
+		lead:   DefaultStyles.Faint.Render(fmt.Sprintf("%d.", i+1)),
+		name:   sec.Label,
+		desc:   sec.Source,
+		tag:    tag,
+		search: []string{sec.Kind, sec.Preview},
+		detail: func(width int) []string { return sectionDetails(sec, width) },
+	}
+}
+
+// sectionDetails is the pane: where a section comes from, how much of it
+// there is, and its preview.
+func sectionDetails(sec daemon.ContextSection, width int) []string {
+	pages := "content unavailable"
+	if sec.Pages > 0 {
+		pages = contextCount(sec.Pages, "page")
+	}
+	lines := paneTitle(sec.Label, "", width)
+	lines = append(lines, factRows("source", sec.Source, width)...)
+	lines = append(lines, factRows("items", contextCount(sec.ItemCount, "item"), width)...)
+	lines = append(lines, factRows("bytes", contextCount(sec.ByteCount, "measured byte"), width)...)
+	lines = append(lines, factRows("pages", pages, width)...)
+	if sec.Preview != "" {
+		lines = append(lines, "")
+		lines = append(lines, factRows("preview", sec.Preview, width)...)
+	}
+	lines = append(lines, "")
+	return append(lines, paneNote("enter reads this section a page at a time", width)...)
+}
+
+// requestFacts is the prepared request's standing, drawn above the sections
+// so it reads without opening one.
+func (m ContextInspectorModel) requestFacts(width int) []string {
+	snap := m.Snapshot
+	if snap == nil {
+		return nil
+	}
+	if snap.State == "pending" {
+		value := "not prepared for this running session yet"
+		if snap.Reason != "" {
+			value += ". " + snap.Reason
+		}
+		return factRows("request", value, width)
+	}
+	label := snap.Model
+	if snap.Provider != "" {
+		label = snap.Provider + " · " + snap.Model
+	}
+	if snap.Protocol != "" {
+		label += " · " + snap.Protocol
+	}
+	window := "not reported"
+	if snap.ContextWindowTokens != nil {
+		window = contextCount(*snap.ContextWindowTokens, "token") + " (configured)"
+	}
+	compaction := snap.Compaction
+	lines := factRows("model", label, width)
+	lines = append(lines, factRows("window", window, width)...)
+	strategy := cmp.Or(compaction.Strategy, "none")
+	if status := compactionStatuses[compaction.Status]; status != "" {
+		strategy += " · " + status
+	}
+	lines = append(lines, factRows("compact", strategy, width)...)
+	if compaction.TriggerFreePercent != nil {
+		lines = append(lines, factRows("trigger", fmt.Sprintf("keep %g%% free", *compaction.TriggerFreePercent), width)...)
+	}
+	switch {
+	case compaction.ProviderInputTokens != nil:
+		measured := contextCount(*compaction.ProviderInputTokens, "token") + " from provider"
+		if compaction.ProviderCachedInputTokens != nil {
+			measured += " · " + contextCount(*compaction.ProviderCachedInputTokens, "cached token")
+		}
+		lines = append(lines, factRows("input", measured, width)...)
+	case compaction.EstimatedInputTokens != nil:
+		method := cmp.Or(compaction.EstimateMethod, "method not reported")
+		lines = append(lines, factRows("input", contextCount(*compaction.EstimatedInputTokens, "token")+" estimated · "+method, width)...)
+	}
+	return lines
+}
+
+// emptyText says why there are no section rows.
+func (m ContextInspectorModel) emptyText() string {
+	switch {
+	case m.Loading && m.Snapshot == nil:
+		return "loading prepared request snapshot…"
+	case m.Snapshot == nil:
+		return "no prepared request to inspect"
+	case m.Snapshot.State == "pending":
+		return "sections appear once a request is prepared"
+	}
+	return "the prepared request contains no inspectable sections"
+}
+
+// list draws the request's standing above the sections, then the sections,
+// at exactly width × height.
+func (m ContextInspectorModel) list(width, height int) []string {
+	head := append(m.requestFacts(width), paneNote("read-only · durable transcript and request-only context are separate", width)...)
+	head = append(head, "")
+	for i := range head {
+		head[i] = svFit(head[i], width)
+	}
+	lv := m.listView
+	lv.Empty = m.emptyText()
+	return append(head, lv.list(width, max(1, height-len(head)))...)
+}
+
+func (m ContextInspectorModel) footer(width int) string {
+	hints := []hint{{"↑↓", "move"}, {"enter", "inspect"}, {"ctrl+r", "refresh"}, {"esc", "back"}}
+	var status string
+	urgent := true
+	switch {
+	case m.Error != "":
+		status = DefaultStyles.Error.Render(m.Error)
+	case m.Loading:
+		status, urgent = DefaultStyles.Faint.Render("loading…"), false
+	case m.Snapshot != nil:
+		status, urgent = DefaultStyles.Faint.Render(counted(len(m.Snapshot.Sections), "section")), false
+	}
+	return footerLine(width, hints, status, urgent)
+}
+
+// readerFooter is the footer while a section's content is open.
+func readerFooter(width int) string {
+	return footerLine(width, []hint{{"↑↓", "scroll"}, {"pgup/pgdn", "jump"}, {"←→", "page"}, {"esc", "sections"}}, "", false)
+}
+
 func (m ContextInspectorModel) Update(msg tea.Msg) (ContextInspectorModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case contextSnapshotLoadedMsg:
@@ -112,9 +322,7 @@ func (m ContextInspectorModel) Update(msg tea.Msg) (ContextInspectorModel, tea.C
 			return m, nil
 		}
 		m.Snapshot, m.Error = msg.Snapshot, ""
-		if m.Snapshot != nil && m.Cursor >= len(m.Snapshot.Sections) {
-			m.Cursor = max(0, len(m.Snapshot.Sections)-1)
-		}
+		m.setSections()
 		return m, nil
 
 	case contextPageLoadedMsg:
@@ -129,76 +337,64 @@ func (m ContextInspectorModel) Update(msg tea.Msg) (ContextInspectorModel, tea.C
 		return m, nil
 
 	case tea.KeyPressMsg:
-		switch msg.String() {
-		case "esc", "ctrl+c", "ctrl+d":
-			if m.Detail != nil {
-				m.Detail = nil
-				m.Generation = nextPageGeneration()
-				return m, nil
-			}
-			return m, func() tea.Msg { return ContextDoneMsg{} }
-		}
-
 		if m.Detail != nil {
-			lines := m.Detail.rows(m.Width - 4)
-			visibleRows := max(1, m.Height-7)
-			maxScroll := max(0, len(lines)-visibleRows)
-
-			switch msg.String() {
-			case "left", "right":
-				page := m.Detail.Page - 1
-				if msg.String() == "right" {
-					page = m.Detail.Page + 1
-				}
-				if page >= 0 && page < m.Detail.Section.Pages {
-					m.Detail.Page, m.Detail.Value, m.Detail.Scroll, m.Detail.Error = page, nil, 0, ""
-					m.Generation = nextPageGeneration()
-					return m, m.loadPageCmd(m.Detail.Section.ID, m.Detail.Page, m.Generation)
-				}
-			case "up":
-				if m.Detail.Scroll > 0 {
-					m.Detail.Scroll--
-				}
-			case "down":
-				if m.Detail.Scroll < maxScroll {
-					m.Detail.Scroll++
-				}
-			case "pgup":
-				m.Detail.Scroll = max(0, m.Detail.Scroll-visibleRows)
-			case "pgdown":
-				m.Detail.Scroll = min(maxScroll, m.Detail.Scroll+visibleRows)
-			}
-			return m, nil
+			return m.readerKey(msg)
 		}
+		return m.sectionsKey(msg)
+	}
+	cmd := m.listView.update(msg)
+	return m, cmd
+}
 
-		if strings.EqualFold(msg.String(), "r") {
-			m.Loading, m.Snapshot, m.Detail, m.Error = true, nil, nil, ""
+// readerKey scrolls and pages through a section's content; esc returns to
+// the sections.
+func (m ContextInspectorModel) readerKey(msg tea.KeyPressMsg) (ContextInspectorModel, tea.Cmd) {
+	d := m.Detail
+	switch msg.String() {
+	case "esc", "ctrl+c", "ctrl+d":
+		m.Detail = nil
+		m.Generation = nextPageGeneration()
+	case "up":
+		d.scroll(-1)
+	case "down":
+		d.scroll(1)
+	case "pgup":
+		d.scroll(-max(1, d.visible))
+	case "pgdown":
+		d.scroll(max(1, d.visible))
+	case "left", "right":
+		page := d.Page - 1
+		if msg.String() == "right" {
+			page = d.Page + 1
+		}
+		if page >= 0 && page < d.Section.Pages {
+			d.Page, d.Value, d.Scroll, d.Error = page, nil, 0, ""
 			m.Generation = nextPageGeneration()
-			return m, m.loadSnapshotCmd(m.Generation)
-		}
-
-		switch msg.String() {
-		case "up", "ctrl+p":
-			if m.Cursor > 0 {
-				m.Cursor--
-			}
-		case "down", "ctrl+n":
-			if m.Snapshot != nil && m.Cursor < len(m.Snapshot.Sections)-1 {
-				m.Cursor++
-			}
-		case "enter":
-			if m.Snapshot != nil && len(m.Snapshot.Sections) > m.Cursor {
-				sec := m.Snapshot.Sections[m.Cursor]
-				if sec.Pages > 0 {
-					m.Detail = &ContextDetail{Section: sec}
-					m.Generation = nextPageGeneration()
-					return m, m.loadPageCmd(sec.ID, 0, m.Generation)
-				}
-			}
+			return m, m.loadPageCmd(d.Section.ID, page, m.Generation)
 		}
 	}
-
 	return m, nil
+}
+
+func (m ContextInspectorModel) sectionsKey(msg tea.KeyPressMsg) (ContextInspectorModel, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "ctrl+c", "ctrl+d":
+		return m, func() tea.Msg { return ContextDoneMsg{} }
+	case "enter":
+		if sec, ok := m.current(); ok && sec.Pages > 0 {
+			m.Detail = &ContextDetail{Section: sec}
+			m.Generation = nextPageGeneration()
+			return m, m.loadPageCmd(sec.ID, 0, m.Generation)
+		}
+		return m, nil
+	case "ctrl+r":
+		m.Loading, m.Snapshot, m.Error = true, nil, ""
+		m.setSections()
+		m.Generation = nextPageGeneration()
+		return m, m.loadSnapshotCmd(m.Generation)
+	}
+	cmd := m.listView.update(msg)
+	return m, cmd
 }
 
 func wrapContextContent(content string, width int) []string {
@@ -217,112 +413,23 @@ func contextCount(n int, unit string) string {
 	return englishPrinter.Sprintf("%d", n) + " " + unit
 }
 
+// reader is the section's content as a list with no filter and no pane.
+func (m ContextInspectorModel) reader() listFrame {
+	title := brand("albedo") + " " + DefaultStyles.Muted.Render("/context")
+	return listFrame{
+		title:  title,
+		right:  DefaultStyles.Faint.Render(m.Detail.Section.Label),
+		list:   m.Detail.list,
+		footer: readerFooter(max(1, m.Width)),
+	}
+}
+
 func (m ContextInspectorModel) View() string {
-	var b strings.Builder
-	line := func(text string) { b.WriteString(text); b.WriteByte('\n') }
-	faint := func(text string) { line(DefaultStyles.Faint.Render(text)) }
 	if m.Detail != nil {
-		sec, d := m.Detail.Section, m.Detail
-		line(titleRule(m.Width, brand("albedo")+" "+DefaultStyles.Muted.Render("/context"), DefaultStyles.Faint.Render(sec.Label)))
-		faint(fmt.Sprintf("%s · page %d/%d · %s", sec.Source, d.Page+1, sec.Pages, contextCount(sec.ByteCount, "byte")))
-		if d.Error != "" {
-			line(DefaultStyles.Error.Render(d.Error))
-		} else if d.Value == nil {
-			faint("loading inspectable prepared content…")
-		} else {
-			if d.Value.Omitted != "" {
-				line(DefaultStyles.Warning.Render("omitted: " + d.Value.Omitted))
-			}
-			line("")
-			rows := d.rows(m.Width - 4)
-			visible := 17
-			if m.Height > 0 {
-				visible = max(1, m.Height-7)
-			}
-			for _, row := range rows[min(d.Scroll, len(rows)):min(len(rows), d.Scroll+visible)] {
-				line(row)
-			}
-		}
-		line(keyHints(hint{"↑↓", "scroll"}, hint{"pgup/pgdn", "jump"}, hint{"←→", "page"}, hint{"esc", "sections"}))
-		return strings.TrimSuffix(b.String(), "\n")
+		return m.reader().view(m.Width, m.Height)
 	}
-	line(titleRule(m.Width, brand("albedo")+" "+DefaultStyles.Muted.Render("/context"), DefaultStyles.Faint.Render("prepared request")))
-	faint(inkWrap("read-only · durable transcript and request-only context are separate", m.Width))
-	if m.Error != "" {
-		line(DefaultStyles.Error.Render(m.Error))
-	}
-	if m.Loading && m.Snapshot == nil && m.Error == "" {
-		faint("loading prepared request snapshot…")
-	} else if m.Snapshot == nil {
-		line(keyHints(hint{"r", "retry"}, hint{"esc", "return to chat"}))
-	} else if m.Snapshot.State == "pending" {
-		line(DefaultStyles.Warning.Render("No request has been prepared for this running session yet."))
-		faint(m.Snapshot.Reason)
-		line(keyHints(hint{"r", "refresh"}, hint{"esc", "return to chat"}))
-	} else {
-		snap := m.Snapshot
-		label := snap.Model
-		if snap.Provider != "" {
-			label = snap.Provider + " · " + snap.Model
-		}
-		if snap.Protocol != "" {
-			label += " · " + snap.Protocol
-		}
-		line(label)
-		window := "not reported"
-		if snap.ContextWindowTokens != nil {
-			window = contextCount(*snap.ContextWindowTokens, "token") + " (configured)"
-		}
-		faint(inkWrap("context window: "+window, m.Width))
-		status := compactionStatuses[snap.Compaction.Status]
-		strategy := cmp.Or(snap.Compaction.Strategy, "none")
-		faint("compaction: " + strategy + " · " + status)
-		if snap.Compaction.TriggerFreePercent != nil {
-			faint(fmt.Sprintf("trigger: keep %g%% free", *snap.Compaction.TriggerFreePercent))
-		}
-		if snap.Compaction.ProviderInputTokens != nil {
-			measured := "provider input: " + contextCount(*snap.Compaction.ProviderInputTokens, "token")
-			if snap.Compaction.ProviderCachedInputTokens != nil {
-				measured += " · " + contextCount(*snap.Compaction.ProviderCachedInputTokens, "cached token")
-			}
-			faint(measured)
-		} else if snap.Compaction.EstimatedInputTokens != nil {
-			method := cmp.Or(snap.Compaction.EstimateMethod, "method not reported")
-			faint("estimated input: " + contextCount(*snap.Compaction.EstimatedInputTokens, "token") + " · " + method)
-		}
-		line("")
-		capacity := 5
-		if m.Height > 0 {
-			capacity = max(1, (m.Height-9)/3)
-		}
-		first := min(max(0, m.Cursor-capacity/2), max(0, len(snap.Sections)-capacity))
-		for i := first; i < min(len(snap.Sections), first+capacity); i++ {
-			sec := snap.Sections[i]
-			marker := " "
-			if i == m.Cursor {
-				marker = selectBar()
-			}
-			label := fmt.Sprintf("%s %d. %s ", marker, i+1, sec.Label) + DefaultStyles.Faint.Render("· "+sec.Source)
-			if i == m.Cursor {
-				label = selectedLine(label, m.Width)
-			}
-			line(label)
-			available := "content unavailable"
-			if sec.Pages > 0 {
-				available = contextCount(sec.Pages, "page")
-			}
-			faint("  " + contextCount(sec.ItemCount, "item") + " · " + contextCount(sec.ByteCount, "measured byte") + " · " + available)
-			if i == m.Cursor && sec.Preview != "" {
-				line("  " + sec.Preview)
-			}
-		}
-		if len(snap.Sections) == 0 {
-			faint("the prepared request contains no inspectable sections")
-		}
-		if len(snap.Sections) > capacity {
-			faint(fmt.Sprintf("showing %d–%d of %d sections", first+1, min(len(snap.Sections), first+capacity), len(snap.Sections)))
-		}
-		line(inkWrap(keyHints(hint{"↑↓", "select"}, hint{"enter", "inspect content"}, hint{"r", "refresh"}, hint{"esc", "return to chat"}), m.Width))
-	}
-	return strings.TrimSuffix(b.String(), "\n")
+	title := brand("albedo") + " " + DefaultStyles.Muted.Render("/context")
+	f := m.listView.frame(title, DefaultStyles.Faint.Render("prepared request"), m.footer(max(1, m.Width)))
+	f.list = m.list
+	return f.view(m.Width, m.Height)
 }

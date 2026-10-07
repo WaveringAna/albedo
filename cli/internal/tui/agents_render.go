@@ -158,17 +158,8 @@ func (m AgentsViewModel) View() string {
 	out := []string{titleRule(m.Width, brand("albedo")+" "+DefaultStyles.Muted.Render("/agents"), right)}
 
 	var confirmRows []string
-	if m.confirm != "" {
-		what := m.label(m.confirm, "")
-		if below := m.below(m.confirm); below == 1 {
-			what += " and the agent below it"
-		} else if below > 1 {
-			what += fmt.Sprintf(" and the %d agents below it", below)
-		}
-		for line := range strings.SplitSeq(ansi.Wrap("Their transcripts and work will also be deleted. Delete "+what+"?", max(1, m.Width), " "), "\n") {
-			confirmRows = append(confirmRows, DefaultStyles.Warning.Render(line))
-		}
-		confirmRows = append(confirmRows, keyHints(hint{"y", "delete"}, hint{"any key", "keep"}))
+	if m.confirm.asking() {
+		confirmRows = strings.Split(m.confirm.footer(max(1, m.Width), ""), "\n")
 	}
 	bodyH := max(1, m.Height-3-max(1, len(confirmRows)))
 	dagW := m.dagWidth()
