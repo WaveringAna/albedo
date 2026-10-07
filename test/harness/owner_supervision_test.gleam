@@ -2,11 +2,12 @@
 //// started, races beyond normal E2E teardown. Split from supervision_test so
 //// the two run side by side.
 
+import albedo/daemon/store
 import albedo/harness/extensions/python/kernel as python
-import albedo/harness/extensions/work/ledger as work
 import gleam/erlang/process
 import gleam/int
 import gleeunit/should
+import harness/kernel_fixture
 
 /// Cells may not spawn processes themselves, but a library they call may:
 /// this defines one, `spawn`, compiled outside any cell.
@@ -14,8 +15,8 @@ const library_spawn =
   "library = {}\nexec(compile('import subprocess\\ndef spawn(*args, **kwargs):\\n    return subprocess.Popen(*args, **kwargs)', 'fixture_library.py', 'exec'), library)\nspawn = library['spawn']\n"
 
 pub fn owner_death_still_ends_reported_job_groups_test() -> Nil {
-  let assert Ok(store) = work.start(":memory:")
-  let assert Ok(kernel) = python.local(store, "/tmp")
+  let assert Ok(store) = store.start(":memory:", "")
+  let assert Ok(kernel) = kernel_fixture.local(store, "/tmp")
   let assert Ok(started) =
     python.execute(
       kernel,
@@ -33,7 +34,7 @@ pub fn owner_death_still_ends_reported_job_groups_test() -> Nil {
       "import os, signal\nos.kill(os.getpid(), signal.SIGKILL)",
       5000,
     )
-  let assert Ok(probe) = python.local(store, "/tmp")
+  let assert Ok(probe) = kernel_fixture.local(store, "/tmp")
   let assert Ok(checked) =
     python.execute(
       probe,
@@ -45,12 +46,12 @@ pub fn owner_death_still_ends_reported_job_groups_test() -> Nil {
     )
   checked.value |> should.equal("'gone'")
   let assert Ok(_) = python.stop(probe)
-  work.close(store)
+  store.close(store)
 }
 
 pub fn kernel_death_ends_unregistered_children_in_its_own_group_test() -> Nil {
-  let assert Ok(store) = work.start(":memory:")
-  let assert Ok(kernel) = python.local(store, "/tmp")
+  let assert Ok(store) = store.start(":memory:", "")
+  let assert Ok(kernel) = kernel_fixture.local(store, "/tmp")
   let assert Ok(started) =
     python.execute(kernel, "start", library_spawn <> "import subprocess
 child = spawn(['sleep', '30'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -64,7 +65,7 @@ child.pid", 5000)
 os.kill(os.getpid(), signal.SIGKILL)",
       5000,
     )
-  let assert Ok(probe) = python.local(store, "/tmp")
+  let assert Ok(probe) = kernel_fixture.local(store, "/tmp")
   let assert Ok(checked) = python.execute(probe, "check", "import os
 state = 'alive'
 try:
@@ -74,12 +75,12 @@ except ProcessLookupError:
 state", 5000)
   checked.value |> should.equal("'gone'")
   let assert Ok(_) = python.stop(probe)
-  work.close(store)
+  store.close(store)
 }
 
 pub fn shutdown_keeps_ownership_of_late_job_registrations_test() -> Nil {
-  let assert Ok(store) = work.start(":memory:")
-  let assert Ok(kernel) = python.local(store, "/tmp")
+  let assert Ok(store) = store.start(":memory:", "")
+  let assert Ok(kernel) = kernel_fixture.local(store, "/tmp")
   let assert Ok(path) =
     python.execute(
       kernel,
@@ -98,7 +99,7 @@ report",
       5000,
     )
   let assert Ok(_) = python.stop(kernel)
-  let assert Ok(probe) = python.local(store, "/tmp")
+  let assert Ok(probe) = kernel_fixture.local(store, "/tmp")
   let assert Ok(checked) = python.execute(probe, "check", "import os
 from pathlib import Path
 report = Path(" <> path.value <> ")
@@ -112,12 +113,12 @@ except ProcessLookupError:
 state", 5000)
   checked.value |> should.equal("'gone'")
   let assert Ok(_) = python.stop(probe)
-  work.close(store)
+  store.close(store)
 }
 
 pub fn owner_loss_terminates_a_kernel_held_in_native_code_test() -> Nil {
-  let assert Ok(store) = work.start(":memory:")
-  let assert Ok(kernel) = python.local(store, "/tmp")
+  let assert Ok(store) = store.start(":memory:", "")
+  let assert Ok(kernel) = kernel_fixture.local(store, "/tmp")
   let assert Ok(started) =
     python.execute(
       kernel,
@@ -142,10 +143,10 @@ ctypes.PyDLL(None).sleep(30)",
       )
     })
   process.sleep(100)
-  work.close(store)
+  store.close(store)
   process.receive(reply, 8000) |> should.equal(Ok(Error(python.Lost)))
-  let assert Ok(other) = work.start(":memory:")
-  let assert Ok(probe) = python.local(other, "/tmp")
+  let assert Ok(other) = store.start(":memory:", "")
+  let assert Ok(probe) = kernel_fixture.local(other, "/tmp")
   let assert Ok(checked) = python.execute(probe, "check", "import os
 state = 'alive'
 try:
@@ -155,5 +156,5 @@ except ProcessLookupError:
 state", 5000)
   checked.value |> should.equal("'gone'")
   let assert Ok(_) = python.stop(probe)
-  work.close(other)
+  store.close(other)
 }

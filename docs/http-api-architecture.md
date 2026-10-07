@@ -10,6 +10,10 @@ Session actors, the store transaction connection, the family owner, the
 settings lock, and the bounded bus own the state below. HTTP handlers call
 these owners and project their results.
 
+The runtime owns a generic `store.Store` handle named `ledger`. Extensions such
+as work initialise and consume their own tables through that handle. Kernel APIs
+accept the same generic store and receive their plugin wiring from callers.
+
 | State | Owner and commit boundary | Recovery and removal |
 | --- | --- | --- |
 | Creation intent and decision | `conversation` and `operations`, on the shared store transaction connection. Persist the submitted descriptor separately from resolved defaults and editable configuration. | Keep provenance while the session exists. Keep rejected decisions and deletion tombstones for the contract's seven-day window. A lost response is recovered by the same session URI and original ID. |

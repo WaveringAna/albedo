@@ -1,11 +1,11 @@
 //// Kernel plumbing for the runtime actor: opening, resuming, and ending a
 //// session's Python kernel, and the routes a kernel's host calls come in on.
 
+import albedo/daemon/store
 import albedo/harness/extension
 import albedo/harness/extension/composition
 import albedo/harness/extensions/python/kernel as python
 import albedo/harness/extensions/python/link
-import albedo/harness/extensions/work/ledger as work
 import albedo/harness/host
 import albedo/harness/rpc
 import albedo/harness/runtime/state as runtime_state
@@ -64,7 +64,7 @@ pub fn checked_id(id: String) -> Result(String, python.Error) {
 }
 
 pub fn kernel_routes(
-  owner: work.Store,
+  owner: store.Store,
   id: String,
   composed: composition.Composition,
 ) -> fn(String) -> String {
@@ -83,7 +83,7 @@ pub fn kernel_routes(
 /// Boot a kernel over one composition. A failed boot keeps the composition:
 /// it is valid, and the next open retries only the kernel.
 pub fn open_kernel(
-  owner: work.Store,
+  owner: store.Store,
   id: String,
   cached: runtime_state.Cached,
 ) -> Result(runtime_state.Session, python.Error) {
@@ -104,7 +104,7 @@ pub fn open_kernel(
 }
 
 pub fn session_over(
-  owner: work.Store,
+  owner: store.Store,
   id: String,
   cached: runtime_state.Cached,
   kernel: python.Kernel,
@@ -125,7 +125,7 @@ pub fn session_over(
 /// A replacement kernel staged beside the session's published one, over
 /// `cached`; `link.publish` on the record makes it the session's.
 pub fn stage(
-  owner: work.Store,
+  owner: store.Store,
   id: String,
   cached: runtime_state.Cached,
 ) -> Result(#(python.Kernel, link.Record), python.Error) {
@@ -141,7 +141,7 @@ pub fn stage(
 /// Swap a stale kernel for one on the current bundle and modules, carrying
 /// its namespace: the session over the new kernel, and what came across.
 pub fn upgrade(
-  owner: work.Store,
+  owner: store.Store,
   id: String,
   cached: runtime_state.Cached,
   kernel: python.Kernel,
@@ -165,7 +165,7 @@ pub fn upgrade(
 
 /// The session's recorded kernel attached again, or None when it is gone.
 pub fn resume_kernel(
-  owner: work.Store,
+  owner: store.Store,
   id: String,
   cached: runtime_state.Cached,
 ) -> Option(runtime_state.Session) {

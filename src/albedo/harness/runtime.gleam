@@ -1,4 +1,4 @@
-//// An embeddable extension runtime with durable work and session-owned Python kernels.
+//// An embeddable extension runtime with a shared ledger and session-owned Python kernels.
 
 import albedo/actor_call
 import albedo/daemon/configuration
@@ -12,7 +12,6 @@ import albedo/harness/extensions
 import albedo/harness/extensions/python/cells as journal
 import albedo/harness/extensions/python/kernel as python
 import albedo/harness/extensions/python/link
-import albedo/harness/extensions/work/ledger as work
 import albedo/harness/oauth
 import albedo/harness/protect
 import albedo/harness/runtime/boot
@@ -194,7 +193,7 @@ pub fn start_with_config(
     use installation <- result.try(
       extension.install(installed, default_enabled, ledger)
       |> result.map_error(fn(error) {
-        work.close(ledger)
+        store.close(ledger)
         error
       }),
     )
@@ -212,7 +211,7 @@ pub fn start_with_config(
       ))
     Ok(
       actor.initialised(runtime_state.State(
-        work: ledger,
+        ledger: ledger,
         sessions: dict.new(),
         compositions: dict.new(),
         desired: dict.new(),
@@ -234,8 +233,8 @@ pub fn start_with_config(
   |> result.map(fn(started) { started.data })
 }
 
-pub fn ledger(runtime: Runtime) -> work.Store {
-  runtime.work
+pub fn ledger(runtime: Runtime) -> store.Store {
+  runtime.ledger
 }
 
 /// Apply installed extensions' data upgrades after core storage is ready, before
@@ -244,7 +243,7 @@ pub fn migrate(
   runtime: Runtime,
   backup: String,
 ) -> Result(List(#(String, Int)), String) {
-  extension.migrate(installed(runtime), runtime.work, backup)
+  extension.migrate(installed(runtime), runtime.ledger, backup)
 }
 
 /// Every installed extension's cleanup for a deleted session.
@@ -429,9 +428,9 @@ pub fn detach_kernels(runtime: Runtime) -> Nil {
 /// will wake it, one not started as a service.
 pub fn resume_kernels(runtime: Runtime, awaited: fn(String) -> Nil) -> Nil {
   let subject = runtime.subject
-  let work = runtime.work
+  let ledger = runtime.ledger
   process.spawn_unlinked(fn() {
-    list.each(python.recorded(work), fn(entry) {
+    list.each(python.recorded(ledger), fn(entry) {
       let #(id, cwd) = entry
       let reply = process.new_subject()
       process.send(subject, runtime_state.Reattach(id, cwd, reply))
@@ -520,19 +519,19 @@ pub fn execute(
   timeout_ms: Int,
 ) -> Result(Execution, String) {
   use _ <- result.try(owned_by(runtime, session))
-  use id <- result.try(journal.begin(runtime.work, session.id, code))
+  use id <- result.try(journal.begin(runtime.ledger, session.id, code))
   let outcome =
     python.execute_saved(session.kernel, id, code, timeout_ms, types.any_images)
-  use _ <- result.try(journal.settle(runtime.work, id, outcome))
+  use _ <- result.try(journal.settle(runtime.ledger, id, outcome))
   Ok(Execution(id, outcome))
 }
 
 pub fn cell(runtime: Runtime, id: String) -> Result(journal.Cell, String) {
-  journal.get(runtime.work, id)
+  journal.get(runtime.ledger, id)
 }
 
 fn owned_by(runtime: Runtime, session: Session) -> Result(Nil, String) {
-  case session.owner == runtime.work {
+  case session.owner == runtime.ledger {
     True -> Ok(Nil)
     False -> Error("session belongs to another runtime")
   }
@@ -808,7 +807,7 @@ fn serve(
         })
         use recorded <- result.try(case kernel {
           Some(_) -> Ok(None)
-          None -> link.lookup(state.work, id)
+          None -> link.lookup(state.ledger, id)
         })
         let phase = case
           dict.has_key(state.booting, id),
@@ -868,7 +867,7 @@ fn serve(
       process.send(
         reply,
         selection.summaries(
-          state.work,
+          state.ledger,
           installed.extensions,
           installed.quarantined,
           installed.default_enabled,
@@ -909,9 +908,9 @@ fn serve(
             Ok(session) ->
               case python.alive(session.kernel) {
                 True -> python.stop(session.kernel)
-                False -> python.stop_recorded(state.work, id)
+                False -> python.stop_recorded(state.ledger, id)
               }
-            Error(_) -> python.stop_recorded(state.work, id)
+            Error(_) -> python.stop_recorded(state.ledger, id)
           }
       }
       case stopped {
@@ -943,7 +942,7 @@ fn serve(
       dict.each(state.compositions, fn(_, cached) {
         composition.close(cached.composition)
       })
-      work.close(state.work)
+      store.close(state.ledger)
       process.send(reply, Nil)
       actor.stop()
     }
@@ -978,7 +977,7 @@ fn tool_call(
     #(
       tool,
       extension.Context(
-        runtime.work,
+        runtime.ledger,
         session.id,
         session.kernel,
         call.id,
@@ -1109,7 +1108,7 @@ fn enabled_for(
 ) -> Result(List(extension.Extension), String) {
   let installed = shared.read(runtime.installed)
   selection.enabled(
-    runtime.work,
+    runtime.ledger,
     installed.extensions,
     installed.default_enabled,
     session,
@@ -1364,7 +1363,7 @@ fn view_scoped(
     Some(strategy) -> {
       let context =
         compaction.Context(
-          runtime.work,
+          runtime.ledger,
           session.id,
           session.kernel,
           model,
@@ -1377,7 +1376,7 @@ fn view_scoped(
             list.filter(extension.folds(enabled), fn(folds) {
               folds.owner != strategy.name
             }),
-            runtime.work,
+            runtime.ledger,
             session.id,
           ),
           reader(info),

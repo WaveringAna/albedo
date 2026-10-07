@@ -3,8 +3,6 @@
 import albedo/daemon/image
 import albedo/daemon/store
 import albedo/harness/extensions/python/link
-import albedo/harness/extensions/work/ledger as work
-import albedo/harness/extensions/work/rpc
 import albedo/harness/location
 import albedo/harness/settings
 import albedo/harness/ssh
@@ -326,7 +324,7 @@ fn stop_recorded_native(
 
 /// Supervise a saved namespace directly; never boot or prepare one to delete it.
 pub fn stop_recorded(
-  store: work.Store,
+  store: store.Store,
   session: String,
 ) -> Result(Nil, String) {
   use published <- result.try(link.lookup(store, session))
@@ -340,7 +338,7 @@ pub fn stop_recorded(
 }
 
 pub fn stop_recorded_instance(
-  store: work.Store,
+  store: store.Store,
   record: link.Record,
 ) -> Result(Nil, String) {
   let remote = case location.parse(record.cwd) {
@@ -432,14 +430,9 @@ fn read_images(encoded: List(String)) -> #(List(types.Image), List(String)) {
   #(list.reverse(images), list.reverse(errors))
 }
 
-/// Start with python3 from PATH and albedo's packaged kernel script.
-pub fn local(store: work.Store, cwd: String) -> Result(Kernel, Error) {
-  local_with_plugins(store, cwd, rpc.handle(store, cwd, _), ["run", "work"])
-}
-
 /// A kernel no session will look for again.
 pub fn local_with_plugins(
-  store: work.Store,
+  store: store.Store,
   cwd: String,
   host: fn(String) -> String,
   modules: List(String),
@@ -463,7 +456,7 @@ fn new_id() -> String
 /// is still alive, otherwise a fresh one. The flag says it was attached, so
 /// its namespace is the one the session left.
 pub fn open(
-  store: work.Store,
+  store: store.Store,
   session: String,
   cwd: String,
   host: fn(String) -> String,
@@ -483,7 +476,7 @@ pub fn open(
 
 /// Prepare a replacement beside the currently published namespace.
 pub fn stage(
-  store: work.Store,
+  store: store.Store,
   session: String,
   cwd: String,
   host: fn(String) -> String,
@@ -497,7 +490,7 @@ pub fn stage(
 }
 
 fn boot_fresh(
-  store: work.Store,
+  store: store.Store,
   session: String,
   cwd: String,
   modules: String,
@@ -548,7 +541,7 @@ fn boot_fresh(
 
 /// The session's recorded kernel attached again, never a fresh one.
 pub fn resume(
-  store: work.Store,
+  store: store.Store,
   session: String,
   cwd: String,
   host: fn(String) -> String,
@@ -562,7 +555,7 @@ pub fn resume(
 
 /// Every session with a recorded kernel, and the workspace it booted in.
 /// Sessions of kernels nobody looks for again are left to their grace.
-pub fn recorded(store: work.Store) -> List(#(String, String)) {
+pub fn recorded(store: store.Store) -> List(#(String, String)) {
   link.all(store)
   |> list.filter(fn(record) { !string.starts_with(record.session, "local-") })
   |> list.map(fn(record) { #(record.session, record.cwd) })
@@ -572,7 +565,7 @@ pub fn recorded(store: work.Store) -> List(#(String, String)) {
 /// with the modules as the record stores them and the directory new run
 /// directories go under (an error when a fresh kernel can't boot there now).
 fn booter(
-  store: work.Store,
+  store: store.Store,
   cwd: String,
   host: fn(String) -> String,
   modules: List(String),
@@ -591,7 +584,7 @@ fn booter(
     #(modules, runs, fn(record: link.Record, fresh) {
       use remote <- result.try(reached(reach, record))
       start_native(Boot(
-        owner: work.owner(store),
+        owner: store.owner(store),
         python: python,
         bridge: bridge,
         cwd: path,
@@ -613,7 +606,7 @@ fn booter(
 
 /// The recorded kernel, when it still answers and still fits this session.
 fn reattach(
-  store: work.Store,
+  store: store.Store,
   session: String,
   cwd: String,
   modules: String,
@@ -706,7 +699,7 @@ fn reached(
 
 /// Whether the session has a kernel on record, which a turn may wait to
 /// attach to again even while its host is out of reach.
-pub fn recorded_for(store: work.Store, session: String) -> Bool {
+pub fn recorded_for(store: store.Store, session: String) -> Bool {
   option.is_some(link.find(store, session))
 }
 
@@ -743,7 +736,7 @@ pub type UpgradeFailure {
 }
 
 pub fn upgrade(
-  store: work.Store,
+  store: store.Store,
   session: String,
   cwd: String,
   host: fn(String) -> String,
@@ -848,7 +841,7 @@ pub fn upgrade(
 /// A failed replacement may have left a staged process whose shutdown was
 /// not confirmed. Reap it before another boot can replace its durable identity.
 fn reconcile_stages(
-  storage: work.Store,
+  storage: store.Store,
   session: String,
 ) -> Result(Nil, String) {
   use tables <- result.try(store.read(
@@ -868,7 +861,7 @@ fn reconcile_stages(
 
 /// Reap unpublished candidates left by a daemon that stopped during staging.
 /// A ready candidate whose old link is absent was published by link.apply.
-pub fn recover_staged(storage: work.Store) -> Result(Nil, String) {
+pub fn recover_staged(storage: store.Store) -> Result(Nil, String) {
   use stages <- result.try(link.stages(storage))
   list.try_each(stages, stop_recorded_instance(storage, _))
 }

@@ -79,7 +79,7 @@ fn start(
   request: runtime_state.BootRequest,
 ) -> Nil {
   let self = state.self
-  let owner = state.work
+  let owner = state.ledger
   let inventory = observation.composition_inventory(state)
   case request {
     runtime_state.Observe(id, home, reply, retries) -> {

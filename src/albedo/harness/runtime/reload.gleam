@@ -79,20 +79,20 @@ pub fn reload(
       None -> Ok(Nil)
     })
     use selected <- result.try(selection.propose(
-      state.work,
+      state.ledger,
       installed.extensions,
       installed.default_enabled,
       id,
       change,
     ))
     use previous <- result.try(selection.enabled(
-      state.work,
+      state.ledger,
       installed.extensions,
       installed.default_enabled,
       id,
     ))
     selection.record_selected(
-      state.work,
+      state.ledger,
       id,
       change,
       previous,

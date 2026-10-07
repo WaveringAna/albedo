@@ -2,9 +2,9 @@
 //// scheduler like a boot, carrying what the old namespace could, and settled
 //// when the worker reports which kernel the session ends up with.
 
+import albedo/daemon/store
 import albedo/harness/extensions/python/kernel as python
 import albedo/harness/extensions/python/link
-import albedo/harness/extensions/work/ledger as work
 import albedo/harness/protect
 import albedo/harness/runtime/kernels
 import albedo/harness/runtime/preparation
@@ -62,7 +62,7 @@ pub fn start_upgrade(
 /// The swap itself, run by a scheduler worker: the session over its new
 /// kernel, or over the old one when the swap must wait and it still lives.
 pub fn swap_stale(
-  owner: work.Store,
+  owner: store.Store,
   id: String,
   cached: runtime_state.Cached,
   session: runtime_state.Session,
@@ -108,7 +108,7 @@ pub fn start_kernel_upgrade(
           |> result.map(fn(cached) { Some(#(cached.cwd, Some(cached))) })
           |> result.replace_error("prepared composition missing")
         None -> {
-          use recorded <- result.try(link.lookup(state.work, id))
+          use recorded <- result.try(link.lookup(state.ledger, id))
           Ok(
             option.map(recorded, fn(record) {
               #(
@@ -173,7 +173,7 @@ pub fn start_kernel_upgrade(
 }
 
 pub fn upgrade_value(
-  owner: work.Store,
+  owner: store.Store,
   id: String,
   cached: runtime_state.Cached,
   previous: Option(runtime_state.Session),

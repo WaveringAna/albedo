@@ -1,5 +1,6 @@
 import albedo/daemon/bus
 import albedo/daemon/http_api as api
+import albedo/daemon/store
 import albedo/harness/client_api
 import albedo/harness/command
 import albedo/harness/extension
@@ -588,7 +589,7 @@ fn identities(ids: List(Option(String))) -> Result(Nil, api.Failure) {
 
 /// Native composition uses this typed bounded read without executing a command.
 pub fn sidebar(
-  storage: work.Store,
+  storage: store.Store,
   _session: String,
   workspace: String,
 ) -> Result(page.Glance, String) {

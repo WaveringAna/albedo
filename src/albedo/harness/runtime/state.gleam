@@ -2,13 +2,13 @@
 //// `Runtime` handle, a session's `Session`, a prepared `Cached` composition.
 //// The helpers here read or step that state without talking to a kernel.
 
+import albedo/daemon/store
 import albedo/harness/client_api
 import albedo/harness/command
 import albedo/harness/extension
 import albedo/harness/extension/composition
 import albedo/harness/extension/selection
 import albedo/harness/extensions/python/kernel as python
-import albedo/harness/extensions/work/ledger as work
 import albedo/harness/runtime/catalog as session_catalog
 import albedo/openai_api/types
 import albedo/shared.{type Shared}
@@ -24,7 +24,7 @@ import gleam/result
 pub type Runtime {
   Runtime(
     subject: Subject(Message),
-    work: work.Store,
+    ledger: store.Store,
     installed: Shared(Installed),
   )
 }
@@ -44,7 +44,7 @@ pub type Session {
     id: String,
     cwd: String,
     kernel: python.Kernel,
-    owner: work.Store,
+    owner: store.Store,
     composition: composition.Composition,
     instructions: String,
     context: List(types.Input),
@@ -209,7 +209,7 @@ pub type CommandWaiter {
 
 pub type State {
   State(
-    work: work.Store,
+    ledger: store.Store,
     sessions: Dict(String, Session),
     compositions: Dict(String, Cached),
     desired: Dict(String, Desired),

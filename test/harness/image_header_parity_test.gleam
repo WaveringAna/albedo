@@ -7,8 +7,8 @@
 import albedo/daemon/image
 import albedo/openai_api/types
 
+import albedo/daemon/store
 import albedo/harness/extensions/python/kernel as python
-import albedo/harness/extensions/work/ledger as work
 import gleam/bit_array
 import gleam/int
 import gleam/json
@@ -16,6 +16,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import gleeunit/should
+import harness/kernel_fixture
 
 /// Name, canonical base64, and the MIME type and size its header says.
 const fixtures = [
@@ -101,8 +102,8 @@ pub fn the_kernel_reads_image_headers_the_way_the_daemon_does_test() -> Nil {
   })
   |> should.equal(expected)
 
-  let assert Ok(store) = work.start(":memory:")
-  let assert Ok(kernel) = python.local(store, "/tmp")
+  let assert Ok(store) = store.start(":memory:", "")
+  let assert Ok(kernel) = kernel_fixture.local(store, "/tmp")
   let encoded = json.array(fixtures, fn(fixture) { json.string(fixture.1) })
   let assert Ok(read) =
     python.execute(
@@ -122,7 +123,7 @@ pub fn the_kernel_reads_image_headers_the_way_the_daemon_does_test() -> Nil {
     list.map(expected, fn(pair) { #(pair.0, header_json(pair.1)) }),
   )
   let assert Ok(_) = python.stop(kernel)
-  work.close(store)
+  store.close(store)
 }
 
 fn header_json(header: Option(#(String, Int, Int))) -> String {

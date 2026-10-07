@@ -1,7 +1,6 @@
 import albedo/daemon/store
 import albedo/harness/extensions/python/cells as journal
 import albedo/harness/extensions/python/kernel as python
-import albedo/harness/extensions/work/ledger as work
 import albedo/harness/rpc
 import gleam/dynamic
 import gleam/dynamic/decode
@@ -24,7 +23,7 @@ pub fn session(cwd: String, request: String) -> String {
   )
 }
 
-pub fn handle(store: work.Store, session: String, request: String) -> String {
+pub fn handle(store: store.Store, session: String, request: String) -> String {
   rpc.serve(
     request,
     "unknown cells operation",

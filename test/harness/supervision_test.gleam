@@ -1,10 +1,11 @@
 //// Process-group termination must clean up descendants and races beyond normal E2E teardown.
 //// Kernel-level supervision: owned process groups, quota accounting, verified stops.
 
+import albedo/daemon/store
 import albedo/harness/extensions/python/kernel as python
-import albedo/harness/extensions/work/ledger as work
 import gleam/int
 import gleeunit/should
+import harness/kernel_fixture
 
 /// A group and the descendant that outlived the command must become
 /// absent. Permission errors do not prove termination.
@@ -26,8 +27,8 @@ const leaves_a_sleeper =
   "program = 'import subprocess; child = subprocess.Popen([\"sleep\", \"30\"]); print(child.pid, flush=True)'\n"
 
 pub fn deadline_ends_the_group_and_reports_it_test() -> Nil {
-  let assert Ok(store) = work.start(":memory:")
-  let assert Ok(kernel) = python.local(store, "/tmp")
+  let assert Ok(store) = store.start(":memory:", "")
+  let assert Ok(kernel) = kernel_fixture.local(store, "/tmp")
   let assert Ok(outcome) =
     python.execute(
       kernel,
@@ -45,12 +46,12 @@ pub fn deadline_ends_the_group_and_reports_it_test() -> Nil {
   outcome.status |> should.equal(python.Succeeded)
   outcome.value |> should.equal("(True, True, 'gone', True, True, True)")
   let assert Ok(_) = python.stop(kernel)
-  work.close(store)
+  store.close(store)
 }
 
 pub fn command_exit_ends_a_descendant_that_holds_output_test() -> Nil {
-  let assert Ok(store) = work.start(":memory:")
-  let assert Ok(kernel) = python.local(store, "/tmp")
+  let assert Ok(store) = store.start(":memory:", "")
+  let assert Ok(kernel) = kernel_fixture.local(store, "/tmp")
   let assert Ok(outcome) =
     python.execute(
       kernel,
@@ -66,12 +67,12 @@ pub fn command_exit_ends_a_descendant_that_holds_output_test() -> Nil {
   outcome.status |> should.equal(python.Succeeded)
   outcome.value |> should.equal("(False, True, 'gone', True)")
   let assert Ok(_) = python.stop(kernel)
-  work.close(store)
+  store.close(store)
 }
 
 pub fn stop_ends_a_running_job_group_test() -> Nil {
-  let assert Ok(store) = work.start(":memory:")
-  let assert Ok(kernel) = python.local(store, "/tmp")
+  let assert Ok(store) = store.start(":memory:", "")
+  let assert Ok(kernel) = kernel_fixture.local(store, "/tmp")
   let assert Ok(started) =
     python.execute(
       kernel,
@@ -82,7 +83,7 @@ pub fn stop_ends_a_running_job_group_test() -> Nil {
   let assert Ok(pgid) = int.parse(started.value)
   // The typed stop is the supervisor's verdict: every owned group is gone.
   let assert Ok(_) = python.stop(kernel)
-  let assert Ok(probe) = python.local(store, "/tmp")
+  let assert Ok(probe) = kernel_fixture.local(store, "/tmp")
   let assert Ok(checked) =
     python.execute(
       probe,
@@ -94,5 +95,5 @@ pub fn stop_ends_a_running_job_group_test() -> Nil {
     )
   checked.value |> should.equal("'gone'")
   let assert Ok(_) = python.stop(probe)
-  work.close(store)
+  store.close(store)
 }

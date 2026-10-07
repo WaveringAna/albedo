@@ -1,10 +1,8 @@
 import albedo/daemon/store as storage
 import gleam/dynamic/decode
-import gleam/erlang/process
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
-import gleam/otp/actor
 import gleam/result
 import gleam/string
 import sqlight
@@ -39,21 +37,6 @@ pub type Error {
   NotFound
   Conflict
   Storage(String)
-}
-
-pub type Store =
-  storage.Store
-
-pub fn start(path: String) -> Result(Store, actor.StartError) {
-  storage.start(path, schema)
-}
-
-pub fn owner(store: Store) -> process.Pid {
-  storage.owner(store)
-}
-
-pub fn close(store: Store) -> Nil {
-  storage.close(store)
 }
 
 const schema =
@@ -210,7 +193,7 @@ fn one_or_conflict(items: List(Item)) -> Result(Item, Error) {
 
 /// Keyset pagination. No unbounded ledger dumps into a model context.
 pub fn list(
-  store: Store,
+  store: storage.Store,
   cwd: String,
   after: Int,
   limit: Int,
@@ -234,13 +217,13 @@ pub fn list(
   }
 }
 
-pub fn get(store: Store, cwd: String, id: Int) -> Result(Item, Error) {
+pub fn get(store: storage.Store, cwd: String, id: Int) -> Result(Item, Error) {
   use _ <- result.try(valid_cwd(cwd))
   storage.query(store, find(_, cwd, id)) |> result.try(one)
 }
 
 pub fn create(
-  store: Store,
+  store: storage.Store,
   cwd: String,
   title: String,
   notes: String,
@@ -250,7 +233,7 @@ pub fn create(
 }
 
 pub fn create_assigned(
-  store: Store,
+  store: storage.Store,
   cwd: String,
   title: String,
   notes: String,
@@ -283,7 +266,11 @@ pub fn create_assigned(
   |> result.try(one)
 }
 
-pub fn update(store: Store, cwd: String, item: Item) -> Result(Item, Error) {
+pub fn update(
+  store: storage.Store,
+  cwd: String,
+  item: Item,
+) -> Result(Item, Error) {
   use _ <- result.try(valid_cwd(cwd))
   use _ <- result.try(validate(item.title, item.notes, item.session, item.run))
   storage.query(store, fn(db) {
@@ -319,7 +306,7 @@ pub fn update(store: Store, cwd: String, item: Item) -> Result(Item, Error) {
 /// Remove one item at the revision the caller last saw. An item with children
 /// stays: its sub-items would lose their parent.
 pub fn delete(
-  store: Store,
+  store: storage.Store,
   cwd: String,
   id: Int,
   revision: Int,
@@ -389,12 +376,12 @@ pub fn to_json(item: Item) -> json.Json {
   ])
 }
 
-pub fn initialise(store: Store) -> Result(Nil, String) {
+pub fn initialise(store: storage.Store) -> Result(Nil, String) {
   storage.query(store, storage.exec(_, schema))
 }
 
 /// The sidebar reads only the twelve active records it can display.
-pub fn active(store: Store, cwd: String) -> Result(List(Item), Error) {
+pub fn active(store: storage.Store, cwd: String) -> Result(List(Item), Error) {
   use _ <- result.try(valid_cwd(cwd))
   storage.query(store, fn(db) {
     use #(within, group) <- result.try(scope(db, cwd))

@@ -9,7 +9,7 @@ import gleam/json
 import gleam/option.{None}
 import gleam/result
 
-pub fn handle(store: work.Store, cwd: String, request: String) -> String {
+pub fn handle(store: store.Store, cwd: String, request: String) -> String {
   rpc.serve(
     request,
     work.Invalid("invalid host request"),

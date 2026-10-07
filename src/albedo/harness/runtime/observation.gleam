@@ -20,7 +20,7 @@ pub fn composition_inventory(
 ) -> session_catalog.Inventory {
   let installed = shared.read(state.installed)
   session_catalog.Inventory(
-    state.work,
+    state.ledger,
     installed.extensions,
     installed.quarantined,
     installed.default_enabled,
