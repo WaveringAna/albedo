@@ -70,8 +70,9 @@ type settingsLoadedMsg struct {
 }
 
 type uiSavedMsg struct {
-	Err   error
-	Prefs daemon.UIPreferences
-	Gen   int
-	Open  bool
+	Err     error
+	Prefs   daemon.UIPreferences
+	Gen     int
+	Session string // the pinned or archived session; empty for shared preferences
+	Open    bool
 }

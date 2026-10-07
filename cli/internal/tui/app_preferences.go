@@ -37,10 +37,12 @@ func (m *AppModel) handlePreferences(msg tea.Msg) (tea.Cmd, bool) {
 			}
 			return m.refreshSettingsCmd(), true
 		}
-		if msg.Gen != m.SettingsGen {
-			return nil, true
-		}
+		// One save runs at a time, so this answer always ends it.
 		m.UISaving, m.SessionPicker.Saving = false, false
+		if msg.Session == "" && msg.Gen != m.SettingsGen {
+			// The settings read an invalidation asked for waited on this save.
+			return m.loadSettingsCmd(m.SettingsGen), true
+		}
 		if msg.Err != nil {
 			m.Chat.AddError(msg.Err.Error())
 			m.SessionPicker.notice = msg.Err.Error()
@@ -48,7 +50,15 @@ func (m *AppModel) handlePreferences(msg tea.Msg) (tea.Cmd, bool) {
 		}
 		m.SessionPicker.notice = ""
 		m.ApplyUI(msg.Prefs)
-		return nil, true
+		if msg.Session == "" {
+			return nil, true
+		}
+		if !m.listingSessions {
+			return nil, true
+		}
+		// The listing in flight predates the save and would undo it.
+		m.SessionGen++
+		return m.loadSessionsCmd(m.SessionGen), true
 	case SessionPreferenceMsg:
 		if m.UISaving {
 			m.SessionPicker.Saving = false
@@ -147,7 +157,7 @@ func (m *AppModel) patchUICmd(session string, patch daemon.UIPreferencesPatch, g
 		} else {
 			prefs, err = daemon.PatchSessionUI(context.Background(), conn, session, patch)
 		}
-		return uiSavedMsg{Prefs: prefs, Gen: gen, Err: err}
+		return uiSavedMsg{Prefs: prefs, Gen: gen, Session: session, Err: err}
 	}
 }
 

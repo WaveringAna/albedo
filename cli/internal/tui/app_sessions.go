@@ -69,6 +69,7 @@ func (m *AppModel) handleSessionResults(msg tea.Msg) (tea.Cmd, bool) {
 		if msg.Gen != m.SessionGen {
 			return nil, true
 		}
+		m.listingSessions = false
 		if msg.Err != nil {
 			m.SessionPicker.Loading = false
 			m.AddError("Could not load sessions: " + msg.Err.Error())
@@ -141,6 +142,7 @@ func (m *AppModel) handleSessionResults(msg tea.Msg) (tea.Cmd, bool) {
 }
 
 func (m *AppModel) loadSessionsCmd(gen int, notices ...string) tea.Cmd {
+	m.listingSessions = true
 	conn := m.Conn
 	notice := ""
 	if len(notices) > 0 {
@@ -161,7 +163,15 @@ func (m *AppModel) renameSessionCmd(rename SessionRenameMsg) tea.Cmd {
 		if conn == nil {
 			return sessionRenamedMsg{SessionRenameMsg: rename, Err: errors.New("daemon connection unavailable")}
 		}
-		s, err := daemon.RenameSession(context.Background(), conn, rename.ID, rename.Name, rename.ETag)
+		etag := rename.ETag
+		if etag == "" {
+			current, err := currentCondition(conn, rename.ID)
+			if err != nil {
+				return sessionRenamedMsg{SessionRenameMsg: rename, Err: err}
+			}
+			etag = current.ETag
+		}
+		s, err := daemon.RenameSession(context.Background(), conn, rename.ID, rename.Name, etag)
 		return sessionRenamedMsg{SessionRenameMsg: rename, Session: s, Err: err}
 	}
 }
@@ -173,9 +183,22 @@ func (m *AppModel) deleteSessionCmd(id string, condition daemon.SessionCondition
 		if conn == nil {
 			return sessionDeletedMsg{ID: id, Err: errors.New("daemon connection unavailable")}
 		}
+		if condition.ETag == "" || condition.FamilyRevision == "" {
+			current, err := currentCondition(conn, id)
+			if err != nil {
+				return sessionDeletedMsg{ID: id, Err: err}
+			}
+			condition = current
+		}
 		result, err := daemon.DeleteSession(context.Background(), conn, id, true, condition)
 		return sessionDeletedMsg{ID: id, Err: err, Result: &result}
 	}
+}
+
+// currentCondition reads validators missing from a selected session row.
+func currentCondition(conn *daemon.Connection, id string) (daemon.SessionCondition, error) {
+	current, err := daemon.GetSessionConfiguration(context.Background(), conn, id)
+	return daemon.SessionCondition{ETag: current.ETag, FamilyRevision: current.Value.FamilyRevision}, err
 }
 
 func sessionPreviewCmd(conn *daemon.Connection, id, etag string) tea.Cmd {

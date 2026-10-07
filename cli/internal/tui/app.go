@@ -76,6 +76,8 @@ type AppModel struct {
 	folderReturn    AppState
 	UISaving        bool
 	StandaloneLogin bool
+	// listingSessions says a session listing is in flight.
+	listingSessions bool
 
 	// Graphemes says the terminal measures grapheme clusters; see ChatModel.
 	Graphemes bool

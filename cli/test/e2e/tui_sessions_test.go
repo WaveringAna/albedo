@@ -65,22 +65,51 @@ func TestTUISessionPickerPinsRenamesArchivesAndDeletes(t *testing.T) {
 	}
 }
 
-// The session list carries no validators, so archiving a row whose preview
-// never loaded still has to reach the daemon.
-func TestTUIArchivesASessionStraightFromTheList(t *testing.T) {
+// The session list carries no validators, so renaming, archiving and
+// deleting a row whose preview never loaded still have to reach the daemon,
+// and the picker has to show each change without being reopened.
+func TestTUIChangesSessionsStraightFromTheList(t *testing.T) {
 	providerRoute(t, echoReply)
 	t.Parallel()
 	d := newTUIDriver(t)
-	target := newSession(t, t.TempDir())
+	archived, renamed := newSession(t, t.TempDir()), newSession(t, t.TempDir())
 	d.Dispatch(tui.ChatBackToSessionsMsg{})
-	i := slices.IndexFunc(d.App.SessionPicker.Filtered, func(it tui.PickerItem) bool { return it.ID == target })
-	if i < 0 {
-		t.Fatalf("the picker does not list %s:\n%s", target, d.View())
+	listed := func(id string) int {
+		return slices.IndexFunc(d.App.SessionPicker.Filtered, func(it tui.PickerItem) bool { return it.ID == id })
 	}
-	d.App.SessionPicker.Cursor = i
-	d.Dispatch(tea.KeyPressMsg{Code: 'a', Mod: tea.ModCtrl})
-	if saved := daemonSession(t, target); !saved.Archived {
+	pick := func(id string) {
+		t.Helper()
+		i := listed(id)
+		if i < 0 {
+			t.Fatalf("the picker does not list %s:\n%s", id, d.View())
+		}
+		d.App.SessionPicker.Cursor = i
+	}
+	ctrl := func(code rune) { d.Dispatch(tea.KeyPressMsg{Code: code, Mod: tea.ModCtrl}) }
+
+	pick(archived)
+	ctrl('a')
+	if !daemonSession(t, archived).Archived || listed(archived) >= 0 {
 		t.Fatalf("ctrl+a did not archive the listed session:\n%s", d.View())
+	}
+
+	pick(renamed)
+	ctrl('r')
+	for _, r := range "listed-rename" {
+		d.Update(tea.KeyPressMsg{Code: r, Text: string(r)})
+	}
+	d.Dispatch(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if title := daemonSession(t, renamed).Title; title != "listed-rename" || !strings.Contains(d.View(), "listed-rename") {
+		t.Fatalf("ctrl+r did not rename the listed session (daemon has %q):\n%s", title, d.View())
+	}
+
+	pick("archive")
+	d.Dispatch(tea.KeyPressMsg{Code: tea.KeyEnter})
+	pick(archived)
+	ctrl('d')
+	d.Dispatch(tea.KeyPressMsg{Code: 'y', Text: "y"})
+	if slices.ContainsFunc(daemonSessions(t), func(s daemon.Session) bool { return s.ID == archived }) {
+		t.Fatalf("ctrl+d did not delete the archived session:\n%s", d.View())
 	}
 }
 

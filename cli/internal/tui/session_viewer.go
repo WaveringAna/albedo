@@ -418,10 +418,6 @@ func (m *SessionViewer) startRename() {
 	if current == untitled {
 		current = ""
 	}
-	if s.ETag == "" {
-		m.notice = "Wait for the session preview, then rename."
-		return
-	}
 	m.rename.open(s.ID, current, "Name this session")
 	m.rename.etag = s.ETag
 }
@@ -499,12 +495,7 @@ func (m SessionViewer) Update(msg tea.Msg) (SessionViewer, tea.Cmd) {
 		switch key := msg.String(); {
 		case key == "ctrl+d":
 			if item, ok := m.Highlighted(); m.ArchiveView && ok {
-				s, _ := m.session(item.ID)
-				if s.ETag == "" {
-					m.notice = "Wait for the session preview, then delete."
-				} else {
-					m.ConfirmDelete = item.ID
-				}
+				m.ConfirmDelete = item.ID
 			}
 			return m, nil
 		case key == "ctrl+a":
