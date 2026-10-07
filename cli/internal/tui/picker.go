@@ -16,6 +16,8 @@ type PickerItem struct {
 	// Group ranks its items apart from the other groups under a search;
 	// groups keep the order they were listed in.
 	Group int
+	// Note is what a detail pane says about the item, where a list has one.
+	Note string
 	// hits are the characters of Label the search matched.
 	hits []int
 }

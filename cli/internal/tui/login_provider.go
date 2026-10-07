@@ -209,19 +209,16 @@ func (m *LoginModel) buildProtocolPicker() {
 		{ID: "responses", Label: "responses", Detail: "OpenAI Responses API"},
 		{ID: "chat_completions", Label: "chat completions", Detail: "widely supported by compatible endpoints"},
 	}
-	m.ProtocolPicker = NewPickerModel("api protocol", items, false, m.Draft.Protocol)
-	m.ProtocolPicker.SetSize(m.Width, m.Height)
+	m.ProtocolPicker = newLoginPick("api protocol", items, m.Draft.Protocol, m.Width, m.Height)
 }
 
 func (m *LoginModel) buildModelPicker() {
 	items := make([]PickerItem, 0, len(m.Catalog)+1)
 	for _, name := range m.Catalog {
-		items = append(items, PickerItem{ID: "model:" + name, Label: name})
+		items = append(items, PickerItem{ID: "model:" + name, Label: name, Note: "from the models.dev catalog"})
 	}
-	items = append(items, PickerItem{ID: "manual", Label: "enter a model ID manually"})
-
-	m.ModelPicker = NewPickerModel("model", items, true, "model:"+m.Draft.Model)
-	m.ModelPicker.SetSize(m.Width, m.Height)
+	items = append(items, PickerItem{ID: "manual", Label: "enter a model ID manually", Note: "type a model ID yourself"})
+	m.ModelPicker = newLoginPick("model", items, "model:"+m.Draft.Model, m.Width, m.Height)
 }
 
 // hasKey reports a profile with an api key, entered now or held by the daemon.

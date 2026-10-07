@@ -74,14 +74,14 @@ type LoginModel struct {
 	Accounts                     []daemon.Account
 	Catalog                      []string
 	TextInput                    textinput.Model
-	ChoosePicker                 PickerModel
-	ProtocolPicker               PickerModel
-	ModelPicker                  PickerModel
-	ConfirmPicker                PickerModel
-	Generation                   int
-	Width                        int
-	Height                       int
-	Step                         LoginStep
+	ChoosePicker                 loginPick
+	ProtocolPicker               loginPick
+	ModelPicker                  loginPick
+	confirm
+	Generation int
+	Width      int
+	Height     int
+	Step       LoginStep
 }
 
 // NewLoginModel panics if conn is nil. A nil browser opener disables automatic
@@ -258,7 +258,10 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 
 	case tea.KeyPressMsg:
 		key := msg.String()
-		if m.Step == StepChoose && (key == "delete" || key == "d") {
+		switch {
+		case m.Step == StepRemove:
+			return m, m.confirmKey(msg)
+		case m.Step == StepChoose && key == "ctrl+d":
 			if item, ok := m.ChoosePicker.Highlighted(); ok {
 				if target, ok := m.removalFor(item.ID); ok {
 					return m, m.confirmRemoval(target)
@@ -267,7 +270,7 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 			return m, nil
 		}
 		if key == "esc" || key == "ctrl+c" || key == "ctrl+d" {
-			pickerStep := m.Step == StepChoose || m.Step == StepAccountProfile || m.Step == StepOAuthFlow || m.Step == StepProtocol || m.Step == StepModels || m.Step == StepOAuthModels || m.Step == StepRemove
+			pickerStep := m.Step == StepChoose || m.Step == StepAccountProfile || m.Step == StepOAuthFlow || m.Step == StepProtocol || m.Step == StepModels || m.Step == StepOAuthModels
 			if !pickerStep || key == "ctrl+d" {
 				cancel := m.Close()
 				m.LoginValues = nil
@@ -310,13 +313,6 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 				}
 			}
 
-		case StepRemove:
-			if msg.ID == "remove" {
-				m.Step = StepSaving
-				return m, m.removeCmd(m.Removing)
-			}
-			return m, m.backToChoose()
-
 		case StepProtocol:
 			m.Draft.Protocol = msg.ID
 			return m, m.advanceToModels()
@@ -354,8 +350,6 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 			}
 			m.Step = StepBaseURL
 			return m, m.promptInput(m.Draft.BaseURL, false)
-		case StepRemove:
-			return m, m.backToChoose()
 		}
 	}
 
@@ -363,18 +357,13 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 	if m.Step == StepOAuthFields && m.LoginFieldIndex < len(m.LoginFields) {
 		field := m.LoginFields[m.LoginFieldIndex]
 		if field.Type == "choice" || field.Type == "boolean" {
-			var cmd tea.Cmd
-			m.ChoosePicker, cmd = m.ChoosePicker.Update(msg)
-			return m, cmd
+			return m, m.pickUpdate(msg)
 		}
 	}
 
 	switch m.Step {
-	case StepChoose, StepAccountProfile, StepOAuthFlow, StepProtocol, StepRemove, StepModels, StepOAuthModels:
-		p := m.pickerFor()
-		var cmd tea.Cmd
-		*p, cmd = p.Update(msg)
-		return m, cmd
+	case StepChoose, StepAccountProfile, StepOAuthFlow, StepProtocol, StepModels, StepOAuthModels:
+		return m, m.pickUpdate(msg)
 	}
 
 	if key, ok := msg.(tea.KeyPressMsg); ok && key.String() == "enter" {

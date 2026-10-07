@@ -45,9 +45,6 @@ func (m LoginModel) accountAt(id string) (daemon.Account, bool) {
 
 func (m *LoginModel) buildChoosePicker() {
 	var items []PickerItem
-	add := func(id, label, detail string) {
-		items = append(items, PickerItem{ID: id, Label: label, Detail: detail})
-	}
 	for _, name := range slices.Sorted(maps.Keys(m.Profiles.Providers)) {
 		settings := m.Profiles.Providers[name]
 		extension := cmp.Or(settings.Extension, "openai")
@@ -60,20 +57,18 @@ func (m *LoginModel) buildChoosePicker() {
 		if name == m.Profiles.Active {
 			detail += " · active"
 		}
-		add("use:"+name, name, detail)
+		items = append(items, PickerItem{ID: "use:" + name, Label: name, Detail: detail, Note: "a saved provider profile; enter makes it the one new sessions use"})
 	}
 	for index, account := range m.Accounts {
-		add("account:"+strconv.Itoa(index), account.Label, account.Detail)
+		items = append(items, PickerItem{ID: "account:" + strconv.Itoa(index), Label: account.Label, Detail: account.Detail, Note: "a signed-in account; enter picks the profile it runs under"})
 	}
 	for _, p := range customProviders {
-		add(p.ID, p.Label, p.Detail)
+		items = append(items, PickerItem{ID: p.ID, Label: p.Label, Detail: p.Detail, Note: "creates or updates a provider profile"})
 	}
 	for _, login := range m.SignIns {
-		add("signin:"+login.Provider, login.Label, login.Detail)
+		items = append(items, PickerItem{ID: "signin:" + login.Provider, Label: login.Label, Detail: login.Detail, Note: "signs in through the daemon; its tokens stay in the daemon's credential store"})
 	}
-
-	m.ChoosePicker = NewPickerModel("Provider for new sessions", items, false, "use:"+m.Profiles.Active)
-	m.ChoosePicker.SetSize(m.Width, m.Height)
+	m.ChoosePicker = newLoginPick("Provider for new sessions", items, "use:"+m.Profiles.Active, m.Width, m.Height)
 }
 
 // removalFor maps a chooser row to what removing it would delete.
@@ -96,13 +91,22 @@ func (m *LoginModel) confirmRemoval(target removal) tea.Cmd {
 	}
 	m.Removing = target
 	m.Step = StepRemove
-	items := []PickerItem{
-		{ID: "keep", Label: "keep", Detail: ""},
-		{ID: "remove", Label: "remove", Detail: detail},
+	m.confirm.ask("remove", target.ID, "remove", detail+". Remove "+target.Kind+" "+target.Label+"?")
+	return nil
+}
+
+// confirmKey settles a key on the removal question: enter removes, esc keeps
+// what is there, and any other key is ignored.
+func (m *LoginModel) confirmKey(msg tea.KeyPressMsg) tea.Cmd {
+	if m.confirm.key(msg) {
+		m.confirm.dismiss()
+		m.Step = StepSaving
+		return m.removeCmd(m.Removing)
 	}
-	m.ConfirmPicker = NewPickerModel(detail+". Remove "+target.Kind+" "+target.Label+"?", items, false, "keep")
-	m.ConfirmPicker.SetSize(m.Width, m.Height)
-	return m.ConfirmPicker.Init()
+	if m.confirm.asking() {
+		return nil
+	}
+	return m.backToChoose()
 }
 
 // reloadCmd changes the daemon's accounts or the saved profiles, then re-reads
@@ -157,10 +161,9 @@ func (m *LoginModel) chooseAccount(account daemon.Account) tea.Cmd {
 	m.Step = StepAccountProfile
 	items := make([]PickerItem, 0, len(names))
 	for _, name := range names {
-		items = append(items, PickerItem{ID: name, Label: name, Detail: "use " + account.Label})
+		items = append(items, PickerItem{ID: name, Label: name, Detail: "use " + account.Label, Note: "the profile this account signs in for"})
 	}
-	m.ChoosePicker = NewPickerModel("Choose the profile for this account", items, false, m.Profiles.Active)
-	m.ChoosePicker.SetSize(m.Width, m.Height)
+	m.ChoosePicker = newLoginPick("Choose the profile for this account", items, m.Profiles.Active, m.Width, m.Height)
 	return m.ChoosePicker.Init()
 }
 
@@ -202,8 +205,7 @@ func (m *LoginModel) startSignIn(login daemon.SignIn) tea.Cmd {
 		for _, flow := range login.Flows {
 			items = append(items, PickerItem{ID: flow, Label: flow})
 		}
-		m.ChoosePicker = NewPickerModel("Choose a sign-in flow", items, false, login.Flows[0])
-		m.ChoosePicker.SetSize(m.Width, m.Height)
+		m.ChoosePicker = newLoginPick("Choose a sign-in flow", items, login.Flows[0], m.Width, m.Height)
 		return m.ChoosePicker.Init()
 	}
 	if len(login.Flows) == 1 {
@@ -234,8 +236,7 @@ func (m *LoginModel) nextLoginField() tea.Cmd {
 			if index := daemon.FormChoiceDefault(field); index < len(items) {
 				initial = items[index].ID
 			}
-			m.ChoosePicker = NewPickerModel(field.Label, items, false, initial)
-			m.ChoosePicker.SetSize(m.Width, m.Height)
+			m.ChoosePicker = newLoginPick(field.Label, items, initial, m.Width, m.Height)
 			return m.ChoosePicker.Init()
 		}
 		initial := ""
