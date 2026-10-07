@@ -126,11 +126,11 @@ func TestIndependentAdapterDrivesContextTreeAndSessionCatalog(t *testing.T) {
 		t.Fatalf("workspace skill did not reach catalog page: %+v", page)
 	}
 	page.Cursor = selected
-	driver.Dispatch(tea.KeyPressMsg{Code: 's', Text: "s"})
+	driver.Dispatch(tea.KeyPressMsg{Code: tea.KeyEnter, Mod: tea.ModShift})
 	// The app also refreshes its command menu after this save, which starts
 	// recurring glance polls. Drive through the page's actual save and reload
 	// completion instead of asking the synchronous driver to settle timers.
-	queued := driver.results(driver.Update(tea.KeyPressMsg{Code: tea.KeySpace}))
+	queued := driver.results(driver.Update(tea.KeyPressMsg{Code: tea.KeyEnter}))
 	for step := 0; page.Saving || page.Loading; step++ {
 		if step == 16 || len(queued) == 0 {
 			t.Fatalf("catalog save did not finish: %+v", page)
@@ -209,9 +209,9 @@ func TestTUICapabilityPageEnablesAndLoadsSkillCommands(t *testing.T) {
 	if driver.App.CapabilityPage.ExtensionEnabled {
 		t.Fatal("page did not observe the disabled skills extension")
 	}
-	driver.Dispatch(tea.KeyPressMsg{Code: 'E', Text: "E"})
-	if !driver.App.CapabilityPage.ConfirmExtension {
-		t.Fatal("E did not request extension-enable confirmation")
+	driver.Dispatch(tea.KeyPressMsg{Code: 't', Mod: tea.ModCtrl})
+	if !driver.App.CapabilityPage.Confirming() {
+		t.Fatal("ctrl+t did not request extension-enable confirmation")
 	}
 	driver.Dispatch(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if page := driver.App.CapabilityPage; page.Error != "" || !page.ExtensionEnabled || !strings.Contains(page.Notice, "Reload completed.") {
@@ -315,7 +315,7 @@ func TestAttachedWebhookScreenCreatesConfiguresDisablesAndDeletesHook(t *testing
 	driver := driveTUIWithConnection(t, &session, attached)
 	defer driver.App.Chat.Close()
 	driver.Dispatch(tui.ChatOpenWebhooksPageMsg{})
-	driver.Dispatch(tea.KeyPressMsg{Code: 'n', Text: "n"})
+	driver.Dispatch(tea.KeyPressMsg{Code: 'o', Mod: tea.ModCtrl})
 	if driver.App.WebhooksPage.Error != "" || driver.App.WebhooksPage.Form == nil {
 		t.Fatalf("cannot open webhook creation form: %+v", driver.App.WebhooksPage)
 	}
@@ -398,10 +398,10 @@ func TestAttachedWebhookScreenCreatesConfiguresDisablesAndDeletesHook(t *testing
 	if selected < 0 {
 		t.Fatal("created hook did not appear after secret dismissal")
 	}
-	driver.Dispatch(tea.KeyPressMsg{Code: 'r', Text: "r"})
+	driver.Dispatch(tea.KeyPressMsg{Code: 'r', Mod: tea.ModCtrl})
 	page.Cursor = selected
-	driver.Dispatch(tea.KeyPressMsg{Code: tea.KeySpace})
-	driver.Dispatch(tea.KeyPressMsg{Code: 'r', Text: "r"})
+	driver.Dispatch(tea.KeyPressMsg{Code: tea.KeyEnter})
+	driver.Dispatch(tea.KeyPressMsg{Code: 'r', Mod: tea.ModCtrl})
 	listed, err = daemon.ListWebhooks(t.Context(), attached, session.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -429,7 +429,7 @@ func TestAttachedWebhookScreenCreatesConfiguresDisablesAndDeletesHook(t *testing
 		t.Fatalf("typed deletion lost deleted hook: result=%+v saved=%+v", removed, hook)
 	}
 	deleted = true
-	driver.Dispatch(tea.KeyPressMsg{Code: 'r', Text: "r"})
+	driver.Dispatch(tea.KeyPressMsg{Code: 'r', Mod: tea.ModCtrl})
 	listed, err = daemon.ListWebhooks(t.Context(), attached, session.ID)
 	if err != nil {
 		t.Fatal(err)

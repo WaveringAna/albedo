@@ -14,13 +14,18 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-func typeText(m CapabilityPageModel, text string) CapabilityPageModel {
+func typeMCP(m CapabilityPageModel, text string) CapabilityPageModel {
 	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyExtended, Text: text})
 	return m
 }
 
 func key(m CapabilityPageModel, k rune) CapabilityPageModel {
 	m, _ = m.Update(tea.KeyPressMsg{Code: k})
+	return m
+}
+
+func ctrl(m CapabilityPageModel, k rune) CapabilityPageModel {
+	m, _ = m.Update(tea.KeyPressMsg{Code: k, Mod: tea.ModCtrl})
 	return m
 }
 
@@ -35,11 +40,11 @@ func mcpPage(t *testing.T) CapabilityPageModel {
 
 func TestAddingAnHTTPServerAsksForAuthBeforeSaving(t *testing.T) {
 	m := mcpPage(t)
-	m = typeText(m, "n")
+	m = ctrl(m, 'o')
 	if m.Form == nil || m.Form.current() != fieldURL {
-		t.Fatal("n should open the add form on the URL")
+		t.Fatal("ctrl+o should open the add form on the URL")
 	}
-	m = typeText(m, "http://100.64.0.19:8787/mcp")
+	m = typeMCP(m, "http://100.64.0.19:8787/mcp")
 	if got := m.Form.Inputs[fieldName].Value(); got != "mcp-100-64-0-19" {
 		t.Fatalf("name should follow the URL, got %q", got)
 	}
@@ -48,7 +53,7 @@ func TestAddingAnHTTPServerAsksForAuthBeforeSaving(t *testing.T) {
 	if m.Form.current() != fieldToken || m.Saving {
 		t.Fatalf("enter should walk to the bearer token without saving, at %q", m.Form.current())
 	}
-	m = typeText(m, "sensitive-token")
+	m = typeMCP(m, "sensitive-token")
 	if strings.Contains(ansi.Strip(m.View()), "sensitive-token") || !strings.Contains(ansi.Strip(m.View()), "bearer token") {
 		t.Fatalf("the token field must be labelled and masked:\n%s", ansi.Strip(m.View()))
 	}
@@ -63,17 +68,17 @@ func TestAddingAnHTTPServerAsksForAuthBeforeSaving(t *testing.T) {
 
 func TestStdioServerParsesItsCommandAndSuggestsAName(t *testing.T) {
 	m := mcpPage(t)
-	m = typeText(m, "n")
+	m = ctrl(m, 'o')
 	m = key(m, tea.KeyUp)
 	m = key(m, tea.KeyRight)
 	if m.Form.Transport != "stdio" {
 		t.Fatal("← → should switch the transport")
 	}
 	m = key(m, tea.KeyDown)
-	m = typeText(m, `npx -y @modelcontextprotocol/server-filesystem "/tmp/my dir"`)
+	m = typeMCP(m, `npx -y @modelcontextprotocol/server-filesystem "/tmp/my dir"`)
 	m = key(m, tea.KeyDown)
 	m = key(m, tea.KeyDown)
-	m = typeText(m, "TOKEN=abc DEBUG=1")
+	m = typeMCP(m, "TOKEN=abc DEBUG=1")
 	sub, err := m.Form.submission(nil)
 	if err != nil {
 		t.Fatal(err)

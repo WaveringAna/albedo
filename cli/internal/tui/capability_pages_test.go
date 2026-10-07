@@ -1,8 +1,11 @@
-// Stale replies from closed capability pages must not satisfy reopened pages.
-// E2E cannot deterministically interleave replies across discarded views.
+// Stale replies from closed capability pages must not satisfy reopened pages,
+// and the confirm, filter, and detail pane are unexported screen state.
+// E2E cannot deterministically interleave replies across discarded views or
+// read the pane and question without a terminal.
 package tui
 
 import (
+	"albedo/cli/internal/config"
 	"albedo/cli/internal/daemon"
 	"albedo/cli/internal/testwire"
 	"encoding/json"
@@ -12,6 +15,7 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 )
 
 func TestCapabilityStaleReplyFromReplacedInstanceIsRejected(t *testing.T) {
@@ -20,14 +24,15 @@ func TestCapabilityStaleReplyFromReplacedInstanceIsRejected(t *testing.T) {
 	items := []capabilityItem{{ID: "row-draft", Candidate: daemon.CatalogCandidate{PreferenceKey: &key, Valid: true, GlobalPreference: &disabled}}}
 	a := NewCapabilityPageModel(nil, "s", "skills")
 	a, _ = a.Update(capabilityLoadedMsg{Gen: a.Generation, Items: items, Revision: "rev-1"})
-	a, _ = a.Update(tea.KeyPressMsg{Code: 'r'})
+	a, _ = a.Update(tea.KeyPressMsg{Code: 'r', Mod: tea.ModCtrl})
 	zombie := capabilityLoadedMsg{Gen: a.Generation, Items: items, Revision: "rev-1"}
 	a, _ = a.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
 
 	b := NewCapabilityPageModel(nil, "s", "skills")
 	b, _ = b.Update(capabilityLoadedMsg{Gen: b.Generation, Items: items, Revision: "rev-1"})
 	before := b.Generation
-	b, _ = b.Update(tea.KeyPressMsg{Code: tea.KeySpace})
+	b, _ = b.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	b, _ = b.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if !b.Saving || b.Generation == before {
 		t.Fatal("a toggle must start a save under a fresh generation")
 	}
@@ -45,7 +50,7 @@ func TestCapabilityStaleReplyFromReplacedInstanceIsRejected(t *testing.T) {
 		t.Fatal("the discarded page's reply cleared the current fetch")
 	}
 	b, _ = b.Update(reloaded)
-	if b.Loading || b.selectedEnabled(b.Items[0]) || len(b.Items) != 1 {
+	if b.Loading || b.enabledIn(b.Items[0], scopeGlobal) || len(b.Items) != 1 {
 		t.Fatal("the current page's acknowledged state was not accepted")
 	}
 }
@@ -82,10 +87,10 @@ func TestCapabilityConflictRefreshesWithoutReplayingToggle(t *testing.T) {
 	item := capabilityItem{ID: "row", Title: "Original skill", Candidate: daemon.CatalogCandidate{ID: "row", PreferenceKey: &key, Valid: true, EffectiveEnabled: true}}
 	m := NewCapabilityPageModel(conn, "s", "skills")
 	m, _ = m.Update(capabilityLoadedMsg{Gen: m.Generation, Items: []capabilityItem{item}, Revision: "before", SessionETag: "\"seen\""})
-	m.Global = false
-	m, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeySpace})
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter, Mod: tea.ModShift})
+	m, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m, cmd = m.Update(cmd())
-	if m.Saving || !m.Loading || cmd == nil || !m.selectedEnabled(m.Items[0]) {
+	if m.Saving || !m.Loading || cmd == nil || !m.enabledIn(m.Items[0], scopeSession) {
 		t.Fatal("conflict must preserve acknowledged choices and start a read")
 	}
 	m, cmd = m.Update(cmd())
@@ -96,7 +101,7 @@ func TestCapabilityConflictRefreshesWithoutReplayingToggle(t *testing.T) {
 	if first.ID != "row" {
 		first = m.Items[0]
 	}
-	if m.selectedEnabled(first) || first.Candidate.SessionOverride == nil {
+	if m.enabledIn(first, scopeSession) || first.Candidate.SessionOverride == nil {
 		t.Fatalf("fresh disabled row lost %+v", first)
 	}
 	if len(methods) != 4 || methods[0] != "PATCH" {
@@ -144,19 +149,101 @@ func TestCapabilityToggleSubmitsRowIdentityAndAcknowledgedRevision(t *testing.T)
 	}
 	m := NewCapabilityPageModel(conn, "s", "skills")
 	m, _ = m.Update(capabilityLoadedMsg{Gen: m.Generation, Items: items, Revision: "current", SessionETag: "\"seen\""})
-	m.Global = false
 	for _, index := range []int{1, 2} {
 		m.Cursor = index
 		var cmd tea.Cmd
-		m, cmd = m.Update(tea.KeyPressMsg{Code: tea.KeySpace})
+		m, cmd = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter, Mod: tea.ModShift})
 		if cmd != nil || m.Saving {
 			t.Fatal("shadowed or unaddressable invalid candidate accepted a toggle")
 		}
 	}
 	m.Cursor = 0
-	m, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeySpace})
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter, Mod: tea.ModShift})
+	m, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	msg := cmd().(capabilitySavedMsg)
 	if msg.Err != nil || requests != 1 || !m.Items[0].Candidate.EffectiveEnabled {
 		t.Fatalf("toggle must send once without optimistic changes: %v", msg.Err)
+	}
+}
+
+// The filter, the pane, and the confirm live in unexported listView and
+// confirm state; these read them through View and key presses, which E2E
+// cannot do without a terminal.
+func TestCapabilityFilterNarrowsRowsAndPaneShowsWithoutEnter(t *testing.T) {
+	m := NewCapabilityPageModel(nil, "s", "skills")
+	m.SetSize(120, 30)
+	m, _ = m.Update(capabilityLoadedMsg{Gen: m.Generation, ExtensionEnabled: true, Items: []capabilityItem{
+		{ID: "alpha", Title: "alpha-review", Candidate: daemon.CatalogCandidate{ID: "alpha", Source: "/skills/alpha", Description: new("checks diffs"), Valid: true}},
+		{ID: "beta", Title: "beta-notes", Candidate: daemon.CatalogCandidate{ID: "beta", Source: "/skills/beta", Description: new("writes notes"), Valid: true}},
+	}})
+	for _, r := range "beta" {
+		m, _ = m.Update(tea.KeyPressMsg{Code: r, Text: string(r)})
+	}
+	view := ansi.Strip(m.View())
+	if m.Confirming() || strings.Contains(view, "alpha-review") || !strings.Contains(view, "/skills/beta") || !strings.Contains(view, "eligible on reload") {
+		t.Fatalf("typing should narrow to beta and show its source and state in the pane:\n%s", view)
+	}
+	if item, _ := m.current(); item.ID != "beta" {
+		t.Fatalf("the filter left %q under the cursor", item.ID)
+	}
+}
+
+func TestCapabilityEnterAsksAndOnlyEnterOrEscAnswer(t *testing.T) {
+	key := "draft"
+	m := NewCapabilityPageModel(nil, "s", "skills")
+	m.SetSize(120, 30)
+	m, _ = m.Update(capabilityLoadedMsg{Gen: m.Generation, ExtensionEnabled: true, Revision: "rev", Items: []capabilityItem{
+		{ID: "one", Title: "one", Candidate: daemon.CatalogCandidate{ID: "one", PreferenceKey: &key, Valid: true, EffectiveEnabled: true}},
+		{ID: "two", Title: "two", Candidate: daemon.CatalogCandidate{ID: "two", PreferenceKey: &key, Valid: true, EffectiveEnabled: true}},
+	}})
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if !m.Confirming() || !strings.Contains(ansi.Strip(m.View()), "Disable one globally?") {
+		t.Fatalf("enter should ask about the global default:\n%s", ansi.Strip(m.View()))
+	}
+	m, _ = m.Update(tea.KeyPressMsg{Code: 'y', Text: "y"})
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	if !m.Confirming() || m.Cursor != 0 || m.Saving {
+		t.Fatal("a stray key must neither answer nor move past the question")
+	}
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
+	if m.Confirming() || m.Saving {
+		t.Fatal("esc must cancel the question without saving")
+	}
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter, Mod: tea.ModShift})
+	if !m.Confirming() || !strings.Contains(ansi.Strip(m.View()), "for this session only") {
+		t.Fatalf("shift+enter should ask about this session only:\n%s", ansi.Strip(m.View()))
+	}
+	m, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if !m.Saving || cmd == nil {
+		t.Fatal("enter on the question must start the save")
+	}
+}
+
+func TestMCPPaneShowsSettingsAndKeysOpenFormAndDelete(t *testing.T) {
+	enabled := true
+	m := NewCapabilityPageModel(nil, "s", "mcp")
+	m.SetSize(120, 30)
+	m, _ = m.Update(capabilityLoadedMsg{Gen: m.Generation, ExtensionEnabled: true, Items: []capabilityItem{
+		{ID: "docs", Title: "docs", Detail: "http · https://docs.example/mcp", Server: config.MCPServer{Type: "http", URL: "https://docs.example/mcp", Enabled: &enabled}, Secrets: daemon.MCPSecretNames{BearerToken: true}},
+	}})
+	view := ansi.Strip(m.View())
+	if !strings.Contains(view, "stored privately") || !strings.Contains(view, "bearer") || !strings.Contains(view, "extensions.json") {
+		t.Fatalf("the pane should show credentials and config without enter:\n%s", view)
+	}
+	m = ctrl(m, 'e')
+	if m.Form == nil || m.Form.Editing != "docs" {
+		t.Fatal("ctrl+e should edit the highlighted server")
+	}
+	if view := ansi.Strip(m.View()); !strings.Contains(view, "edit docs") || strings.Contains(view, "Search MCP servers") {
+		t.Fatalf("the open form replaces the list with its filter hidden:\n%s", view)
+	}
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
+	m = ctrl(m, 'd')
+	if !m.Confirming() || !strings.Contains(ansi.Strip(m.View()), "stored credentials will also be removed") {
+		t.Fatalf("ctrl+d should ask before deleting, with its credentials warning:\n%s", ansi.Strip(m.View()))
+	}
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
+	if m.Confirming() {
+		t.Fatal("esc should cancel the delete question")
 	}
 }

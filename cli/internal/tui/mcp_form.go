@@ -149,7 +149,7 @@ type mcpSubmission struct {
 func (f *mcpForm) submission(existing []capabilityItem) (mcpSubmission, error) {
 	name := f.value(fieldName)
 	if !mcpName.MatchString(name) {
-		return mcpSubmission{}, errors.New("use 1–64 letters, digits, underscores, or hyphens for the server name")
+		return mcpSubmission{}, errors.New("name: 1–64 letters, digits, _ or -")
 	}
 	if f.Editing == "" && slices.ContainsFunc(existing, func(item capabilityItem) bool { return item.ID == name }) {
 		return mcpSubmission{}, fmt.Errorf("a server called %s already exists; choose another name", name)
@@ -215,6 +215,7 @@ func (f *mcpForm) submission(existing []capabilityItem) (mcpSubmission, error) {
 	return mcpSubmission{Name: name, Server: server, Secrets: secrets}, nil
 }
 
+// view is the form's rows; footer is its keys, shown in the screen's footer.
 func (f *mcpForm) view(width int) []string {
 	f.fit(width - 16)
 	title := "add MCP server"
@@ -235,6 +236,11 @@ func (f *mcpForm) view(width int) []string {
 		label := cmp.Or(mcpFieldLabels[key], key)
 		rows = append(rows, formRow(i == f.Focus, label, 13, value, width))
 	}
+	return rows
+}
+
+// footer explains the focused field and lists the form's keys.
+func (f *mcpForm) footer(width int) string {
 	var own []hint
 	note := ""
 	switch f.current() {
@@ -249,7 +255,7 @@ func (f *mcpForm) view(width int) []string {
 	case fieldEnv:
 		note = "optional, stored privately"
 	}
-	return append(rows, "", formFooter(note, width, own...))
+	return formFooter(note, width, own...)
 }
 
 var nameUnsafe = regexp.MustCompile(`[^A-Za-z0-9_-]+`)
