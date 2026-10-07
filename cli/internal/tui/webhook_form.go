@@ -110,16 +110,16 @@ func (f *webhookForm) steps() ([]daemon.WebhookRequest, string, error) {
 	case f.Editing == nil && f.Chosen == "":
 		return nil, "", errors.New("choose the session this webhook will wake")
 	case f.Editing == nil && !hookName.MatchString(name):
-		return nil, "", errors.New("use 1–64 letters, digits, underscores, or hyphens for the webhook name")
+		return nil, "", errors.New("name: 1–64 letters, digits, _ or -")
 	case secret != "" && (len(secret) < 16 || len(secret) > 4096):
 		if f.Editing != nil {
-			return nil, "", errors.New("use 16–4096 bytes for the secret, or leave it blank to keep the existing secret")
+			return nil, "", errors.New("secret: 16–4096 bytes, or blank to keep it")
 		}
-		return nil, "", errors.New("use 16–4096 bytes for the secret, or leave it blank to generate one")
+		return nil, "", errors.New("secret: 16–4096 bytes, or blank to generate")
 	case !hookHeader.MatchString(header):
-		return nil, "", errors.New("use 1–64 letters, digits, or hyphens for the signature header")
+		return nil, "", errors.New("header: 1–64 letters, digits or -")
 	case len(prefix) > 32 || strings.ContainsAny(prefix, "\r\n"):
-		return nil, "", errors.New("use at most 32 bytes without newlines for the signature prefix")
+		return nil, "", errors.New("prefix: at most 32 bytes, no newlines")
 	}
 	if f.Editing == nil {
 		steps := []daemon.WebhookRequest{{Action: daemon.WebhookCreate, SessionID: f.Chosen, Name: name, Secret: secret, Header: header, Prefix: prefix}}
@@ -135,6 +135,7 @@ func (f *webhookForm) steps() ([]daemon.WebhookRequest, string, error) {
 	return steps, "saved " + f.Editing.Name, nil
 }
 
+// view is the form's rows; its keys are the footer.
 func (f *webhookForm) view(width int) []string {
 	title := "add webhook"
 	if f.Editing != nil {
@@ -158,6 +159,11 @@ func (f *webhookForm) view(width int) []string {
 			rows = append(rows, f.pickerRows(indent, width)...)
 		}
 	}
+	return rows
+}
+
+// footer explains the focused field and offers the keys every form shares.
+func (f *webhookForm) footer(width int) string {
 	var own []hint
 	var note string
 	switch f.current() {
@@ -175,7 +181,8 @@ func (f *webhookForm) view(width int) []string {
 	case hookFieldPrefix:
 		note = "text before the hex digest · blank for none"
 	}
-	return append(rows, "", formFooter(note, width, own...))
+	keys := append(own, hint{"esc", "cancel"}, hint{"ctrl+s", "save"}, hint{"enter", "next"}, hint{"tab/↑↓", "move"})
+	return footerLine(width, keys, DefaultStyles.Faint.Render(note), false)
 }
 
 // pickerRows lists the matching sessions around the chosen one.

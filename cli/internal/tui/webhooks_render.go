@@ -3,130 +3,152 @@ package tui
 import (
 	"cmp"
 	"fmt"
-	"strings"
-
-	"github.com/charmbracelet/x/ansi"
 )
 
+// View draws the list beside the highlighted hook's detail. The form and the
+// secret shown once take the list's place, and a question takes the footer.
 func (m WebhooksPageModel) View() string {
-	width := max(1, m.Width)
-	rows := m.header("/webhooks", "all sessions")
-	if m.Loading && !m.Loaded {
-		rows = append(rows, DefaultStyles.Faint.Render("loading webhooks…"))
-		return strings.Join(rows, "\n")
+	lv := m.listView
+	lv.Empty = "No webhooks yet. Add one to wake a session with a signed request."
+	switch {
+	case m.Loading:
+		lv.Empty = "loading webhooks…"
+	case !m.Loaded:
+		lv.Empty = "webhooks did not load"
 	}
-	if !m.Loaded {
-		return strings.Join(append(rows, "", keyHints(hint{"r", "retry"}, hint{"esc", "back"})), "\n")
-	}
-	// Give the confirmation the screen instead of truncating its consequence or target.
-	if m.Confirm != "" && m.selected() != nil {
-		question := "Its URL will stop working; accepted deliveries stay in the inbox. Delete " + m.selected().Name + "?"
-		if m.Confirm == "rotate" {
-			question = "The sender must use the new secret. Replace the secret for " + m.selected().Name + "?"
-		}
-		rows = append(rows, "")
-		for line := range strings.SplitSeq(ansi.Wrap(question, width, " "), "\n") {
-			rows = append(rows, DefaultStyles.Warning.Render(line))
-		}
-		rows = append(rows, keyHints(hint{"enter", "confirm"}, hint{"any other key", "cancels"}))
-		return m.fit(rows)
-	}
-	if !m.Mounted {
-		rows = append(rows, DefaultStyles.Warning.Render("Webhooks are not listening")+DefaultStyles.Faint.Render(" · enable webhooks globally in /extensions to accept deliveries"))
-	}
-	agent := DefaultStyles.Faint.Render("off") + DefaultStyles.Faint.Render(" · this session's agent can't touch webhooks")
-	if m.AgentManagement {
-		agent = DefaultStyles.Success.Render("on ") + DefaultStyles.Faint.Render(" · this session's agent can add, rotate and delete its own hooks")
-	}
-	rows = append(rows, ansi.Truncate(DefaultStyles.Muted.Render("agent access ")+agent, width, "…"), "")
-
-	if len(m.Hooks) == 0 {
-		rows = append(rows, DefaultStyles.Faint.Render("No webhooks yet. Add one to wake a session with a signed request."))
-	}
-	nameWidth := 4
-	for _, hook := range m.Hooks {
-		nameWidth = max(nameWidth, ansi.StringWidth(hook.Name))
-	}
-	// Hooks sit under the session they wake; the cursor line is kept in view.
-	counts := map[string]int{}
-	for _, hook := range m.Hooks {
-		counts[hook.Session]++
-	}
-	var list []string
-	cursorLine := 0
-	for i, hook := range m.Hooks {
-		if i == 0 || hook.Session != m.Hooks[i-1].Session {
-			if i > 0 {
-				list = append(list, "")
-			}
-			list = append(list, sectionRule(ansi.Truncate(sessionLabel(m.Sessions, hook.Session, m.SessionID), max(8, width-12), "…"), counts[hook.Session], width))
-		}
-		var label string
-		if hook.Enabled {
-			label = DefaultStyles.Success.Render("on ")
-		} else {
-			label = DefaultStyles.Faint.Render("off")
-		}
-		row := label + "  " + padRight(hook.Name, nameWidth+1) + DefaultStyles.Faint.Render(hook.URL)
-		if hook.Queued > 0 {
-			row += DefaultStyles.Decor.Render(" · ") + DefaultStyles.Warning.Render(fmt.Sprintf("%d queued", hook.Queued))
-		}
-		if i == m.Cursor {
-			cursorLine = len(list)
-		}
-		list = append(list, listRow(i == m.Cursor, row, width))
-	}
-	rows = append(rows, scrolled(list, cursorLine, max(2, m.Height-17))...)
-
+	frame := lv.frame(brand("albedo")+" "+DefaultStyles.Muted.Render("/webhooks"), DefaultStyles.Faint.Render("all sessions"), m.footer(max(1, m.Width)))
 	switch {
 	case m.Reveal != nil:
-		rows = append(rows, "", ansi.Truncate(DefaultStyles.Bold.Render("signing secret for "+m.Reveal.Hook)+DefaultStyles.Faint.Render(" → "+sessionLabel(m.Sessions, m.Reveal.Session, m.SessionID)+" · shown only once; copy it now"), width, "…"))
-		rows = append(rows, "  "+DefaultStyles.Prompt.Render(m.Reveal.Secret), "")
-		rows = append(rows, keyHints(hint{"c", "copy"}, hint{"enter", "done"}))
+		frame.filter, frame.pane, frame.list = "", nil, m.revealRows
 	case m.Form != nil:
-		rows = append(rows, "")
-		rows = append(rows, m.Form.view(width)...)
-		if m.Saving {
-			rows = append(rows, DefaultStyles.Faint.Render("saving…"))
-		}
-	case m.Saving:
-		rows = append(rows, "", DefaultStyles.Faint.Render("saving…"))
-	default:
-		if hook := m.selected(); hook != nil {
-			rows = append(rows, "")
-			rows = append(rows, m.detail(*hook, width)...)
-		}
-		browse := []hint{{"r", "refresh"}, {"esc", "back"}}
-		keys := []hint{{"n", "add hook"}, {"a", "agent access"}}
-		if len(m.Hooks) > 0 {
-			browse = []hint{{"↑↓", "select"}, {"space", "on/off"}, {"y", "copy url"}, {"r", "refresh"}, {"esc", "back"}}
-			keys = []hint{{"n", "add hook"}, {"enter", "edit"}, {"k", "new secret"}, {"d", "delete"}, {"a", "agent access"}}
-		}
-		rows = append(rows, "", keyHints(browse...), keyHints(keys...))
+		frame.filter, frame.pane, frame.list = "", nil, m.formRows
 	}
-	return m.fit(rows)
+	return frame.view(m.Width, m.Height)
 }
 
-// detail explains the selected hook: where to send, how to sign, and what is
-// waiting for the session.
-func (m WebhooksPageModel) detail(hook webhookEntry, width int) []string {
-	field := func(label, value string) string {
-		return ansi.Truncate(DefaultStyles.Muted.Render(padRight(label, 11))+value, width, "…")
+// footer is the keys for what is open and one status: a failure, a notice,
+// work in flight, or what the hooks are doing.
+func (m WebhooksPageModel) footer(width int) string {
+	switch {
+	case m.Reveal != nil:
+		status, urgent := m.status()
+		return footerLine(width, []hint{{"ctrl+l", "copy"}, {"enter", "done"}}, status, urgent)
+	case m.Form != nil:
+		return m.formFooter(width)
+	case m.confirm.asking():
+		return m.confirm.footer(width, m.Error)
 	}
-	rows := []string{
-		field("wakes", sessionLabel(m.Sessions, hook.Session, m.SessionID)),
-		field("url", "POST "+cmp.Or(hook.Address, hook.URL)),
-		field("signature", hook.Header+": "+hook.Prefix+DefaultStyles.Faint.Render("<hex HMAC-SHA256 of the body>")),
+	status, urgent := m.status()
+	return footerLine(width, m.browseHints(), status, urgent)
+}
+
+// status is the footer's state beside the keys. An urgent status takes a row
+// of its own when the keys do not leave room for it.
+func (m WebhooksPageModel) status() (string, bool) {
+	switch {
+	case m.Error != "":
+		return DefaultStyles.Error.Render(m.Error), true
+	case m.Saving:
+		return DefaultStyles.Busy.Render("saving…"), true
+	case m.Loading:
+		return DefaultStyles.Faint.Render("loading…"), false
+	case m.Notice != "":
+		return DefaultStyles.Warning.Render(m.Notice), true
+	case !m.Mounted:
+		return DefaultStyles.Warning.Render("Webhooks are not listening · enable them in /extensions"), true
 	}
-	inbox := DefaultStyles.Faint.Render("empty")
+	return "", false
+}
+
+// browseHints is ordered by what a narrow terminal must keep: esc first, then
+// the row's own keys, then the rest.
+func (m WebhooksPageModel) browseHints() []hint {
+	if !m.Loaded {
+		return []hint{{"esc", "back"}, {"ctrl+r", "retry"}}
+	}
+	_, selected := m.current()
+	hints := []hint{{"esc", "back"}}
+	if selected {
+		hints = append(hints, hint{"enter", "on/off"}, hint{"ctrl+e", "edit"})
+	}
+	hints = append(hints, hint{"ctrl+o", "add hook"})
+	if selected {
+		hints = append(hints, hint{"ctrl+d", "delete"}, hint{"ctrl+g", "new secret"}, hint{"ctrl+l", "copy url"})
+	}
+	return append(hints, hint{"ctrl+t", "agent access " + onOff(m.AgentManagement)}, hint{"ctrl+r", "refresh"})
+}
+
+// formFooter is the form's keys, with a failure or the save in flight above them.
+func (m WebhooksPageModel) formFooter(width int) string {
+	line := m.Form.footer(width)
+	switch {
+	case m.Error != "":
+		return footerLine(width, nil, DefaultStyles.Error.Render(m.Error), true) + "\n" + line
+	case m.Saving:
+		return footerLine(width, nil, DefaultStyles.Busy.Render("saving…"), true) + "\n" + line
+	}
+	return line
+}
+
+// formRows is the form in the list's place, scrolled to keep its focused field in view.
+func (m WebhooksPageModel) formRows(width, height int) []string {
+	return scrolled(m.Form.view(width), 1+m.Form.Focus, height)
+}
+
+// revealRows is the generated secret, shown once, in the list's place. Its
+// session and warning sit on rows of their own so a narrow terminal keeps them.
+func (m WebhooksPageModel) revealRows(_, _ int) []string {
+	r := m.Reveal
+	return []string{
+		DefaultStyles.Bold.Render("signing secret for " + r.Hook),
+		DefaultStyles.Faint.Render("→ " + sessionLabel(m.Sessions, r.Session, m.SessionID)),
+		DefaultStyles.Warning.Render("shown only once; copy it now"),
+		"",
+		"  " + DefaultStyles.Prompt.Render(r.Secret),
+	}
+}
+
+// entry is how a hook reads in the list: its state in front, its URL under
+// its name, and the deliveries waiting for its session at the edge.
+func (m WebhooksPageModel) entry(hook webhookEntry) listEntry {
+	lead, tag := DefaultStyles.Faint.Render("off"), ""
+	if hook.Enabled {
+		lead = DefaultStyles.Success.Render("on")
+	}
 	if hook.Queued > 0 {
-		inbox = DefaultStyles.Warning.Render(fmt.Sprintf("%d waiting for the session", hook.Queued))
+		tag = DefaultStyles.Warning.Render(fmt.Sprintf("%d queued", hook.Queued))
+	}
+	section := sessionLabel(m.Sessions, hook.Session, m.SessionID)
+	return listEntry{
+		key:     hook.ID,
+		section: section,
+		lead:    lead,
+		name:    hook.Name,
+		desc:    hook.URL,
+		tag:     tag,
+		search:  []string{section},
+		detail:  func(width int) []string { return m.details(hook, width) },
+	}
+}
+
+// details is the pane: the state, where deliveries go, how they are signed,
+// and what is waiting for the session.
+func (m WebhooksPageModel) details(hook webhookEntry, width int) []string {
+	state := "off · new deliveries answer 404"
+	if hook.Enabled {
+		state = "on · accepting signed deliveries"
+	}
+	lines := paneTitle(hook.Name, state, width)
+	lines = append(lines, factRows("wakes", sessionLabel(m.Sessions, hook.Session, m.SessionID), width)...)
+	lines = append(lines, factRows("url", "POST "+cmp.Or(hook.Address, hook.URL), width)...)
+	lines = append(lines, factRows("signature", hook.Header+": "+hook.Prefix+"<hex HMAC-SHA256 of the body>", width)...)
+	lines = append(lines, factRows("secret", "stored · ctrl+g makes a new one", width)...)
+	inbox := "empty"
+	if hook.Queued > 0 {
+		inbox = fmt.Sprintf("%d waiting for the session", hook.Queued)
 		if hook.Deferred != "" {
-			inbox += DefaultStyles.Faint.Render(" · last attempt: " + hook.Deferred)
+			inbox += " · last attempt: " + hook.Deferred
 		}
 	}
-	if !hook.Enabled {
-		inbox += DefaultStyles.Faint.Render(" · off, new deliveries answer 404")
-	}
-	return append(rows, field("inbox", inbox))
+	return append(lines, factRows("inbox", inbox, width)...)
 }

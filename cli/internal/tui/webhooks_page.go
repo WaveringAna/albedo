@@ -24,11 +24,12 @@ type WebhooksPageModel struct {
 	Reveal         *webhookSecret
 	SessionID      string
 	PermissionETag string
-	Confirm        string // "delete" or "rotate"
 	// Sessions are the ones a hook can target, the current one first.
 	Sessions []daemon.Session
 	Hooks    []webhookEntry
-	page
+	pageStatus
+	listView
+	confirm
 	AgentManagement bool
 	// Mounted reports whether the extension is on globally; the daemon only
 	// listens for deliveries then.
@@ -78,8 +79,22 @@ const (
 )
 
 func NewWebhooksPageModel(conn *daemon.Connection, sessionID string) WebhooksPageModel {
-	return WebhooksPageModel{Conn: conn, SessionID: sessionID, Mounted: true, page: startPage(true)}
+	return WebhooksPageModel{
+		Conn:       conn,
+		SessionID:  sessionID,
+		Mounted:    true,
+		pageStatus: newPageStatus(true),
+		listView:   newListView("Search webhooks"),
+	}
 }
+
+func (m *WebhooksPageModel) SetSize(width, height int) {
+	m.pageStatus.SetSize(width, height)
+	m.listView.setSize(width, height)
+}
+
+// Confirming reports a question waiting for enter or esc.
+func (m WebhooksPageModel) Confirming() bool { return m.confirm.asking() }
 
 func (m WebhooksPageModel) Init() tea.Cmd { return m.loadCmd(m.Generation) }
 
@@ -196,13 +211,6 @@ func (m WebhooksPageModel) save(gen int, notice string, steps ...daemon.WebhookR
 	}
 }
 
-func (m WebhooksPageModel) selected() *webhookEntry {
-	if m.Cursor < len(m.Hooks) {
-		return &m.Hooks[m.Cursor]
-	}
-	return nil
-}
-
 // sessionLabel names a session plainly enough to tell it apart from the
 // others. Whether it is the session this screen was opened from comes first,
 // and the title is capped, so a long title never hides the rest.
@@ -221,16 +229,41 @@ func sessionLabel(sessions []daemon.Session, id, current string) string {
 	return strings.Join(parts, " · ")
 }
 
+// setHooks lists the hooks under the sessions they wake, keeping the cursor
+// on the hook it was on.
+func (m *WebhooksPageModel) setHooks(hooks []webhookEntry) {
+	m.Hooks = hooks
+	rows := make([]listEntry, len(hooks))
+	for i, hook := range hooks {
+		rows[i] = m.entry(hook)
+	}
+	m.setRows(rows)
+}
+
+// hook is the listed hook with this ID.
+func (m WebhooksPageModel) hook(id string) (webhookEntry, bool) {
+	i := slices.IndexFunc(m.Hooks, func(h webhookEntry) bool { return h.ID == id })
+	if i < 0 {
+		return webhookEntry{}, false
+	}
+	return m.Hooks[i], true
+}
+
+// current is the hook under the cursor.
+func (m WebhooksPageModel) current() (webhookEntry, bool) {
+	row, ok := m.highlighted()
+	if !ok {
+		return webhookEntry{}, false
+	}
+	return m.hook(row.key)
+}
+
 func (m WebhooksPageModel) begin(notice string, steps ...daemon.WebhookRequest) (WebhooksPageModel, tea.Cmd) {
 	for i := range steps {
 		if steps[i].Action == daemon.WebhookAgentEnable || steps[i].Action == daemon.WebhookAgentDisable {
 			steps[i].ETag = m.PermissionETag
-		} else {
-			for _, hook := range m.Hooks {
-				if hook.ID == steps[i].HookID {
-					steps[i].ETag = hook.ETag
-				}
-			}
+		} else if hook, ok := m.hook(steps[i].HookID); ok {
+			steps[i].ETag = hook.ETag
 		}
 	}
 	m.Error, m.Notice = "", ""
@@ -246,9 +279,9 @@ func (m WebhooksPageModel) Update(msg tea.Msg) (WebhooksPageModel, tea.Cmd) {
 			return m, nil
 		}
 		m.Loaded = true
-		m.Cursor = reselect(m.Cursor, m.Hooks, msg.Hooks, func(hook webhookEntry) string { return hook.ID })
 		m.PermissionETag = msg.PermissionETag
-		m.Sessions, m.Hooks, m.AgentManagement, m.Mounted = msg.Sessions, msg.Hooks, msg.Agent, msg.Mounted
+		m.Sessions, m.AgentManagement, m.Mounted = msg.Sessions, msg.Agent, msg.Mounted
+		m.setHooks(msg.Hooks)
 		return m, nil
 	case webhooksSavedMsg:
 		if msg.Gen != m.Generation {
@@ -269,111 +302,7 @@ func (m WebhooksPageModel) Update(msg tea.Msg) (WebhooksPageModel, tea.Cmd) {
 		m.Loading, m.Generation = true, nextPageGeneration()
 		return m, m.loadCmd(m.Generation)
 	case tea.KeyPressMsg:
-		key := msg.String()
-		if m.Saving {
-			return m, nil
-		}
-		if m.Reveal != nil {
-			switch key {
-			case "c":
-				m.Error, m.Notice = "", "Secret copied."
-				return m, CopyText(m.Reveal.Secret)
-			case "enter", "esc":
-				m.Reveal = nil
-			}
-			return m, nil
-		}
-		if m.Form != nil {
-			if key == "esc" {
-				m.Form = nil
-				m.Error = ""
-				return m, nil
-			}
-			submit, cmd := m.Form.update(msg)
-			if !submit {
-				return m, cmd
-			}
-			steps, notice, err := m.Form.steps()
-			if err != nil {
-				m.Error = err.Error()
-				return m, nil
-			}
-			if len(steps) == 0 {
-				m.Form = nil
-				m.Error, m.Notice = "", "No changes made."
-				return m, nil
-			}
-			return m.begin(notice, steps...)
-		}
-		if m.Confirm != "" {
-			action := m.Confirm
-			m.Confirm = ""
-			hook := m.selected()
-			if key != "enter" || hook == nil {
-				return m, nil
-			}
-			note := "New secret for " + hook.Name
-			if action == "delete" {
-				note = "Deleted " + hook.Name
-			}
-			return m.begin(note, daemon.WebhookRequest{Action: daemon.WebhookAction(action), HookID: hook.ID})
-		}
-		if key == "esc" || key == "ctrl+c" {
-			return m, func() tea.Msg { return WebhooksPageDoneMsg{} }
-		}
-		if m.Loading {
-			return m, nil
-		}
-		if key == "r" {
-			m.Error, m.Notice = "", ""
-			m.Loading = true
-			m.Generation = nextPageGeneration()
-			return m, m.loadCmd(m.Generation)
-		}
-		if !m.Loaded {
-			return m, nil
-		}
-		if m.step(key, len(m.Hooks)) {
-			return m, nil
-		}
-		hook := m.selected()
-		switch key {
-		case "enter":
-			if hook != nil {
-				m.Error, m.Notice = "", ""
-				m.Form = newWebhookForm(hook, m.Sessions, m.SessionID)
-			}
-		case "space":
-			if hook != nil {
-				action, note := "enable", hook.Name+" enabled."
-				if hook.Enabled {
-					action, note = "disable", hook.Name+" disabled. New deliveries will receive a 404 response."
-				}
-				return m.begin(note, daemon.WebhookRequest{Action: daemon.WebhookAction(action), HookID: hook.ID})
-			}
-		case "n":
-			m.Error, m.Notice = "", ""
-			m.Form = newWebhookForm(nil, m.Sessions, m.SessionID)
-		case "a":
-			action, note := daemon.WebhookAgentEnable, "This session’s agent can now manage its own webhooks."
-			if m.AgentManagement {
-				action, note = daemon.WebhookAgentDisable, "This session’s agent can no longer manage its webhooks."
-			}
-			return m.begin(note, daemon.WebhookRequest{Action: action})
-		case "d", "k":
-			if hook != nil {
-				if key == "d" {
-					m.Confirm = "delete"
-				} else {
-					m.Confirm = "rotate"
-				}
-			}
-		case "y":
-			if hook != nil {
-				m.Error, m.Notice = "", "URL copied."
-				return m, CopyText(cmp.Or(hook.Address, hook.URL))
-			}
-		}
+		return m.handleKey(msg)
 	case tea.PasteMsg:
 		if m.Saving || m.Reveal != nil || m.Form == nil {
 			return m, nil
@@ -382,6 +311,156 @@ func (m WebhooksPageModel) Update(msg tea.Msg) (WebhooksPageModel, tea.Cmd) {
 		return m, cmd
 	}
 	return m, nil
+}
+
+// handleKey routes a key to the open part of the screen: the secret, the
+// form, the question, or the list.
+func (m WebhooksPageModel) handleKey(msg tea.KeyPressMsg) (WebhooksPageModel, tea.Cmd) {
+	key := msg.String()
+	switch {
+	case m.Reveal != nil:
+		return m.revealKey(key)
+	case m.Form != nil:
+		return m.formKey(msg)
+	case m.confirm.asking():
+		return m.confirmKey(msg)
+	case key == "esc" || key == "ctrl+c":
+		return m, func() tea.Msg { return WebhooksPageDoneMsg{} }
+	case m.Saving || m.Loading:
+		return m, nil
+	}
+	return m.browseKey(msg)
+}
+
+func (m WebhooksPageModel) revealKey(key string) (WebhooksPageModel, tea.Cmd) {
+	switch key {
+	case "ctrl+l":
+		m.Error, m.Notice = "", "Secret copied."
+		return m, CopyText(m.Reveal.Secret)
+	case "enter", "esc":
+		m.Reveal = nil
+	}
+	return m, nil
+}
+
+func (m WebhooksPageModel) formKey(msg tea.KeyPressMsg) (WebhooksPageModel, tea.Cmd) {
+	if msg.String() == "esc" {
+		m.Form, m.Error = nil, ""
+		return m, nil
+	}
+	if m.Saving {
+		return m, nil
+	}
+	submit, cmd := m.Form.update(msg)
+	if !submit {
+		return m, cmd
+	}
+	steps, notice, err := m.Form.steps()
+	if err != nil {
+		m.Error = err.Error()
+		return m, nil
+	}
+	if len(steps) == 0 {
+		m.Form = nil
+		m.Error, m.Notice = "", "No changes made."
+		return m, nil
+	}
+	return m.begin(notice, steps...)
+}
+
+// confirmKey runs the change a question asked about on enter; esc cancels and
+// every other key is ignored.
+func (m WebhooksPageModel) confirmKey(msg tea.KeyPressMsg) (WebhooksPageModel, tea.Cmd) {
+	if !m.confirm.key(msg) {
+		return m, nil
+	}
+	what, id := m.confirm.what, m.confirm.target
+	m.confirm.dismiss()
+	hook, ok := m.hook(id)
+	if !ok {
+		return m, nil
+	}
+	action := daemon.WebhookAction(what)
+	note := "New secret for " + hook.Name
+	switch action {
+	case daemon.WebhookEnable:
+		note = hook.Name + " enabled."
+	case daemon.WebhookDisable:
+		note = hook.Name + " disabled. New deliveries will receive a 404 response."
+	case daemon.WebhookDelete:
+		note = "Deleted " + hook.Name
+	}
+	return m.begin(note, daemon.WebhookRequest{Action: action, HookID: hook.ID})
+}
+
+func (m WebhooksPageModel) browseKey(msg tea.KeyPressMsg) (WebhooksPageModel, tea.Cmd) {
+	key := msg.String()
+	if key == "ctrl+r" {
+		m.Error, m.Notice = "", ""
+		m.Loading = true
+		m.Generation = nextPageGeneration()
+		return m, m.loadCmd(m.Generation)
+	}
+	if !m.Loaded {
+		return m, nil
+	}
+	hook, selected := m.current()
+	switch key {
+	case "enter":
+		if selected {
+			return m.toggleHook(hook)
+		}
+	case "ctrl+o":
+		m.Error, m.Notice = "", ""
+		m.Form = newWebhookForm(nil, m.Sessions, m.SessionID)
+	case "ctrl+e":
+		if selected {
+			m.Error, m.Notice = "", ""
+			m.Form = newWebhookForm(&hook, m.Sessions, m.SessionID)
+		}
+	case "ctrl+d":
+		if selected {
+			m.askHook(daemon.WebhookDelete, hook, "delete", "Its URL will stop working; accepted deliveries stay in the inbox. Delete "+hook.Name+"?")
+		}
+	case "ctrl+g":
+		if selected {
+			m.askHook(daemon.WebhookRotate, hook, "new secret", "The sender must use the new secret. Replace the secret for "+hook.Name+"?")
+		}
+	case "ctrl+t":
+		return m.toggleAgent()
+	case "ctrl+l":
+		if selected {
+			m.Error, m.Notice = "", "URL copied."
+			return m, CopyText(cmp.Or(hook.Address, hook.URL))
+		}
+	default:
+		cmd := m.listView.update(msg)
+		return m, cmd
+	}
+	return m, nil
+}
+
+// toggleHook switches a hook on or off now; an off hook answers new deliveries
+// with a 404, so the notice says so.
+func (m WebhooksPageModel) toggleHook(hook webhookEntry) (WebhooksPageModel, tea.Cmd) {
+	action, note := daemon.WebhookEnable, hook.Name+" enabled."
+	if hook.Enabled {
+		action, note = daemon.WebhookDisable, hook.Name+" disabled. New deliveries will receive a 404 response."
+	}
+	return m.begin(note, daemon.WebhookRequest{Action: action, HookID: hook.ID})
+}
+
+func (m WebhooksPageModel) toggleAgent() (WebhooksPageModel, tea.Cmd) {
+	action, note := daemon.WebhookAgentEnable, "This session’s agent can now manage its own webhooks."
+	if m.AgentManagement {
+		action, note = daemon.WebhookAgentDisable, "This session’s agent can no longer manage its webhooks."
+	}
+	return m.begin(note, daemon.WebhookRequest{Action: action})
+}
+
+func (m *WebhooksPageModel) askHook(action daemon.WebhookAction, hook webhookEntry, verb, prompt string) {
+	m.Error = ""
+	m.confirm.ask(string(action), hook.ID, verb, prompt)
 }
 
 func optionalWebhookText(text string) *string {

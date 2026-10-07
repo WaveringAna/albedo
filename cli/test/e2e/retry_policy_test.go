@@ -333,7 +333,7 @@ func TestWebhookCreationMissingGeneratedSecretStopsAfterOneEffect(t *testing.T) 
 	if !driver.App.WebhooksPage.Loaded || driver.App.WebhooksPage.Error != "" {
 		t.Fatalf("open creation screen: %s", driver.App.WebhooksPage.Error)
 	}
-	driver.Dispatch(tea.KeyPressMsg{Code: 'n', Text: "n"})
+	driver.Dispatch(tea.KeyPressMsg{Code: 'o', Mod: tea.ModCtrl})
 	driver.Type("missing-secret")
 	// Creation installs the signature atomically even when its secret acknowledgment is lost.
 	driver.App.WebhooksPage.Form.Inputs["header"].SetValue("x-custom-signature")
