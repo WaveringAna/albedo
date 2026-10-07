@@ -141,7 +141,12 @@ func (c *ChatClient) readStream(ctx context.Context, scanner *bufio.Scanner, onB
 			if err := json.Unmarshal(first.Data, &reason); err != nil || reason.Code == "" {
 				return streamFailure(StreamProtocol, fieldError("failure reason"))
 			}
-			return streamFailure(StreamTerminal, &APIError{Code: reason.Code, Message: reason.Detail})
+			failure := &APIError{Code: reason.Code, Message: reason.Detail}
+			if failure.daemonRestarting() {
+				// older daemons end streams this way while they shut down
+				return streamFailure(StreamTransient, failure)
+			}
+			return streamFailure(StreamTerminal, failure)
 		}
 		reset := first.Type == "reset"
 		c.mu.Lock()

@@ -3,6 +3,7 @@
 package daemon
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -154,5 +155,25 @@ func TestProgressOverflowIsRejectedBeforeCallbacks(t *testing.T) {
 	err := NewChatClient(conn, "test").Stream(t.Context(), 0, func(StreamEvent) error { calls++; return nil })
 	if err == nil || calls != 0 {
 		t.Fatalf("intermediate overflow delivered: %v calls=%d", err, calls)
+	}
+}
+
+// The daemon that restarts under a client is often an older build than the
+// client, and older daemons end a stream with a daemon_unavailable failure
+// batch while they shut down. The e2e suites run one build on both sides, so
+// only this test sends that batch.
+func TestFailureBatchFromStoppingDaemonIsTransient(t *testing.T) {
+	for code, want := range map[string]StreamFailureKind{
+		"daemon_unavailable":  StreamTransient,
+		"daemon_stopping":     StreamTransient,
+		"history_unavailable": StreamTerminal,
+	} {
+		client := NewChatClient(NewConnection(ConnectionSnapshot{Port: 1}, nil), "s")
+		wire := `data: {"generation":"abcdefghijklmnopqrstuv","cursor":3,"events":[{"type":"failure","data":{"code":"` + code + `","detail":"gone"}}]}` + "\n\n"
+		err := client.readStream(context.Background(), bufio.NewScanner(strings.NewReader(wire)), nil, func(StreamEvent) error { return nil })
+		var failure *StreamError
+		if !errors.As(err, &failure) || failure.Kind != want {
+			t.Errorf("%s failure batch: %v, want kind %d", code, err, want)
+		}
 	}
 }

@@ -1,7 +1,8 @@
 //go:build unix
 
 // A read through a ChatClient built before a real daemon restart refreshes
-// its connection before another turn without losing the first turn's transcript.
+// its connection before another turn without losing the first turn's transcript,
+// and an open session stream follows the session to the restarted daemon.
 // A fake daemon cannot exercise process lifetime or on-disk session persistence.
 package e2e
 
@@ -205,4 +206,44 @@ func TestTUIReopensInterruptedSessionWithoutCompacting(t *testing.T) {
 	if !strings.Contains(replies, "echo: continue without compacting") {
 		t.Fatalf("the reopened session did not answer: %q", replies)
 	}
+}
+
+// The daemon closes its sessions before it stops listening, so an open stream
+// sees its session stop first. That is a restart, not a failed session: the
+// chat keeps its stream and shows the next turn from the restarted daemon.
+func TestTUIStreamFollowsSessionAcrossDaemonRestart(t *testing.T) {
+	providerRoute(t, echoReply)
+	session := daemonSession(t, newSession(t, t.TempDir()))
+	driver := driveTUI(t, &session)
+	t.Cleanup(driver.App.Chat.Close)
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+	defer cancel()
+	inbox := make(chan tea.Msg, 32)
+	pump := func(until func(daemon.StreamEvent) bool) {
+		t.Helper()
+		for {
+			select {
+			case msg := <-inbox:
+				if result, ok := msg.(tui.ChatStreamResultMsg); ok {
+					t.Fatalf("the restart stopped the stream: %v", result.Err)
+				}
+				streamMessages(ctx, driver.Update(msg), inbox)
+				if event, ok := msg.(tui.ChatStreamEventMsg); ok && until(event.Event) {
+					return
+				}
+			case <-ctx.Done():
+				t.Fatalf("stream did not reach expected state:\n%s", driver.View())
+			}
+		}
+	}
+	streamMessages(ctx, driver.App.Chat.Init(), inbox)
+	pump(func(event daemon.StreamEvent) bool { return event.Type == daemon.EventReset })
+
+	restartDaemon(t)
+	if _, err := daemon.NewChatClient(conn(t), session.ID).Send(ctx, "turn after the restart", nil); err != nil {
+		t.Fatal(err)
+	}
+	pump(func(event daemon.StreamEvent) bool {
+		return event.Type == daemon.EventMessage && strings.Contains(event.Text, "echo: turn after the restart")
+	})
 }

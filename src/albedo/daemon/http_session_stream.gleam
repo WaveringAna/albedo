@@ -185,53 +185,66 @@ fn session_stream_loop(
           mist.ChunkContinue(State(..state, initial: None))
         }
       }
-    None -> {
-      let captured =
+    None ->
+      case
         protect.attempt(fn() { session.read(state.worker, Some(state.cursor)) })
-        |> result.replace_error("daemon is shutting down")
-        |> result.flatten
-        |> result.map_error(http_api.failure)
-      let outcome = {
-        use page <- result.try(captured)
-        use batch <- result.try(session_batch(
-          state.secret,
-          state.ledger,
-          page,
-          Some(state.cursor),
-          state.tail,
-        ))
-        Ok(#(page, batch))
+      {
+        // The session stopped (the daemon is shutting down, or the session
+        // was closed or deleted) or did not answer. That is not the stream
+        // failing: end it, so the client reconnects and learns which.
+        Error(_) -> {
+          http_stream.close(state.writer)
+          mist.ChunkStop
+        }
+        Ok(read) -> next_batch(state, message, read)
       }
-      case outcome {
-        Error(failure) -> stream_failure(state.writer, state.cursor, failure)
-        Ok(#(page, batch)) -> {
-          let sent = case
-            page.snapshot == None
-            && list.is_empty(page.events)
-            && message == StreamTick
-          {
-            True -> http_stream.keepalive(state.writer)
-            False -> http_stream.send(state.writer, batch)
-          }
-          case sent {
-            Error(_) -> mist.ChunkStop
-            Ok(_) -> {
-              session.consumed(
-                state.worker,
-                state.owner,
-                page.cursor,
-                message == StreamWake,
-              )
-              case message {
-                StreamTick -> {
-                  let _ = process.send_after(state.subject, 5000, StreamTick)
-                  Nil
-                }
-                StreamWake -> Nil
-              }
-              mist.ChunkContinue(State(..state, cursor: page.cursor))
+  }
+}
+
+fn next_batch(
+  state: State,
+  message: StreamMessage,
+  read: Result(session.Page, String),
+) -> mist.ChunkNext(State) {
+  let outcome = {
+    use page <- result.try(read |> result.map_error(http_api.failure))
+    use batch <- result.try(session_batch(
+      state.secret,
+      state.ledger,
+      page,
+      Some(state.cursor),
+      state.tail,
+    ))
+    Ok(#(page, batch))
+  }
+  case outcome {
+    Error(failure) -> stream_failure(state.writer, state.cursor, failure)
+    Ok(#(page, batch)) -> {
+      let sent = case
+        page.snapshot == None
+        && list.is_empty(page.events)
+        && message == StreamTick
+      {
+        True -> http_stream.keepalive(state.writer)
+        False -> http_stream.send(state.writer, batch)
+      }
+      case sent {
+        Error(_) -> mist.ChunkStop
+        Ok(_) -> {
+          session.consumed(
+            state.worker,
+            state.owner,
+            page.cursor,
+            message == StreamWake,
+          )
+          case message {
+            StreamTick -> {
+              let _ = process.send_after(state.subject, 5000, StreamTick)
+              Nil
             }
+            StreamWake -> Nil
           }
+          mist.ChunkContinue(State(..state, cursor: page.cursor))
         }
       }
     }

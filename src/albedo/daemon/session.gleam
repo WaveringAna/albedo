@@ -1808,6 +1808,7 @@ fn handle(
         Ok(_) -> {
           active_output.revoke(state.home, state.info.id)
           cleanup_registrations(state.info.id)
+          wake_watchers(state)
           process.send(reply, Ok(Nil))
           actor.stop()
         }
@@ -1822,6 +1823,7 @@ fn handle(
         }
         None -> close_idle(state)
       }
+      wake_watchers(state)
       process.send(reply, Nil)
       actor.stop()
     }
@@ -1863,6 +1865,12 @@ fn close_idle(state: State) -> Nil {
     None -> Nil
   }
   forget(state)
+}
+
+/// Wake every stream watching this stopping session, so each ends now rather
+/// than at its next keepalive and its client reconnects to what serves next.
+fn wake_watchers(state: State) -> Nil {
+  list.each(state.watchers, fn(watcher) { watcher.notify() })
 }
 
 fn forget(state: State) -> Nil {

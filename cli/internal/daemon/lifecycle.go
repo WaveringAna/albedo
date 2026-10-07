@@ -148,7 +148,7 @@ func Rediscover(ctx context.Context, homeDir string) (ConnectionSnapshot, error)
 				return ConnectionSnapshot{}, err
 			}
 			var api *APIError
-			if errors.As(err, &api) && api.Code != "daemon_stopping" && api.Code != "daemon_unavailable" {
+			if errors.As(err, &api) && !api.daemonRestarting() {
 				return ConnectionSnapshot{}, err
 			}
 			if _, ok := errors.AsType[*ProtocolError](err); ok {
@@ -368,7 +368,7 @@ func startLocal(ctx context.Context, cmd *exec.Cmd, options LocalOptions) (*Conn
 			var local *LocalError
 			var api *APIError
 			unreachable := errors.As(err, &local) && local.Kind == UnreachableDaemon
-			starting := errors.As(err, &api) && (api.Code == "daemon_stopping" || api.Code == "daemon_unavailable")
+			starting := errors.As(err, &api) && api.daemonRestarting()
 			if !unreachable && !starting {
 				return nil, err
 			}

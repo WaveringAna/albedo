@@ -78,7 +78,11 @@ response's bytes, so any replay fits a single batch.
 Session subscribers receive coalesced wake notifications. Event payloads stay
 in the session's existing replay buffer; a successful frame acknowledges its
 cursor before another wake is issued. A subscriber's death removes its watch
-without requiring another event.
+without requiring another event. A session that stops (closed at shutdown or
+deleted) wakes its subscribers, and a stream whose session stopped or did not
+answer ends with a clean EOF rather than a failure batch: the daemon closes
+sessions before it stops listening, so that is a restart or a deletion, and the
+client's reconnect learns which.
 
 The CLI validates the whole batch before consuming it and saves both cursor
 values only after every callback succeeds. Initial attachment and a generation
@@ -96,7 +100,9 @@ a delay starting at 500 milliseconds and increasing to at most five seconds.
 EOF and transient failures retain the saved pair. Cancellation ends the
 subscription quietly and clears the pair, as does explicit protocol recovery.
 Other HTTP refusals, explicit SSE failures, and consumer callback failures end
-the subscription with a visible notice. A terminal failure also stops status
+the subscription with a visible notice, except an SSE failure coded
+`daemon_unavailable` or `daemon_stopping`, which older daemons send while they
+shut down and which reconnects like a server error. A terminal failure also stops status
 polling for that attachment.
 
 The TUI attempts one durable transcript reset per attachment after a protocol
