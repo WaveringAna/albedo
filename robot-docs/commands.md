@@ -66,3 +66,9 @@ skills contributes one command per cataloged skill; `/tree`, `/fork`, `/login`, 
 `cli/internal/tui/page.go` allocates a unique generation for each page instance and each superseding request. Generic pages, capability pages, extension pickers, tree pickers, context inspectors, and webhook pages reject responses from earlier generations before changing data or operation state. A delayed tree-fork completion also carries its generation to the app.
 
 The app forwards history and context-window responses to the active chat while a modal is open. Chat checks the session and generation before accepting them. Generic page text and secret inputs receive paste and cursor messages while focused, including the input component's returned command.
+
+## SSH image paste
+
+`cli/internal/tui/clipboard_terminal.go` owns terminal clipboard reads. On SSH or mosh, ctrl+v sends an OSC 5522 request for PNG or JPEG bytes to the user's terminal instead of running clipboard tools on the remote host. This needs a terminal implementing the [kitty clipboard protocol](https://sw.kovidgoyal.net/kitty/clipboard/) and permission to read its clipboard; OSC 52 alone supports text, not images. Normal terminal text paste and local image paste are unchanged. In tmux the request uses DCS passthrough, which needs `set -g allow-passthrough on`.
+
+Bubble Tea's existing terminal reader delivers the replies; no subprocess opens a competing TTY reader. One read may be pending per chat. Request IDs reject delayed replies, session generations reject delayed completions, and replies continue reaching the chat while a modal is open. Reads accept at most 5 MiB total, with individual decoded chunks capped at 4096 bytes, and expire after 30 seconds (including time spent granting permission). Denied permission, unsupported terminals, malformed responses, and timeout report an error without changing the draft. Closing the chat drops its pending buffer.

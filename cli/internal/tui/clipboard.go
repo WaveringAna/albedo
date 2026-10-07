@@ -187,6 +187,10 @@ func ReadClipboardImage() (*daemon.ImageAttachment, error) {
 		return nil, fmt.Errorf("could not read clipboard image: %w", err)
 	}
 
+	return clipboardImage(data)
+}
+
+func clipboardImage(data []byte) (*daemon.ImageAttachment, error) {
 	if len(data) == 0 {
 		return nil, errors.New("clipboard contains no image data")
 	}
@@ -245,14 +249,18 @@ func PasteClipboardImageCmd(sessionID string, gen int64) tea.Cmd {
 			return ClipboardImagePastedMsg{SessionID: sessionID, Generation: gen}
 		}
 		img, err := ReadClipboardImage()
-		msg := ClipboardImagePastedMsg{SessionID: sessionID, Generation: gen, Image: img, Err: err}
-		if img != nil {
-			g := terminalGraphics()
-			if thumb, transmit, ok := transmitThumbnail(g, *img); ok {
-				msg.thumb, msg.transmit = &thumb, transmit
-			}
-			msg.hint = g.hint
-		}
-		return msg
+		return clipboardImagePasted(sessionID, gen, img, err)
 	}
+}
+
+func clipboardImagePasted(sessionID string, gen int64, img *daemon.ImageAttachment, err error) ClipboardImagePastedMsg {
+	msg := ClipboardImagePastedMsg{SessionID: sessionID, Generation: gen, Image: img, Err: err}
+	if img != nil {
+		g := terminalGraphics()
+		if thumb, transmit, ok := transmitThumbnail(g, *img); ok {
+			msg.thumb, msg.transmit = &thumb, transmit
+		}
+		msg.hint = g.hint
+	}
+	return msg
 }

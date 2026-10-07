@@ -3,6 +3,7 @@ package tui
 import (
 	"albedo/cli/internal/daemon"
 	tea "charm.land/bubbletea/v2"
+	uv "github.com/charmbracelet/ultraviolet"
 )
 
 func (m *AppModel) handleChatLifecycle(msg tea.Msg) (tea.Cmd, bool) {
@@ -37,6 +38,10 @@ func (m *AppModel) handleChatLifecycle(msg tea.Msg) (tea.Cmd, bool) {
 		sid, forward = sm.SessionID, true
 	case ClipboardImagePastedMsg:
 		sid, forward = sm.SessionID, true
+	case terminalClipboardTimeoutMsg:
+		sid, forward = sm.SessionID, true
+	case uv.UnknownOscEvent:
+		sid, forward = m.Chat.SessionID, true
 	case ChatStreamEventMsg:
 		sid, forward = sm.SessionID, true
 		if m.ActiveSession != nil && sid == m.ActiveSession.ID && sm.Generation == m.Chat.Generation && sm.Event.Snapshot != nil {

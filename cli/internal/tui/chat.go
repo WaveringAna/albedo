@@ -170,6 +170,7 @@ type ChatModel struct {
 	dragHead           Point
 	effortSelected     int
 	Generation         int64
+	terminalClipboard  terminalClipboardRead
 	copyStatusRevision uint64
 	burstEpoch         int
 	// burstRenders counts frame builds; tests watch it to catch a cache that
@@ -280,6 +281,7 @@ func NewChatModel(session *daemon.Session, client *daemon.ChatClient) ChatModel 
 }
 
 func (m *ChatModel) Close() {
+	m.terminalClipboard = terminalClipboardRead{}
 	if m.streamCancel != nil {
 		m.streamCancel()
 	}
