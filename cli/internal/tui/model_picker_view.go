@@ -74,48 +74,19 @@ func (m ModelPickerModel) tag(r modelRow) string {
 }
 
 func (m ModelPickerModel) View() string {
-	width, height := cmp.Or(m.Width, 80), cmp.Or(m.Height, 24)
-	roomy := height >= 12
-
-	lines := []string{" " + titleRule(width-1, brand("albedo")+" "+DefaultStyles.Muted.Render("/model"), m.selection())}
-	if roomy {
-		lines = append(lines, "")
+	width := cmp.Or(m.Width, 80)
+	f := listFrame{
+		title:  brand("albedo") + " " + DefaultStyles.Muted.Render("/model"),
+		right:  m.selection(),
+		filter: promptLead() + m.search.View(),
+		list:   m.list,
+		pane:   m.details,
+		footer: m.footer(width),
 	}
-	lines = append(lines, " "+promptLead()+m.search.View())
-	if height >= 9 {
-		lines = append(lines, "")
+	if r, ok := m.highlighted(); ok {
+		f.summary = m.summary(r)
 	}
-
-	paned := width >= 96 && height >= 14
-	var tail []string
-	if roomy {
-		tail = append(tail, "")
-	}
-	if r, ok := m.highlighted(); ok && !paned && height >= 16 {
-		tail = append(tail, " "+m.summary(r))
-	}
-	tail = append(tail, m.footer(width))
-	body := max(1, height-len(lines)-len(tail))
-
-	if paned {
-		paneW := min(max(width/3, 34), 48)
-		list := m.list(width-paneW-ansi.StringWidth(svSep()), body)
-		pane := m.details(paneW, body)
-		for i := range body {
-			lines = append(lines, list[i]+svSep()+pane[i])
-		}
-	} else {
-		lines = append(lines, m.list(width, body)...)
-	}
-	lines = append(lines, tail...)
-
-	if len(lines) > height {
-		lines = append(lines[:max(0, height-1)], lines[len(lines)-1])
-	}
-	for i, l := range lines {
-		lines[i] = ansi.Truncate(l, width, "…")
-	}
-	return strings.Join(lines, "\n")
+	return f.view(m.Width, m.Height)
 }
 
 // selection is the session's profile, model and effort for the title.

@@ -133,71 +133,28 @@ func svSep() string { return DefaultStyles.Decor.Render(" │ ") }
 // View shows the grouped session list beside its preview when there is room,
 // and the list alone on narrow terminals.
 func (m SessionViewer) View() string {
-	width, height := m.Width, m.Height
-	if width <= 0 {
-		width = 80
-	}
-	if height <= 0 {
-		height = 24
-	}
+	width := cmp.Or(m.Width, 80)
 	now := m.clock()
-	roomy := height >= 12
-
-	lines := []string{m.titleRule(width)}
-	if roomy {
-		lines = append(lines, "")
+	f := listFrame{
+		title:     located(m.brandName(), sessionText(m.workspacePlace())),
+		filter:    promptLead() + m.SearchInput.View(),
+		list:      func(w, h int) []string { return m.column(w, h, now) },
+		pane:      func(w, h int) []string { return m.preview(w, h, now) },
+		paneWidth: halfPane,
+		footer:    m.footer(width, now),
 	}
-	lines = append(lines, " "+promptLead()+m.SearchInput.View())
-	if height >= 9 {
-		lines = append(lines, "")
-	}
-	tail := strings.Split(m.footer(width, now), "\n")
-	if roomy {
-		tail = append([]string{""}, tail...)
-	}
-	body := max(1, height-len(lines)-len(tail))
-
-	var columns [][]string
-	if width >= 96 && height >= 14 {
-		listW := width / 2
-		columns = [][]string{
-			m.column(listW, body, now),
-			m.preview(width-listW-ansi.StringWidth(svSep()), body, now),
-		}
-	} else {
-		columns = [][]string{m.column(width, body, now)}
-	}
-	for row := range body {
-		var b strings.Builder
-		for c, col := range columns {
-			if c > 0 {
-				b.WriteString(svSep())
-			}
-			b.WriteString(col[row])
-		}
-		lines = append(lines, b.String())
-	}
-	lines = append(lines, tail...)
-
-	if len(lines) > height {
-		lines = append(lines[:max(0, height-1)], lines[len(lines)-1])
-	}
-	for i, l := range lines {
-		lines[i] = ansi.Truncate(l, width, "…")
-	}
-	return strings.Join(lines, "\n")
+	return f.view(m.Width, m.Height)
 }
 
 // svFit pads or cuts a styled line to exactly w columns.
 func svFit(s string, w int) string { return svCell(s, w, false) }
 
-// titleRule is the brand at the workspace over a rule.
-func (m SessionViewer) titleRule(width int) string {
-	label := "albedo"
+// brandName is the title's brand: the archive says so.
+func (m SessionViewer) brandName() string {
 	if m.ArchiveView {
-		label = "albedo  archive"
+		return "albedo  archive"
 	}
-	return " " + titleRule(width-1, located(label, sessionText(m.workspacePlace())), "")
+	return "albedo"
 }
 
 func (m SessionViewer) footer(width int, now time.Time) string {

@@ -42,32 +42,26 @@ func (m FolderPicker) visibleRows() (first, last int) {
 }
 
 func (m FolderPicker) View() string {
-	width, height := cmp.Or(m.Width, 80), cmp.Or(m.Height, 24)
-	l := m.layout()
+	width := cmp.Or(m.Width, 80)
 	heading, title := "sessions by folder", ""
 	if !m.browse {
 		heading, title = "move session", DefaultStyles.Faint.Render(sessionTitle(m.session))
 	}
-	lines := []string{
-		" " + titleRule(width-1, brand("albedo")+" "+DefaultStyles.Muted.Render(heading), title), "",
-		" " + promptLead() + m.input.View(), "",
-	}
-	list := m.list(l.list, l.body)
-	if l.pane > 0 {
-		pane := m.preview(l.pane-1, l.body)
-		for i := range list {
-			list[i] += svSep() + svFit(pane[i], l.pane-1) + " "
-		}
-	}
-	lines = append(lines, list...)
-	lines = append(lines, "", m.footer(width))
-	if len(lines) > height {
-		lines = append(lines[:max(0, height-1)], lines[len(lines)-1])
-	}
-	for i, line := range lines {
-		lines[i] = ansi.Truncate(line, width, "…")
-	}
-	return strings.Join(lines, "\n")
+	return listFrame{
+		title:     brand("albedo") + " " + DefaultStyles.Muted.Render(heading),
+		right:     title,
+		filter:    promptLead() + m.input.View(),
+		list:      m.list,
+		paneWidth: halfPane,
+		pane: func(w, h int) []string {
+			pane := m.preview(w-1, h)
+			for i := range pane {
+				pane[i] = svFit(pane[i], w-1) + " "
+			}
+			return pane
+		},
+		footer: m.footer(width),
+	}.view(m.Width, m.Height)
 }
 
 func (m FolderPicker) footer(width int) string {
