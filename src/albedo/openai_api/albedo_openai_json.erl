@@ -1,10 +1,16 @@
 -module(albedo_openai_json).
--export([encode/1, null/0, flatten/1, data_url/2, base64_string/1, semantically_empty/1, object_fields/1]).
+-export([encode/1, replay_item/2, null/0, flatten/1, data_url/2, base64_string/1, semantically_empty/1, object_fields/1]).
 -export([event/1, string_field/2, optional_string_field/2, int_field/2,
          optional_int_field/2, int_field_or/3, list_field/2, object_field/2,
          missing/2, empty_except/2, string_at/2, field_or/4, present/3, absent/2]).
 
 encode(Value) -> json:encode(Value).
+
+%% types.ReplayItem with its JSON. The value is decoded back from that JSON:
+%% json:decode returns unescaped strings as sub-binaries of its input.
+replay_item(Protocol, Value) ->
+    Json = iolist_to_binary(json:encode(Value)),
+    {replay_item, Protocol, json:decode(Json), Json}.
 
 null() -> null.
 

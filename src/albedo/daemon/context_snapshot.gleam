@@ -304,8 +304,8 @@ fn history_section(
     [] -> None
     history -> {
       let item_count = list.length(history)
-      // Exact byte counting still temporarily serializes replay JSON. The
-      // inspection entries remove retained payloads, not that preparation cost.
+      // Replay items carry their JSON, so the exact byte count serializes
+      // nothing; the inspection entries drop retained payloads.
       let byte_count = context_size.inputs_bytes(history)
       let omitted = input_omission(history)
       let entries = list.map(history, inspection_entry)

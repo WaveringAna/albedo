@@ -386,8 +386,7 @@ pub fn input_bytes(input: types.Input) -> Int {
       string.byte_size(id)
       + string.byte_size(output)
       + fold_cost(images, types.image_size)
-    types.Replay(item) ->
-      types.replay_json(item) |> json.to_string |> string.byte_size
+    types.Replay(item) -> types.replay_bytes(item)
   }
 }
 

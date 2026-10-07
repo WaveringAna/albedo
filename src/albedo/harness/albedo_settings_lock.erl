@@ -1,6 +1,9 @@
 -module(albedo_settings_lock).
 -export([with_lock/3]).
 
+%% How long a caller waits for the lock before it reports the store busy.
+-define(WAIT_MS, 20000).
+
 %% One daemon owns each home. This lock serializes its settings mutations,
 %% including credential updates. It is not a lock shared with CLI processes.
 %% Nested operations in the same process retain the outer lock until it exits.
@@ -19,9 +22,9 @@ with_lock(Home, Run, Busy) ->
                     end
                 after erase(Key) end
             end,
-            case global:trans({Key, self()}, Locked, [node()], 8) of
-                aborted -> Busy();
-                Result -> Result
+            case albedo_lock:trans(Key, Locked, ?WAIT_MS) of
+                {ok, Result} -> Result;
+                busy -> Busy()
             end
     end.
 

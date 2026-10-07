@@ -1,5 +1,7 @@
 -module(albedo_conversation).
 -export([pack/1,pack_fit/3,unpack/2,unpack_fit/2,unpack_trace/1,pack_list/1,unpack_list/2,row_atoms/0,classify/1,elide_tool_images/1,elision_marker/1]).
+%% A replay item is stored without its JSON, which unpack rebuilds.
+pack({replay,{replay_item,Protocol,Value,_Json}}) -> term_to_binary({1,{replay,{replay_item,Protocol,Value}}});
 pack(Input) -> term_to_binary({1,albedo_images:pack(Input)}).
 
 %% binary_to_term/2 with `safe` rejects atoms that do not exist yet; a stored
@@ -16,8 +18,10 @@ unpack(Bytes,Read) ->
     %% Tool outputs saved before tool images carry no image list.
     {1,{tool_output,Id,Text}} when is_binary(Id),is_binary(Text) -> {ok,{tool_output,Id,Text,[]}};
     {1,{tool_output,Id,Text,Images}=Input} when is_binary(Id),is_binary(Text),is_list(Images) -> attached(Input,Read);
-    {1,{replay,{replay_item,responses,#{<<"type">> := Type}}}=Input} when is_binary(Type) -> {ok,Input};
-    {1,{replay,{replay_item,chat_completions,#{<<"role">> := <<"assistant">>}}}=Input} -> {ok,Input};
+    {1,{replay,{replay_item,responses,#{<<"type">> := Type}=Value}}} when is_binary(Type) ->
+      {ok,{replay,albedo_openai_json:replay_item(responses,Value)}};
+    {1,{replay,{replay_item,chat_completions,#{<<"role">> := <<"assistant">>}=Value}}} ->
+      {ok,{replay,albedo_openai_json:replay_item(chat_completions,Value)}};
     %% An image fit reads as its note everywhere but the history fold.
     {1,{image_fit,{user,Text},Source,_}} when is_binary(Text),is_binary(Source) -> {ok,{user,Text}};
     _ -> {error,nil}

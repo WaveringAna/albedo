@@ -239,9 +239,10 @@ pub type Format {
   JsonSchema(name: String, schema: Json, strict: Bool)
 }
 
-/// An unmodified provider output object, including opaque replay fields.
+/// An unmodified provider output object, including opaque replay fields, and
+/// its JSON, encoded once: every request and size estimate reuses it.
 pub opaque type ReplayItem {
-  ReplayItem(protocol: Protocol, value: Dynamic)
+  ReplayItem(protocol: Protocol, value: Dynamic, json: String)
 }
 
 pub fn replay_protocol(item: ReplayItem) -> Protocol {
@@ -253,21 +254,36 @@ pub fn replay_decoder(protocol: Protocol) -> decode.Decoder(ReplayItem) {
   case protocol {
     Responses -> {
       use _ <- decode.field("type", decode.string)
-      decode.success(ReplayItem(protocol, value))
+      decode.success(replay_item(protocol, value))
     }
     ChatCompletions -> {
       use role <- decode.field("role", decode.string)
       case role {
-        "assistant" -> decode.success(ReplayItem(protocol, value))
-        _ -> decode.failure(ReplayItem(protocol, value), "assistant message")
+        "assistant" -> decode.success(replay_item(protocol, value))
+        _ ->
+          decode.failure(ReplayItem(protocol, value, ""), "assistant message")
       }
     }
   }
 }
 
+/// A replay item for `value`, which it re-reads from its own JSON so that
+/// unescaped strings share those bytes instead of holding a second copy.
+@external(erlang, "albedo_openai_json", "replay_item")
+fn replay_item(protocol: Protocol, value: Dynamic) -> ReplayItem
+
 pub fn replay_json(item: ReplayItem) -> Json {
-  encode_value(item.value)
+  preencoded(item.json)
 }
+
+/// The size of the item's JSON in bytes.
+pub fn replay_bytes(item: ReplayItem) -> Int {
+  string.byte_size(item.json)
+}
+
+/// Encoded JSON is already a valid `Json` on Erlang; a binary passes through.
+@external(erlang, "erlang", "iolist_to_binary")
+fn preencoded(json: String) -> Json
 
 /// Decode a saved provider item with a caller-selected typed view.
 pub fn inspect_item(
