@@ -27,7 +27,7 @@ type listFrame struct {
 }
 
 // Side by side needs this much terminal; a narrower one with this many body
-// rows stacks the pane under the list instead.
+// rows stacks the pane under the list instead, which gets the larger part.
 const (
 	paneMinWidth  = 96
 	paneMinHeight = 14
@@ -81,7 +81,7 @@ func (f listFrame) view(width, height int) string {
 			lines = append(lines, list[i]+svSep()+pane[i])
 		}
 	} else if stacked {
-		paneH := body / 2
+		paneH := body * 2 / 5
 		lines = append(lines, f.list(width, body-paneH-1)...)
 		lines = append(lines, " "+DefaultStyles.Decor.Render(strings.Repeat("─", max(0, width-2))))
 		for _, line := range f.pane(width-1, paneH) {

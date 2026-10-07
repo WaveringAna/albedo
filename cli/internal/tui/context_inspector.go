@@ -285,8 +285,15 @@ func (m ContextInspectorModel) emptyText() string {
 // list draws the request's standing above the sections, then the sections,
 // at exactly width × height.
 func (m ContextInspectorModel) list(width, height int) []string {
-	head := append(m.requestFacts(width), paneNote("read-only · durable transcript and request-only context are separate", width)...)
-	head = append(head, "")
+	head := m.requestFacts(width)
+	// The note and the facts give up their rows, in that order, to the
+	// sections when the list is short, as it is with the pane stacked below.
+	if height >= len(head)+8 {
+		head = append(head, paneNote("read-only · durable transcript and request-only context are separate", width)...)
+		head = append(head, "")
+	} else if height < len(head)+4 {
+		head = nil
+	}
 	for i := range head {
 		head[i] = svFit(head[i], width)
 	}
