@@ -7,12 +7,15 @@
 
 import albedo/daemon/conversation
 import albedo/daemon/family
+import albedo/daemon/store
 import albedo/harness/extension
+import albedo/harness/extension/composition
 import albedo/harness/extensions
 import albedo/harness/runtime
 import albedo/harness/tool
 import albedo/openai_api/types
 import gleam/dynamic/decode
+import gleam/erlang/process
 import gleam/json
 import gleam/list
 import gleam/option.{None, Some}
@@ -316,4 +319,150 @@ pub fn a_quarantined_extension_cannot_be_enabled_test() -> Nil {
     )
   string.contains(refusal, "quarantined") |> should.be_true
   runtime.stop(host)
+}
+
+/// Mixed plugins and transitive failures require synthetic registry entries;
+/// the daemon only installs its compiled registry.
+pub fn a_failed_bundle_removes_all_capabilities_and_dependents_test() -> Nil {
+  let assert Ok(ledger) = store.start(":memory:", "")
+  let closed = process.new_subject()
+  let managed = fn(name) {
+    extension.ManagedPlugin(fn(_, _, _) {
+      Ok(
+        extension.Managed(
+          ..extension.empty(),
+          tools: [answering(name)],
+          close: fn() { process.send(closed, name) },
+        ),
+      )
+    })
+  }
+  let extensions = [
+    extension.Extension(
+      "dependent",
+      "dependent",
+      ["broken"],
+      [managed("dependent")],
+      extension.no_initialise,
+    ),
+    extension.Extension(
+      "transitive",
+      "transitive",
+      ["dependent"],
+      [managed("transitive")],
+      extension.no_initialise,
+    ),
+    extension.Extension(
+      "broken",
+      "mixed",
+      [],
+      [
+        extension.ToolPlugin("must disappear", [answering("static")], [], []),
+        managed("prepared"),
+        extension.ManagedPlugin(fn(_, _, _) { Error("prepare refused") }),
+      ],
+      extension.no_initialise,
+    ),
+    healthy("working"),
+  ]
+  let composed = composition.compose(extensions, ledger, "s", "/tmp")
+  composition.tools(composed)
+  |> list.map(fn(tool) { tool.definition.name })
+  |> should.equal(["working"])
+  composition.extensions(composed)
+  |> list.map(fn(item) { item.name })
+  |> should.equal(["working"])
+  composition.requested(composed) |> list.length |> should.equal(4)
+  composition.inactive(composed) |> list.length |> should.equal(3)
+  composition.instructions(composed) |> should.equal("")
+  process.receive(closed, 100) |> should.equal(Ok("prepared"))
+  process.receive(closed, 100) |> should.equal(Ok("transitive"))
+  process.receive(closed, 100) |> should.equal(Ok("dependent"))
+  composition.close(composed)
+  process.receive(closed, 0) |> should.equal(Error(Nil))
+  store.close(ledger)
+}
+
+pub fn context_failure_never_prepares_the_rest_of_the_bundle_test() -> Nil {
+  let assert Ok(ledger) = store.start(":memory:", "")
+  let prepared = process.new_subject()
+  let composed =
+    composition.compose(
+      [
+        extension.Extension(
+          "broken",
+          "context",
+          [],
+          [
+            extension.ContextPlugin(fn(_) { Error("context refused") }),
+            extension.ManagedPlugin(fn(_, _, _) {
+              process.send(prepared, Nil)
+              Ok(extension.empty())
+            }),
+          ],
+          extension.no_initialise,
+        ),
+      ],
+      ledger,
+      "s",
+      "/tmp",
+    )
+  composition.extensions(composed) |> should.equal([])
+  process.receive(prepared, 0) |> should.equal(Error(Nil))
+  composition.close(composed)
+  store.close(ledger)
+}
+
+pub fn registry_order_resolves_whole_bundle_collisions_test() -> Nil {
+  let assert Ok(ledger) = store.start(":memory:", "")
+  let closed = process.new_subject()
+  let composed =
+    composition.compose(
+      [
+        plugin_only(
+          "first",
+          extension.ManagedPlugin(fn(_, _, _) {
+            Ok(
+              extension.Managed(..extension.empty(), tools: [
+                answering("claimed"),
+              ]),
+            )
+          }),
+        ),
+        extension.Extension(
+          "loser",
+          "mixed",
+          [],
+          [
+            extension.ToolPlugin(
+              "",
+              [answering("claimed"), answering("extra")],
+              [],
+              [],
+            ),
+            extension.ManagedPlugin(fn(_, _, _) {
+              Ok(
+                extension.Managed(..extension.empty(), close: fn() {
+                  process.send(closed, Nil)
+                }),
+              )
+            }),
+          ],
+          extension.no_initialise,
+        ),
+      ],
+      ledger,
+      "s",
+      "/tmp",
+    )
+  composition.tools(composed)
+  |> list.map(fn(tool) { tool.definition.name })
+  |> should.equal(["claimed"])
+  composition.extensions(composed)
+  |> list.map(fn(item) { item.name })
+  |> should.equal(["first"])
+  process.receive(closed, 100) |> should.equal(Ok(Nil))
+  composition.close(composed)
+  process.receive(closed, 0) |> should.equal(Error(Nil))
+  store.close(ledger)
 }

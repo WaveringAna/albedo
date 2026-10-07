@@ -449,7 +449,11 @@ pub fn install(
   let #(installed, unstarted) = started(installed, ledger)
   let #(installed, unmet) = satisfied(installed)
   let #(installed, conflicting) = agreeable(installed, default_enabled)
-  Ok(#(installed, list.flatten([unnamed, unstarted, unmet, conflicting])))
+  let #(installed, dependents) = satisfied(installed)
+  Ok(#(
+    installed,
+    list.flatten([unnamed, unstarted, unmet, conflicting, dependents]),
+  ))
 }
 
 fn quarantined(extension: Extension, reason: String) -> Quarantined {

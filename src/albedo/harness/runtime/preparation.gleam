@@ -111,7 +111,7 @@ pub fn build_cached(
         option.map(basis, fn(observed) {
           session_catalog.composition_revision(
             observed.snapshot,
-            list.map(selected, fn(item) { item.name }),
+            list.map(composition.extensions(composed), fn(item) { item.name }),
           )
         }),
         basis,

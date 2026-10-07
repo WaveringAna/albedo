@@ -20,6 +20,7 @@ import gleam/string
 /// applies exactly once and a plugin that disappears takes its tools with it.
 pub opaque type Composition {
   Composition(
+    requested: List(extension.Extension),
     extensions: List(extension.Extension),
     /// Static contributions only; `contributions` appends the other two, so
     /// a composition copied to another process carries each plugin once.
@@ -40,20 +41,97 @@ pub fn compose(
   session: String,
   workspace: String,
 ) -> Composition {
-  let #(loadable, unloadable) =
-    split(list.flat_map(selected, loaded(_, workspace)))
-  let #(static, static_rejected) = distinct([], loadable)
-  let #(preparable, unpreparable) =
-    split(prepare(selected, ledger, session, workspace))
-  let #(managed, managed_rejected) = distinct(static, preparable)
+  let empty = Composition(selected, [], [], [], [])
+  let composed =
+    list.fold(selected, empty, fn(composed, candidate) {
+      let #(static, load_failures) = split(loaded(candidate, workspace))
+      let #(managed, prepare_failures) = case load_failures {
+        [] -> split(prepare([candidate], ledger, session, workspace))
+        _ -> #([], [])
+      }
+      let failures = list.append(load_failures, prepare_failures)
+      let claimed =
+        list.flatten([composed.static, composed.managed, static, managed])
+      let failures = case failures {
+        [] ->
+          case extension.duplicate_capabilities(list.map(claimed, value)) {
+            False -> []
+            True -> [
+              broken(
+                candidate.name,
+                "it duplicates tools, commands, python modules, or routes",
+              ),
+            ]
+          }
+        _ -> failures
+      }
+      case failures {
+        [] ->
+          Composition(
+            ..composed,
+            extensions: list.append(composed.extensions, [candidate]),
+            static: list.append(composed.static, static),
+            managed: list.append(composed.managed, managed),
+          )
+        _ -> {
+          close_prepared(managed)
+          Composition(
+            ..composed,
+            failures: list.append(composed.failures, [
+              extension.Prepared(
+                candidate.name,
+                extension.Managed(
+                  ..extension.empty(),
+                  warnings: list.flat_map(failures, fn(item) {
+                    item.value.warnings
+                  }),
+                ),
+              ),
+            ]),
+          )
+        }
+      }
+    })
+  let active = supported(composed.extensions)
+  let names = list.map(active, fn(item) { item.name })
+  let kept = fn(item: extension.Prepared) {
+    list.contains(names, item.extension)
+  }
+  let #(managed, rejected) = list.partition(composed.managed, kept)
+  close_prepared(rejected)
   let failures =
-    list.flatten([
-      unloadable,
-      static_rejected,
-      unpreparable,
-      managed_rejected,
-    ])
-  Composition(selected, static, managed, failures)
+    composed.extensions
+    |> list.filter(fn(item) { !list.contains(names, item.name) })
+    |> list.map(fn(item) {
+      let missing =
+        list.filter(item.requires, fn(name) { !list.contains(names, name) })
+      broken(
+        item.name,
+        "it requires active extension " <> string.join(missing, ", "),
+      )
+    })
+  Composition(
+    ..composed,
+    extensions: active,
+    static: list.filter(composed.static, kept),
+    managed: managed,
+    failures: list.append(composed.failures, failures),
+  )
+}
+
+/// Remove dependents until every remaining requirement is active.
+fn supported(
+  candidates: List(extension.Extension),
+) -> List(extension.Extension) {
+  let names = list.map(candidates, fn(item) { item.name })
+  let kept =
+    list.filter(candidates, fn(item) {
+      list.all(item.requires, fn(name) { list.contains(names, name) })
+    })
+  case list.length(kept) == list.length(candidates) {
+    True -> kept
+    False -> supported(kept)
+  }
 }
 
 /// Every contribution in order: static, managed, then the broken ones.
@@ -102,35 +180,6 @@ pub fn loaded(
   }
 }
 
-/// Accept `candidates` in order, dropping any that claims a tool, command,
-/// python module, or route `taken` or an earlier candidate already has.
-/// Answers the kept ones and the dropped ones' warnings; a dropped
-/// contribution is closed here, since the session never sees it.
-fn distinct(
-  taken: List(extension.Prepared),
-  candidates: List(extension.Prepared),
-) -> #(List(extension.Prepared), List(extension.Prepared)) {
-  let #(kept, rejected) =
-    list.fold(candidates, #([], []), fn(state, candidate) {
-      let #(kept, rejected) = state
-      let claimed = list.flatten([[candidate], kept, taken])
-      case extension.duplicate_capabilities(list.map(claimed, value)) {
-        False -> #([candidate, ..kept], rejected)
-        True -> {
-          close_prepared([candidate])
-          #(kept, [
-            broken(
-              candidate.extension,
-              "it duplicates another extension's tools, commands, python modules, or routes",
-            ),
-            ..rejected
-          ])
-        }
-      }
-    })
-  #(list.reverse(kept), list.reverse(rejected))
-}
-
 /// A broken extension's only contribution: no capabilities, one warning,
 /// which the session shows as a note.
 fn broken(name: String, reason: String) -> extension.Prepared {
@@ -169,6 +218,10 @@ pub fn observers(
 /// The prepared managed plugins, in registry order.
 pub fn managed(composition: Composition) -> List(extension.Prepared) {
   composition.managed
+}
+
+pub fn requested(composition: Composition) -> List(extension.Extension) {
+  composition.requested
 }
 
 pub fn extensions(composition: Composition) -> List(extension.Extension) {
