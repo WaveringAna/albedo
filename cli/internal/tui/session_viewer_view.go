@@ -157,54 +157,56 @@ func (m SessionViewer) brandName() string {
 	return "albedo"
 }
 
+// footer is the keys and the status, or the question while one is asked.
 func (m SessionViewer) footer(width int, now time.Time) string {
-	if m.ConfirmDelete != "" {
-		message := "This permanently deletes the session, its child sessions, and their history. Delete? y confirms · any other key cancels"
-		wrapped := ansi.Wrap(message, max(1, width-1), "")
-		rows := strings.Split(wrapped, "\n")
-		for i, row := range rows {
-			rows[i] = " " + DefaultStyles.Error.Render(row)
+	if m.confirm.asking() {
+		return m.confirm.footer(width, "")
+	}
+	status, urgent := m.counts(now), false
+	switch {
+	case m.notice != "":
+		status, urgent = DefaultStyles.Error.Render(m.notice), true
+	case m.Loading:
+		status = DefaultStyles.Faint.Render("loading…")
+	}
+	return footerLine(width, m.hints(), status, urgent)
+}
+
+// hints are the keys for the list, the archive, or a rename in progress.
+func (m SessionViewer) hints() []hint {
+	switch {
+	case m.rename.active():
+		return []hint{{"enter", "save"}, {"esc", "cancel"}, {"", "empty restores the automatic title"}}
+	case m.ArchiveView:
+		if _, ok := m.Highlighted(); !ok {
+			return []hint{{"esc", "back"}}
 		}
-		return strings.Join(rows, "\n")
+		return []hint{{"↑↓", "move"}, {"enter", "open"}, {"^r", "rename"}, {"^a", "restore"}, {"^d", "delete"}, {"esc", "back"}}
 	}
 	esc := "quit"
 	if m.HasActive {
 		esc = "back"
 	}
-	left := " " + keyHints(hint{"↑↓", "move"}, hint{"tab", "switch"}, hint{"enter", "open"}, hint{"^r", "rename"}, hint{"^s", "pin"}, hint{"^a", "archive"}, hint{"^f", "folders"}, hint{"esc", esc})
-	switch {
-	case m.rename.active():
-		left = " " + renameHints("restores the automatic title")
-	case m.ArchiveView:
-		left = " " + keyHints(hint{"↑↓", "move"}, hint{"enter", "open"}, hint{"^r", "rename"}, hint{"^a", "restore"}, hint{"^d", "delete"}, hint{"esc", "back"})
-	}
+	return []hint{{"↑↓", "move"}, {"tab", "switch"}, {"enter", "open"}, {"^r", "rename"}, {"^s", "pin"}, {"^a", "archive"}, {"^f", "folders"}, {"esc", esc}}
+}
 
-	var right string
-	if m.notice != "" {
-		right = DefaultStyles.Error.Render(m.notice)
-	} else if m.Loading {
-		right = DefaultStyles.Faint.Render("loading…")
+// counts is how many sessions the list holds, and how many of them today.
+func (m SessionViewer) counts(now time.Time) string {
+	count, today := len(m.Sessions), 0
+	if m.ArchiveView {
+		count = len(m.archivedIDs)
 	} else {
-		count, today := len(m.Sessions), 0
-		if m.ArchiveView {
-			count = len(m.archivedIDs)
-		} else {
-			for _, s := range m.Sessions {
-				if dateSection(s, now) == secToday {
-					today++
-				}
+		for _, s := range m.Sessions {
+			if dateSection(s, now) == secToday {
+				today++
 			}
 		}
-		right = DefaultStyles.Faint.Render(fmt.Sprintf("%d sessions", count))
-		if today > 0 {
-			right += DefaultStyles.Decor.Render(" · ") + DefaultStyles.Success.Render(fmt.Sprintf("%d today", today))
-		}
 	}
-	gap := width - ansi.StringWidth(left) - ansi.StringWidth(right) - 1
-	if gap < 3 {
-		return left
+	out := DefaultStyles.Faint.Render(counted(count, "session"))
+	if today > 0 {
+		out += DefaultStyles.Decor.Render(" · ") + DefaultStyles.Success.Render(fmt.Sprintf("%d today", today))
 	}
-	return left + strings.Repeat(" ", gap) + right
+	return out
 }
 
 // column renders items with section headings at exactly width × height,
@@ -339,7 +341,7 @@ func (m SessionViewer) row(item PickerItem, s daemon.Session, sec int, selected 
 		glyph, title, hint, fg := "✦ ", "New session", "in "+sessionText(filepath.Base(m.Workspace)), DefaultStyles.You
 		switch item.ID {
 		case "archive":
-			glyph, title, hint, fg = "▤ ", "Archive", fmt.Sprintf("%d sessions", len(m.archivedIDs)), DefaultStyles.Muted
+			glyph, title, hint, fg = "▤ ", "Archive", counted(len(m.archivedIDs), "session"), DefaultStyles.Muted
 		case "login":
 			glyph, title, hint, fg = "◇ ", "Accounts", "providers", DefaultStyles.Muted
 		}
@@ -361,7 +363,7 @@ func (m SessionViewer) row(item PickerItem, s daemon.Session, sec int, selected 
 		glyph, iconStyle = "● ", DefaultStyles.Success
 	}
 	gap := st(lipgloss.NewStyle()).Render("  ")
-	title := st(titleStyle).Render(svCell(item.Label, cols.title, false))
+	title := markedCell(item.Label, item.hits, cols.title, st(titleStyle))
 	if editing {
 		title = m.rename.view(cols.title)
 	}
@@ -411,6 +413,8 @@ func (m SessionViewer) preview(width, height int, now time.Time) []string {
 	item, ok := m.Highlighted()
 	s, isSession := m.session(item.ID)
 	switch {
+	case !ok && m.SearchInput.Value() == "":
+		return paneBox([]string{"", DefaultStyles.Muted.Render("Nothing listed here")}, inner, width, height)
 	case !ok:
 		return paneBox([]string{"", DefaultStyles.Muted.Render("No matching sessions"), DefaultStyles.Faint.Render("Try fewer search terms")}, inner, width, height)
 	case !isSession:

@@ -59,7 +59,7 @@ func TestTUISessionPickerPinsRenamesArchivesAndDeletes(t *testing.T) {
 	d.Dispatch(tea.KeyPressMsg{Code: tea.KeyEnter})
 	highlight(target)
 	ctrl('d')
-	d.Dispatch(tea.KeyPressMsg{Code: 'y', Text: "y"})
+	d.Dispatch(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if slices.ContainsFunc(daemonSessions(t), func(s daemon.Session) bool { return s.ID == target }) {
 		t.Fatalf("the daemon still lists deleted session %s", target)
 	}
@@ -107,7 +107,7 @@ func TestTUIChangesSessionsStraightFromTheList(t *testing.T) {
 	d.Dispatch(tea.KeyPressMsg{Code: tea.KeyEnter})
 	pick(archived)
 	ctrl('d')
-	d.Dispatch(tea.KeyPressMsg{Code: 'y', Text: "y"})
+	d.Dispatch(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if slices.ContainsFunc(daemonSessions(t), func(s daemon.Session) bool { return s.ID == archived }) {
 		t.Fatalf("ctrl+d did not delete the archived session:\n%s", d.View())
 	}

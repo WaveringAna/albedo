@@ -14,26 +14,14 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-// folderLayout splits the screen below the prompt: the list, and the
-// preview beside it when there is room.
-type folderLayout struct {
-	body, list, pane int
-}
-
-func (m FolderPicker) layout() folderLayout {
-	width, height := cmp.Or(m.Width, 80), cmp.Or(m.Height, 24)
-	l := folderLayout{body: max(1, height-6), list: width}
-	if width >= 96 && height >= 14 {
-		l.list = width / 2
-		l.pane = width - l.list - ansi.StringWidth(svSep())
-	}
-	return l
-}
+// folderChrome is the rows around the list: the title, the filter with its
+// rules, and the footer.
+const folderChrome = 6
 
 // visibleRows is the range of rows the list window shows, the way
 // scrollWindow cuts it under the section rule.
 func (m FolderPicker) visibleRows() (first, last int) {
-	h, n := m.layout().body, len(m.rows)+1
+	h, n := max(1, cmp.Or(m.Height, 24)-folderChrome), len(m.rows)+1
 	if n <= h {
 		return 0, len(m.rows)
 	}
@@ -64,38 +52,57 @@ func (m FolderPicker) View() string {
 	}.view(m.Width, m.Height)
 }
 
+// narrowKeys is the width the full keys need beside a status; less than that
+// and a failed session list keeps only its retry. minStatusRoom is the least
+// a status can have beside the keys.
+const (
+	narrowKeys    = 28
+	minStatusRoom = 16
+)
+
+// footer is the keys on the left and the most pressing thing to say on the
+// right, which takes what the keys leave.
 func (m FolderPicker) footer(width int) string {
-	left := " " + keyHints(m.hints()...)
-	room := width - ansi.StringWidth(left) - 4
-	if room < 24 {
-		left = ""
-		if m.sessionsError != "" {
-			// Keep recovery discoverable when the full navigation help cannot fit.
-			action := "retry"
-			if m.sessionsLoading {
-				action = "retrying…"
-			}
-			left = ansi.Truncate(" "+keyHints(hint{"ctrl+r", action}), max(0, width-1), "")
-		}
-		room = max(0, width-ansi.StringWidth(left)-2)
+	hints := m.hints()
+	keys := " " + keyHints(hints...)
+	if m.sessionsError != "" && width-ansi.StringWidth(keys) < narrowKeys {
+		hints = []hint{m.retryHint()}
+		keys = " " + keyHints(hints...)
 	}
-	var right string
+	room := width - ansi.StringWidth(keys) - 3
+	if room < minStatusRoom {
+		room = width - 2 // too little beside the keys: an urgent status takes a row of its own
+	}
+	status, urgent := m.status(room)
+	return footerLine(width, hints, status, urgent)
+}
+
+// status is the most pressing thing to say in room columns: a move in
+// flight, a refusal, a dead host, a failed listing, a folder that went
+// missing, or else where the session is.
+func (m FolderPicker) status(room int) (string, bool) {
+	dead := m.deadHighlighted()
 	switch {
 	case m.moving:
-		right = DefaultStyles.Faint.Render("moving…")
+		return DefaultStyles.Faint.Render("moving…"), true
 	case m.notice != "":
-		right = DefaultStyles.Warning.Render(tailFit(m.notice, room))
-	case m.deadHighlighted() != "":
-		right = DefaultStyles.Error.Render(ansi.Truncate(m.deadHighlighted(), room, "…"))
+		return DefaultStyles.Warning.Render(tailFit(m.notice, room)), true
+	case dead != "":
+		return DefaultStyles.Error.Render(ansi.Truncate(dead, room, "…")), true
 	case m.sessionsError != "":
-		right = DefaultStyles.Warning.Render(ansi.Truncate("Recent sessions: "+m.sessionsError, room, "…"))
+		return DefaultStyles.Warning.Render(ansi.Truncate("Recent sessions: "+m.sessionsError, room, "…")), true
 	case m.retry != nil:
-		right = DefaultStyles.Warning.Render("Folder not found: ") + DefaultStyles.Muted.Render(tailFit(m.homed(m.retry.Missing), room-ansi.StringWidth("Folder not found: ")))
+		const missing = "Folder not found: "
+		return DefaultStyles.Warning.Render(missing) + DefaultStyles.Muted.Render(tailFit(m.homed(m.retry.Missing), room-ansi.StringWidth(missing))), true
 	case m.browse: // nothing moves, so there is no "now in"
-	default:
-		right = DefaultStyles.Faint.Render("now in ") + DefaultStyles.Muted.Render(tailFit(m.homed(m.workspace()), room-7))
+		return "", false
 	}
-	return left + strings.Repeat(" ", max(1, width-ansi.StringWidth(left)-ansi.StringWidth(right)-1)) + right
+	const here = "now in "
+	where := tailFit(m.homed(m.workspace()), room-ansi.StringWidth(here))
+	if where == "" {
+		return "", false
+	}
+	return DefaultStyles.Faint.Render(here) + DefaultStyles.Muted.Render(where), false
 }
 
 // hints are the footer's keys for where the cursor is; → shows only when
@@ -103,11 +110,7 @@ func (m FolderPicker) footer(width int) string {
 func (m FolderPicker) hints() []hint {
 	var hints []hint
 	if m.sessionsError != "" {
-		action := "retry sessions"
-		if m.sessionsLoading {
-			action = "retrying…"
-		}
-		hints = append(hints, hint{"ctrl+r", action})
+		hints = append(hints, m.retryHint())
 	}
 	if m.inSessions {
 		return append(hints, hint{"↑↓", "move"}, hint{"enter", "open"}, hint{"←", "folders"})
@@ -127,8 +130,19 @@ func (m FolderPicker) hints() []hint {
 	return append(hints, hint{"enter", action}, hint{"esc", "back"})
 }
 
+// retryHint is the way back into a session list that failed to load.
+func (m FolderPicker) retryHint() hint {
+	if m.sessionsLoading {
+		return hint{"ctrl+r", "retrying…"}
+	}
+	return hint{"ctrl+r", "retry sessions"}
+}
+
 // tailFit keeps the end of plain text, where a path names its folder.
 func tailFit(s string, w int) string {
+	if w <= 0 {
+		return ""
+	}
 	if n := ansi.StringWidth(s); n > w {
 		return "…" + ansi.TruncateLeft(s, n-w+1, "")
 	}

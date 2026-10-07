@@ -9,12 +9,15 @@
 //     invalidates a preview are race-dependent state a scripted scenario
 //     reaches only flakily;
 //   - grouping: within a group, sessions the daemon still holds lead the
-//     reaped ones.
+//     reaped ones;
+//   - keystrokes: the fuzzy search narrows as each key lands, and a delete
+//     asks first and ignores every key but enter and esc.
 package tui
 
 import (
 	"albedo/cli/internal/daemon"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -143,5 +146,46 @@ func TestSessionViewerArchiveKeepsCursorSlot(t *testing.T) {
 	m.rebuild()
 	if item, _ := m.Highlighted(); item.ID != "c" {
 		t.Fatalf("archiving the last session left the cursor on %q, want c", item.ID)
+	}
+}
+
+func TestSessionViewerFilterMatchesFuzzily(t *testing.T) {
+	m := NewSessionViewer("/work/current")
+	m.SetSize(120, 30)
+	m.SetSessions([]daemon.Session{{ID: "a", Title: "Fix the parser"}, {ID: "b", Title: "Zebra notes"}}, nil)
+	for _, r := range "fxprs" {
+		m, _ = m.Update(tea.KeyPressMsg{Code: r, Text: string(r)})
+	}
+	i := slices.IndexFunc(m.Filtered, func(item PickerItem) bool { return item.ID == "a" })
+	if i < 0 || slices.ContainsFunc(m.Filtered, func(item PickerItem) bool { return item.ID == "b" }) {
+		t.Fatalf("fuzzy search kept the wrong rows: %v", filteredIDs(m.PickerModel))
+	}
+	if len(m.Filtered[i].hits) == 0 {
+		t.Fatal("the matched title has no characters to light up")
+	}
+}
+
+func TestSessionViewerDeleteAsksThenTakesEnterOnly(t *testing.T) {
+	m := NewSessionViewer("/work/current")
+	m.SetSize(120, 30)
+	m.SetSessions([]daemon.Session{{ID: "gone", Title: "Old", Archived: true, ETag: "e1"}}, nil)
+	m.OpenArchive()
+	m, _ = m.Update(tea.KeyPressMsg{Code: 'd', Mod: tea.ModCtrl})
+	if !m.confirm.asking() || !strings.Contains(ansi.Strip(m.View()), "enter delete") {
+		t.Fatalf("ctrl+d did not ask:\n%s", ansi.Strip(m.View()))
+	}
+	m, cmd := m.Update(tea.KeyPressMsg{Code: 'x', Text: "x"})
+	if cmd != nil || !m.confirm.asking() {
+		t.Fatal("a stray key changed the question")
+	}
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	if m.confirm.asking() || !m.ArchiveView {
+		t.Fatal("esc did not cancel the question alone")
+	}
+	m, _ = m.Update(tea.KeyPressMsg{Code: 'd', Mod: tea.ModCtrl})
+	m, cmd = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	deleted, ok := cmd().(SessionDeleteMsg)
+	if !ok || deleted.ID != "gone" || deleted.Condition.ETag != "e1" {
+		t.Fatalf("enter did not delete the asked session: %#v", deleted)
 	}
 }

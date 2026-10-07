@@ -139,6 +139,11 @@ func (f *fakeFolders) Local() bool { return true }
 // which it drops: previews and polls are not what these tests are about.
 func settle(t *testing.T, m FolderPicker, cmd tea.Cmd) FolderPicker {
 	t.Helper()
+	return drainPicker(m, cmd)
+}
+
+// drainPicker is settle for the gallery, which has no test to report to.
+func drainPicker(m FolderPicker, cmd tea.Cmd) FolderPicker {
 	queue := []tea.Cmd{cmd}
 	for len(queue) > 0 {
 		next := queue[0]
@@ -169,10 +174,16 @@ func settle(t *testing.T, m FolderPicker, cmd tea.Cmd) FolderPicker {
 }
 
 func typeQuery(t *testing.T, m FolderPicker, text string) FolderPicker {
+	t.Helper()
+	return typeText(m, text)
+}
+
+// typeText types text one key at a time, settling after each.
+func typeText(m FolderPicker, text string) FolderPicker {
 	for _, r := range text {
 		var cmd tea.Cmd
 		m, cmd = m.Update(tea.KeyPressMsg{Code: r, Text: string(r)})
-		m = settle(t, m, cmd)
+		m = drainPicker(m, cmd)
 	}
 	return m
 }
@@ -334,5 +345,27 @@ func TestPickerOffersSignInForAHostThatNeedsAPerson(t *testing.T) {
 	m, cmd = m.Update(tea.KeyPressMsg{Code: 'l', Mod: tea.ModCtrl})
 	if cmd != nil || !strings.Contains(m.notice, "ssh mayer@chernobog") {
 		t.Fatalf("ctrl+l without a control path: cmd %v, notice %q", cmd != nil, m.notice)
+	}
+}
+
+func TestFolderFooterKeepsRetryWhenSessionsFail(t *testing.T) {
+	m := NewFolderBrowser(remoteFolders("ready", ""), "/Users/dawn/proj/albedo", "")
+	m.SetSize(40, 16)
+	m.sessionsError = "boom"
+	footer := ansi.Strip(m.footer(40))
+	if !strings.Contains(footer, "ctrl+r") || strings.Contains(footer, "move") {
+		t.Fatalf("narrow footer should keep only the retry: %q", footer)
+	}
+}
+
+func TestFolderPickerCtrlDGoesBack(t *testing.T) {
+	m := NewFolderBrowser(remoteFolders("ready", ""), "/Users/dawn/proj/albedo", "")
+	m.SetSize(100, 16)
+	_, cmd := m.Update(tea.KeyPressMsg{Code: 'd', Mod: tea.ModCtrl})
+	if cmd == nil {
+		t.Fatal("ctrl+d did nothing")
+	}
+	if _, ok := cmd().(FolderPickerCancelMsg); !ok {
+		t.Fatal("ctrl+d did not go back like esc")
 	}
 }

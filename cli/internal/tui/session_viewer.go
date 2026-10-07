@@ -64,20 +64,20 @@ type sessionGroup struct {
 type SessionViewer struct {
 	active *daemon.Session
 	// Fetch loads a preview; nil disables previews.
-	Fetch         func(id string) tea.Cmd
-	now           func() time.Time
-	previews      map[string]*cachedPreview
-	section       map[string]int
-	sessionIndex  map[string]int
-	archivedIDs   map[string]bool
-	Workspace     string
-	ConfirmDelete string
-	notice        string
-	Sessions      []daemon.Session
-	raw           []daemon.Session
-	groups        []sessionGroup
+	Fetch        func(id string) tea.Cmd
+	now          func() time.Time
+	previews     map[string]*cachedPreview
+	section      map[string]int
+	sessionIndex map[string]int
+	archivedIDs  map[string]bool
+	Workspace    string
+	notice       string
+	Sessions     []daemon.Session
+	raw          []daemon.Session
+	groups       []sessionGroup
 
 	rename renameField
+	confirm
 	PickerModel
 	sectionCounts [len(sectionTitles)]int
 	Loading       bool
@@ -274,7 +274,7 @@ func (m *SessionViewer) rebuild() {
 	}
 	for _, s := range visible {
 		if m.ArchiveView == m.archivedIDs[s.ID] {
-			items = append(items, PickerItem{ID: s.ID, Label: sessionTitle(s), Detail: sessionText(s.Workspace + " " + s.Model + " " + s.Provider)})
+			items = append(items, PickerItem{ID: s.ID, Label: sessionTitle(s), Detail: sessionText(s.Workspace + " " + s.Model + " " + s.Provider), Group: m.section[s.ID]})
 		}
 	}
 	m.Items = items
@@ -326,6 +326,8 @@ func byWarm(now time.Time) func(a, b daemon.Session) int {
 }
 
 const untitled = "Untitled session"
+
+const sessionDeletePrompt = "This permanently deletes the session, its child sessions, and their history. Delete?"
 
 func sessionTitle(s daemon.Session) string {
 	title := strings.TrimSpace(sessionText(s.Title))
@@ -443,7 +445,7 @@ func (m *SessionViewer) CloseArchive() { m.setArchive(false) }
 // delete confirmation and the search.
 func (m *SessionViewer) setArchive(open bool) {
 	m.ArchiveView = open
-	m.ConfirmDelete = ""
+	m.confirm.dismiss()
 	m.SearchInput.SetValue("")
 	m.rebuild()
 	m.Cursor = 0
@@ -454,7 +456,7 @@ func (m *SessionViewer) setArchive(open bool) {
 
 func (m *SessionViewer) ForgetPreview(id string) {
 	delete(m.previews, id)
-	m.ConfirmDelete = ""
+	m.confirm.dismiss()
 }
 
 func (m SessionViewer) Update(msg tea.Msg) (SessionViewer, tea.Cmd) {
@@ -477,25 +479,25 @@ func (m SessionViewer) Update(msg tea.Msg) (SessionViewer, tea.Cmd) {
 		if m.rename.active() {
 			return m, m.rename.key(msg)
 		}
-		if m.ConfirmDelete != "" {
-			id := m.ConfirmDelete
-			m.ConfirmDelete = ""
-			if msg.Text == "y" {
-				s, _ := m.session(id)
-				return m, func() tea.Msg {
-					return SessionDeleteMsg{ID: id, Condition: daemon.SessionCondition{ETag: s.ETag, FamilyRevision: s.FamilyRevision}}
-				}
+		if m.confirm.asking() {
+			if !m.confirm.key(msg) {
+				return m, nil
 			}
-			return m, nil
+			id := m.confirm.target
+			m.confirm.dismiss()
+			s, _ := m.session(id)
+			return m, func() tea.Msg {
+				return SessionDeleteMsg{ID: id, Condition: daemon.SessionCondition{ETag: s.ETag, FamilyRevision: s.FamilyRevision}}
+			}
 		}
 		if m.ArchiveView && msg.String() == "esc" {
 			m.CloseArchive()
 			return m, nil
 		}
 		switch key := msg.String(); {
-		case key == "ctrl+d":
-			if item, ok := m.Highlighted(); m.ArchiveView && ok {
-				m.ConfirmDelete = item.ID
+		case key == "ctrl+d" && m.ArchiveView:
+			if item, ok := m.Highlighted(); ok {
+				m.confirm.ask("delete", item.ID, "delete", sessionDeletePrompt)
 			}
 			return m, nil
 		case key == "ctrl+a":

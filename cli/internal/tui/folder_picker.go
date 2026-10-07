@@ -369,7 +369,7 @@ func (m FolderPicker) Update(msg tea.Msg) (FolderPicker, tea.Cmd) {
 			}
 		}
 		switch msg.String() {
-		case "esc", "ctrl+c":
+		case "esc", "ctrl+c", "ctrl+d":
 			return m, func() tea.Msg { return FolderPickerCancelMsg{} }
 		case "ctrl+l":
 			if row, ok := m.highlighted(); ok && m.probe(row.hostKey).State == "needs_auth" {
