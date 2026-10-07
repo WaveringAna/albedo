@@ -293,9 +293,11 @@ func (m PageViewModel) prompt() string {
 	return ""
 }
 
-// fitHints is " " and the hints in room columns, shedding what the screen
-// already says first: moving, then leaving, then every label but the keys.
-// Empty when not even the keys fit.
+// fitHints is " " and the hints in room columns. A screen lists its hints
+// most important first and esc last. What the screen already says goes
+// first: moving, then leaving, then the least important hints one at a
+// time from the end, and only when three labelled hints no longer fit, every
+// label but the keys. Empty when not even the keys fit.
 func fitHints(hints []hint, room int) string {
 	keysOnly := make([]hint, len(hints))
 	for i, h := range hints {
@@ -306,7 +308,12 @@ func fitHints(hints []hint, room int) string {
 	}
 	still := slices.DeleteFunc(slices.Clone(hints), func(h hint) bool { return h.key == "↑↓" })
 	staying := slices.DeleteFunc(slices.Clone(still), func(h hint) bool { return h.key == "esc" })
-	for _, candidate := range [][]hint{hints, still, staying, keysOnly} {
+	candidates := [][]hint{hints, still, staying}
+	for n := len(staying) - 1; n >= min(3, len(staying)); n-- {
+		candidates = append(candidates, staying[:n])
+	}
+	candidates = append(candidates, keysOnly)
+	for _, candidate := range candidates {
 		if line := " " + keyHints(candidate...); len(candidate) > 0 && ansi.StringWidth(line) <= room {
 			return line
 		}

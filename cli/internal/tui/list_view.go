@@ -226,6 +226,8 @@ func (l listView) pane(width, height int) []string {
 	inner := max(1, width-2)
 	r, ok := l.highlighted()
 	switch {
+	case !ok && len(l.rows) == 0:
+		return paneBox(nil, inner, width, height)
 	case !ok:
 		return paneBox([]string{"", DefaultStyles.Muted.Render("nothing matches"), DefaultStyles.Faint.Render("Try fewer search terms")}, inner, width, height)
 	case r.detail == nil:
