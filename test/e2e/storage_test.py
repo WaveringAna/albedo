@@ -18,13 +18,14 @@ import unittest
 
 from harness import Albedo, ROOT, exclusive, wait_until
 
-MAINTENANCE = ROOT / "cli/internal/storage/maintenance.py"
+from storage_helper_support import maintenance_command
 
 
 class StorageTests(unittest.TestCase):
-    def helper(self, home, paths=()):
+    def helper(self, app, paths=()):
         helper = subprocess.Popen(
-            [sys.executable, str(MAINTENANCE), str(home)],
+            maintenance_command(app.home, app.env["ALBEDO_DAEMON"]),
+            env=app.env,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -68,7 +69,7 @@ class StorageTests(unittest.TestCase):
             def maintenance(app):
                 database = app.home / "albedo.sqlite"
                 before = hashlib.sha256(database.read_bytes()).digest()
-                helper = self.helper(app.home, [backup])
+                helper = self.helper(app, [backup])
                 refused = subprocess.run(
                     [app.env["ALBEDO_DAEMON"]],
                     env=dict(app.env, ALBEDO_TOKEN="x" * 32),
@@ -169,25 +170,18 @@ class StorageTests(unittest.TestCase):
                 self.addCleanup(os.close, descriptor)
                 tools = app.home / "test-tools"
                 tools.mkdir()
-                wrapper = tools / "python3"
-                # Gate only unlink in the embedded maintenance script. Ordinary
-                # inspection uses the real Python runtime without modification.
-                held_unlink = (
-                    "def held_unlink(path):\n"
-                    f"    with open({str(gate)!r}, 'w') as pipe:\n"
-                    "        pipe.write(str(os.getpid()) + '\\n')\n"
-                    "    threading.Event().wait()\n"
-                    "os.unlink = held_unlink\n"
+                wrapper = tools / "albedo-daemon"
+                held = maintenance_command(
+                    app.home, app.env["ALBEDO_DAEMON"], operation="delete", gate=gate
                 )
                 wrapper.write_text(
                     f"#!{sys.executable}\n"
                     "import os, sys\n"
-                    "script = sys.argv[2]\n"
-                    "if 'def maintain(home)' in script:\n"
-                    f"    gate = {held_unlink!r}\n"
-                    "    script = script.replace('if __name__ ==', gate + 'if __name__ ==')\n"
-                    "sys.argv = ['-c', *sys.argv[3:]]\n"
-                    "exec(compile(script, '<maintenance>', 'exec'))\n"
+                    "if sys.argv[1:3] == ['storage', 'maintain']:\n"
+                    f"    command = {held!r}\n"
+                    "else:\n"
+                    f"    command = [{app.env['ALBEDO_DAEMON']!r}, *sys.argv[1:]]\n"
+                    "os.execv(command[0], command)\n"
                 )
                 wrapper.chmod(0o700)
                 for death in (signal.SIGKILL, signal.SIGINT, signal.SIGTERM):
@@ -200,9 +194,7 @@ class StorageTests(unittest.TestCase):
                                 "--backups",
                                 "--yes",
                             ],
-                            env=dict(
-                                app.env, PATH=str(tools) + os.pathsep + app.env["PATH"]
-                            ),
+                            env=dict(app.env, ALBEDO_DAEMON=str(wrapper)),
                             cwd=ROOT,
                             stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE,
@@ -251,18 +243,16 @@ class StorageTests(unittest.TestCase):
                 self.addCleanup(os.close, descriptor)
                 tools = app.home / "test-tools"
                 tools.mkdir()
-                wrapper = tools / "python3"
+                wrapper = tools / "albedo-daemon"
                 wrapper.write_text(
                     f"#!{sys.executable}\n"
-                    "import sys\n"
-                    "script = sys.argv[2]\n"
-                    "if 'def maintain(home)' in script:\n"
+                    "import os, sys\n"
+                    "if sys.argv[1:3] == ['storage', 'maintain']:\n"
                     f"    with open({str(ready)!r}, 'w') as pipe:\n"
                     "        pipe.write('acquiring')\n"
                     f"    with open({str(release)!r}) as pipe:\n"
                     "        pipe.read(1)\n"
-                    "sys.argv = ['-c', *sys.argv[3:]]\n"
-                    "exec(compile(script, '<maintenance>', 'exec'))\n"
+                    f"os.execv({app.env['ALBEDO_DAEMON']!r}, [{app.env['ALBEDO_DAEMON']!r}, *sys.argv[1:]])\n"
                 )
                 wrapper.chmod(0o700)
                 cleanup = subprocess.Popen(
@@ -273,7 +263,7 @@ class StorageTests(unittest.TestCase):
                         "--all",
                         "--yes",
                     ],
-                    env=dict(app.env, PATH=str(tools) + os.pathsep + app.env["PATH"]),
+                    env=dict(app.env, ALBEDO_DAEMON=str(wrapper)),
                     cwd=ROOT,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
@@ -296,6 +286,52 @@ class StorageTests(unittest.TestCase):
                 self.close_helper(cleanup)
 
             app.restart(prepare=maintenance)
+
+    # The private home catches filename encoding regressions and Python invocation.
+    def test_offline_inspection_and_prune_do_not_invoke_python(self):
+        with Albedo(providers={}) as app, tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            home = root / "home ?%é"
+            home.mkdir()
+            database = home / "albedo.sqlite"
+            with closing(sqlite3.connect(database)) as db:
+                db.executescript(
+                    "CREATE TABLE sessions(id TEXT); CREATE TABLE transcript(session TEXT,payload BLOB); CREATE TABLE reclaim(data BLOB);"
+                )
+                db.execute("INSERT INTO reclaim VALUES(zeroblob(262144))")
+                db.execute("DELETE FROM reclaim")
+                db.commit()
+            backup = home / "backups/albedo-before-image-store-1.sqlite"
+            backup.parent.mkdir()
+            backup.write_bytes(b"approved backup")
+            old = time.time() - 31 * 24 * 60 * 60
+            os.utime(backup, (old, old))
+            tools = root / "tools"
+            tools.mkdir()
+            python = tools / "python3"
+            python.write_text("#!/bin/sh\nexit 99\n")
+            python.chmod(0o700)
+            env = dict(
+                app.env,
+                ALBEDO_HOME=str(home),
+                PATH=str(tools) + os.pathsep + app.env["PATH"],
+            )
+            for arguments in (("--offline", "--json"), ("prune", "--all", "--yes")):
+                result = subprocess.run(
+                    [str(ROOT / "cli/bin/albedo"), "storage", *arguments],
+                    env=env,
+                    cwd=ROOT,
+                    capture_output=True,
+                    text=True,
+                    timeout=20,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                if arguments[0] == "--offline":
+                    self.assertGreater(json.loads(result.stdout)["db"]["free_pages"], 0)
+            self.assertFalse(backup.exists())
+            self.assertFalse((home / "daemon.json").exists())
+            with closing(sqlite3.connect(database)) as db:
+                self.assertEqual(db.execute("PRAGMA freelist_count").fetchone()[0], 0)
 
     # exclusive: restarts the daemon and mutates global storage offline
     @exclusive
@@ -523,7 +559,7 @@ class StorageTests(unittest.TestCase):
                     env=dict(
                         app.env,
                         ALBEDO_HOME=str(home),
-                        ALBEDO_DAEMON="/nonexistent/no-launch",
+                        ALBEDO_DAEMON=app.env["ALBEDO_DAEMON"],
                         PATH=app.env["PATH"] if path is None else path,
                     ),
                     cwd=ROOT,
@@ -560,9 +596,16 @@ class StorageTests(unittest.TestCase):
             older = json.loads(supported.stdout)
             self.assertEqual(older["db"]["sessions"], [{"id": "older", "bytes": 7}])
             self.assertEqual(older["db"]["images"], 2)
-            missing_python = report("--offline", path="")
-            self.assertNotEqual(missing_python.returncode, 0)
-            self.assertIn("require Python", missing_python.stderr)
+            tools = Path(directory) / "tools"
+            tools.mkdir()
+            python = tools / "python3"
+            python.write_text("#!/bin/sh\nexit 99\n")
+            python.chmod(0o700)
+            without_python = report(
+                "--offline", path=str(tools) + os.pathsep + app.env["PATH"]
+            )
+            self.assertEqual(without_python.returncode, 0, without_python.stderr)
+            self.assertEqual(json.loads(without_python.stdout), older)
             self.assertEqual(database.read_bytes(), before)
             self.assertEqual({path.name for path in home.iterdir()}, {"albedo.sqlite"})
             with closing(sqlite3.connect(database)) as db:
@@ -628,7 +671,7 @@ class StorageTests(unittest.TestCase):
                     env=dict(
                         app.env,
                         ALBEDO_HOME=str(home),
-                        ALBEDO_DAEMON="/nonexistent/no-launch",
+                        ALBEDO_DAEMON=app.env["ALBEDO_DAEMON"],
                     ),
                     cwd=ROOT,
                     capture_output=True,
@@ -697,8 +740,8 @@ class StorageTests(unittest.TestCase):
             self.addCleanup(os.close, descriptor)
             tools = root / "tools"
             tools.mkdir()
-            python = tools / "python3"
-            python.write_text(
+            helper = tools / "albedo-daemon"
+            helper.write_text(
                 f"#!{sys.executable}\n"
                 "import os, sys, threading\n"
                 "from pathlib import Path\n"
@@ -708,7 +751,7 @@ class StorageTests(unittest.TestCase):
                 "    pipe.write(str(os.getpid()) + '\\n')\n"
                 "threading.Event().wait()\n"
             )
-            python.chmod(0o700)
+            helper.chmod(0o700)
             for death in (signal.SIGINT, signal.SIGTERM):
                 with self.subTest(signal=death):
                     command = subprocess.Popen(
@@ -722,7 +765,7 @@ class StorageTests(unittest.TestCase):
                             app.env,
                             ALBEDO_HOME=str(home),
                             TMPDIR=str(scratch),
-                            PATH=str(tools) + os.pathsep + app.env["PATH"],
+                            ALBEDO_DAEMON=str(helper),
                         ),
                         cwd=ROOT,
                         stdout=subprocess.PIPE,

@@ -88,7 +88,7 @@ c.close()`
 	if _, err := service.ApplyCleanup(t.Context(), plan); err != nil {
 		t.Fatal(err)
 	}
-	helper, err := startMaintenance(t.Context(), home, nil)
+	helper, err := testService(home).startMaintenance(t.Context(), nil)
 	if err != nil {
 		t.Fatalf("vacuum retained ownership: %v", err)
 	}
@@ -130,7 +130,7 @@ func TestStorageRefusesSymlinkDirectory(t *testing.T) {
 }
 
 func testService(home string) *Service {
-	return &Service{Home: home, Now: time.Now, Running: func() (bool, error) { return false, nil }, DeleteSessions: func(context.Context, []string) error { panic("offline test attempted session deletion") }}
+	return &Service{Command: testCommand, Home: home, Now: time.Now, Running: func() (bool, error) { return false, nil }, DeleteSessions: func(context.Context, []string) error { panic("offline test attempted session deletion") }}
 }
 
 // Candidate races occur during the confirmation wait. Force them locally so
@@ -193,7 +193,7 @@ func TestCleanupRevalidatesBeforeAnyDeletion(t *testing.T) {
 			if applyErr == nil {
 				t.Fatal("cleanup accepted changed state")
 			}
-			helper, err := startMaintenance(t.Context(), home, nil)
+			helper, err := testService(home).startMaintenance(t.Context(), nil)
 			if err != nil {
 				t.Fatalf("revalidation failure retained ownership: %v", err)
 			}
@@ -277,7 +277,7 @@ with sqlite3.connect(sys.argv[1]) as db:
 	if content, err := os.ReadFile(candidate); err != nil || string(content) != "retain" {
 		t.Fatalf("kernel changed: %q, %v", content, err)
 	}
-	helper, err := startMaintenance(t.Context(), home, nil)
+	helper, err := testService(home).startMaintenance(t.Context(), nil)
 	if err != nil {
 		t.Fatalf("refused cleanup retained ownership: %v", err)
 	}

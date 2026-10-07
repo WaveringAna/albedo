@@ -168,6 +168,7 @@
     vendorHash = "sha256-Pl+bXHakJyxncOSWMI1FVpNui/LI/zgKg74nvjCwSKU=";
     nativeBuildInputs = [python311 makeWrapper];
     ALBEDO_NO_BROWSER = "1";
+    ALBEDO_TEST_DAEMON = "${server}/bin/albedo-daemon";
     postInstall = ''
       wrapProgram $out/bin/albedo \
         --prefix PATH : ${lib.makeBinPath clipboardTools}

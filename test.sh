@@ -15,7 +15,7 @@ export ALBEDO_NO_BROWSER=1
 export ALBEDO_KERNEL_GRACE_SECONDS=20
 
 ruff check
-ruff format --check priv/python test cli/internal/storage
+ruff format --check priv/python test
 ty check
 gleam format --check src test
 test/gleam-lint.sh

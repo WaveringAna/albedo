@@ -2,8 +2,8 @@ package storage
 
 import (
 	"albedo/cli/internal/daemon"
+	"bytes"
 	"context"
-	_ "embed"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,10 +14,14 @@ import (
 	"time"
 )
 
-//go:embed diagnostic.py
-var inspectStorage string
+func (s *Service) command(ctx context.Context, args ...string) (*exec.Cmd, error) {
+	if s.Command == nil {
+		return nil, errors.New("offline storage requires a local daemon executable; set ALBEDO_DAEMON or ALBEDO_ROOT, or query a running daemon without --offline")
+	}
+	return s.Command(ctx, args...)
+}
 
-func sqliteStorage(ctx context.Context, path string) (daemon.StorageDatabase, error) {
+func (s *Service) sqliteStorage(ctx context.Context, path string) (daemon.StorageDatabase, error) {
 	db := daemon.StorageDatabase{Sessions: []daemon.StorageSession{}}
 	if err := ctx.Err(); err != nil {
 		return db, err
@@ -27,15 +31,18 @@ func sqliteStorage(ctx context.Context, path string) (daemon.StorageDatabase, er
 		return db, fmt.Errorf("create private offline storage snapshot: %w", err)
 	}
 	defer os.RemoveAll(scratch)
-	out, err := exec.CommandContext(ctx, "python3", "-c", inspectStorage, path, scratch).CombinedOutput()
+	command, err := s.command(ctx, "storage", "inspect", path, scratch)
+	if err != nil {
+		return db, err
+	}
+	var stderr bytes.Buffer
+	command.Stderr = &stderr
+	out, err := command.Output()
 	if ctx.Err() != nil {
 		return db, ctx.Err()
 	}
-	if errors.Is(err, exec.ErrNotFound) {
-		return db, errors.New("offline storage diagnostics require Python 3; install Python or query a running daemon without --offline")
-	}
 	if err != nil {
-		return db, fmt.Errorf("read disk usage from the database: %w: %s", err, strings.TrimSpace(string(out)))
+		return db, fmt.Errorf("read disk usage from the database: %w: %s", err, strings.TrimSpace(stderr.String()))
 	}
 	if err := json.Unmarshal(out, &db); err != nil {
 		return db, fmt.Errorf("decode the database disk usage report: %w", err)
@@ -129,7 +136,7 @@ func (s *Service) OfflineReport(ctx context.Context) (daemon.StorageReport, erro
 		p.WAL += size
 	}
 	if databaseExists {
-		if p.DB, err = sqliteStorage(ctx, dbPath); err != nil {
+		if p.DB, err = s.sqliteStorage(ctx, dbPath); err != nil {
 			return p, err
 		}
 	}

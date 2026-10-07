@@ -4,7 +4,6 @@ import (
 	"albedo/cli/internal/daemon"
 	"bytes"
 	"context"
-	_ "embed"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,9 +11,6 @@ import (
 	"os/exec"
 	"strings"
 )
-
-//go:embed maintenance.py
-var maintenanceScript string
 
 // maintenance owns both mutations and the lock. Closing input revokes ownership.
 type maintenance struct {
@@ -30,8 +26,12 @@ type maintenanceMessage struct {
 	Ready  bool           `json:"ready"`
 }
 
-func startMaintenance(ctx context.Context, home string, files []daemon.StorageFile) (*maintenance, error) {
-	helper := &maintenance{command: exec.CommandContext(ctx, "python3", "-c", maintenanceScript, home)}
+func (s *Service) startMaintenance(ctx context.Context, files []daemon.StorageFile) (*maintenance, error) {
+	command, err := s.command(ctx, "storage", "maintain", s.Home)
+	if err != nil {
+		return nil, err
+	}
+	helper := &maintenance{command: command}
 	helper.command.Stderr = &helper.stderr
 	input, err := helper.command.StdinPipe()
 	if err != nil {

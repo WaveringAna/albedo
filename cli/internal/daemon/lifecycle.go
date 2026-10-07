@@ -186,6 +186,11 @@ func resolveDaemonExecutable(path string) (string, error) {
 
 // Local launch filters provider overrides; daemon bootstrap owns all defaults.
 func daemonCommand(options LocalOptions) (*exec.Cmd, error) {
+	return LocalCommand(context.Background(), options)
+}
+
+// LocalCommand selects the local daemon executable without launching its server.
+func LocalCommand(ctx context.Context, options LocalOptions, args ...string) (*exec.Cmd, error) {
 	executable := os.Getenv("ALBEDO_DAEMON")
 	if executable == "" {
 		if options.ProjectRoot == "" {
@@ -204,7 +209,7 @@ func daemonCommand(options LocalOptions) (*exec.Cmd, error) {
 	if err != nil {
 		return nil, err
 	}
-	cmd := exec.Command(executable)
+	cmd := exec.CommandContext(ctx, executable, args...)
 	for _, entry := range os.Environ() {
 		key, _, _ := strings.Cut(entry, "=")
 		switch key {

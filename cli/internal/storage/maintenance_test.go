@@ -29,12 +29,12 @@ func TestMaintenanceOwnershipAndRelease(t *testing.T) {
 			}
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
-			helper, err := startMaintenance(ctx, home, []daemon.StorageFile{{Path: path, Bytes: 4}})
+			helper, err := testService(home).startMaintenance(ctx, []daemon.StorageFile{{Path: path, Bytes: 4}})
 			if err != nil {
 				t.Fatal(err)
 			}
 			defer helper.close()
-			if other, acquireErr := startMaintenance(t.Context(), home, nil); acquireErr == nil {
+			if other, acquireErr := testService(home).startMaintenance(t.Context(), nil); acquireErr == nil {
 				other.close()
 				t.Fatal("second cleanup acquired ownership")
 			} else if !strings.Contains(acquireErr.Error(), "storage is in use") {
@@ -94,7 +94,7 @@ func TestMaintenanceOwnershipAndRelease(t *testing.T) {
 			if os.IsNotExist(statErr) != deleted {
 				t.Fatalf("unexpected candidate state: %v", statErr)
 			}
-			next, err := startMaintenance(t.Context(), home, nil)
+			next, err := testService(home).startMaintenance(t.Context(), nil)
 			if err != nil {
 				t.Fatalf("ownership not released: %v", err)
 			}
@@ -110,7 +110,7 @@ func TestCleanupRequiresOwnershipBeforeRevalidation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	helper, err := startMaintenance(t.Context(), home, nil)
+	helper, err := testService(home).startMaintenance(t.Context(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

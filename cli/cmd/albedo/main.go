@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
 	"syscall"
 	"time"
@@ -94,6 +95,9 @@ func run(args []string) error {
 		},
 	}
 	store := &storage.Service{
+		Command: func(ctx context.Context, args ...string) (*exec.Cmd, error) {
+			return daemon.LocalCommand(ctx, options, args...)
+		},
 		Home: home, Now: time.Now,
 		Running: func() (bool, error) {
 			found, err := daemon.Discover(ctx, home)

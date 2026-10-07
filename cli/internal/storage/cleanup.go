@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"regexp"
 	"slices"
 	"time"
@@ -14,6 +15,7 @@ import (
 
 // Service keeps offline inspection separate from daemon-backed session deletion.
 type Service struct {
+	Command        func(context.Context, ...string) (*exec.Cmd, error)
 	OnlineReport   func(context.Context) (*daemon.StorageReport, error)
 	Now            func() time.Time
 	Running        func() (bool, error)
@@ -154,7 +156,7 @@ func (s *Service) ApplyCleanup(ctx context.Context, plan CleanupPlan) (CleanupRe
 	if options.Backups {
 		files = append(files, preview.OldBackups...)
 	}
-	helper, err := startMaintenance(ctx, s.Home, files)
+	helper, err := s.startMaintenance(ctx, files)
 	if err != nil {
 		return result, err
 	}
