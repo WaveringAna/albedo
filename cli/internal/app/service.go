@@ -11,7 +11,6 @@ import (
 	"slices"
 	"strings"
 
-	"albedo/cli/internal/config"
 	"albedo/cli/internal/daemon"
 )
 
@@ -26,7 +25,7 @@ type OpenOptions struct {
 }
 type PreparedOpen struct {
 	Connection    *daemon.Connection
-	Providers     config.Profiles
+	Settings      daemon.Settings
 	Selected      *daemon.Session
 	Workspace     string
 	Sessions      []daemon.Session
@@ -68,11 +67,11 @@ func (s *Service) PrepareOpen(ctx context.Context, options OpenOptions) (Prepare
 		selected = &session
 	}
 
-	profs, err := daemon.ProviderProfiles(ctx, conn)
+	settings, err := daemon.GetSettings(ctx, conn)
 	if err != nil {
 		return PreparedOpen{}, err
 	}
-	configured := profs.Active != ""
+	configured := settings.Profiles.Active != ""
 
 	if !configured && !options.Terminal {
 		return PreparedOpen{}, errors.New("no model provider is configured; run albedo login in a terminal to set one up")
@@ -93,7 +92,14 @@ func (s *Service) PrepareOpen(ctx context.Context, options OpenOptions) (Prepare
 		initial = &created
 	}
 
-	return PreparedOpen{Connection: conn, Providers: profs, Sessions: sessions, Selected: initial, Workspace: absWorkspace, LoginRequired: !configured}, nil
+	if initial != nil {
+		if i := slices.IndexFunc(sessions, func(s daemon.Session) bool { return s.ID == initial.ID }); i >= 0 {
+			sessions[i] = *initial
+		} else {
+			sessions = append([]daemon.Session{*initial}, sessions...)
+		}
+	}
+	return PreparedOpen{Connection: conn, Settings: settings, Sessions: sessions, Selected: initial, Workspace: absWorkspace, LoginRequired: !configured}, nil
 }
 
 func (s *Service) Sessions(ctx context.Context) ([]daemon.Session, error) {
@@ -211,6 +217,6 @@ func (s *Service) PrepareLogin(ctx context.Context) (PreparedOpen, error) {
 	if err != nil {
 		return PreparedOpen{}, err
 	}
-	profiles, err := daemon.ProviderProfiles(ctx, conn)
-	return PreparedOpen{Connection: conn, Providers: profiles}, err
+	settings, err := daemon.GetSettings(ctx, conn)
+	return PreparedOpen{Connection: conn, Settings: settings}, err
 }

@@ -350,3 +350,13 @@ func (m LoginModel) listSignIns(ctx context.Context, gen int) signInsLoadedMsg {
 	settings, err := daemon.GetSettings(ctx, m.Conn)
 	return signInsLoadedMsg{Listed: listed, Profiles: &settings.Profiles, Err: err, Gen: gen}
 }
+
+// Startup already read profiles; only authentication choices need loading.
+func (m LoginModel) initWithProfiles(profiles config.Profiles) tea.Cmd {
+	conn, ctx, gen := m.Conn, m.readCtx, m.Generation
+	profiles.Providers = maps.Clone(profiles.Providers)
+	return func() tea.Msg {
+		listed, err := daemon.SignInList(ctx, conn)
+		return signInsLoadedMsg{Listed: listed, Profiles: &profiles, Err: err, Gen: gen}
+	}
+}

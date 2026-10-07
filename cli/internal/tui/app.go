@@ -97,23 +97,27 @@ func (m *AppModel) newChatModel(session *daemon.Session) ChatModel {
 }
 
 // NewAppModel requires an established daemon connection and panics if conn is nil.
-func NewAppModel(conn *daemon.Connection, profiles config.Profiles, initialSession *daemon.Session, workspace string, needsLogin bool, openBrowser func(string)) *AppModel {
+func NewAppModel(conn *daemon.Connection, bootstrap Bootstrap, initialSession *daemon.Session, workspace string, needsLogin bool, openBrowser func(string)) *AppModel {
 	if conn == nil {
 		panic("tui.NewAppModel requires a daemon connection")
 	}
 	m := &AppModel{
 		Conn:          conn,
-		Profiles:      profiles,
+		Profiles:      bootstrap.Settings.Profiles,
 		ActiveSession: initialSession,
 		Workspace:     workspace,
 		openBrowser:   openBrowser,
 	}
 
+	// Seed the shared owner before constructing a screen that reads preferences.
 	m.SessionPicker = NewSessionViewer(workspace)
 	m.SessionPicker.Fetch = func(id string) tea.Cmd {
 		current, _ := m.session(id)
 		return sessionPreviewCmd(conn, id, current.ETag)
 	}
+	m.SettingsETags = maps.Clone(bootstrap.Settings.ETags)
+	m.applySessionList(bootstrap.Sessions)
+	m.ApplyUI(bootstrap.Settings.UI)
 	if needsLogin {
 		m.State = AppStateLogin
 		m.Login = NewLoginModel(conn, "", openBrowser)
@@ -128,8 +132,8 @@ func NewAppModel(conn *daemon.Connection, profiles config.Profiles, initialSessi
 }
 
 // NewLoginAppModel starts the standalone login flow, which exits when finished.
-func NewLoginAppModel(conn *daemon.Connection, profiles config.Profiles, workspace, nameHint string, openBrowser func(string)) *AppModel {
-	m := NewAppModel(conn, profiles, nil, workspace, false, openBrowser)
+func NewLoginAppModel(conn *daemon.Connection, bootstrap Bootstrap, workspace, nameHint string, openBrowser func(string)) *AppModel {
+	m := NewAppModel(conn, bootstrap, nil, workspace, false, openBrowser)
 	m.State = AppStateLogin
 	m.StandaloneLogin = true
 	m.Login = NewLoginModel(conn, nameHint, openBrowser)
@@ -137,7 +141,7 @@ func NewLoginAppModel(conn *daemon.Connection, profiles config.Profiles, workspa
 }
 
 func (m *AppModel) Init() tea.Cmd {
-	return tea.Batch(m.initScreen(), m.loadSettingsCmd(m.SettingsGen))
+	return m.initScreen()
 }
 
 func (m *AppModel) AddNotice(message string) {

@@ -48,7 +48,7 @@ func awaitCommandSignal[T any](t *testing.T, ch <-chan T) T {
 // A partial deletion must keep an undeleted row until an authoritative refresh.
 // A healthy daemon cannot reliably force a teardown failure during this update.
 func TestPartialDeletionKeepsUndeletedSessionAndOutcomeAfterRefresh(t *testing.T) {
-	app := NewAppModel(daemon.NewConnection(daemon.ConnectionSnapshot{Port: 1}, nil), config.Profiles{}, nil, "", false, nil)
+	app := NewAppModel(daemon.NewConnection(daemon.ConnectionSnapshot{Port: 1}, nil), Bootstrap{Settings: daemon.Settings{Profiles: config.Profiles{}}}, nil, "", false, nil)
 	app.State = AppStateSessionPicker
 	app.Sessions = []daemon.Session{{ID: "root"}, {ID: "deleted"}}
 	app.updateSessionPickerItems()
@@ -261,7 +261,7 @@ func TestPreviewCallbackKeepsConnectionAcrossAppChanges(t *testing.T) {
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"high_water": 1, "items": []any{protocolEntry("e", "user", "hello", 1)}, "older": nil, "newer": nil})
 	})
-	app := NewAppModel(conn, config.Profiles{}, nil, "", false, nil)
+	app := NewAppModel(conn, Bootstrap{Settings: daemon.Settings{Profiles: config.Profiles{}}}, nil, "", false, nil)
 	app.Conn = nil
 	msg := app.SessionPicker.Fetch("requested")().(SessionPreviewMsg)
 	if msg.Err != nil || msg.ID != "requested" || len(msg.Preview.Items) != 1 || msg.Preview.Items[0].Preview != "hello" {

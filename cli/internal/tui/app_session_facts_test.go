@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"testing"
 
-	"albedo/cli/internal/config"
 	"albedo/cli/internal/daemon"
 	"albedo/cli/internal/testwire"
 	tea "charm.land/bubbletea/v2"
@@ -16,7 +15,7 @@ import (
 func TestPartialPreferencesKeepSharedFactsAndPickerInteraction(t *testing.T) {
 	conn := daemon.NewConnection(daemon.ConnectionSnapshot{Port: 1}, nil)
 	active := daemon.Session{ID: "active", Title: "Current", ETag: "active-a", Model: "model"}
-	m := NewAppModel(conn, config.Profiles{}, &active, "", false, nil)
+	m := NewAppModel(conn, Bootstrap{}, &active, "", false, nil)
 	t.Cleanup(m.Chat.Close)
 	m.applySessionList([]daemon.Session{active, {ID: "other", Title: "Other", Pinned: true, Opens: 3, ETag: "other-a"}})
 	m.ApplyUI(daemon.UIPreferences{ETag: "ui-a", Thinking: true, DismissedNotices: []string{"migration"}})
@@ -73,7 +72,7 @@ func TestNavigationRefreshRejectsOlderSettingsReply(t *testing.T) {
 			t.Errorf("unexpected refresh request: %s", r.URL)
 		}
 	})
-	m := NewAppModel(conn, config.Profiles{}, nil, "", false, nil)
+	m := NewAppModel(conn, Bootstrap{}, nil, "", false, nil)
 	m.ApplyUI(daemon.UIPreferences{ETag: "prepared", Tools: true})
 	previous := m.SettingsGen
 	batch := m.openSessions()().(tea.BatchMsg)

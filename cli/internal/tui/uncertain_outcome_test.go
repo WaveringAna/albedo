@@ -103,7 +103,7 @@ func TestStreamEchoBeforeUncertainAcknowledgementDoesNotRestoreSubmission(t *tes
 func TestUncertainCommandKeepsSessionAndEffort(t *testing.T) {
 	conn := daemon.NewConnection(daemon.ConnectionSnapshot{Port: 1}, nil)
 	session := &daemon.Session{ID: "current", Effort: "low"}
-	m := NewAppModel(conn, config.Profiles{}, session, "", false, nil)
+	m := NewAppModel(conn, Bootstrap{Settings: daemon.Settings{Profiles: config.Profiles{}}}, session, "", false, nil)
 	t.Cleanup(m.Chat.Close)
 	confirmed := m.ActiveSession
 	updated, cmd := m.Update(commandExecutedMsg{Name: "/effort", Effort: "high", Err: &daemon.UncertainOutcomeError{Operation: "command", Cause: io.EOF}})
@@ -133,7 +133,7 @@ func TestUncertainSignInDoesNotRestartOrOpenBrowser(t *testing.T) {
 
 func TestInvalidSessionSnapshotKeepsConfirmedGlances(t *testing.T) {
 	conn := daemon.NewConnection(daemon.ConnectionSnapshot{Port: 1}, nil)
-	m := NewAppModel(conn, config.Profiles{}, &daemon.Session{ID: "current"}, "", false, nil)
+	m := NewAppModel(conn, Bootstrap{Settings: daemon.Settings{Profiles: config.Profiles{}}}, &daemon.Session{ID: "current"}, "", false, nil)
 	t.Cleanup(m.Chat.Close)
 	m.Chat.Glances = []PageGlance{{Title: "confirmed"}}
 	updated, _ := m.Update(ChatStatusMsg{
@@ -148,7 +148,7 @@ func TestInvalidSessionSnapshotKeepsConfirmedGlances(t *testing.T) {
 
 func TestInvalidOpenResponseDoesNotRefreshSettings(t *testing.T) {
 	conn := daemon.NewConnection(daemon.ConnectionSnapshot{Port: 1}, nil)
-	m := NewAppModel(conn, config.Profiles{}, &daemon.Session{ID: "current"}, "", false, nil)
+	m := NewAppModel(conn, Bootstrap{Settings: daemon.Settings{Profiles: config.Profiles{}}}, &daemon.Session{ID: "current"}, "", false, nil)
 	t.Cleanup(m.Chat.Close)
 	_, cmd := m.Update(uiSavedMsg{Open: true, Err: invalidResponseOutcome("record open", "thinking", errors.New("missing preference"))})
 	if cmd != nil {

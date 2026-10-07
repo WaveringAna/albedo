@@ -45,11 +45,15 @@ func driveTUIWithConnection(t *testing.T, session *daemon.Session, connection *d
 	if session != nil {
 		workspace = session.Workspace
 	}
-	profiles, err := daemon.ProviderProfiles(t.Context(), connection)
+	settings, err := daemon.GetSettings(t.Context(), connection)
 	if err != nil {
 		t.Fatal(err)
 	}
-	d := &tuiDriver{t: t, App: tui.NewAppModel(connection, profiles, session, workspace, false, nil)}
+	sessions, err := daemon.ListSessions(t.Context(), connection)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := &tuiDriver{t: t, App: tui.NewAppModel(connection, tui.Bootstrap{Sessions: sessions, Settings: settings}, session, workspace, false, nil)}
 	d.Update(tea.WindowSizeMsg{Width: 80, Height: 22})
 	return d
 }

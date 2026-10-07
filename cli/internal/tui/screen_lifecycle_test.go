@@ -123,7 +123,7 @@ func TestClosedLoginCancelsLateStartupWithoutOpeningBrowser(t *testing.T) {
 		w.WriteHeader(http.StatusCreated)
 		_ = json.NewEncoder(w).Encode(map[string]any{"id": id, "provider": "provider", "url": "https://login.example/authorize", "expires_at": "2099-01-01T00:00:00Z", "state": "waiting", "instructions": nil, "progress": "waiting", "accounts": []any{}, "failure": nil})
 	})
-	app := NewAppModel(conn, config.Profiles{}, nil, "", false, func(string) { opened.Store(true) })
+	app := NewAppModel(conn, Bootstrap{Settings: daemon.Settings{Profiles: config.Profiles{}}}, nil, "", false, func(string) { opened.Store(true) })
 	app.State = AppStateLogin
 	app.Login = NewLoginModel(conn, "", app.openBrowser)
 	app.Login.Provider = "provider"
@@ -151,7 +151,7 @@ func TestClosedLoginCancelsLateStartupWithoutOpeningBrowser(t *testing.T) {
 
 func TestLateProviderMutationKeepsUncertaintyWithoutSelectingReplacementFlow(t *testing.T) {
 	conn := daemon.NewConnection(daemon.ConnectionSnapshot{Port: 1}, nil)
-	app := NewAppModel(conn, config.Profiles{}, nil, "", false, nil)
+	app := NewAppModel(conn, Bootstrap{Settings: daemon.Settings{Profiles: config.Profiles{}}}, nil, "", false, nil)
 	previous := NewLoginModel(conn, "", nil)
 	conn.HTTPClient().Transport = catalogTransport(func(*http.Request) (*http.Response, error) { return nil, io.ErrUnexpectedEOF })
 	// Capture the observed validator before creating the mutation command.

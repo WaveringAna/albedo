@@ -11,12 +11,9 @@ func (m *AppModel) initScreen() tea.Cmd {
 	case AppStateChat:
 		return tea.Batch(m.Chat.Init(), m.loadCommandCatalogCmd(m.CatalogGen), m.recordOpenCmd(m.ActiveSession.ID))
 	case AppStateLogin:
-		if !m.StandaloneLogin && m.ActiveSession == nil {
-			return tea.Batch(m.Login.Init(), m.loadSessionsCmd(m.SessionGen))
-		}
-		return m.Login.Init()
+		return m.Login.initWithProfiles(m.Profiles)
 	case AppStateSessionPicker:
-		return tea.Batch(m.SessionPicker.Init(), m.loadSessionsCmd(m.SessionGen), m.loadSettingsCmd(m.SettingsGen))
+		return tea.Batch(m.SessionPicker.Init(), m.SessionPicker.PreviewCmd())
 	}
 	return nil
 }

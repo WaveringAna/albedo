@@ -32,7 +32,7 @@ func TestModelChangeRetainsConfirmedSelectionWhenCapFails(t *testing.T) {
 				_, _ = w.Write([]byte(`{}`))
 			})
 			session := &daemon.Session{ID: "session", Model: "old", Provider: "old-provider", Effort: "high", ETag: "\"session-a\""}
-			app := NewAppModel(conn, config.Profiles{ETag: "\"providers-a\"", Providers: map[string]config.Settings{"provider": {Protocol: "responses"}}}, session, "", false, nil)
+			app := NewAppModel(conn, Bootstrap{Settings: daemon.Settings{Profiles: config.Profiles{ETag: "\"providers-a\"", Providers: map[string]config.Settings{"provider": {Protocol: "responses"}}}}}, session, "", false, nil)
 			app.SettingsETags = map[string]string{"models": "\"models-a\""}
 			t.Cleanup(app.Chat.Close)
 			app.State, app.ModelPicker.Saving, app.ModelGen = AppStateModelPicker, true, 1
@@ -73,7 +73,7 @@ func TestModelChangeFailureDoesNotApplySelectionOrRaiseCap(t *testing.T) {
 				_, _ = w.Write([]byte(`{}`))
 			})
 			session := &daemon.Session{ID: "session", Model: "old", Provider: "provider", Effort: "low", ETag: "\"session-a\""}
-			app := NewAppModel(conn, config.Profiles{ETag: "\"providers-a\"", Providers: map[string]config.Settings{"provider": {Protocol: "responses"}}}, session, "", false, nil)
+			app := NewAppModel(conn, Bootstrap{Settings: daemon.Settings{Profiles: config.Profiles{ETag: "\"providers-a\"", Providers: map[string]config.Settings{"provider": {Protocol: "responses"}}}}}, session, "", false, nil)
 			app.SettingsETags = map[string]string{"models": "\"models-a\""}
 			t.Cleanup(app.Chat.Close)
 			app.State, app.ModelPicker.Saving, app.ModelGen = AppStateModelPicker, true, 1
@@ -100,7 +100,7 @@ func TestModelChangeIgnoresStaleSessionOrGeneration(t *testing.T) {
 		{"generation", "session", 0},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
-			app := NewAppModel(daemon.NewConnection(daemon.ConnectionSnapshot{Port: 1}, nil), config.Profiles{}, &daemon.Session{ID: "session", Model: "old"}, "", false, nil)
+			app := NewAppModel(daemon.NewConnection(daemon.ConnectionSnapshot{Port: 1}, nil), Bootstrap{Settings: daemon.Settings{Profiles: config.Profiles{}}}, &daemon.Session{ID: "session", Model: "old"}, "", false, nil)
 			t.Cleanup(app.Chat.Close)
 			app.State, app.ModelPicker.Saving, app.ModelGen = AppStateModelPicker, true, 1
 			updated, cmd := app.Update(modelChangedMsg{
@@ -116,7 +116,7 @@ func TestModelChangeIgnoresStaleSessionOrGeneration(t *testing.T) {
 }
 
 func TestModelChangePreservesScreenAfterLeavingPicker(t *testing.T) {
-	app := NewAppModel(daemon.NewConnection(daemon.ConnectionSnapshot{Port: 1}, nil), config.Profiles{}, &daemon.Session{ID: "session", Model: "old"}, "", false, nil)
+	app := NewAppModel(daemon.NewConnection(daemon.ConnectionSnapshot{Port: 1}, nil), Bootstrap{Settings: daemon.Settings{Profiles: config.Profiles{}}}, &daemon.Session{ID: "session", Model: "old"}, "", false, nil)
 	t.Cleanup(app.Chat.Close)
 	app.State, app.ModelGen = AppStateSessionPicker, 1
 	updated, cmd := app.Update(modelChangedMsg{
