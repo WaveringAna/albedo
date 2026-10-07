@@ -2,6 +2,7 @@ package tui
 
 import (
 	"cmp"
+	"slices"
 	"strings"
 
 	"github.com/charmbracelet/x/ansi"
@@ -19,16 +20,18 @@ type listFrame struct {
 	pane func(width, height int) []string
 	// paneWidth is the pane's width at a terminal width; nil is sidePane.
 	paneWidth func(width int) int
-	// summary is the detail's one-line stand-in when the pane has no room.
+	// summary is the detail's one-line stand-in when the pane has no room at all.
 	summary string
 	// footer is the finished bottom rows: hints, status, or a confirmation.
 	footer string
 }
 
-// Side by side needs this much terminal.
+// Side by side needs this much terminal; a narrower one with this many body
+// rows stacks the pane under the list instead.
 const (
 	paneMinWidth  = 96
 	paneMinHeight = 14
+	stackMinBody  = 12
 )
 
 // sidePane is a narrow detail column for facts about the highlighted row.
@@ -59,11 +62,13 @@ func (f listFrame) view(width, height int) string {
 	if roomy {
 		tail = append(tail, "")
 	}
-	if !paned && f.summary != "" && height >= 16 {
-		tail = append(tail, " "+f.summary)
-	}
 	tail = append(tail, strings.Split(f.footer, "\n")...)
 	body := max(1, height-len(lines)-len(tail))
+	stacked := !paned && f.pane != nil && body >= stackMinBody
+	if !paned && !stacked && f.summary != "" && height >= 16 {
+		tail = slices.Insert(tail, len(tail)-strings.Count(f.footer, "\n")-1, " "+f.summary)
+		body = max(1, height-len(lines)-len(tail))
+	}
 
 	if paned {
 		paneW := sidePane(width)
@@ -74,6 +79,13 @@ func (f listFrame) view(width, height int) string {
 		pane := f.pane(paneW, body)
 		for i := range body {
 			lines = append(lines, list[i]+svSep()+pane[i])
+		}
+	} else if stacked {
+		paneH := body / 2
+		lines = append(lines, f.list(width, body-paneH-1)...)
+		lines = append(lines, " "+DefaultStyles.Decor.Render(strings.Repeat("─", max(0, width-2))))
+		for _, line := range f.pane(width-1, paneH) {
+			lines = append(lines, " "+line)
 		}
 	} else {
 		lines = append(lines, f.list(width, body)...)

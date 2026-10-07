@@ -295,9 +295,9 @@ func (m PageViewModel) prompt() string {
 
 // fitHints is " " and the hints in room columns. A screen lists its hints
 // most important first and esc last. What the screen already says goes
-// first: moving, then leaving, then the least important hints one at a
-// time from the end, and only when three labelled hints no longer fit, every
-// label but the keys. Empty when not even the keys fit.
+// first: moving, then the least important hints one at a time from the end,
+// always keeping esc, and only when three labelled hints no longer fit,
+// every label but the keys. Empty when not even the keys fit.
 func fitHints(hints []hint, room int) string {
 	keysOnly := make([]hint, len(hints))
 	for i, h := range hints {
@@ -307,10 +307,13 @@ func fitHints(hints []hint, room int) string {
 		}
 	}
 	still := slices.DeleteFunc(slices.Clone(hints), func(h hint) bool { return h.key == "↑↓" })
-	staying := slices.DeleteFunc(slices.Clone(still), func(h hint) bool { return h.key == "esc" })
-	candidates := [][]hint{hints, still, staying}
-	for n := len(staying) - 1; n >= min(3, len(staying)); n-- {
-		candidates = append(candidates, staying[:n])
+	candidates := [][]hint{hints, still}
+	leaving := slices.IndexFunc(still, func(h hint) bool { return h.key == "esc" })
+	if leaving >= 0 {
+		staying := slices.Delete(slices.Clone(still), leaving, leaving+1)
+		for n := len(staying) - 1; n >= min(2, len(staying)); n-- {
+			candidates = append(candidates, append(slices.Clone(staying[:n]), still[leaving]))
+		}
 	}
 	candidates = append(candidates, keysOnly)
 	for _, candidate := range candidates {

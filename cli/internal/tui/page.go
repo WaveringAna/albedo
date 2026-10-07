@@ -12,9 +12,9 @@ import (
 // or save in flight, and the last error and notice. Every request carries
 // the Generation it was started under; a reply under any other is stale.
 type pageStatus struct {
-	Error, Notice            string
+	Error, Notice             string
 	Width, Height, Generation int
-	Loading, Saving          bool
+	Loading, Saving           bool
 }
 
 // newPageStatus starts a screen's first request under a new generation.
