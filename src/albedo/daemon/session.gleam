@@ -3095,13 +3095,15 @@ fn awaited(state: State) -> Bool {
   awaiting_jobs(state) || children_working(state.host, state.info.id)
 }
 
-/// Whether a live job that is not a service runs in the kernel. Jobs the
-/// kernel cannot list, such as a remote one with no summary, do not count.
+/// Whether a live job that is not a service runs in the kernel, here or on a
+/// host its remote plugin reached.
 fn awaiting_jobs(state: State) -> Bool {
-  case session_namespace.observe_kernel(state) {
-    Ok(session_namespace.KernelObservation(running_jobs: Some(jobs), ..)) ->
-      list.any(jobs, fn(job) { !job.service })
-    _ -> False
+  case state.kernel {
+    Some(kernel) ->
+      runtime.kernel_observation(kernel)
+      |> result.map(python.awaits_jobs)
+      |> result.unwrap(False)
+    None -> runtime.awaiting_jobs(state.host, state.info.id)
   }
 }
 

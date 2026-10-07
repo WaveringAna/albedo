@@ -54,7 +54,7 @@ start({boot, Owner, Python, Bridge, Cwd, Host, Modules, Link, RunDir, Kernel, To
         %% this attach still has its groups ended.
         {Target, Groups} = owned(Owned),
         S = #{port => none, host => Host, link => Link, owner => Owner, active => none, events => [],
-              groups => Groups, external => 0, cells => 0, target => Target,
+              groups => Groups, external => 0, awaited_external => 0, cells => 0, target => Target,
               python => Python, bridge => Bridge, cwd => Cwd, remote => Remote,
               modules => Modules, run_dir => RunDir, kernel => Kernel, token => Token,
               grace => Grace, in => 0, acked => 0, kack => 0, out => OutSeq,
@@ -404,7 +404,8 @@ loop(S = #{port := Port, active := Active}) ->
             Jobs = maps:get(groups, S),
             Count = maps:size(Jobs) + maps:get(external, S, 0),
             JobIds = lists:sublist(lists:sort(maps:keys(Jobs)), 200),
-            From ! {Ref, {observation, maps:get(kernel, S), Build, Port =/= none, Stale, Count, JobIds, job_summaries(maps:get(groups, S))}},
+            From ! {Ref, {observation, maps:get(kernel, S), Build, Port =/= none, Stale, Count, JobIds,
+                          job_summaries(maps:get(groups, S)), maps:get(awaited_external, S, 0)}},
             loop(S);
         {call, From, Ref, {stop_job, Id}} ->
             Reply = case maps:get(Id, maps:get(groups, S), none) of
@@ -587,9 +588,12 @@ hello(Hello, S0) ->
         N when is_integer(N), N >= 0 -> N;
         _ -> 0
     end,
-    case maps:get(<<"external">>, Hello, 0) of
-        Live when is_integer(Live), Live >= 0 -> S1#{external => Live, cells => Cells};
-        _ -> S1#{cells => Cells}
+    External = maps:get(<<"external">>, Hello, 0),
+    %% A kernel from before awaited counts says none of its remote jobs wake it.
+    Awaited = maps:get(<<"awaited_external">>, Hello, 0),
+    case is_integer(External) andalso External >= 0 andalso is_integer(Awaited) andalso Awaited >= 0 of
+        true -> S1#{external => External, awaited_external => Awaited, cells => Cells};
+        false -> S1#{cells => Cells}
     end.
 
 %% A kernel speaking another protocol, or running another bundle than the
@@ -642,9 +646,12 @@ handle_frame(#{<<"type">> := <<"job">>} = Message, S) ->
 handle_frame(#{<<"type">> := <<"cells">>, <<"live">> := Live}, S)
         when is_integer(Live), Live >= 0 ->
     S#{cells => Live};
-handle_frame(#{<<"type">> := <<"jobs">>, <<"live">> := Live}, S)
+handle_frame(#{<<"type">> := <<"jobs">>, <<"live">> := Live} = Message, S)
         when is_integer(Live), Live >= 0 ->
-    S#{external => Live};
+    case maps:get(<<"awaited">>, Message, 0) of
+        Awaited when is_integer(Awaited), Awaited >= 0 -> S#{external => Live, awaited_external => Awaited};
+        _ -> S#{external => Live}
+    end;
 handle_frame(#{<<"type">> := <<"trace">>} = Message, S) ->
     journal(Message, S);
 handle_frame(Message, S) -> track(Message, S).

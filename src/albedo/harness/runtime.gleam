@@ -451,7 +451,7 @@ pub fn resume_kernels(runtime: Runtime, awaited: fn(String) -> Nil) -> Nil {
 pub fn awaiting_jobs(runtime: Runtime, id: String) -> Bool {
   case observe_loaded(runtime, id) {
     Ok(runtime_state.LoadedObservation(kernel: Some(observed), ..)) ->
-      list.any(observed.running_jobs, fn(job) { !job.service })
+      python.awaits_jobs(observed)
     _ -> False
   }
 }

@@ -153,6 +153,7 @@ class Mirror(MirrorState):
 class RemoteEvent(TypedDict):
     type: Literal["job_start", "job", "trace", "done"]
     id: str
+    service: NotRequired[bool]  # job_start: nothing waits on the job's end
 
 
 class RemoteCleanup(TypedDict):

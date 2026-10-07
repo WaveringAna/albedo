@@ -14,7 +14,15 @@ import unittest
 import urllib.error
 import zlib
 
-from harness import Albedo, Provider, exclusive, operation_id, python, text
+from harness import (
+    LOOPBACK_REMOTE,
+    Albedo,
+    Provider,
+    exclusive,
+    operation_id,
+    python,
+    text,
+)
 
 
 def png(width, height, metadata=b""):
@@ -31,20 +39,6 @@ def png(width, height, metadata=b""):
         + chunk(b"IEND", b"")
     )
 
-
-# An ssh first on the kernel's PATH that runs the command right here, so
-# remote.connect boots, stages and talks to a real remote kernel.
-LOOPBACK_SSH = """#!/bin/sh
-while [ $# -gt 0 ]; do
-  case "$1" in
-    -o) shift 2 ;;
-    -*) shift ;;
-    *) break ;;
-  esac
-done
-shift
-exec sh -c "$*"
-"""
 
 WIDE = png(1200, 10)
 WIDE_DATA = base64.b64encode(WIDE).decode()
@@ -318,24 +312,13 @@ class ImageLimitsTest(unittest.TestCase):
 
     def test_a_remote_image_is_shown_under_the_same_limits(self):
         cell = (
-            """import os
-os.makedirs("bin", exist_ok=True)
-with open("bin/ssh", "w") as script:
-    script.write(%r)
-os.chmod("bin/ssh", 0o755)
-with open("bin/loginsh", "w") as script:
-    script.write('#!/bin/sh\\n[ "$1" = -l ] && shift\\nexec /bin/sh "$@"\\n')
-os.chmod("bin/loginsh", 0o755)
-os.environ["SHELL"] = os.path.abspath("bin/loginsh")
-os.environ["PATH"] = os.path.abspath("bin") + os.pathsep + os.environ["PATH"]
-rem = await remote.connect("loopback")
-try:
+            LOOPBACK_REMOTE
+            + """try:
     print(await rem.show_image("small.png"))
     await rem.show_image("wide.png")
 finally:
     await rem.close()
 """
-            % LOOPBACK_SSH
         )
 
         def reply(request):

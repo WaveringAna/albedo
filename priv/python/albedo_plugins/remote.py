@@ -55,14 +55,17 @@ _fallback_live: set[str] = set()  # degraded-mode jobs still running over ssh
 
 
 def _report_live() -> None:
-    """Tell the local supervisor how many remote jobs are still live.
+    """Tell the local supervisor how many remote jobs are still live, and how
+    many of them will wake the session: every one not started as a service.
 
     Releasing the kernel would kill every ssh client and with them the remote
-    kernels, so the idle sweep keeps a kernel alive while remote work runs.
+    kernels, so the idle sweep keeps a kernel alive while remote work runs,
+    and the cache warmer keeps an idle session warm while one it awaits does.
     """
     try:
         live = len(_fallback_live) + sum(len(c._live) for c in connections)
-        send_frame({"type": "jobs", "live": live})
+        awaited = len(_fallback_live) + sum(sum(c._live.values()) for c in connections)
+        send_frame({"type": "jobs", "live": live, "awaited": awaited})
     except Exception:
         pass  # no channel or shutdown; the supervisor keeps the last count
 
@@ -526,7 +529,7 @@ class RemoteConnection:
         self._refs: dict[str, RemoteRef] = {}
         self._mirrors: dict[str, dict[str, Any]] = {}
         self._handshake: asyncio.Future[dict[str, Any]] | None = None
-        self._live: set[str] = set()
+        self._live: dict[str, bool] = {}  # job id: whether it is awaited
         self._stderr_tail = bytearray()
         self._reader: asyncio.Task[None] | None = None
         self._drain: asyncio.Task[None] | None = None
@@ -625,10 +628,10 @@ class RemoteConnection:
         elif frame["type"] == "mirror":
             self._mirrors[frame["handle"]] = dict(frame)
         elif frame["type"] == "job_start":
-            self._live.add(frame["id"])
+            self._live[frame["id"]] = frame.get("service") is not True
             _report_live()
         elif frame["type"] == "job":
-            self._live.discard(frame["id"])
+            self._live.pop(frame["id"], None)
             _report_live()
         # trace, done, cleanup describe remote cells; those are addressed
         # through references, not events on this side.

@@ -51,7 +51,10 @@ without starting a kernel. Unknown observations are null. The list contains up
 to 100 live jobs ordered by ID, with `id`, nullable `pid`, `command` (up to
 4096 scalars), and `started_at`: wall-clock milliseconds when the port owner
 recorded the job's group, zero when unknown (a restored link older than the
-field). The count can exceed the list when remote jobs have no summaries.
+field). The count can exceed the list by the remote jobs the kernel's remote
+connections report (`{"type": "jobs", "live": n, "awaited": m}`, `m` the ones
+not started as services): they own no group on this machine, so they are
+counted, not listed.
 The TUI uses these observations for its idle-job status, animation, and
 sidebar, and calls a job background only once it has run three seconds
 (`jobGrace`), so work a cell starts and awaits never flashes through the

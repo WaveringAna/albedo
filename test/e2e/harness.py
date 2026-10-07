@@ -15,6 +15,8 @@ daemon under an open-file limit.
 daemon reach the network, and ``store_secrets(section, value)`` writes a
 creds.json section such as the OAuth ``accounts`` or ``mcp`` server secrets.
 A response ``Reply(..., usage=None)`` omits provider usage.
+A ``python(...)`` cell that starts with ``LOOPBACK_REMOTE`` has ``rem`` bound to
+a remote connection whose ssh runs everything on this machine.
 
 Example::
 
@@ -680,6 +682,34 @@ def release_fifo(path):
     finally:
         os.close(descriptor)
     return True
+
+
+# An ssh that runs its command right here, under a login shell that does the
+# same, so a cell's remote.connect("loopback") boots, stages and talks to a
+# real remote kernel.
+_LOOPBACK_SSH = """#!/bin/sh
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -o) shift 2 ;;
+    -*) shift ;;
+    *) break ;;
+  esac
+done
+shift
+exec sh -c "$*"
+"""
+_LOOPBACK_LOGIN = '#!/bin/sh\n[ "$1" = -l ] && shift\nexec /bin/sh "$@"\n'
+# The start of a cell that binds `rem` to a loopback remote connection.
+LOOPBACK_REMOTE = f"""import os
+os.makedirs("bin", exist_ok=True)
+for name, script in (("ssh", {_LOOPBACK_SSH!r}), ("loginsh", {_LOOPBACK_LOGIN!r})):
+    with open(f"bin/{{name}}", "w") as file:
+        file.write(script)
+    os.chmod(f"bin/{{name}}", 0o755)
+os.environ["SHELL"] = os.path.abspath("bin/loginsh")
+os.environ["PATH"] = os.path.abspath("bin") + os.pathsep + os.environ["PATH"]
+rem = await remote.connect("loopback")
+"""
 
 
 def alive(pid):

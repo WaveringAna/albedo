@@ -6,9 +6,10 @@ Catches: pings that rebuild the request instead of repeating the one the turn
 sent (which would compact or summarize), ping request rows that do not carry
 the turn's prefix identity, pings that commit or publish anything, warming
 that never stops at its budget, warming that continues after the waking work
-finished, warming kept up for a job that was started as a service, a parent
-let go cold while its child sits between turns on a build of its own, and a
-submit that cannot get through while a ping holds the session.
+finished, a session let go cold while its job runs on a remote host its
+kernel cannot list, warming kept up for a job that was started as a service,
+a parent let go cold while its child sits between turns on a build of its
+own, and a submit that cannot get through while a ping holds the session.
 None of this is observable from the transcript alone; the provider and the
 request rows are the witnesses.
 """
@@ -22,6 +23,7 @@ import time
 import unittest
 
 from harness import (
+    LOOPBACK_REMOTE,
     Albedo,
     alive,
     Provider,
@@ -221,23 +223,37 @@ class WarmTest(unittest.TestCase):
         self.app.idle(parent)
         return parent, child
 
-    def job_gate(self, service):
-        """The fifo a job started by `self.job_code` runs until."""
+    def job_gate(self, service, remote=False):
+        """The fifo a job started by `self.job_code` runs until. A remote job
+        runs on a loopback host: the parent's kernel cannot list it, only hear
+        its remote kernel count it."""
         gate = self.app.workspace / "job-release"
         os.mkfifo(gate)
         program = f"open({str(gate)!r}, 'rb').read(1)"
         flag = ", service=True" if service else ""
-        self.job_code = (
-            f"import sys\njob = run(sys.executable, '-c', {program!r}{flag})\njob.id"
-        )
+        start = f"run(sys.executable, '-c', {program!r}{flag})"
+        if remote:
+            # The cell ends once the remote kernel has started the job.
+            self.job_code = (
+                LOOPBACK_REMOTE
+                + f"""import asyncio, sys
+job = rem.{start}
+for _ in range(200):
+    if job.id is not None:
+        break
+    await asyncio.sleep(0.05)
+job.id"""
+            )
+        else:
+            self.job_code = f"import sys\njob = {start}\njob.id"
         # A failed test must not leave the job blocked.
         self.addCleanup(release_fifo, gate)
         return gate
 
-    def job(self, service):
+    def job(self, service, remote=False):
         """A parent whose turn started a job that runs until released, and
         then went idle waiting on it."""
-        gate = self.job_gate(service)
+        gate = self.job_gate(service, remote)
         parent = self.app.session()
         self.app.prompt(parent, JOB_PROMPT).close()
         self.app.idle(parent)
@@ -465,10 +481,8 @@ class WarmTest(unittest.TestCase):
                 ping, [{**repeated, "max_output_tokens": 16} for repeated in turns]
             )
 
-    # exclusive: writes daemon-wide cache TTL and warmer settings
-    @exclusive
-    def test_a_running_job_keeps_the_cache_warm_until_it_finishes(self):
-        parent, gate = self.job(service=False)
+    def assert_warm_until_the_job_ends(self, remote):
+        parent, gate = self.job(service=False, remote=remote)
         pings = wait_for(lambda: self.pings(self.requests("/parent/")) or None)
         turn = self.turns("/parent/")[-1]
         self.assertEqual(pings[0], {**turn, "max_output_tokens": 16})
@@ -487,13 +501,31 @@ class WarmTest(unittest.TestCase):
         time.sleep(QUIET_SECONDS)
         self.assertEqual(len(self.pings(self.requests("/parent/"))), settled)
 
-    # exclusive: writes daemon-wide cache TTL and warmer settings
-    @exclusive
-    def test_a_service_job_does_not_keep_the_cache_warm(self):
-        parent, gate = self.job(service=True)
+    def assert_a_service_is_not_warmed_for(self, remote):
+        parent, _ = self.job(service=True, remote=remote)
         time.sleep(QUIET_SECONDS)
         self.assertEqual(len(self.requests("/parent/")), 2)
         self.assertEqual([row["kind"] for row in self.rows(parent)], ["turn", "turn"])
+
+    # exclusive: writes daemon-wide cache TTL and warmer settings
+    @exclusive
+    def test_a_running_job_keeps_the_cache_warm_until_it_finishes(self):
+        self.assert_warm_until_the_job_ends(remote=False)
+
+    # exclusive: writes daemon-wide cache TTL and warmer settings
+    @exclusive
+    def test_a_remote_job_keeps_the_cache_warm_until_it_finishes(self):
+        self.assert_warm_until_the_job_ends(remote=True)
+
+    # exclusive: writes daemon-wide cache TTL and warmer settings
+    @exclusive
+    def test_a_service_job_does_not_keep_the_cache_warm(self):
+        self.assert_a_service_is_not_warmed_for(remote=False)
+
+    # exclusive: writes daemon-wide cache TTL and warmer settings
+    @exclusive
+    def test_a_remote_service_job_does_not_keep_the_cache_warm(self):
+        self.assert_a_service_is_not_warmed_for(remote=True)
 
     # exclusive: writes daemon-wide cache TTL and warmer settings
     @exclusive
@@ -516,14 +548,16 @@ class WarmTest(unittest.TestCase):
 
     def restarted_pings(self, wait):
         """The parent's pings after a restart while it idles on `wait`: a
-        job, a service, a child, or a child idle on a job."""
+        job, a remote job, a service, a child, or a child idle on a job."""
         (self.app.home / "cache-ttl.json").write_text(json.dumps(RESTART_TTL))
         if wait == "child":
             parent, gate = self.swarm()
         elif wait == "child job":
             parent, _, gate = self.child_job()
         else:
-            parent, gate = self.job(service=wait == "service")
+            parent, gate = self.job(
+                service=wait == "service", remote=wait == "remote job"
+            )
         turn = self.turns("/parent/")[-1]
         self.app.restart()
         before = len(self.provider.requests)
@@ -540,10 +574,8 @@ class WarmTest(unittest.TestCase):
             ),
         )
 
-    # exclusive: writes daemon-wide cache TTL and warmer settings, restarts
-    @exclusive
-    def test_a_restart_keeps_warming_a_session_waiting_on_a_job(self):
-        parent, gate, turn, pings = self.restarted_pings("job")
+    def assert_a_restart_keeps_warming_for(self, wait):
+        parent, gate, turn, pings = self.restarted_pings(wait)
         # The warmer's call lived in memory only; the restarted session
         # rebuilds it from the transcript, exactly as the turn sent it.
         ping = wait_for(pings)[0]
@@ -564,6 +596,17 @@ class WarmTest(unittest.TestCase):
             )
         )
         self.app.idle(parent)
+
+    # exclusive: writes daemon-wide cache TTL and warmer settings, restarts
+    @exclusive
+    def test_a_restart_keeps_warming_a_session_waiting_on_a_job(self):
+        self.assert_a_restart_keeps_warming_for("job")
+
+    # exclusive: writes daemon-wide cache TTL and warmer settings, restarts
+    @exclusive
+    def test_a_restart_keeps_warming_a_session_waiting_on_a_remote_job(self):
+        # The reattached kernel's hello carries its remote jobs' count.
+        self.assert_a_restart_keeps_warming_for("remote job")
 
     # exclusive: shortens the daemon's idle and unload limits, restarts
     @exclusive

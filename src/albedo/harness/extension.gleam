@@ -167,9 +167,8 @@ pub type Session {
     /// running, so call it again when the next one ends.
     refresh: fn(String) -> Nil,
     /// Whether work that will wake the session is under way: a background
-    /// job not started as a service, or an open child (or one beneath it)
-    /// in a turn or itself waiting on such a job. A job a kernel cannot
-    /// list does not count.
+    /// job not started as a service, local or on a remote host, or an open
+    /// child (or one beneath it) in a turn or itself waiting on such a job.
     awaited: fn() -> Bool,
   )
 }

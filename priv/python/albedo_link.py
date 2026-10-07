@@ -43,6 +43,13 @@ def envelope(seq: int, ack: int, frame: bytes) -> bytes:
     return b'{"seq":%d,"ack":%d,"frame":%s}' % (seq, ack, frame)
 
 
+def count_of(value: object) -> int | None:
+    """A frame's count: a non-negative integer, else None."""
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        return value
+    return None
+
+
 def write_all(write: Callable[[Any], int | None], data: bytes) -> None:
     remaining = memoryview(data)
     while remaining:
@@ -167,6 +174,7 @@ class JobBook:
     def __init__(self) -> None:
         self.started: dict[str, dict[str, object]] = {}
         self.external = 0
+        self.awaited_external = 0
 
     def observe(self, frame: dict[str, object]) -> None:
         kind, id = frame.get("type"), frame.get("id")
@@ -179,9 +187,10 @@ class JobBook:
             if isinstance(cleanup, dict) and cleanup.get("gone") is True:
                 self.started.pop(id, None)
         elif kind == "jobs":
-            live = frame.get("live")
-            if isinstance(live, int) and not isinstance(live, bool) and live >= 0:
-                self.external = live
+            live = count_of(frame.get("live"))
+            awaited = count_of(frame.get("awaited", 0))
+            if live is not None and awaited is not None:
+                self.external, self.awaited_external = live, awaited
 
     def live(self) -> int:
         return len(self.started) + self.external
@@ -325,6 +334,7 @@ class SocketLink:
                 "ack": self.inbound.last,
                 "jobs": list(self.jobs.started.values()),
                 "external": self.jobs.external,
+                "awaited_external": self.jobs.awaited_external,
                 "dropped": self.outbox.dropped,
             }
             write_frame(connection.send, encode({"hello": hello}))

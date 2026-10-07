@@ -28,11 +28,21 @@ pub type Observation {
     live_job_count: Int,
     job_ids: List(String),
     running_jobs: List(Job),
+    /// Remote jobs not started as services, which the remote plugin counts
+    /// but cannot list here: they own no group on this machine.
+    awaited_remote_jobs: Int,
   )
 }
 
 @external(erlang, "albedo_python", "observation")
 pub fn observation(kernel: Kernel) -> Result(Observation, Nil)
+
+/// Whether the kernel runs a job that will wake its session: a local one or
+/// a remote one, either not started as a service.
+pub fn awaits_jobs(observed: Observation) -> Bool {
+  observed.awaited_remote_jobs > 0
+  || list.any(observed.running_jobs, fn(job) { !job.service })
+}
 
 pub type Error {
   Unavailable(String)
