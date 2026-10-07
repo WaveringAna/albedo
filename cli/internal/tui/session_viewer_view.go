@@ -230,7 +230,7 @@ func (m SessionViewer) footer(width int, now time.Time) string {
 	} else {
 		count, today := len(m.Sessions), 0
 		if m.ArchiveView {
-			count = len(m.prefs.Archived)
+			count = len(m.archivedIDs)
 		} else {
 			for _, s := range m.Sessions {
 				if dateSection(s, now) == secToday {
@@ -382,7 +382,7 @@ func (m SessionViewer) row(item PickerItem, s daemon.Session, sec int, selected 
 		glyph, title, hint, fg := "✦ ", "New session", "in "+sessionText(filepath.Base(m.Workspace)), DefaultStyles.You
 		switch item.ID {
 		case "archive":
-			glyph, title, hint, fg = "▤ ", "Archive", fmt.Sprintf("%d sessions", len(m.prefs.Archived)), DefaultStyles.Muted
+			glyph, title, hint, fg = "▤ ", "Archive", fmt.Sprintf("%d sessions", len(m.archivedIDs)), DefaultStyles.Muted
 		case "login":
 			glyph, title, hint, fg = "◇ ", "Accounts", "providers", DefaultStyles.Muted
 		}
@@ -465,7 +465,7 @@ func (m SessionViewer) preview(width, height int, now time.Time) []string {
 		top = append(top, DefaultStyles.Bold.Render(l))
 	}
 	meta := []string{}
-	if m.prefs.pinned(s.ID) {
+	if s.Pinned {
 		meta = append(meta, DefaultStyles.Agent.Render("★ pinned"))
 	}
 	if s.Model != "" {

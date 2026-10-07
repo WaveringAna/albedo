@@ -133,13 +133,13 @@ func TestSessionViewerArchiveKeepsCursorSlot(t *testing.T) {
 	m.SetSessions([]daemon.Session{{ID: "a"}, {ID: "b"}, {ID: "c"}, {ID: "d"}}, nil)
 	m.focus("b")
 	slot := m.Cursor
-	m.prefs.Archived = []string{"b"}
+	m.raw[1].Archived = true
 	m.rebuild()
 	if item, _ := m.Highlighted(); item.ID != "c" || m.Cursor != slot {
 		t.Fatalf("cursor %d on %q, want slot %d on c", m.Cursor, item.ID, slot)
 	}
 	m.focus("d")
-	m.prefs.Archived = []string{"b", "d"}
+	m.raw[3].Archived = true
 	m.rebuild()
 	if item, _ := m.Highlighted(); item.ID != "c" {
 		t.Fatalf("archiving the last session left the cursor on %q, want c", item.ID)

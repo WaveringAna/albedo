@@ -13,6 +13,17 @@ import (
 
 func (m *AppModel) handleSessionResults(msg tea.Msg) (tea.Cmd, bool) {
 	switch msg := msg.(type) {
+	case SessionPreviewMsg:
+		if msg.Err == nil && msg.Preview.Session != nil {
+			current, known := m.session(msg.ID)
+			if known && current.ETag == msg.ExpectedETag {
+				m.updateSession(*msg.Preview.Session)
+			}
+		}
+		var cmd tea.Cmd
+		m.SessionPicker, cmd = m.SessionPicker.Update(msg)
+		return cmd, true
+
 	case sessionDeletedMsg:
 		if msg.Err != nil {
 			m.AddError(operationError(msg.Err, "Could not delete the session: ", "Session may have been deleted; refresh the session list before trying again."))
@@ -28,9 +39,10 @@ func (m *AppModel) handleSessionResults(msg tea.Msg) (tea.Cmd, bool) {
 		}
 		for _, id := range deleted {
 			delete(m.pendingBySession, id)
-			m.SessionPicker.Removed(id)
+			m.SessionPicker.ForgetPreview(id)
 		}
 		m.Sessions = slices.DeleteFunc(m.Sessions, func(s daemon.Session) bool { return slices.Contains(deleted, s.ID) })
+		m.updateSessionPickerItems()
 		if !msg.Result.OK || msg.Result.Truncated {
 			m.AddNotice(msg.Result.Message)
 			m.SessionPicker.notice = msg.Result.Message
@@ -39,6 +51,7 @@ func (m *AppModel) handleSessionResults(msg tea.Msg) (tea.Cmd, bool) {
 		}
 		return nil, true
 	case SessionRenameMsg:
+		m.SessionGen++
 		return m.renameSessionCmd(msg), true
 	case sessionRenamedMsg:
 		var cmd tea.Cmd
@@ -49,15 +62,8 @@ func (m *AppModel) handleSessionResults(msg tea.Msg) (tea.Cmd, bool) {
 			m.SessionPicker.notice = operationError(msg.Err, "Could not rename the session: ", "Session may have been renamed; refresh the session list before trying again.")
 			return cmd, true
 		}
-		if i := slices.IndexFunc(m.Sessions, func(s daemon.Session) bool { return s.ID == msg.ID }); i >= 0 {
-			m.Sessions[i] = msg.Session
-		}
-		if m.ActiveSession != nil && m.ActiveSession.ID == msg.ID {
-			captured := msg.Session
-			m.ActiveSession = &captured
-		}
+		m.updateSession(msg.Session)
 		m.SessionPicker.notice = ""
-		m.SessionPicker.Renamed(msg.Session)
 		return cmd, true
 	case sessionsLoadedMsg:
 		if msg.Gen != m.SessionGen {
@@ -68,22 +74,9 @@ func (m *AppModel) handleSessionResults(msg tea.Msg) (tea.Cmd, bool) {
 			m.AddError("Could not load sessions: " + msg.Err.Error())
 			return nil, true
 		}
-		m.Sessions = msg.Sessions
-		m.SessionPicker.prefs.Pinned = nil
-		m.SessionPicker.prefs.Archived = nil
-		m.SessionPicker.prefs.Opens = map[string]int{}
-		for _, session := range msg.Sessions {
-			if session.Pinned {
-				m.SessionPicker.prefs.Pinned = append(m.SessionPicker.prefs.Pinned, session.ID)
-			}
-			if session.Archived {
-				m.SessionPicker.prefs.Archived = append(m.SessionPicker.prefs.Archived, session.ID)
-			}
-			m.SessionPicker.prefs.Opens[session.ID] = session.Opens
-		}
+		m.applySessionList(msg.Sessions)
+
 		m.ClearNotices()
-		m.SessionPicker.Prune(msg.Sessions)
-		m.updateSessionPickerItems()
 		if msg.Notice != "" {
 			m.AddNotice(msg.Notice)
 			m.SessionPicker.notice = msg.Notice
@@ -174,6 +167,7 @@ func (m *AppModel) renameSessionCmd(rename SessionRenameMsg) tea.Cmd {
 }
 
 func (m *AppModel) deleteSessionCmd(id string, condition daemon.SessionCondition) tea.Cmd {
+	m.SessionGen++
 	conn := m.Conn
 	return func() tea.Msg {
 		if conn == nil {
@@ -184,10 +178,10 @@ func (m *AppModel) deleteSessionCmd(id string, condition daemon.SessionCondition
 	}
 }
 
-func sessionPreviewCmd(conn *daemon.Connection, id string) tea.Cmd {
+func sessionPreviewCmd(conn *daemon.Connection, id, etag string) tea.Cmd {
 	return func() tea.Msg {
 		preview, err := daemon.PreviewHistory(context.Background(), conn, id, 16)
-		return SessionPreviewMsg{ID: id, Preview: preview, Err: err}
+		return SessionPreviewMsg{ID: id, ExpectedETag: etag, Preview: preview, Err: err}
 	}
 }
 
@@ -235,9 +229,10 @@ func (m *AppModel) setChatSession(s daemon.Session, prepend bool) tea.Cmd {
 	m.Chat.Close()
 	session := s
 	m.ActiveSession = &session
-	if prepend {
+	if prepend && !slices.ContainsFunc(m.Sessions, func(listed daemon.Session) bool { return listed.ID == s.ID }) {
 		m.Sessions = append([]daemon.Session{s}, m.Sessions...)
 	}
+	m.updateSession(s)
 	m.Chat = m.newChatModel(&session)
 	m.Chat.SetSize(m.Width, m.Height)
 	m.State = AppStateChat

@@ -2,7 +2,6 @@ package tui
 
 import (
 	"albedo/cli/internal/daemon"
-	"slices"
 
 	tea "charm.land/bubbletea/v2"
 )
@@ -41,7 +40,7 @@ func (m *AppModel) openLogin(name string) tea.Cmd {
 func (m *AppModel) openSessions() tea.Cmd {
 	m.State = AppStateSessionPicker
 	m.SessionGen++
-	return tea.Batch(m.SessionPicker.Init(), m.loadSessionsCmd(m.SessionGen), m.loadSettingsCmd(m.SettingsGen))
+	return tea.Batch(m.SessionPicker.Init(), m.loadSessionsCmd(m.SessionGen), m.refreshSettingsCmd())
 }
 
 type screen interface {
@@ -124,12 +123,9 @@ func (m *AppModel) moved(msg FolderMovedMsg) tea.Cmd {
 	if msg.Session != nil && msg.Session.ETag != "" {
 		captured := *msg.Session
 		m.ActiveSession = &captured
-		m.SessionPicker.Renamed(captured)
 	}
 	m.ActiveSession.Workspace, m.ActiveSession.Location, m.Workspace = msg.Workspace, msg.Location, msg.Workspace
-	if i := slices.IndexFunc(m.Sessions, func(s daemon.Session) bool { return s.ID == msg.SessionID }); i >= 0 {
-		m.Sessions[i] = *m.ActiveSession
-	}
+	m.updateSession(*m.ActiveSession)
 	m.State = AppStateChat
 	return m.Chat.Moved(*m.ActiveSession, msg.Retry)
 }

@@ -26,6 +26,7 @@ func (m *AppModel) handleCommandResults(msg tea.Msg) (tea.Cmd, bool) {
 			m.ActiveSession.Provider, m.Chat.Provider = selected.Provider, selected.Provider
 			m.ActiveSession.Protocol = selected.Protocol
 			m.ActiveSession.ETag = selected.ETag
+			m.updateSession(*m.ActiveSession)
 			if selected.DefaultETag != "" {
 				m.Profiles.ETag = selected.DefaultETag
 				m.Profiles.Active = selected.Provider
@@ -92,6 +93,7 @@ func (m *AppModel) handleCommandResults(msg tea.Msg) (tea.Cmd, bool) {
 			m.ActiveSession.Effort = msg.Effort
 			m.ActiveSession.ETag = msg.ETag
 			m.Chat.Effort = msg.Effort
+			m.updateSession(*m.ActiveSession)
 		}
 		return nil, true
 	case profilesLoadedMsg:

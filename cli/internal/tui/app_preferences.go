@@ -4,7 +4,6 @@ import (
 	"albedo/cli/internal/daemon"
 	"context"
 	"errors"
-	"maps"
 	"slices"
 
 	tea "charm.land/bubbletea/v2"
@@ -33,7 +32,10 @@ func (m *AppModel) handlePreferences(msg tea.Msg) (tea.Cmd, bool) {
 					return nil, true
 				}
 			}
-			return m.loadSettingsCmd(m.SettingsGen), true
+			if msg.Err == nil {
+				m.ApplyUI(msg.Prefs)
+			}
+			return m.refreshSettingsCmd(), true
 		}
 		if msg.Gen != m.SettingsGen {
 			return nil, true
@@ -54,6 +56,7 @@ func (m *AppModel) handlePreferences(msg tea.Msg) (tea.Cmd, bool) {
 		}
 		m.UISaving = true
 		m.SettingsGen++
+		m.SessionGen++
 		patch := daemon.UIPreferencesPatch{ETag: msg.ETag}
 		switch msg.Field {
 		case "pinned":
@@ -68,44 +71,44 @@ func (m *AppModel) handlePreferences(msg tea.Msg) (tea.Cmd, bool) {
 
 // ApplyUI takes acknowledged shared preferences from the daemon.
 func (m *AppModel) ApplyUI(prefs daemon.UIPreferences) {
-	current := &m.SessionPicker.prefs
+	if len(prefs.SessionETags) != 0 || len(prefs.Opens) != 0 {
+		m.SessionGen++ // Earlier listings predate these acknowledged session facts.
+	}
 	if prefs.ETag != "" {
-		current.Thinking, current.Tools, current.ETag = prefs.Thinking, prefs.Tools, prefs.ETag
-	}
-	if current.Opens == nil {
-		current.Opens = map[string]int{}
-	}
-	maps.Copy(current.Opens, prefs.Opens)
-	for id, etag := range prefs.SessionETags {
-		current.Pinned = slices.DeleteFunc(current.Pinned, func(v string) bool { return v == id })
-		current.Archived = slices.DeleteFunc(current.Archived, func(v string) bool { return v == id })
-		if slices.Contains(prefs.Pinned, id) {
-			current.Pinned = append(current.Pinned, id)
-		}
-		if slices.Contains(prefs.Archived, id) {
-			current.Archived = append(current.Archived, id)
-		}
-		for i := range m.Sessions {
-			if m.Sessions[i].ID == id {
-				m.Sessions[i].ETag = etag
-				m.Sessions[i].Pinned = slices.Contains(prefs.Pinned, id)
-				m.Sessions[i].Archived = slices.Contains(prefs.Archived, id)
-			}
-		}
-		for i := range m.SessionPicker.raw {
-			if m.SessionPicker.raw[i].ID == id {
-				m.SessionPicker.raw[i].ETag = etag
-				m.SessionPicker.raw[i].Pinned = slices.Contains(prefs.Pinned, id)
-				m.SessionPicker.raw[i].Archived = slices.Contains(prefs.Archived, id)
-			}
-		}
-		if m.ActiveSession != nil && m.ActiveSession.ID == id {
-			m.ActiveSession.ETag = etag
+		m.UI.Thinking, m.UI.Tools, m.UI.ETag = prefs.Thinking, prefs.Tools, prefs.ETag
+		if prefs.DismissedNotices != nil {
+			m.UI.DismissedNotices = slices.Clone(prefs.DismissedNotices)
 		}
 	}
-	m.SessionPicker.rebuild()
-	m.Chat.Flags.Thinking, m.Chat.Flags.Tools = current.Thinking, current.Tools
+	for i := range m.Sessions {
+		m.Sessions[i] = applySessionPreferences(m.Sessions[i], prefs)
+	}
+	if m.ActiveSession != nil {
+		captured := applySessionPreferences(*m.ActiveSession, prefs)
+		m.ActiveSession = &captured
+	}
+	m.updateSessionPickerItems()
+	m.Chat.Flags.Thinking, m.Chat.Flags.Tools = m.UI.Thinking, m.UI.Tools
+}
 
+func applySessionPreferences(session daemon.Session, prefs daemon.UIPreferences) daemon.Session {
+	if etag, updated := prefs.SessionETags[session.ID]; updated {
+		session.ETag = etag
+		session.Pinned = slices.Contains(prefs.Pinned, session.ID)
+		session.Archived = slices.Contains(prefs.Archived, session.ID)
+	}
+	if opens, updated := prefs.Opens[session.ID]; updated {
+		session.Opens = opens
+	}
+	return session
+}
+
+func (m *AppModel) refreshSettingsCmd() tea.Cmd {
+	if m.UISaving {
+		return nil
+	}
+	m.SettingsGen++
+	return m.loadSettingsCmd(m.SettingsGen)
 }
 
 func (m *AppModel) loadSettingsCmd(gen int) tea.Cmd {
@@ -122,7 +125,7 @@ func (m *AppModel) loadSettingsCmd(gen int) tea.Cmd {
 func (m *AppModel) patchUICmd(session string, patch daemon.UIPreferencesPatch, gen int) tea.Cmd {
 	conn := m.Conn
 	if session == "" {
-		patch.ETag = m.SessionPicker.prefs.ETag
+		patch.ETag = m.UI.ETag
 	}
 	if patch.Thinking != nil {
 		patch.Thinking = new(*patch.Thinking)

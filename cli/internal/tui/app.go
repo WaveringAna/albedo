@@ -42,6 +42,7 @@ type AppModel struct {
 	Conn             *daemon.Connection
 	Profiles         config.Profiles
 	SettingsETags    map[string]string
+	UI               daemon.UIPreferences
 	Workspace        string
 	Sessions         []daemon.Session
 	Notices          Notices
@@ -87,8 +88,8 @@ func (m *AppModel) newChatModel(session *daemon.Session) ChatModel {
 		chat.pendingContinuations = maps.Clone(pending.continuations)
 		delete(m.pendingBySession, session.ID)
 	}
-	chat.Flags.Thinking = m.SessionPicker.prefs.Thinking
-	chat.Flags.Tools = m.SessionPicker.prefs.Tools
+	chat.Flags.Thinking = m.UI.Thinking
+	chat.Flags.Tools = m.UI.Tools
 	chat.Notices = slices.Clone(m.Notices)
 	chat.graphemes = m.Graphemes
 	m.Notices = nil
@@ -108,19 +109,19 @@ func NewAppModel(conn *daemon.Connection, profiles config.Profiles, initialSessi
 		openBrowser:   openBrowser,
 	}
 
+	m.SessionPicker = NewSessionViewer(workspace)
+	m.SessionPicker.Fetch = func(id string) tea.Cmd {
+		current, _ := m.session(id)
+		return sessionPreviewCmd(conn, id, current.ETag)
+	}
 	if needsLogin {
 		m.State = AppStateLogin
 		m.Login = NewLoginModel(conn, "", openBrowser)
 	} else if initialSession != nil {
 		m.State = AppStateChat
-		m.Chat = m.newChatModel(initialSession)
+		m.Chat = m.newChatModel(m.ActiveSession)
 	} else {
 		m.State = AppStateSessionPicker
-	}
-	// Built even when starting in a session so /sessions has a working search.
-	m.SessionPicker = NewSessionViewer(workspace)
-	m.SessionPicker.Fetch = func(id string) tea.Cmd {
-		return sessionPreviewCmd(conn, id)
 	}
 
 	return m
@@ -403,7 +404,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, m.openLogin("")
 			default:
 				// The active session may not yet appear in the daemon's recent list.
-				listed := m.SessionPicker.raw
+				listed := m.Sessions
 				if m.ActiveSession != nil && !slices.ContainsFunc(m.Sessions, func(s daemon.Session) bool { return s.ID == m.ActiveSession.ID }) {
 					listed = append([]daemon.Session{*m.ActiveSession}, listed...)
 				}

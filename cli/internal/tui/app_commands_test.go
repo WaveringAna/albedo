@@ -228,7 +228,7 @@ func TestUIPatchCapturesValuesAndObservedValidator(t *testing.T) {
 				}
 			})
 			app := &AppModel{Conn: conn}
-			app.SessionPicker.prefs.ETag = "\"seen\""
+			app.UI.ETag = "\"seen\""
 			first, second := true, false
 			patch := daemon.UIPreferencesPatch{Thinking: &first, Tools: &second}
 			if sessionID != "" {

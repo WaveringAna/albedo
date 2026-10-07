@@ -38,9 +38,10 @@ const (
 
 // SessionPreviewMsg carries a fetched preview back to the viewer.
 type SessionPreviewMsg struct {
-	Err     error
-	ID      string
-	Preview daemon.SessionPreview
+	ExpectedETag string
+	Err          error
+	ID           string
+	Preview      daemon.SessionPreview
 }
 
 type sessionPreviewTickMsg struct{ ID string }
@@ -76,7 +77,6 @@ type SessionViewer struct {
 	raw           []daemon.Session
 	groups        []sessionGroup
 
-	prefs  sessionPrefs
 	rename renameField
 	PickerModel
 	sectionCounts [len(sectionTitles)]int
@@ -151,16 +151,21 @@ func dateSection(s daemon.Session, now time.Time) int {
 }
 
 func (m *SessionViewer) SetSessions(sessions []daemon.Session, active *daemon.Session) {
+	initial := m.Loading
 	m.Loading = false
 	m.HasActive = active != nil
 	m.raw = slices.Clone(sessions)
-	m.active = active
+	m.active = nil
+	if active != nil {
+		captured := *active
+		m.active = &captured
+	}
 	previous, ok := m.Highlighted()
 	m.rebuild()
 	// Initial load favors the active or most recent session; later refreshes
 	// keep the cursor.
 	target := ""
-	if active != nil && !m.archivedIDs[active.ID] && !m.ArchiveView {
+	if initial && active != nil && !m.archivedIDs[active.ID] && !m.ArchiveView {
 		target = active.ID
 	} else if ok && m.section[previous.ID] != secAction {
 		target = previous.ID
@@ -168,16 +173,6 @@ func (m *SessionViewer) SetSessions(sessions []daemon.Session, active *daemon.Se
 		target = m.Sessions[i].ID
 	}
 	m.focus(target)
-}
-
-// Prune forgets pins and counts for sessions the daemon no longer has. Call it
-// only with a complete, successfully loaded session list.
-func (m *SessionViewer) Prune(sessions []daemon.Session) {
-	known := make(map[string]bool, len(sessions))
-	for _, s := range sessions {
-		known[s.ID] = true
-	}
-	m.prefs.forget(known)
 }
 
 // rebuild orders sessions into sections and refreshes the picker items,
@@ -195,9 +190,14 @@ func (m *SessionViewer) rebuild() {
 			m.sessionIndex[session.ID] = i
 		}
 	}
-	m.archivedIDs = make(map[string]bool, len(m.prefs.Archived))
-	for _, id := range m.prefs.Archived {
-		m.archivedIDs[id] = true
+	m.archivedIDs = make(map[string]bool)
+	for _, session := range m.raw {
+		if session.Archived {
+			m.archivedIDs[session.ID] = true
+		}
+	}
+	if m.active != nil && m.active.Archived {
+		m.archivedIDs[m.active.ID] = true
 	}
 	listed := m.raw
 	if m.active != nil {
@@ -208,20 +208,20 @@ func (m *SessionViewer) rebuild() {
 	now := m.clock()
 	clear(m.section)
 	var ordered []daemon.Session
-	for _, id := range m.prefs.Pinned {
-		if s, ok := m.session(id); ok && !m.archivedIDs[id] {
-			m.section[id] = secPinned
+	for _, s := range listed {
+		if s.Pinned && !m.archivedIDs[s.ID] {
+			m.section[s.ID] = secPinned
 			ordered = append(ordered, s)
 		}
 	}
 	var frequent []daemon.Session
 	for _, s := range listed {
-		if _, taken := m.section[s.ID]; !taken && !m.archivedIDs[s.ID] && m.prefs.Opens[s.ID] >= frequentMinOpens {
+		if _, taken := m.section[s.ID]; !taken && !m.archivedIDs[s.ID] && s.Opens >= frequentMinOpens {
 			frequent = append(frequent, s)
 		}
 	}
 	slices.SortStableFunc(frequent, func(a, b daemon.Session) int {
-		return cmp.Compare(m.prefs.Opens[b.ID], m.prefs.Opens[a.ID])
+		return cmp.Compare(b.Opens, a.Opens)
 	})
 	frequent = frequent[:min(len(frequent), frequentLimit)]
 	slices.SortStableFunc(frequent, byWarm(now))
@@ -390,8 +390,8 @@ func (m *SessionViewer) togglePin() tea.Cmd {
 	if !ok || m.section[item.ID] == secAction || m.ArchiveView || m.Saving {
 		return nil
 	}
-	value := !m.prefs.pinned(item.ID)
 	session, _ := m.session(item.ID)
+	value := !session.Pinned
 	m.Saving = true
 	return func() tea.Msg {
 		return SessionPreferenceMsg{ID: item.ID, Field: "pinned", Value: value, ETag: session.ETag}
@@ -426,21 +426,6 @@ func (m *SessionViewer) startRename() {
 	m.rename.etag = s.ETag
 }
 
-// Renamed takes a session's new listing from the daemon.
-func (m *SessionViewer) Renamed(s daemon.Session) {
-	for i := range m.raw {
-		if m.raw[i].ID == s.ID {
-			m.raw[i] = s
-		}
-	}
-	if m.active != nil && m.active.ID == s.ID {
-		m.active = &s
-	}
-	item, _ := m.Highlighted()
-	m.rebuild()
-	m.focus(item.ID)
-}
-
 func (m *SessionViewer) toggleArchive() tea.Cmd {
 	item, ok := m.Highlighted()
 	if !ok || m.section[item.ID] == secAction || m.Saving {
@@ -471,14 +456,9 @@ func (m *SessionViewer) setArchive(open bool) {
 	}
 }
 
-func (m *SessionViewer) Removed(id string) {
-	m.raw = slices.DeleteFunc(m.raw, func(s daemon.Session) bool { return s.ID == id })
-	m.prefs.Archived = slices.DeleteFunc(m.prefs.Archived, func(v string) bool { return v == id })
-	m.prefs.Pinned = slices.DeleteFunc(m.prefs.Pinned, func(v string) bool { return v == id })
-	delete(m.prefs.Opens, id)
+func (m *SessionViewer) ForgetPreview(id string) {
 	delete(m.previews, id)
 	m.ConfirmDelete = ""
-	m.rebuild()
 }
 
 func (m SessionViewer) Update(msg tea.Msg) (SessionViewer, tea.Cmd) {
@@ -489,13 +469,6 @@ func (m SessionViewer) Update(msg tea.Msg) (SessionViewer, tea.Cmd) {
 			c.loading, c.err = false, msg.Err != nil
 			if !c.err {
 				c.SessionPreview = msg.Preview
-				if msg.Preview.Session != nil {
-					for i := range m.raw {
-						if m.raw[i].ID == msg.ID {
-							m.raw[i] = *msg.Preview.Session
-						}
-					}
-				}
 			}
 		}
 		return m, nil

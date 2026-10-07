@@ -41,8 +41,7 @@ func (m *AppModel) handleChatLifecycle(msg tea.Msg) (tea.Cmd, bool) {
 		sid, forward = sm.SessionID, true
 		if m.ActiveSession != nil && sid == m.ActiveSession.ID && sm.Generation == m.Chat.Generation && sm.Event.Snapshot != nil {
 			captured := *sm.Event.Snapshot
-			m.ActiveSession = &captured
-			m.SessionPicker.Renamed(captured)
+			m.updateSession(captured)
 		}
 		if m.ActiveSession != nil && sid == m.ActiveSession.ID && sm.Generation == m.Chat.Generation && sm.Event.Type == daemon.EventUser && !sm.Event.Replayed {
 			m.ClearNotices()
@@ -63,7 +62,7 @@ func (m *AppModel) handleChatLifecycle(msg tea.Msg) (tea.Cmd, bool) {
 			m.Chat, cmd = m.Chat.Update(msg)
 		}
 		if event, ok := msg.(ChatStreamEventMsg); ok && event.SessionID == m.Chat.SessionID && event.Generation == m.Chat.Generation && event.Event.Type == daemon.EventReset {
-			cmd = tea.Batch(cmd, m.loadSettingsCmd(m.SettingsGen))
+			cmd = tea.Batch(cmd, m.refreshSettingsCmd())
 		}
 		if event, ok := msg.(ChatStreamEventMsg); ok && event.SessionID == m.Chat.SessionID && event.Generation == m.Chat.Generation && !event.Event.Replayed && event.Event.Invalidation != nil {
 			if event.Event.Invalidation.Catalog {
@@ -71,8 +70,7 @@ func (m *AppModel) handleChatLifecycle(msg tea.Msg) (tea.Cmd, bool) {
 				cmd = tea.Batch(cmd, m.loadCommandCatalogCmd(m.CatalogGen))
 			}
 			if event.Event.Invalidation.Settings {
-				m.SettingsGen++
-				cmd = tea.Batch(cmd, m.loadSettingsCmd(m.SettingsGen))
+				cmd = tea.Batch(cmd, m.refreshSettingsCmd())
 			}
 		}
 		return cmd, true

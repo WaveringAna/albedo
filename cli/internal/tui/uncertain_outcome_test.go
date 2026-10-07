@@ -105,9 +105,10 @@ func TestUncertainCommandKeepsSessionAndEffort(t *testing.T) {
 	session := &daemon.Session{ID: "current", Effort: "low"}
 	m := NewAppModel(conn, config.Profiles{}, session, "", false, nil)
 	t.Cleanup(m.Chat.Close)
+	confirmed := m.ActiveSession
 	updated, cmd := m.Update(commandExecutedMsg{Name: "/effort", Effort: "high", Err: &daemon.UncertainOutcomeError{Operation: "command", Cause: io.EOF}})
 	m = updated.(*AppModel)
-	if cmd != nil || m.ActiveSession != session || m.ActiveSession.Effort != "low" || m.Chat.Effort != "low" || m.State != AppStateChat {
+	if cmd != nil || m.ActiveSession != confirmed || m.ActiveSession.Effort != "low" || m.Chat.Effort != "low" || m.State != AppStateChat {
 		t.Fatal("uncertain command applied an unconfirmed result or resubmitted the command")
 	}
 	if len(m.Chat.Notices) != 1 || m.Chat.Notices[0].Message == "" {
