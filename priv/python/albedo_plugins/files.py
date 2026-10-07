@@ -495,7 +495,8 @@ class Files:
         hidden: bool = False,
     ) -> Search[Rows]:
         """File names, not contents; the same ripgrep-or-Python split. A pattern
-        with *, ? or [ is a glob over names; other text matches anywhere in the path.
+        with *, ? or [ is a glob over names, or over the path from the search
+        root when it has a /; other text matches anywhere in the path.
         `path` may be one path or a list. Await it: `await files.paths(pattern)`."""
         return Search(
             "files.paths", lambda: self._paths(pattern, path, glob, max_results, hidden)
@@ -523,7 +524,9 @@ class Files:
         )
         _, output = await _run(command)
         matches = _name_matcher(pattern)
-        found = [line for line in output.splitlines() if line and matches(line)]
+        # rg lists "./x" under ".", where a path from the root is just "x"
+        listed = (line.removeprefix("./") for line in output.splitlines() if line)
+        found = [line for line in listed if matches(line)]
         return Rows(found[:max_results], truncated=len(found) > max_results)
 
     def edit(
@@ -706,7 +709,7 @@ def _name_matcher(pattern: str | None) -> Callable[[str], bool]:
     in the path, so "*.md" and "readme" both mean what they look like."""
     if not pattern:
         return lambda _path: True
-    folded = pattern.lower()
+    folded = pattern.lower().removeprefix("./")
     if any(char in pattern for char in "*?["):
         return lambda path: fnmatch.fnmatch(
             (path if "/" in pattern else Path(path).name).lower(), folded

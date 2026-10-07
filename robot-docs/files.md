@@ -31,7 +31,7 @@ Reads decode UTF-8 with replacement and recognize Python line boundaries, includ
 
 ## search
 
-`await find(pattern, path=".", glob=..., context=0, max_results=50, literal=False, case_sensitive=None, hidden=False)` searches contents and returns rows that print as `path:line: text`. `path` may be a list of paths. `context=N` adds up to N lines around each match, printed grep-style as `path-line- text` and marked `context=True`; `max_results` counts matches, not context lines. Slicing or indexing before the await applies to the rows, so `await find(...)[:10]` reads as intended. `await paths(pattern=None, path=".", glob=...)` searches file names; like `find`, `path` and `glob` may each be a list. Both bound their results and say when the list was cut.
+`await find(pattern, path=".", glob=..., context=0, max_results=50, literal=False, case_sensitive=None, hidden=False)` searches contents and returns rows that print as `path:line: text`. `path` may be a list of paths. `context=N` adds up to N lines around each match, printed grep-style as `path-line- text` and marked `context=True`; `max_results` counts matches, not context lines. Slicing or indexing before the await applies to the rows, so `await find(...)[:10]` reads as intended. `await paths(pattern=None, path=".", glob=...)` searches file names; like `find`, `path` and `glob` may each be a list. A pattern with `*`, `?` or `[` globs the file name, or the path from the search root when it has a `/` (`src/*/*_test.go`; a leading `./` is optional). Returned paths carry no leading `./`. Both bound their results and say when the list was cut.
 
 ## await
 

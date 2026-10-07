@@ -146,6 +146,15 @@ class PythonToolsTests(unittest.TestCase):
         self.assertIn("two.txt", output)
         self.assertNotIn("three.md", output)
 
+    def test_paths_globs_a_path_from_the_workspace_root(self):
+        (self.app.workspace / "src" / "deep").mkdir(parents=True)
+        (self.app.workspace / "src" / "deep" / "stream_test.go").write_text("x")
+        output = self.execute(
+            "print([str(row) for row in await files.paths('src/*/*_test.go')])\n"
+            "print([str(row) for row in await files.paths('./src/*/*_test.go')])"
+        )
+        self.assertEqual(output.count("['src/deep/stream_test.go']"), 2, output)
+
     def test_file_reads_decode_complete_lines_across_chunk_boundaries(self):
         fixtures = [
             (b"", []),
