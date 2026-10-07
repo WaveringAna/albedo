@@ -66,7 +66,7 @@ func NewContextInspectorModel(conn *daemon.Connection, sessionID string) Context
 	return ContextInspectorModel{
 		Conn:      conn,
 		SessionID: sessionID,
-		page:      page{Loading: true, Generation: nextPageGeneration()},
+		page:      startPage(true),
 	}
 }
 

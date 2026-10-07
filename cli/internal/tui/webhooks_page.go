@@ -78,7 +78,7 @@ const (
 )
 
 func NewWebhooksPageModel(conn *daemon.Connection, sessionID string) WebhooksPageModel {
-	return WebhooksPageModel{Conn: conn, SessionID: sessionID, Mounted: true, page: page{Loading: true, Generation: nextPageGeneration()}}
+	return WebhooksPageModel{Conn: conn, SessionID: sessionID, Mounted: true, page: startPage(true)}
 }
 
 func (m WebhooksPageModel) Init() tea.Cmd { return m.loadCmd(m.Generation) }

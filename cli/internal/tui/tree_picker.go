@@ -66,7 +66,7 @@ func NewTreePickerModel(conn *daemon.Connection, sessionID string) TreePickerMod
 		SessionID: sessionID,
 		Cursors:   []int{0},
 		PageIndex: 0,
-		page:      page{Loading: true, Generation: nextPageGeneration()},
+		page:      startPage(true),
 	}
 }
 

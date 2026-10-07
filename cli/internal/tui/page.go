@@ -8,26 +8,38 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-// page is the state the list screens share: a cursor, the terminal size,
-// the load or save in flight, and the last error and notice. Every request
-// carries the Generation it was started under; a reply under any other is
-// stale.
-type page struct {
-	Error, Notice                     string
-	Cursor, Width, Height, Generation int
-	Loading, Saving                   bool
+// pageStatus is the state every screen shares: the terminal size, the load
+// or save in flight, and the last error and notice. Every request carries
+// the Generation it was started under; a reply under any other is stale.
+type pageStatus struct {
+	Error, Notice            string
+	Width, Height, Generation int
+	Loading, Saving          bool
 }
+
+// newPageStatus starts a screen's first request under a new generation.
+func newPageStatus(loading bool) pageStatus {
+	return pageStatus{Loading: loading, Generation: nextPageGeneration()}
+}
+
+// page is pageStatus with a cursor, for the screens not yet on listView.
+type page struct {
+	pageStatus
+	Cursor int
+}
+
+func startPage(loading bool) page { return page{pageStatus: newPageStatus(loading)} }
 
 // Commands outlive closed screens; unique generations reject their replies.
 var pageGeneration atomic.Int64
 
 func nextPageGeneration() int { return int(pageGeneration.Add(1)) }
 
-func (p *page) SetSize(width, height int) { p.Width, p.Height = width, height }
+func (p *pageStatus) SetSize(width, height int) { p.Width, p.Height = width, height }
 
 // settle takes a reply for the request busy tracks: false when it is stale
 // or failed, with the failure shown.
-func (p *page) settle(gen int, err error, busy *bool) bool {
+func (p *pageStatus) settle(gen int, err error, busy *bool) bool {
 	if gen != p.Generation {
 		return false
 	}
@@ -63,7 +75,7 @@ func reselect[T any](cursor int, before, after []T, id func(T) string) int {
 }
 
 // header opens a page with its title rule, the last error and the notice.
-func (p page) header(command, right string) []string {
+func (p pageStatus) header(command, right string) []string {
 	width := max(1, p.Width)
 	rows := []string{titleRule(width, brand("albedo")+" "+DefaultStyles.Muted.Render(command), DefaultStyles.Faint.Render(right)), ""}
 	if p.Error != "" {

@@ -90,8 +90,8 @@ func (f listFrame) view(width, height int) string {
 }
 
 // footerLine is the keys on the left and a status on the right. When both
-// do not fit the keys give way to an urgent status (an error, work in
-// flight) and the status to the keys otherwise.
+// do not fit, an urgent status (an error, a notice, work in flight) takes
+// a row of its own above the keys, and any other status gives way to them.
 func footerLine(width int, hints []hint, status string, urgent bool) string {
 	if len(hints) == 0 {
 		return " " + status
@@ -102,12 +102,17 @@ func footerLine(width int, hints []hint, status string, urgent bool) string {
 	}
 	left := fitHints(hints, room)
 	switch {
-	case left == "" && urgent && status != "":
-		return " " + status
-	case left == "":
-		return " " + ansi.Truncate(keyHints(hints...), max(1, width-2), "…")
-	case status == "":
+	case left != "" && status != "":
+		return left + strings.Repeat(" ", width-ansi.StringWidth(left)-ansi.StringWidth(status)-1) + status
+	case left != "":
 		return left
 	}
-	return left + strings.Repeat(" ", width-ansi.StringWidth(left)-ansi.StringWidth(status)-1) + status
+	keys := fitHints(hints, width-1)
+	if keys == "" {
+		keys = " " + ansi.Truncate(keyHints(hints...), max(1, width-2), "…")
+	}
+	if urgent && status != "" {
+		return " " + ansi.Truncate(status, max(1, width-2), "…") + "\n" + keys
+	}
+	return keys
 }

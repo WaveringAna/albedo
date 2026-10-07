@@ -49,12 +49,35 @@ type matchRank [3]int
 func (a matchRank) compare(b matchRank) int { return slices.Compare(a[:], b[:]) }
 
 // matchModel ranks a model against the search words. Each word must fuzzy
-// match the model id or the profile name.
+// match the model id or the profile name; typing profile and id together
+// is an exact match too.
 func matchModel(words []string, profile, id string) (rank matchRank, hits []int, ok bool) {
-	if whole := strings.Join(words, ""); whole != "" && (whole == searchKey(id) || whole == searchKey(profile+id)) {
+	rank, hits, ok = matchFields(words, id, profile)
+	if whole := strings.Join(words, ""); ok && whole != "" && whole == searchKey(profile+id) {
 		rank[0] = 1
 	}
-	fields := []string{id, profile}
+	return rank, hits, ok
+}
+
+// searchWords splits a query into the keys its words match by.
+func searchWords(query string) []string {
+	var words []string
+	for field := range strings.FieldsSeq(query) {
+		if word := searchKey(field); word != "" {
+			words = append(words, word)
+		}
+	}
+	return words
+}
+
+// matchFields ranks a row's fields against the search words, which every
+// list screen shares: each word must fuzzy match some field. The hits are
+// the characters of the first field to underline. An empty search matches
+// everything equally.
+func matchFields(words []string, fields ...string) (rank matchRank, hits []int, ok bool) {
+	if whole := strings.Join(words, ""); whole != "" && slices.ContainsFunc(fields, func(f string) bool { return whole == searchKey(f) }) {
+		rank[0] = 1
+	}
 	for _, word := range words {
 		var best matchRank
 		var bestHits []int
@@ -99,12 +122,7 @@ func (m *ModelPickerModel) refilter(reset bool) {
 		keep = r.key()
 	}
 	query := strings.TrimSpace(m.search.Value())
-	var words []string
-	for field := range strings.FieldsSeq(query) {
-		if word := searchKey(field); word != "" {
-			words = append(words, word)
-		}
-	}
+	words := searchWords(query)
 
 	// Rows rank within their profile, and profiles by their best
 	// row. Ties, and an empty search, keep the catalog order.

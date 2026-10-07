@@ -120,12 +120,7 @@ func NewModelPickerModel(conn *daemon.Connection, profiles config.Profiles, mode
 		})
 	}
 
-	search := newField()
-	search.Placeholder = "Search models or type a model ID"
-	st := search.Styles()
-	st.Focused.Placeholder, st.Blurred.Placeholder = DefaultStyles.Faint, DefaultStyles.Faint
-	search.SetStyles(st)
-	search.Focus()
+	search := newFilter("Search models or type a model ID")
 
 	readCtx, cancelReads := context.WithCancel(context.Background())
 	m := ModelPickerModel{

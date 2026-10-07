@@ -57,7 +57,7 @@ type ChatOpenCapabilityPageMsg struct{ Kind string }
 
 func NewCapabilityPageModel(conn *daemon.Connection, sessionID, kind string) CapabilityPageModel {
 	// Pages open on the global defaults; s scopes changes to this session.
-	return CapabilityPageModel{Conn: conn, SessionID: sessionID, Kind: kind, Global: true, page: page{Loading: true, Generation: nextPageGeneration()}}
+	return CapabilityPageModel{Conn: conn, SessionID: sessionID, Kind: kind, Global: true, page: startPage(true)}
 }
 func (m CapabilityPageModel) Init() tea.Cmd { return m.loadCmd(m.Generation) }
 func (m CapabilityPageModel) loadCmd(gen int) tea.Cmd {

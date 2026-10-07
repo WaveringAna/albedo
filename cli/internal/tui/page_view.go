@@ -82,7 +82,7 @@ func NewPageViewModel(conn *daemon.Connection, sessionID, command string) PageVi
 		SessionID: sessionID,
 		Command:   command,
 		TextInput: newField(),
-		page:      page{Generation: nextPageGeneration()},
+		page:      startPage(false),
 		Busy:      true,
 	}
 }
