@@ -15,7 +15,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-func TestExtensionsOpenOnGlobalDefaultsAndScopeToSessionOnRequest(t *testing.T) {
+func TestExtensionsShowBothChoicesAndAskBeforeEachScope(t *testing.T) {
 	m := NewExtensionPickerModel(nil, "s")
 	m.SetSize(120, 30)
 	m, _ = m.Update(extensionsLoadedMsg{Gen: m.Generation, Extensions: []ExtensionItem{
@@ -23,32 +23,58 @@ func TestExtensionsOpenOnGlobalDefaultsAndScopeToSessionOnRequest(t *testing.T) 
 		{Name: "bash", Enabled: true, GlobalEnabled: true},
 	}})
 	view := ansi.Strip(m.View())
-	if m.Session || !strings.Contains(view, "global defaults") {
-		t.Fatalf("the page should open on global defaults:\n%s", view)
-	}
-	if !strings.Contains(view, "off  view  this session: on") {
-		t.Fatalf("global view should show the default and this session's own choice:\n%s", view)
+	if !strings.Contains(view, "off  view") || !strings.Contains(view, "this session: on") || !strings.Contains(view, "follows global") && !strings.Contains(view, "its own choice") {
+		t.Fatalf("the list should show the global default and this session's own choice:\n%s", view)
 	}
 
-	// x only drops a session choice, and only in session scope.
-	m, _ = m.Update(tea.KeyPressMsg{Code: 'x', Text: "x"})
-	if m.Confirming {
-		t.Fatal("x must not act on global defaults")
+	// Enter asks about the global default, shift+enter about this session
+	// only, and esc leaves either question.
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if !m.Confirming() || !strings.Contains(ansi.Strip(m.View()), "Enable view globally?") {
+		t.Fatalf("enter should ask about the global default:\n%s", ansi.Strip(m.View()))
 	}
-	m, _ = m.Update(tea.KeyPressMsg{Code: 's', Text: "s"})
-	view = ansi.Strip(m.View())
-	if !m.Session || !strings.Contains(view, "on   view  this session") || !strings.Contains(view, "bash  follows global") {
-		t.Fatalf("session scope should mark own choices and inherited ones:\n%s", view)
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter, Mod: tea.ModShift})
+	if !m.Confirming() || !strings.Contains(ansi.Strip(m.View()), "Disable view for this session only?") {
+		t.Fatalf("shift+enter should ask about this session only:\n%s", ansi.Strip(m.View()))
 	}
-	m, _ = m.Update(tea.KeyPressMsg{Code: 'x', Text: "x"})
-	if !m.Confirming || !m.Inheriting || !strings.Contains(ansi.Strip(m.View()), "follow the global default") {
-		t.Fatalf("x should confirm dropping the session choice:\n%s", ansi.Strip(m.View()))
+	// Other keys do nothing while the question is open.
+	m, _ = m.Update(tea.KeyPressMsg{Code: 'y', Text: "y"})
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	if !m.Confirming() || m.Cursor != 0 || m.Saving {
+		t.Fatal("a stray key must neither answer nor move past the question")
+	}
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
+
+	// ctrl+x drops this session's choice, and only when it has one.
+	m, _ = m.Update(tea.KeyPressMsg{Code: 'x', Mod: tea.ModCtrl})
+	if !m.Confirming() || !strings.Contains(ansi.Strip(m.View()), "follow the global default") {
+		t.Fatalf("ctrl+x should confirm dropping the session choice:\n%s", ansi.Strip(m.View()))
 	}
 	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
 	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
-	m, _ = m.Update(tea.KeyPressMsg{Code: 'x', Text: "x"})
-	if m.Confirming {
-		t.Fatal("x needs a session choice to drop")
+	m, _ = m.Update(tea.KeyPressMsg{Code: 'x', Mod: tea.ModCtrl})
+	if m.Confirming() {
+		t.Fatal("ctrl+x needs a session choice to drop")
+	}
+}
+
+func TestExtensionsFilterByTypingAndShowDetailsWithoutEnter(t *testing.T) {
+	m := NewExtensionPickerModel(nil, "s")
+	m.SetSize(120, 30)
+	m, _ = m.Update(extensionsLoadedMsg{Gen: m.Generation, Extensions: []ExtensionItem{
+		{Name: "view", Description: "highlighted images", Plugins: []string{"tool"}},
+		{Name: "bash", Description: "shell commands", Tools: []string{"run_command"}},
+	}})
+	for _, r := range "bsh" {
+		m, _ = m.Update(tea.KeyPressMsg{Code: r, Text: string(r)})
+	}
+	view := ansi.Strip(m.View())
+	if m.Confirming() || strings.Contains(view, "highlighted images") && !strings.Contains(view, "bash") || !strings.Contains(view, "run_command") {
+		t.Fatalf("typing should filter to bash and its details should show beside the list:\n%s", view)
+	}
+	if ext, _ := m.current(); ext.Name != "bash" {
+		t.Fatalf("the filter left %q under the cursor", ext.Name)
 	}
 }
 
@@ -103,11 +129,12 @@ func TestExtensionEnableKeepsConfirmedSaveWhenReloadFails(t *testing.T) {
 				})
 				if screen == "picker" {
 					model := NewExtensionPickerModel(conn, "s")
-					model.Loading, model.Saving, model.Confirming, model.Session = false, true, true, true
+					model.Loading, model.Saving = false, true
+					model.confirm.ask(scopeSession, "skills", "enable", "Enable skills?")
 					model.Extensions = []ExtensionItem{{Name: "skills", SessionETag: "\"observed\""}}
 					message := model.changeExtensionCmd("skills", "session", true, model.Generation)()
 					model, _ = model.Update(message)
-					if model.Saving || model.Confirming || model.Error != "" || len(model.Extensions) != 1 || !model.Extensions[0].Enabled || model.Extensions[0].SessionETag != "\"saved\"" || !strings.Contains(model.Notice, "Selection saved;") || !strings.Contains(model.Notice, failureNotice) {
+					if model.Saving || model.Confirming() || model.Error != "" || len(model.Extensions) != 1 || !model.Extensions[0].Enabled || model.Extensions[0].SessionETag != "\"saved\"" || !strings.Contains(model.Notice, "Selection saved;") || !strings.Contains(model.Notice, failureNotice) {
 						t.Fatalf("confirmed save was lost after reload failed: %+v", model)
 					}
 				} else {

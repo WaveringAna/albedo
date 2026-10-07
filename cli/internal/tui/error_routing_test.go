@@ -32,20 +32,19 @@ func TestCatalogFailureUsesErrorIdentity(t *testing.T) {
 func TestExtensionSaveHidesConfirmationUntilFailure(t *testing.T) {
 	m := NewExtensionPickerModel(nil, "session")
 	m.Loading = false
-	m.Width, m.Height = 80, 20
-	m.Extensions = []ExtensionItem{{Name: "webhooks"}}
-	m.Session = true
-	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m.SetSize(80, 20)
+	m.setExtensions([]ExtensionItem{{Name: "webhooks"}})
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter, Mod: tea.ModShift})
 	m, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if !m.Saving || cmd == nil {
 		t.Fatal("confirmation did not start the save")
 	}
 	view := ansi.Strip(m.View())
-	if !strings.Contains(view, "Reloading") || strings.Contains(view, "cancel") || strings.Contains(view, "confirm") {
+	if !strings.Contains(view, "saving") || strings.Contains(view, "cancel") || strings.Contains(view, "confirm") {
 		t.Fatalf("in-flight save still offers confirmation: %s", view)
 	}
 	m, _ = m.Update(extensionToggledMsg{Gen: m.Generation, Err: errors.New("save failed")})
-	if m.Saving || !m.Confirming || !strings.Contains(ansi.Strip(m.View()), "retry") {
+	if m.Saving || !m.Confirming() || !strings.Contains(ansi.Strip(m.View()), "retry") {
 		t.Fatal("failed save did not restore the retry prompt")
 	}
 }

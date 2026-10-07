@@ -170,7 +170,6 @@ func TestTUIExtensionPickerSwitchesCompactionStrategies(t *testing.T) {
 	defer d.App.Chat.Close()
 	for turn, name := range []string{"lcm", "rolling", "lcm"} {
 		d.Dispatch(tui.ChatExecuteCommandMsg{Name: "/extensions"})
-		d.Dispatch(tea.KeyPressMsg{Code: 's', Text: "s"})
 		picker := d.App.ExtensionPicker
 		index := -1
 		for i, item := range picker.Extensions {
@@ -190,9 +189,9 @@ func TestTUIExtensionPickerSwitchesCompactionStrategies(t *testing.T) {
 		for d.App.ExtensionPicker.Cursor > index {
 			d.Dispatch(tea.KeyPressMsg{Code: tea.KeyUp})
 		}
+		d.Dispatch(tea.KeyPressMsg{Code: tea.KeyEnter, Mod: tea.ModShift})
 		d.Dispatch(tea.KeyPressMsg{Code: tea.KeyEnter})
-		d.Dispatch(tea.KeyPressMsg{Code: tea.KeyEnter})
-		if picker := d.App.ExtensionPicker; picker.Error != "" || picker.Confirming || !strings.Contains(picker.Notice, "Reload completed.") {
+		if picker := d.App.ExtensionPicker; picker.Error != "" || picker.Confirming() || !strings.Contains(picker.Notice, "Reload completed.") {
 			t.Fatalf("strategy %s did not apply through the picker:\n%s", name, d.View())
 		}
 		configuration, err := daemon.GetSessionConfiguration(t.Context(), conn(t), session.ID)
@@ -221,10 +220,10 @@ func TestTUIExtensionPickerSwitchesCompactionStrategies(t *testing.T) {
 			}
 			// Another client edited this session while the picker was open.
 			// A stale confirmation refreshes the choices without replaying it.
-			d.Dispatch(tea.KeyPressMsg{Code: tea.KeyEnter})
+			d.Dispatch(tea.KeyPressMsg{Code: tea.KeyEnter, Mod: tea.ModShift})
 			d.Dispatch(tea.KeyPressMsg{Code: tea.KeyEnter})
 			picker := d.App.ExtensionPicker
-			if picker.Loading || picker.Saving || picker.Confirming || picker.Error != "" || !strings.Contains(picker.Notice, "Review the refreshed choices") {
+			if picker.Loading || picker.Saving || picker.Confirming() || picker.Error != "" || !strings.Contains(picker.Notice, "Review the refreshed choices") {
 				t.Fatalf("stale selection did not return to review:\n%s", d.View())
 			}
 			configuration, err := daemon.GetSessionConfiguration(t.Context(), conn(t), session.ID)
