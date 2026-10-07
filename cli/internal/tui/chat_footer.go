@@ -131,9 +131,9 @@ func (m ChatModel) glanceRows(g PageGlance, limit int) []string {
 		case ToneMuted:
 			mark = "✓"
 		}
-		label := item.Text
+		label := oneLine(item.Text)
 		if item.ID != "" {
-			label = "#" + item.ID + " " + item.Text
+			label = "#" + item.ID + " " + label
 		}
 		rows = append(rows, style.Render(mark)+" "+ansi.Truncate(label, max(1, m.sidebarWidth()-2), "…"))
 	}

@@ -2,9 +2,11 @@ import albedo/clock
 import albedo/daemon/bus
 import albedo/daemon/conversation
 import albedo/daemon/http_api as api
+import albedo/daemon/store
 import albedo/harness/client_api
 import albedo/harness/extension
 import albedo/harness/extensions/schedule/ledger
+import albedo/harness/page
 import gleam/dynamic/decode
 import gleam/http.{Delete, Get, Patch, Post}
 import gleam/http/request
@@ -15,6 +17,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import gleam/uri
 import mist
 
 pub fn handle(
@@ -316,6 +319,49 @@ fn change(item: ledger.Job) -> json.Json {
     False,
   )
   json.object([#("resource", resource(item)), #("notification", notification())])
+}
+
+/// The session's next 12 jobs for the chat sidebar, soonest first, each led
+/// by its timing: `in 4m`, `every 1h`, or `heartbeat 10m`.
+pub fn sidebar(
+  storage: store.Store,
+  session: String,
+  _workspace: String,
+) -> Result(page.Glance, String) {
+  use jobs <- result.try(ledger.list(storage, session, 12))
+  let now = clock.system_seconds()
+  Ok(page.Glance(
+    "scheduled",
+    list.map(jobs, fn(job) {
+      let timing = case job.kind, job.every {
+        "heartbeat", Some(every) -> "heartbeat " <> span(every)
+        _, Some(every) -> "every " <> span(every)
+        _, None -> "in " <> span(int.max(job.next_at - now, 0))
+      }
+      page.Row(
+        int.to_string(job.id),
+        timing <> " · " <> api.content_preview(job.prompt, 64),
+        job.kind,
+        page.Plain,
+        "",
+      )
+    }),
+  ))
+}
+
+/// Canonical resource addressed by this extension sidebar.
+pub fn resource_url(session: String, _workspace: String) -> String {
+  "/extensions/schedule/jobs?session_id=" <> uri.percent_encode(session)
+}
+
+/// Whole seconds in their largest whole unit, rounded down: 90 is `1m`.
+fn span(seconds: Int) -> String {
+  case seconds {
+    _ if seconds >= 86_400 -> int.to_string(seconds / 86_400) <> "d"
+    _ if seconds >= 3600 -> int.to_string(seconds / 3600) <> "h"
+    _ if seconds >= 60 -> int.to_string(seconds / 60) <> "m"
+    _ -> int.to_string(seconds) <> "s"
+  }
 }
 
 fn descriptor(

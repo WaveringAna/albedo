@@ -1,8 +1,8 @@
 // Transcript re-rendering on width changes, not height changes, prevents
 // expensive UI refreshes. The cost is invisible outside the process: the
 // rendered text is identical either way, so no e2e can catch a regression.
-// The sidebar's stacking, width and the stale-kernel note are checked here
-// too: a daemon run would need a live job, an active work item and a stale
+// The sidebar's stacking, width, row folding and the stale-kernel note are
+// checked here too: a daemon run would need a live job, an active work item and a stale
 // kernel at once to show them.
 package tui
 
@@ -63,6 +63,15 @@ func TestSidebarStacksActiveWorkAboveBackgroundJobs(t *testing.T) {
 		if ansi.StringWidth(line) > 60 {
 			t.Fatalf("a %d-cell line at width 60: %q", ansi.StringWidth(line), line)
 		}
+	}
+}
+
+func TestSidebarFoldsAMultiLineRowOntoOneLine(t *testing.T) {
+	m := newTestChatModel(t, &daemon.Session{ID: "s"})
+	m.Glances = []PageGlance{{Title: "scheduled", Rows: []PageRow{{ID: "3", Text: "every 1h · ci\nlog"}}}}
+	m.SetSize(160, 30)
+	if view := ansi.Strip(m.View()); !strings.Contains(view, "#3 every 1h · ci log") {
+		t.Fatalf("a scheduled prompt's lines must fold onto its row:\n%s", view)
 	}
 }
 

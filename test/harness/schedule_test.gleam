@@ -17,7 +17,7 @@ pub fn schedules_are_session_scoped_and_advance_once_test() -> Nil {
   let assert Ok(first) =
     ledger.save(db, "a", None, "recurring", "inspect", 60, Some(60))
   let assert Ok(one) = ledger.save(db, "b", None, "once", "check", 60, None)
-  let assert Ok([listed]) = ledger.list(db, "a")
+  let assert Ok([listed]) = ledger.list(db, "a", 200)
   listed |> should.equal(first)
   ledger.delete(db, "b", first.id) |> should.equal(Ok(False))
   let assert Ok([]) = ledger.due(db, first.next_at - 1)
@@ -34,6 +34,6 @@ pub fn schedules_are_session_scoped_and_advance_once_test() -> Nil {
     )
   })
   |> should.be_ok
-  ledger.list(db, "a") |> should.equal(Ok([]))
+  ledger.list(db, "a", 200) |> should.equal(Ok([]))
   store.close(db)
 }

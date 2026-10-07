@@ -51,7 +51,8 @@ by the name someone gave it — a child by its family name, a root by its
 title — else by a short id, the same precedence the agents view uses. the
 page's glance lists the open vents in the review window, which keeps open vents
 ahead of newer finished ones. vents stay out of the chat sidebar, which shows
-only the work ledger's active items and the session's background jobs.
+only the work ledger's active items, the session's scheduled prompts, and its
+background jobs.
 
 ## storage
 

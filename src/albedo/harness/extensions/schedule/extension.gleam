@@ -38,6 +38,7 @@ pub fn extension() -> extension.Extension {
           ),
         ),
       ]),
+      extension.GlancePlugin(service.sidebar, service.resource_url),
       extension.MigrationPlugin(extension.SchemaMigration(revision.apply)),
       extension.ServicePlugin(extension.Service(
         fn(_, _) { extension.Admission(extension.DaemonToken, 65_536) },
@@ -74,7 +75,7 @@ fn command(db: store.Store, session: String) -> command.Command {
       let #(action, details) = page.args(args, "list")
       use value <- result.try(case action {
         "list" ->
-          ledger.list(db, session)
+          ledger.list(db, session, 200)
           |> result.map(fn(jobs) { json.array(jobs, ledger.to_json) })
         "delete" -> {
           use id <- result.try(parse_id(details))

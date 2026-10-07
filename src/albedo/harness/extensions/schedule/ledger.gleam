@@ -69,13 +69,18 @@ fn decoder() -> decode.Decoder(Job) {
 const columns =
   "id,session,kind,prompt,next_at,every_seconds,revision,created_at,updated_at"
 
-pub fn list(db: store.Store, session: String) -> Result(List(Job), String) {
+/// The session's jobs, soonest first, at most `limit` of them.
+pub fn list(
+  db: store.Store,
+  session: String,
+  limit: Int,
+) -> Result(List(Job), String) {
   store.read(
     db,
     "SELECT "
       <> columns
-      <> " FROM schedules WHERE session=? ORDER BY next_at LIMIT 200",
-    [sqlight.text(session)],
+      <> " FROM schedules WHERE session=? ORDER BY next_at LIMIT ?",
+    [sqlight.text(session), sqlight.int(limit)],
     decoder(),
   )
 }
