@@ -2,7 +2,7 @@
 -export([encode/1, null/0, flatten/1, data_url/2, base64_string/1, semantically_empty/1, object_fields/1]).
 -export([event/1, string_field/2, optional_string_field/2, int_field/2,
          optional_int_field/2, int_field_or/3, list_field/2, object_field/2,
-         missing/2, empty_except/2, string_at/2]).
+         missing/2, empty_except/2, string_at/2, field_or/4, present/3, absent/2]).
 
 encode(Value) -> json:encode(Value).
 
@@ -96,6 +96,37 @@ string_field(Object, Key) ->
         #{Key := Value} when is_binary(Value) -> {ok, Value};
         _ -> {error, nil}
     end.
+
+%% A field of Kind (string, int, bool, list, or object), or Default when the
+%% object has no such key; null is a value of no kind.
+field_or(Object, Key, Kind, Default) when is_map(Object) ->
+    case Object of
+        #{Key := Value} -> kind(Kind, Value);
+        _ -> {ok, Default}
+    end;
+field_or(_, _, _, _) -> {error, nil}.
+
+%% A field of Kind as an option: none when the object has no such key.
+present(Object, Key, Kind) when is_map(Object) ->
+    case Object of
+        #{Key := Value} ->
+            case kind(Kind, Value) of
+                {ok, Typed} -> {ok, {some, Typed}};
+                Error -> Error
+            end;
+        _ -> {ok, none}
+    end;
+present(_, _, _) -> {error, nil}.
+
+kind(string, Value) when is_binary(Value) -> {ok, Value};
+kind(int, Value) when is_integer(Value) -> {ok, Value};
+kind(bool, Value) when is_boolean(Value) -> {ok, Value};
+kind(list, Value) when is_list(Value) -> {ok, Value};
+kind(object, Value) when is_map(Value) -> {ok, Value};
+kind(_, _) -> {error, nil}.
+
+%% Whether Object is an object without Key; null counts as present.
+absent(Object, Key) -> is_map(Object) andalso not is_map_key(Key, Object).
 
 %% The string at a path of object keys.
 string_at(Value, []) when is_binary(Value) -> {ok, Value};

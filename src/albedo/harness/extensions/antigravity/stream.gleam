@@ -4,6 +4,7 @@
 import albedo/harness/extensions/antigravity/catalog.{type Model}
 import albedo/harness/extensions/antigravity/wire
 import albedo/openai_api/decoding
+import albedo/openai_api/fields
 import albedo/openai_api/replay
 import albedo/openai_api/stream as reducer
 import albedo/openai_api/types
@@ -75,6 +76,16 @@ fn feed(
       )
     }),
   )
+  case text_chunk(value) {
+    Ok(chunk) -> apply(state, chunk)
+    Error(Nil) -> decode_chunk(state, value)
+  }
+}
+
+fn decode_chunk(
+  state: State,
+  value: Dynamic,
+) -> Result(#(State, List(types.Event)), types.Error) {
   case decode.run(value, decode.at(["error"], error_decoder())) {
     Ok(message) -> Error(types.ProviderError(message))
     Error(_) ->
@@ -313,6 +324,74 @@ fn flatten(fragments: List(String)) -> String {
   fragments |> list.reverse |> string.concat
 }
 
+/// What `chunk_decoder` reads from a chunk without an error, prompt
+/// feedback, or function call and with at most one candidate, read with the
+/// field readers. Error(Nil) for anything else, which the decoders then read.
+fn text_chunk(value: Dynamic) -> Result(Chunk, Nil) {
+  use <- fields.require(fields.absent(value, "error"))
+  use response <- result.try(fields.present_object(value, "response"))
+  case response {
+    None -> Ok(Chunk(None, [], None, None, None))
+    Some(response) -> text_response(response)
+  }
+}
+
+fn text_response(response: Dynamic) -> Result(Chunk, Nil) {
+  use <- fields.require(fields.absent(response, "promptFeedback"))
+  use response_id <- result.try(fields.optional_string(response, "responseId"))
+  use candidates <- result.try(fields.list_or_empty(response, "candidates"))
+  use #(parts, finish) <- result.try(case candidates {
+    [] -> Ok(#([], None))
+    [candidate] -> text_candidate(candidate)
+    _ -> Error(Nil)
+  })
+  use usage <- result.map(case fields.missing(response, "usageMetadata") {
+    True -> Ok(None)
+    False ->
+      fields.object(response, "usageMetadata")
+      |> result.try(read_usage)
+      |> result.map(Some)
+  })
+  Chunk(response_id, parts, finish, usage, None)
+}
+
+fn text_candidate(
+  candidate: Dynamic,
+) -> Result(#(List(Part), Option(String)), Nil) {
+  use content <- result.try(fields.present_object(candidate, "content"))
+  use parts <- result.try(case content {
+    Some(content) ->
+      fields.list_or_empty(content, "parts")
+      |> result.try(list.try_map(_, text_part))
+    None -> Ok([])
+  })
+  use finish <- result.map(fields.optional_string(candidate, "finishReason"))
+  #(parts, finish)
+}
+
+fn text_part(part: Dynamic) -> Result(Part, Nil) {
+  use <- fields.require(fields.missing(part, "functionCall"))
+  use text <- result.try(fields.string_or(part, "text", ""))
+  use thought <- result.try(fields.bool_or(part, "thought", False))
+  use signature <- result.map(fields.optional_string(part, "thoughtSignature"))
+  Part(text, thought, non_empty(signature), None)
+}
+
+fn read_usage(usage: Dynamic) -> Result(types.Usage, Nil) {
+  use input <- result.try(fields.int_or(usage, "promptTokenCount", 0))
+  use output <- result.try(fields.int_or(usage, "candidatesTokenCount", 0))
+  use thoughts <- result.try(fields.int_or(usage, "thoughtsTokenCount", 0))
+  use cached <- result.map(fields.optional_int(usage, "cachedContentTokenCount"))
+  to_usage(input, output, thoughts, cached)
+}
+
+fn non_empty(signature: Option(String)) -> Option(String) {
+  case signature {
+    Some("") -> None
+    other -> other
+  }
+}
+
 fn error_decoder() -> decode.Decoder(String) {
   use message <- decode.optional_field("message", "", decode.string)
   use status <- decode.optional_field("status", "", decode.string)
@@ -346,11 +425,7 @@ fn chunk_decoder() -> decode.Decoder(Chunk) {
         decode.success(#(id, name, args))
       }),
     )
-    let signature = case signature {
-      Some("") -> None
-      other -> other
-    }
-    decode.success(Part(text, thought, signature, call))
+    decode.success(Part(text, thought, non_empty(signature), call))
   }
   let candidate = {
     use parts <- decode.optional_field(
@@ -374,17 +449,7 @@ fn chunk_decoder() -> decode.Decoder(Chunk) {
       None,
       decode.optional(decode.int),
     )
-    // Output keeps folding thoughts in; the thought count is also reported
-    // as reasoning so usage can tell the two apart.
-    decode.success(types.Usage(
-      input,
-      output + thoughts,
-      cached,
-      None,
-      None,
-      None,
-      Some(thoughts),
-    ))
+    decode.success(to_usage(input, output, thoughts, cached))
   }
   let response = {
     use response_id <- decode.optional_field(
@@ -423,6 +488,25 @@ fn chunk_decoder() -> decode.Decoder(Chunk) {
     Chunk(None, [], None, None, None),
     response,
     decode.success,
+  )
+}
+
+/// Output keeps folding thoughts in; the thought count is also reported as
+/// reasoning so usage can tell the two apart.
+fn to_usage(
+  input: Int,
+  output: Int,
+  thoughts: Int,
+  cached: Option(Int),
+) -> types.Usage {
+  types.Usage(
+    input,
+    output + thoughts,
+    cached,
+    None,
+    None,
+    None,
+    Some(thoughts),
   )
 }
 

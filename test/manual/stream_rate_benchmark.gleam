@@ -11,11 +11,14 @@
 //// 20000 unthrottled (ALBEDO_BENCH_UNTHROTTLED=0 skips those).
 //// ALBEDO_BENCH_PARALLEL=N instead streams N at once, each at
 //// ALBEDO_BENCH_RATE (default 1000) per second for four seconds.
-//// ALBEDO_BENCH_PROTOCOL=responses|chat_completions|claude runs one
-//// protocol, ALBEDO_BENCH_TOOLS=P streams P percent of the deltas as tool
+//// ALBEDO_BENCH_PROTOCOL=responses|chat_completions|claude|vertex|antigravity
+//// runs one protocol, ALBEDO_BENCH_TOOLS=P streams P percent of the deltas as tool
 //// call arguments, and ALBEDO_BENCH_MSACC=1 prints microstate accounting.
 
+import albedo/harness/extensions/antigravity/catalog
+import albedo/harness/extensions/antigravity/stream as antigravity
 import albedo/harness/extensions/claude/stream as claude
+import albedo/harness/extensions/vertex/stream as vertex
 import albedo/openai_api as openai
 import albedo/openai_api/types
 import gleam/float
@@ -23,6 +26,7 @@ import gleam/int
 import gleam/io
 import gleam/json
 import gleam/list
+import gleam/option.{None}
 import gleam/result
 import gleam/string
 import gleam/string_tree
@@ -47,6 +51,8 @@ const runs = 3
 type Protocol {
   OpenAI(types.Protocol)
   Claude
+  Vertex
+  Antigravity
 }
 
 pub fn main() -> Nil {
@@ -57,7 +63,13 @@ pub fn main() -> Nil {
   let assert Ok(parallel) = int.parse(env("ALBEDO_BENCH_PARALLEL", "0"))
   let assert Ok(rate) = int.parse(env("ALBEDO_BENCH_RATE", "1000"))
   let unthrottled = env("ALBEDO_BENCH_UNTHROTTLED", "1") == "1"
-  [OpenAI(types.Responses), OpenAI(types.ChatCompletions), Claude]
+  [
+    OpenAI(types.Responses),
+    OpenAI(types.ChatCompletions),
+    Claude,
+    Vertex,
+    Antigravity,
+  ]
   |> list.filter(fn(protocol) { only == "" || only == name(protocol) })
   |> list.each(fn(protocol) {
     case parallel, unthrottled {
@@ -75,6 +87,8 @@ fn name(protocol: Protocol) -> String {
   case protocol {
     OpenAI(protocol) -> types.protocol_name(protocol)
     Claude -> "claude"
+    Vertex -> "vertex"
+    Antigravity -> "antigravity"
   }
 }
 
@@ -149,18 +163,32 @@ fn stream(protocol: Protocol, base: String) -> Result(types.Turn, types.Error) {
       )
     Claude ->
       openai.exchange(
-        openai.Exchange(
-          base <> "/messages",
-          [#("content-type", "application/json")],
-          string_tree.from_string("{}"),
-          60_000,
-          8 * 1024 * 1024,
-          require_event_stream: True,
-        ),
+        exchange(base <> "/messages"),
         claude.reducer("mock", []),
         on_event,
       )
+    Vertex ->
+      openai.exchange(exchange(base <> "/vertex"), vertex.reducer(), on_event)
+    Antigravity -> {
+      let model = catalog.model("/nonexistent", "gemini-3-pro", None)
+      openai.exchange(
+        exchange(base <> "/antigravity"),
+        antigravity.reducer(model),
+        on_event,
+      )
+    }
   }
+}
+
+fn exchange(url: String) -> openai.Exchange {
+  openai.Exchange(
+    url,
+    [#("content-type", "application/json")],
+    string_tree.from_string("{}"),
+    60_000,
+    8 * 1024 * 1024,
+    require_event_stream: True,
+  )
 }
 
 /// Each metric's median across runs, as one JSON object.

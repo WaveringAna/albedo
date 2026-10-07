@@ -2,6 +2,7 @@
 //// chat-shaped replay message: text, thinking text, and tool calls only.
 
 import albedo/openai_api/decoding
+import albedo/openai_api/fields
 import albedo/openai_api/replay
 import albedo/openai_api/stream as reducer
 import albedo/openai_api/types
@@ -59,6 +60,16 @@ fn feed(
       types.InvalidEvent("invalid Vertex JSON: " <> decoding.json_error(error))
     }),
   )
+  case text_chunk(value) {
+    Ok(chunk) -> apply(state, chunk)
+    Error(Nil) -> decode_chunk(state, value)
+  }
+}
+
+fn decode_chunk(
+  state: State,
+  value: dynamic.Dynamic,
+) -> Result(#(State, List(types.Event)), types.Error) {
   use error <- result.try(
     decode.run(
       value,
@@ -304,6 +315,56 @@ fn chunk_decoder() -> decode.Decoder(Chunk) {
   })
 }
 
+/// What `chunk_decoder` reads from a chunk without an error, prompt
+/// feedback, or function call and with at most one candidate, read with the
+/// field readers. Error(Nil) for anything else, which the decoders then read.
+fn text_chunk(value: dynamic.Dynamic) -> Result(Chunk, Nil) {
+  use <- fields.require(
+    fields.absent(value, "error") && fields.absent(value, "promptFeedback"),
+  )
+  use candidates <- result.try(fields.list_or_empty(value, "candidates"))
+  use #(parts, finish) <- result.try(case candidates {
+    [] -> Ok(#([], None))
+    [candidate] -> text_candidate(candidate)
+    _ -> Error(Nil)
+  })
+  use usage <- result.try(fields.present_object(value, "usageMetadata"))
+  use usage <- result.map(case usage {
+    Some(usage) -> read_usage(usage) |> result.map(Some)
+    None -> Ok(None)
+  })
+  Chunk(parts, finish, usage, None)
+}
+
+fn text_candidate(
+  candidate: dynamic.Dynamic,
+) -> Result(#(List(Part), Option(String)), Nil) {
+  use content <- result.try(fields.present_object(candidate, "content"))
+  use parts <- result.try(case content {
+    Some(content) ->
+      fields.list_or_empty(content, "parts")
+      |> result.try(list.try_map(_, text_part))
+    None -> Ok([])
+  })
+  use finish <- result.map(fields.present_string(candidate, "finishReason"))
+  #(parts, finish)
+}
+
+fn text_part(part: dynamic.Dynamic) -> Result(Part, Nil) {
+  use <- fields.require(fields.absent(part, "functionCall"))
+  use text <- result.try(fields.string_or(part, "text", ""))
+  use thought <- result.map(fields.bool_or(part, "thought", False))
+  Part(text, thought, None)
+}
+
+fn read_usage(usage: dynamic.Dynamic) -> Result(types.Usage, Nil) {
+  use prompt <- result.try(fields.int_or(usage, "promptTokenCount", 0))
+  use candidates <- result.try(fields.int_or(usage, "candidatesTokenCount", 0))
+  use cached <- result.try(fields.present_int(usage, "cachedContentTokenCount"))
+  use thoughts <- result.map(fields.present_int(usage, "thoughtsTokenCount"))
+  to_usage(prompt, candidates, cached, thoughts)
+}
+
 fn part_decoder() -> decode.Decoder(Part) {
   object({
     use text <- decode.optional_field("text", "", decode.string)
@@ -344,14 +405,23 @@ fn usage_decoder() -> decode.Decoder(types.Usage) {
       None,
       present(decode.int),
     )
-    decode.success(types.Usage(
-      prompt,
-      candidates + option.unwrap(thoughts, 0),
-      cached,
-      None,
-      None,
-      None,
-      thoughts,
-    ))
+    decode.success(to_usage(prompt, candidates, cached, thoughts))
   })
+}
+
+fn to_usage(
+  prompt: Int,
+  candidates: Int,
+  cached: Option(Int),
+  thoughts: Option(Int),
+) -> types.Usage {
+  types.Usage(
+    prompt,
+    candidates + option.unwrap(thoughts, 0),
+    cached,
+    None,
+    None,
+    None,
+    thoughts,
+  )
 }

@@ -5,9 +5,11 @@ The base URL picks the stream: http://127.0.0.1:PORT/<rate>/<tokens>[/<option>..
 streams <tokens> deltas at <rate> per second (0 for as fast as the socket
 takes them), one SSE event per write, over HTTP/1.1 chunked encoding on
 kept-alive connections. Options: t<percent> streams that share of the
-deltas as one python tool call's arguments after the text, and s<id> names
-the stream so parallel streams keep separate timings. The route picks the
-wire format: /responses, /chat/completions, or Anthropic's /messages. With
+deltas as one python tool call's arguments after the text (Gemini sends the
+call whole, as one more delta), and s<id> names the stream so parallel
+streams keep separate timings. The route picks the wire format: /responses,
+/chat/completions, Anthropic's /messages, Gemini's /vertex, or Cloud Code
+Assist's /antigravity. With
 a certificate and key it serves https instead. A request to /timings/<id>
 (or /timings for stream 0) returns the send time (ns, CLOCK_REALTIME) of
 every delta of that stream's last response, so a client can compute
@@ -274,18 +276,65 @@ def messages(words: list[str], calls: list[str], _arguments: str) -> Events:
     yield False, event("message_stop")
 
 
+def gemini(words: list[str], calls: list[str], arguments: str, wrapped: bool) -> Events:
+    def chunk(parts: list[dict], **candidate: object) -> bytes:
+        response = {
+            "candidates": [
+                {"content": {"role": "model", "parts": parts}, "index": 0, **candidate}
+            ],
+            "usageMetadata": {
+                "promptTokenCount": 1200,
+                "totalTokenCount": 1200,
+                "trafficType": "ON_DEMAND",
+            },
+            "modelVersion": "gemini-mock",
+            "responseId": "resp_0001",
+        }
+        return sse(
+            None,
+            {"response": response, "traceId": "trace_0001"} if wrapped else response,
+        )
+
+    for word in words:
+        yield True, chunk([{"text": word}])
+    if calls:
+        call = {"functionCall": {"name": "python", "args": json.loads(arguments)}}
+        yield True, chunk([call])
+    usage = {
+        "promptTokenCount": 1200,
+        "candidatesTokenCount": len(words) + len(calls),
+        "cachedContentTokenCount": 1000,
+        "thoughtsTokenCount": 0,
+    }
+    final = chunk([{"text": ""}], finishReason="STOP")
+    data = json.loads(final.decode().removeprefix("data: "))
+    (data["response"] if wrapped else data)["usageMetadata"] = usage
+    yield False, sse(None, data)
+
+
+def vertex(words: list[str], calls: list[str], arguments: str) -> Events:
+    return gemini(words, calls, arguments, wrapped=False)
+
+
+def antigravity(words: list[str], calls: list[str], arguments: str) -> Events:
+    """Cloud Code Assist wraps each Gemini response in a response field."""
+    return gemini(words, calls, arguments, wrapped=True)
+
+
 async def stream(writer: asyncio.StreamWriter, path: str) -> None:
     segments = path.split("/")
     rate, count = float(segments[1]), int(segments[2])
     options = segments[3 : segments.index("v1")]
     name = next((option[1:] for option in options if option.startswith("s")), "0")
     share = int(next((option[1:] for option in options if option.startswith("t")), "0"))
-    wire = (
-        chat
-        if path.endswith("/chat/completions")
-        else messages
-        if path.endswith("/messages")
-        else responses
+    routes = {
+        "/chat/completions": chat,
+        "/messages": messages,
+        "/vertex": vertex,
+        "/antigravity": antigravity,
+    }
+    wire = next(
+        (events for route, events in routes.items() if path.endswith(route)), responses
     )
     head = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ntransfer-encoding: chunked\r\n\r\n"
     writer.write(head.encode())
