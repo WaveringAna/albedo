@@ -284,7 +284,6 @@ func (m ExtensionPickerModel) Update(msg tea.Msg) (ExtensionPickerModel, tea.Cmd
 	return m, cmd
 }
 
-
 // entry is how an extension reads in the list: its global default in front,
 // and this session's own choice at the edge when it differs.
 func (m ExtensionPickerModel) entry(ext ExtensionItem) listEntry {
