@@ -4,10 +4,40 @@
 import albedo/daemon/store
 import albedo/daemon/usage
 import gleam/dynamic/decode
+import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import sqlight
+
+/// Hash the canonical submitted descriptor, preserving retained fingerprints.
+@external(erlang, "albedo_operations", "fingerprint")
+pub fn fingerprint(encoded: String) -> String
+
+@external(erlang, "albedo_operations", "scalar_prefix")
+pub fn scalar_prefix(text: String, limit: Int) -> String
+
+/// Canonical message descriptor shared by direct inputs and child creation.
+pub fn message_intent(
+  text: String,
+  pastes: List(String),
+  images: List(#(String, String)),
+) -> json.Json {
+  json.object([
+    #("kind", json.string("message")),
+    #("text", json.string(text)),
+    #("pastes", json.array(pastes, json.string)),
+    #(
+      "images",
+      json.array(images, fn(image) {
+        json.object([
+          #("mime_type", json.string(image.0)),
+          #("data", json.string(image.1)),
+        ])
+      }),
+    ),
+  ])
+}
 
 pub const retention_ms = 604_800_000
 

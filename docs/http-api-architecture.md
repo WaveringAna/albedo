@@ -10,6 +10,13 @@ Session actors, the store transaction connection, the family owner, the
 settings lock, and the bounded bus own the state below. HTTP handlers call
 these owners and project their results.
 
+`session/creation` owns new, fork, and child intents, their canonical submitted
+JSON, and rejection policy. `http_api` parses requests into that type. The
+registry resolves defaults and coordinates creation; `conversation` and
+`operations` persist the submitted intent and the resulting decision. Dependency
+failures stay retryable; validation refusals retain their original fingerprint
+and rejection.
+
 The runtime owns a generic `store.Store` handle named `ledger`. Extensions such
 as work initialise and consume their own tables through that handle. Kernel APIs
 accept the same generic store and receive their plugin wiring from callers.

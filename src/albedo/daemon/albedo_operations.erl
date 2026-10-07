@@ -1,5 +1,5 @@
 -module(albedo_operations).
--export([validate_id/2, decode_display/1]).
+-export([validate_id/2, decode_display/1, fingerprint/1, scalar_prefix/2]).
 
 validate_id(Id, Now) ->
     case re:run(Id, <<"^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$">>, [{capture, none}]) of
@@ -32,3 +32,10 @@ decode_display(Payload) ->
 
 image_metadata({image_metadata, Mime, Width, Height, Bytes})
   when is_binary(Mime), is_integer(Width), is_integer(Height), is_integer(Bytes) -> ok.
+
+fingerprint(Encoded) ->
+    Hash = binary:encode_hex(crypto:hash(sha256, Encoded), lowercase),
+    <<$", Hash/binary, $">>.
+
+scalar_prefix(Text, Limit) ->
+    unicode:characters_to_binary(lists:sublist(unicode:characters_to_list(Text), max(0, Limit))).

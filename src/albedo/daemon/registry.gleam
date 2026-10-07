@@ -9,13 +9,13 @@ import albedo/daemon/configuration
 import albedo/daemon/conversation
 import albedo/daemon/family
 import albedo/daemon/history
-import albedo/daemon/http_api
 import albedo/daemon/mail
 import albedo/daemon/maintenance
 import albedo/daemon/migrations
 import albedo/daemon/operations
 import albedo/daemon/quota
 import albedo/daemon/session
+import albedo/daemon/session/creation as session_creation
 import albedo/daemon/session_preferences
 import albedo/daemon/session_provider
 import albedo/daemon/session_submission
@@ -66,7 +66,7 @@ fn sweep_interval(config: Config) -> Int {
 pub type Message {
   CreateIdentified(
     String,
-    http_api.Creation,
+    session_creation.Intent,
     Subject(Result(operations.Receipt, String)),
   )
 
@@ -1046,33 +1046,23 @@ fn watch(worker: session.Session) -> Nil {
   }
 }
 
-fn rejected_operation(
-  state: State,
-  operation: operations.Request,
-  failure: http_api.Failure,
-) -> Result(operations.Receipt, String) {
-  case failure.status >= 500 {
-    True -> Error(failure.detail)
-    False ->
-      operations.reject(
-        runtime.ledger(state.host),
-        operation,
-        operations.Rejection(failure.status, failure.code, failure.detail),
-      )
-  }
-}
-
 /// The client identity names both the creation decision and the session. All
 /// lookup and validation happen before resolving defaults for a first attempt.
 fn create_identified(
   state: State,
   id: String,
-  intent: http_api.Creation,
+  intent: session_creation.Intent,
 ) -> #(State, Result(operations.Receipt, String)) {
   let db = runtime.ledger(state.host)
-  let submitted = http_api.creation_intent(intent) |> json.to_string
+  let submitted = session_creation.encode(intent) |> json.to_string
   let operation =
-    operations.Request(id, http_api.etag(submitted), "create", id, None)
+    operations.Request(
+      id,
+      operations.fingerprint(submitted),
+      "create",
+      id,
+      None,
+    )
   let checked = {
     use prior <- result.try(conversation.creation(db, id))
     use _ <- result.try(case prior {
@@ -1091,10 +1081,16 @@ fn create_identified(
     Ok(Some(receipt)) -> #(state, Ok(receipt))
     Ok(None) -> {
       let prepared = case intent {
-        http_api.NewSession(workspace, _name, provider_name, model, effort) -> {
+        session_creation.NewSession(
+          workspace,
+          _name,
+          provider_name,
+          model,
+          effort,
+        ) -> {
           use workspace <- result.try(
             location.workspace(workspace)
-            |> result.map_error(http_api.workspace_failure),
+            |> result.map_error(session_creation.workspace_failure),
           )
           use provider <- result.try({
             case provider_name {
@@ -1117,12 +1113,12 @@ fn create_identified(
               }
               None -> configuration.active(state.config.home)
             }
-            |> result.map_error(http_api.failure)
+            |> result.map_error(session_creation.failure)
           })
           let model = option.unwrap(model, provider.model)
           use effort <- result.try(
             selected_effort(state, provider.name, model, effort)
-            |> result.map_error(http_api.failure),
+            |> result.map_error(session_creation.failure),
           )
           Ok(conversation.Info(
             id,
@@ -1136,9 +1132,10 @@ fn create_identified(
             effort,
           ))
         }
-        http_api.ForkSession(source, _, _name) -> {
+        session_creation.ForkSession(source, _, _name) -> {
           use above <- result.try(
-            conversation.get(db, source) |> result.map_error(http_api.failure),
+            conversation.get(db, source)
+            |> result.map_error(session_creation.failure),
           )
           Ok(
             conversation.Info(
@@ -1149,20 +1146,30 @@ fn create_identified(
             ),
           )
         }
-        http_api.ChildSession(parent, address, _name, _, _, model, effort) -> {
+        session_creation.ChildSession(
+          parent,
+          address,
+          _name,
+          _,
+          _,
+          model,
+          effort,
+        ) -> {
           use above <- result.try(
-            conversation.get(db, parent) |> result.map_error(http_api.failure),
+            conversation.get(db, parent)
+            |> result.map_error(session_creation.failure),
           )
           use _ <- result.try(
-            family.valid_name(address) |> result.map_error(http_api.failure),
+            family.valid_name(address)
+            |> result.map_error(session_creation.failure),
           )
           use #(provider, model) <- result.try(
             child_model(state, above, option.unwrap(model, ""))
-            |> result.map_error(http_api.failure),
+            |> result.map_error(session_creation.failure),
           )
           use effort <- result.try(
             selected_effort(state, provider.name, model, effort)
-            |> result.map_error(http_api.failure),
+            |> result.map_error(session_creation.failure),
           )
           Ok(
             conversation.Info(
@@ -1180,20 +1187,23 @@ fn create_identified(
         }
       }
       case prepared {
-        Error(reason) -> #(state, rejected_operation(state, operation, reason))
+        Error(reason) -> #(
+          state,
+          session_creation.reject(db, operation, reason),
+        )
         Ok(info) -> {
           let resolved = conversation.resolved_creation(info)
           let name = case intent {
-            http_api.NewSession(_, name, _, _, _)
-            | http_api.ForkSession(_, _, name) -> name
-            http_api.ChildSession(_, _, name, _, _, _, _) -> Some(name)
+            session_creation.NewSession(_, name, _, _, _)
+            | session_creation.ForkSession(_, _, name) -> name
+            session_creation.ChildSession(_, _, name, _, _, _, _) -> Some(name)
           }
           let creation =
             conversation.Creation(operation, submitted, resolved, name)
           let result = case intent {
-            http_api.NewSession(..) ->
+            session_creation.NewSession(..) ->
               conversation.create_identified(db, info, creation)
-            http_api.ForkSession(source, checkpoint, _) -> {
+            session_creation.ForkSession(source, checkpoint, _) -> {
               use checkpoint <- result.try(
                 int.parse(checkpoint)
                 |> result.replace_error("invalid checkpoint"),
@@ -1203,7 +1213,15 @@ fn create_identified(
                 history.ForkCreation(source, id, checkpoint, creation),
               )
             }
-            http_api.ChildSession(parent, address, _, input_id, task, _, _) -> {
+            session_creation.ChildSession(
+              parent,
+              address,
+              _,
+              input_id,
+              task,
+              _,
+              _,
+            ) -> {
               let letter =
                 mail.Letter(
                   input_id,
@@ -1224,17 +1242,7 @@ fn create_identified(
                   Some(input_id),
                   Some(input_id),
                 )
-              let input_intent =
-                http_api.input_intent(http_api.MessageInput(task, [], [], None))
-                |> json.to_string
-              let input =
-                operations.Request(
-                  input_id,
-                  http_api.etag(input_intent),
-                  "message",
-                  id,
-                  None,
-                )
+              let input = session_creation.task_input(input_id, id, task)
               use _ <- result.try(operations.validate_id(input_id, usage.now()))
               conversation.create_child_identified(
                 db,
@@ -1255,13 +1263,25 @@ fn create_identified(
             Error("session_deleted") -> #(state, Error("session_deleted"))
             Error(reason) -> #(
               state,
-              rejected_operation(state, operation, http_api.failure(reason)),
+              session_creation.reject(
+                db,
+                operation,
+                session_creation.failure(reason),
+              ),
             )
             Ok(receipt) -> {
               let info = conversation.get(db, id) |> result.unwrap(info)
               let state = holding(state, id, #(info, None))
               case intent {
-                http_api.ChildSession(parent, _, _, input_id, task, _, _) -> {
+                session_creation.ChildSession(
+                  parent,
+                  _,
+                  _,
+                  input_id,
+                  task,
+                  _,
+                  _,
+                ) -> {
                   case family.get(db, id) {
                     Ok(Some(member)) -> bus.spawned(member)
                     _ -> Nil

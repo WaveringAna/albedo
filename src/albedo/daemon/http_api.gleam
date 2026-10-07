@@ -1,6 +1,8 @@
 //// Protocol 3 HTTP admission and wire values. Domain owners decide effects;
 //// this module validates client syntax and encodes bounded HTTP responses.
 
+import albedo/daemon/operations
+import albedo/daemon/session/creation
 import albedo/harness/location
 import albedo/harness/ssh
 import gleam/bit_array
@@ -82,30 +84,6 @@ pub const response_limit = 1_048_576
 
 pub type Failure {
   Failure(status: Int, code: String, detail: String)
-}
-
-pub type Creation {
-  NewSession(
-    workspace: String,
-    name: Option(String),
-    provider_profile: Option(String),
-    model: Option(String),
-    effort: Option(String),
-  )
-  ForkSession(
-    source_session_id: String,
-    checkpoint_id: String,
-    name: Option(String),
-  )
-  ChildSession(
-    parent_id: String,
-    address: String,
-    name: String,
-    initial_input_id: String,
-    task: String,
-    model: Option(String),
-    effort: Option(String),
-  )
 }
 
 pub type ImageUpload {
@@ -224,8 +202,9 @@ pub fn dynamic_json(value: Dynamic) -> json.Json
 @external(erlang, "albedo_http_api", "timestamp")
 pub fn timestamp(milliseconds: Int) -> String
 
-@external(erlang, "albedo_http_api", "etag")
-pub fn etag(encoded: String) -> String
+pub fn etag(encoded: String) -> String {
+  operations.fingerprint(encoded)
+}
 
 @external(erlang, "albedo_http_api", "instance_id")
 pub fn instance_id() -> String
@@ -541,7 +520,9 @@ fn nullable_string(
   decode.optional_field(key, None, value, next)
 }
 
-pub fn creation(req: request.Request(BitArray)) -> Result(Creation, Failure) {
+pub fn creation(
+  req: request.Request(BitArray),
+) -> Result(creation.Intent, Failure) {
   use kind <- result.try(body(
     req,
     [
@@ -562,7 +543,13 @@ pub fn creation(req: request.Request(BitArray)) -> Result(Creation, Failure) {
           use provider <- nullable_string("provider_profile")
           use model <- nullable_string("model")
           use effort <- nullable_string("effort")
-          decode.success(NewSession(workspace, name, provider, model, effort))
+          decode.success(creation.NewSession(
+            workspace,
+            name,
+            provider,
+            model,
+            effort,
+          ))
         },
       )
     "fork" ->
@@ -576,7 +563,7 @@ pub fn creation(req: request.Request(BitArray)) -> Result(Creation, Failure) {
           bounded_string(512, True),
         )
         use name <- nullable_string("name")
-        decode.success(ForkSession(source, checkpoint, name))
+        decode.success(creation.ForkSession(source, checkpoint, name))
       })
     "child" ->
       body(
@@ -602,7 +589,7 @@ pub fn creation(req: request.Request(BitArray)) -> Result(Creation, Failure) {
           use task <- decode.field("task", decode.string)
           use model <- nullable_string("model")
           use effort <- nullable_string("effort")
-          decode.success(ChildSession(
+          decode.success(creation.ChildSession(
             parent,
             address,
             name,
@@ -615,35 +602,6 @@ pub fn creation(req: request.Request(BitArray)) -> Result(Creation, Failure) {
       )
     _ -> Error(invalid("unknown session creation kind"))
   }
-}
-
-pub fn creation_intent(creation: Creation) -> json.Json {
-  json.object(case creation {
-    NewSession(workspace, name, provider, model, effort) -> [
-      #("kind", json.string("new")),
-      #("workspace", json.string(workspace)),
-      #("name", json.nullable(name, json.string)),
-      #("provider_profile", json.nullable(provider, json.string)),
-      #("model", json.nullable(model, json.string)),
-      #("effort", json.nullable(effort, json.string)),
-    ]
-    ForkSession(source, checkpoint, name) -> [
-      #("kind", json.string("fork")),
-      #("source_session_id", json.string(source)),
-      #("checkpoint_id", json.string(checkpoint)),
-      #("name", json.nullable(name, json.string)),
-    ]
-    ChildSession(parent, address, name, input_id, task, model, effort) -> [
-      #("kind", json.string("child")),
-      #("parent_id", json.string(parent)),
-      #("address", json.string(address)),
-      #("name", json.string(name)),
-      #("initial_input_id", json.string(input_id)),
-      #("task", json.string(task)),
-      #("model", json.nullable(model, json.string)),
-      #("effort", json.nullable(effort, json.string)),
-    ]
-  })
 }
 
 pub fn input(req: request.Request(BitArray)) -> Result(Input, Failure) {
@@ -754,75 +712,39 @@ pub fn interrupt(req: request.Request(BitArray)) -> Result(Interrupt, Failure) {
 }
 
 pub fn input_intent(input: Input) -> json.Json {
-  json.object(case input {
-    MessageInput(text, images, pastes, _) -> [
-      #("kind", json.string("message")),
-      #("text", json.string(text)),
-      #("pastes", json.array(pastes, json.string)),
-      #(
-        "images",
-        json.array(images, fn(image) {
-          json.object([
-            #("mime_type", json.string(image.mime_type)),
-            #("data", json.string(image.data)),
-          ])
-        }),
-      ),
-    ]
-    ContinueInput(_) -> [
-      #("kind", json.string("continue")),
-    ]
-    SkillInput(candidate, revision, arguments, _) -> [
-      #("kind", json.string("skill")),
-      #("candidate_id", json.string(candidate)),
-      #("catalog_revision", json.string(revision)),
-      #("arguments", json.string(arguments)),
-    ]
-    CommandInput(command, arguments, _) -> [
-      #("kind", json.string("command")),
-      #("command_id", json.string(command)),
-      #("arguments", dynamic_json(arguments)),
-    ]
-  })
+  case input {
+    MessageInput(text, images, pastes, _) ->
+      operations.message_intent(
+        text,
+        pastes,
+        list.map(images, fn(image) { #(image.mime_type, image.data) }),
+      )
+    ContinueInput(_) -> json.object([#("kind", json.string("continue"))])
+    SkillInput(candidate, revision, arguments, _) ->
+      json.object([
+        #("kind", json.string("skill")),
+        #("candidate_id", json.string(candidate)),
+        #("catalog_revision", json.string(revision)),
+        #("arguments", json.string(arguments)),
+      ])
+    CommandInput(command, arguments, _) ->
+      json.object([
+        #("kind", json.string("command")),
+        #("command_id", json.string(command)),
+        #("arguments", dynamic_json(arguments)),
+      ])
+  }
 }
 
-@external(erlang, "albedo_http_api", "scalar_prefix")
+@external(erlang, "albedo_operations", "scalar_prefix")
 pub fn scalar_prefix(text: String, limit: Int) -> String
 
 pub fn failure(code: String) -> Failure {
   case code {
     "active_output_unavailable" ->
       Failure(503, code, "unfinished output is unavailable")
-    "operation_conflict" ->
-      Failure(409, "id_conflict", "resource identity belongs to another intent")
-    "input_conflict" ->
-      Failure(409, code, "input identity belongs to another intent")
     "image_invalid" -> Failure(400, code, "image payload is invalid")
     "message is empty" -> Failure(400, "message_empty", code)
-    "operation_expired" ->
-      Failure(
-        410,
-        "identity_expired",
-        "resource identity is outside its admission window",
-      )
-    "operation_invalid" ->
-      Failure(
-        400,
-        "identity_invalid",
-        "resource identity must be a current UUIDv7",
-      )
-    "operation_future" ->
-      Failure(
-        400,
-        "identity_future",
-        "resource identity is beyond the allowed future clock window",
-      )
-    "session not found" ->
-      Failure(404, "session_not_found", "session was not found")
-    "session_exists" ->
-      Failure(412, "session_exists", "session resource already exists")
-    "session_deleted" ->
-      Failure(410, "session_deleted", "session resource was deleted")
     "configuration_changed" | "family_changed" ->
       Failure(412, code, "observed configuration or family changed")
     "daemon is shutting down" ->
@@ -831,29 +753,6 @@ pub fn failure(code: String) -> Failure {
       Failure(409, code, "leaf deletion requires a session without children")
     "context_changed" ->
       Failure(410, code, "prepared context changed; read a new snapshot")
-    "name must be 1-32 characters of a-z, 0-9, '-' or '_'"
-    | "'parent' is reserved"
-    | "'self' is reserved"
-    | "'all' is reserved" -> Failure(400, "child_address_invalid", code)
-    "expected a model"
-    | "unsupported effort"
-    | "saved profile effort is unsupported by this model" ->
-      Failure(400, "model_selection_invalid", code)
-    "provider is not configured; run /login"
-    | "provider configuration is invalid; run /login"
-    | "active provider is not configured; run /login"
-    | "session provider is not configured; run /login" ->
-      Failure(409, "provider_unconfigured", code)
-    "provider_profile_unknown" ->
-      Failure(400, code, "provider profile was not found")
-    "model is available from multiple providers; use provider/model" ->
-      Failure(409, "model_ambiguous", code)
-    "checkpoint not found" -> Failure(404, "checkpoint_not_found", code)
-    "invalid branch checkpoint or session id" ->
-      Failure(400, "checkpoint_invalid", code)
-    "duplicate tool call id before checkpoint"
-    | "checkpoint contains a tool result without its call" ->
-      Failure(409, "checkpoint_invalid", code)
     "catalog_changed" ->
       Failure(409, code, "discovery changed; refresh the catalog")
     "settings_changed" ->
@@ -880,22 +779,10 @@ pub fn failure(code: String) -> Failure {
     "no compaction strategy is enabled"
     | "no conversation history to compact" ->
       Failure(409, "compaction_unavailable", code)
-    "deletion_in_progress" ->
-      Failure(409, code, "session deletion is in progress")
-    _ ->
-      case string.starts_with(code, "model is not available from provider ") {
-        True -> Failure(409, "model_unavailable", code)
-        False ->
-          case
-            string.starts_with(code, "a child named '")
-            && string.ends_with(code, "' already exists")
-          {
-            True ->
-              Failure(409, "child_address_conflict", scalar_prefix(code, 4096))
-            False ->
-              Failure(503, "request_unavailable", scalar_prefix(code, 4096))
-          }
-      }
+    _ -> {
+      let rejection = creation.failure(code)
+      Failure(rejection.status, rejection.code, rejection.detail)
+    }
   }
 }
 
@@ -928,11 +815,8 @@ pub fn limit_parameter(
 }
 
 pub fn workspace_failure(failure: location.Failure) -> Failure {
-  case failure {
-    location.Invalid(detail) -> Failure(400, "workspace_invalid", detail)
-    location.Unavailable(detail) ->
-      Failure(503, "workspace_unavailable", detail)
-  }
+  let rejection = creation.workspace_failure(failure)
+  Failure(rejection.status, rejection.code, rejection.detail)
 }
 
 pub fn page_binding(

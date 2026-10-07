@@ -30,9 +30,7 @@ timestamp(Milliseconds) ->
     list_to_binary(calendar:system_time_to_rfc3339(max(0, Milliseconds),
         [{unit, millisecond}, {offset, "Z"}])).
 
-etag(Encoded) ->
-    Hash = binary:encode_hex(crypto:hash(sha256, Encoded), lowercase),
-    <<$", Hash/binary, $">>.
+etag(Encoded) -> albedo_operations:fingerprint(Encoded).
 
 %% The listener captures this identity once at daemon startup.
 instance_id() ->
@@ -245,4 +243,4 @@ media_quality(Media, Ranges) ->
     case Matches of [] -> 0; _ -> {Specificity, _} = lists:max(Matches),
         lists:max([Quality || {S, Quality} <- Matches, S =:= Specificity]) end.
 
-scalar_prefix(Text, Limit) -> unicode:characters_to_binary(lists:sublist(unicode:characters_to_list(Text), max(0, Limit))).
+scalar_prefix(Text, Limit) -> albedo_operations:scalar_prefix(Text, Limit).
