@@ -1,6 +1,6 @@
 """Catch orphaned cleanup workers with deterministic gates inside unlink and VACUUM.
 
-The real CLI and daemon E2E tests cannot pause these Python calls. These tests
+The real CLI and daemon E2E tests cannot pause these operations. These tests
 run the production helper, replacing only the operation's scheduling with an
 acknowledged gate. EOF or death must stop that one process and release its lock.
 """
@@ -15,32 +15,12 @@ import sys
 import tempfile
 import unittest
 
-ROOT = Path(__file__).resolve().parents[2]
-HELPER = ROOT / "cli/internal/storage/maintenance.py"
-
-CONTROLLED_WORK = """
-import json, runpy, sys, threading
-module = runpy.run_path(sys.argv[1])
-operation, home, candidate = sys.argv[2:]
-def gate():
-    print(json.dumps({'working': operation}), flush=True)
-    threading.Event().wait()
-if operation == 'delete':
-    module['os'].unlink = lambda path: gate()
-else:
-    connect = module['sqlite3'].connect
-    def controlled_connect(path, *args, **kwargs):
-        db = connect(path, *args, **kwargs)
-        if 'albedo.sqlite' in str(path):
-            db.set_progress_handler(gate, 1)
-        return db
-    module['sqlite3'].connect = controlled_connect
-module['maintain'](module['Path'](home))
-"""
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from storage_helper_support import maintenance_command
 
 OWNER = """
 import json, signal, subprocess, sys
-helper = subprocess.Popen([sys.executable, sys.argv[1], sys.argv[2]],
+helper = subprocess.Popen(sys.argv[1:],
     stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
 helper.stdin.write(json.dumps({'paths': []}) + '\\n')
 helper.stdin.flush()
@@ -88,15 +68,7 @@ class MaintenanceLifetimeTests(unittest.TestCase):
                         db.execute("DELETE FROM reclaim")
                     before = (home / "albedo.sqlite").read_bytes()
                     worker = subprocess.Popen(
-                        [
-                            sys.executable,
-                            "-c",
-                            CONTROLLED_WORK,
-                            str(HELPER),
-                            operation,
-                            directory,
-                            str(candidate),
-                        ],
+                        maintenance_command(home, operation=operation),
                         stdin=subprocess.PIPE,
                         stdout=subprocess.PIPE,
                         stderr=subprocess.PIPE,
@@ -145,7 +117,7 @@ class MaintenanceLifetimeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory)
             owner = subprocess.Popen(
-                [sys.executable, "-c", OWNER, str(HELPER), directory],
+                [sys.executable, "-c", OWNER, *maintenance_command(home)],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,

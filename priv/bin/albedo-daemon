@@ -5,12 +5,20 @@
 # their free pages handed back (acful), and freed segments are not cached
 # (MMmcs), so memory a busy turn took goes back once it is over.
 set -eu
-vm_defaults='+P 65536 +Q 16384 +S 2:2 +SDcpu 2:2 +SDio 2 +sbwt none +sbwtdcpu none +sbwtdio none +MBsbct 16 +MHsbct 32 +MBlmbcs 256 +MHlmbcs 256 +MBsmbcs 32 +MHsmbcs 32 +MBas aobf +MHas aobf +MBacul 50 +MHacul 50 +MBacful 50 +MHacful 50 +MMmcs 0'
+# Application startup can log before Gleam main runs. Keep diagnostics off the
+# helpers' JSON stdout, including when a shipment starts dependencies first.
+vm_defaults='+P 65536 +Q 16384 +S 2:2 +SDcpu 2:2 +SDio 2 +sbwt none +sbwtdcpu none +sbwtdio none +MBsbct 16 +MHsbct 32 +MBlmbcs 256 +MHlmbcs 256 +MBsmbcs 32 +MHsmbcs 32 +MBas aobf +MHas aobf +MBacul 50 +MHacul 50 +MBacful 50 +MHacful 50 +MMmcs 0 -kernel logger [{handler,default,logger_std_h,#{config=>#{type=>standard_error}}}]'
 ERL_FLAGS="$vm_defaults ${ERL_FLAGS:-}"
 export ERL_FLAGS
-if [ "$#" -eq 0 ]; then
+if [ "$#" -eq 0 ] || [ "$1" = storage ]; then
     source_root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
     cd "$source_root"
-    exec gleam run
+    if [ "$#" -eq 0 ]; then
+        exec gleam run
+    fi
+    # The helper must replace this process, so cancellation kills its VM rather
+    # than a `gleam run` parent that could leave SQLite work behind.
+    gleam build </dev/null >&2
+    exec erl -pa "$source_root"/build/dev/erlang/*/ebin -eval 'albedo@@main:run(albedo)' -noshell -extra "$@"
 fi
 exec "$@"

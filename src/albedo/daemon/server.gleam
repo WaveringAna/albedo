@@ -33,6 +33,7 @@ import gleam/otp/static_supervisor as supervisor
 import gleam/otp/supervision
 import gleam/result
 import gleam/string
+import gleam/uri
 import mist
 import sqlight
 
@@ -636,7 +637,11 @@ fn env(name: String) -> String
 /// commits the transaction or replaces the lock file. The OS drops the lock
 /// when its owner exits, so a crashed owner never leaves it stale.
 pub fn claim_home(home: String) -> Result(Nil, sqlight.Error) {
-  use connection <- result.try(sqlight.open(home <> "/daemon.lock"))
+  // Percent encoding keeps non-ASCII filesystem paths intact through the
+  // SQLite driver's filename boundary, including for standalone maintenance.
+  use connection <- result.try(sqlight.open(
+    "file:" <> uri.percent_encode(home <> "/daemon.lock"),
+  ))
   case
     // The transaction is never committed: holding it open keeps the exclusive
     // lock, and a refused BEGIN leaves no lock behind on its connection.
