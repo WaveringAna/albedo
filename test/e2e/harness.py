@@ -315,6 +315,11 @@ class _Response(http.client.HTTPResponse):
     connection = None
 
     def close(self):
+        if self.headers is None:
+            # begin() died before any status line: there is no body to drain,
+            # and reading headers here would mask the error that stopped it.
+            super().close()
+            return
         connection = self.connection
         streaming = self.getheader("content-type", "").startswith("text/event-stream")
         if connection is not None and streaming:
