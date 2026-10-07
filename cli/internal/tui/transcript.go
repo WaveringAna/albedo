@@ -152,6 +152,9 @@ func (r TranscriptRenderer) signoff(entry HistoryEntry) string {
 		}
 		meta = append(meta, fmt.Sprintf("%d %s", entry.Tools, unit))
 	}
+	if entry.TokensPerSecond > 0 {
+		meta = append(meta, formatRate(entry.TokensPerSecond))
+	}
 	row := markChrome + rowAction{verbCopy, entryKey(entry)}.mark() + style.Render(entry.Mood.face(entry.Timestamp))
 	if len(meta) > 0 {
 		row += " " + DefaultStyles.Faint.Render(strings.Join(meta, " · "))

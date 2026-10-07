@@ -47,6 +47,9 @@ type HistoryEntry struct {
 	// Pending is a message of yours the daemon has not echoed back yet.
 	Pending   pending
 	ElapsedMs int64
+	// TokensPerSecond is the output rate of a turn's latest timed call; 0 when
+	// none was timed.
+	TokensPerSecond float64
 	// Seq is the newest transcript row this entry came from; 0 until a
 	// `committed` event says which rows cover it.
 	Seq int64

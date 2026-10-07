@@ -252,6 +252,9 @@ func (t *transcriptState) apply(evt daemon.StreamEvent, agentName string) []Hist
 		})
 	case daemon.EventUsage:
 		entries = t.settle(agentName)
+		if t.turn != nil {
+			t.turn.measure(evt.Usage)
+		}
 	case daemon.EventTurnCompleted:
 		entries = t.settle(agentName)
 		if t.turn != nil {
@@ -301,6 +304,9 @@ type openTurn struct {
 	// answered is whether the agent wrote anything; a turn opened by a note
 	// it never answered has nothing to sign off.
 	answered bool
+	// tokensPerSecond is the rate of the latest call that reported its timing.
+	// A usage record can arrive again, so it replaces the rate, never adds to it.
+	tokensPerSecond float64
 }
 
 func newOpenTurn(ts int64) *openTurn {
@@ -313,6 +319,13 @@ func newOpenTurn(ts int64) *openTurn {
 func (t *openTurn) touch(ts *int64) {
 	if ts != nil && *ts > t.last {
 		t.last = *ts
+	}
+}
+
+// measure takes the rate of a usage record that carries one.
+func (t *openTurn) measure(usage *daemon.Usage) {
+	if usage != nil && usage.TokensPerSecond != nil && *usage.TokensPerSecond > 0 {
+		t.tokensPerSecond = *usage.TokensPerSecond
 	}
 }
 
@@ -345,6 +358,7 @@ func (t *transcriptState) closeTurn(stopped bool) []HistoryEntry {
 	return []HistoryEntry{{
 		Kind: EntryTurnEnd, Mood: outcome(turn.failed, stopped, elapsed),
 		ElapsedMs: elapsed, Tools: turn.tools, Timestamp: end,
+		TokensPerSecond: turn.tokensPerSecond,
 	}}
 }
 

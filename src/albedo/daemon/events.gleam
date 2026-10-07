@@ -470,8 +470,17 @@ pub fn usage(metadata: Option(usage.Metadata)) -> json.Json {
       "total_tokens",
       counter(fn(value) { value.prompt_tokens + value.completion_tokens }),
     ),
-    #("elapsed_ms", json.null()),
-    #("tokens_per_second", json.null()),
+    #(
+      "elapsed_ms",
+      json.nullable(
+        option.then(metadata, fn(value) { value.elapsed_ms }),
+        json.int,
+      ),
+    ),
+    #(
+      "tokens_per_second",
+      json.nullable(option.then(metadata, usage.tokens_per_second), json.float),
+    ),
     #("context_window_tokens", json.null()),
     #("cache_ttl_seconds", json.null()),
     #("cache_fade", case option.then(metadata, fn(value) { value.cache }) {

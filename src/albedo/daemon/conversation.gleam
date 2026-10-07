@@ -2191,7 +2191,9 @@ fn usage_decoder() -> decode.Decoder(Option(usage.Metadata)) {
   case model, recorded_at, prompt, completion {
     None, None, None, None -> decode.success(None)
     Some(model), Some(recorded_at), None, None ->
-      decode.success(Some(usage.Metadata(model, recorded_at, None, cache)))
+      decode.success(
+        Some(usage.Metadata(model, recorded_at, None, cache, None)),
+      )
     Some(model), Some(recorded_at), Some(prompt), Some(completion) ->
       decode.success(
         Some(usage.Metadata(
@@ -2207,6 +2209,7 @@ fn usage_decoder() -> decode.Decoder(Option(usage.Metadata)) {
             reasoning,
           )),
           cache,
+          None,
         )),
       )
     _, _, _, _ -> decode.failure(None, "consistent saved usage metadata")
@@ -2241,7 +2244,7 @@ pub fn record_usage(
   id: String,
   metadata: usage.Metadata,
 ) -> Result(Nil, String) {
-  let usage.Metadata(model, recorded_at, tokens, cache) = metadata
+  let usage.Metadata(model, recorded_at, tokens, cache, _) = metadata
   let #(prompt, completion, cached, creation, write_5m, write_1h, reasoning) = case
     tokens
   {

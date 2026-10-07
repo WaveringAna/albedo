@@ -153,6 +153,25 @@ func TestCommittedIdentityReplacesAllProvisionalChunks(t *testing.T) {
 	}
 }
 
+// A turn's rate is its latest timed call's: a usage record that arrives again
+// changes nothing, and a call the daemon did not time leaves the rate alone.
+func TestTurnRateIsItsLatestTimedCall(t *testing.T) {
+	rate := func(tokensPerSecond float64) *daemon.Usage {
+		return &daemon.Usage{TokensPerSecond: &tokensPerSecond}
+	}
+	state := newTranscriptState()
+	state.apply(daemon.StreamEvent{Type: daemon.EventUser, Source: "chat", Text: "hi"}, "agent")
+	state.apply(daemon.StreamEvent{Type: daemon.EventText, Text: "answer"}, "agent")
+	state.apply(daemon.StreamEvent{Type: daemon.EventUsage, Usage: rate(40)}, "agent")
+	state.apply(daemon.StreamEvent{Type: daemon.EventUsage, Usage: rate(84.2)}, "agent")
+	state.apply(daemon.StreamEvent{Type: daemon.EventUsage, Usage: rate(84.2)}, "agent")
+	state.apply(daemon.StreamEvent{Type: daemon.EventUsage, Usage: &daemon.Usage{}}, "agent")
+	entries := state.apply(daemon.StreamEvent{Type: daemon.EventTurnCompleted}, "agent")
+	if len(entries) != 1 || entries[0].Kind != EntryTurnEnd || entries[0].TokensPerSecond != 84.2 {
+		t.Fatalf("turn ended with entries %+v, want a signoff at 84.2 tok/s", entries)
+	}
+}
+
 func TestANoteTheAgentNeverAnsweredHasNoSignoff(t *testing.T) {
 	// /link and /work queue a note; it commits right before your next message.
 	entries := replayTranscript([]daemon.StreamEvent{

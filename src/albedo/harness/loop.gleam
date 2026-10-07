@@ -176,8 +176,16 @@ pub fn run(
     |> result.map_error(describe(state.upstream, _)),
   )
   let cache = fading(state, sent)
+  // The successful attempt's span, as its request row records it. A clock
+  // that steps back reads as zero.
   let completed_usage =
-    usage.from_completion(state.model, turn.usage, usage.now(), cache)
+    usage.from_completion(
+      state.model,
+      turn.usage,
+      usage.now(),
+      cache,
+      Some(int.max(0, sent.finished_ms - sent.started_ms)),
+    )
   let replay = list.map(turn.output, types.Replay)
   use #(_timestamp, seq) <- result.try(state.commit(
     replay,

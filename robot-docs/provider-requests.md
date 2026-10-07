@@ -15,6 +15,10 @@ Rows are written by the worker that streams the call, one per upstream attempt (
 
 Providers report these differently and each adapter fills what it can: Anthropic's `cache_creation.ephemeral_5m_input_tokens` / `ephemeral_1h_input_tokens` become the TTL-split writes; OpenAI's `completion_tokens_details.reasoning_tokens` and the Responses API's `output_tokens_details.reasoning_tokens` become reasoning; Antigravity's `thoughtsTokenCount` is reported as reasoning while output keeps folding thoughts in, as before.
 
+## Usage timing
+
+The session's usage for a turn's call reports the span of the attempt that succeeded as `elapsed_ms`, and its output tokens over that span as `tokens_per_second`. A re-emitted usage keeps its call's span; a compaction estimate made no call, so it has none.
+
 ## Prefix identity
 
 What makes cache analysis possible without storing requests. Each row records:

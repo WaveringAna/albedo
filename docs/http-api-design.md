@@ -539,7 +539,9 @@ bounded activity once, before subscriber fan-out. Full content stays in history.
 - `pending_inputs`, at most 32 bounded input summaries with acceptance order,
   and `input_order`, the greatest order ever accepted into this session.
 - `usage`, including token and cache counters, elapsed time, model limits,
-  observed cache TTL, and time-indexed cache fade observations.
+  observed cache TTL, and time-indexed cache fade observations. `elapsed_ms` is
+  the span of the provider call that produced the usage, and `tokens_per_second`
+  is its completion tokens over that span; both are null when no call was timed.
 - `history`, a bounded recent page, with its older-page token.
 - `cursor`, the generation and sequence captured with the live state.
 - `glances`, bounded extension-provided summaries and links to their resources.

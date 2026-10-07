@@ -22,9 +22,13 @@ func formatUsage(u *daemon.Usage) string {
 	}
 	rate := ""
 	if u.TokensPerSecond != nil && *u.TokensPerSecond > 0 {
-		rate = fmt.Sprintf(" · %.1f tok/s", *u.TokensPerSecond)
+		rate = " · " + formatRate(*u.TokensPerSecond)
 	}
 	return formatTokens(total) + " tokens" + rate
+}
+
+func formatRate(tokensPerSecond float64) string {
+	return fmt.Sprintf("%.1f tok/s", tokensPerSecond)
 }
 
 func formatTokens(val int) string {

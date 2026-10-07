@@ -86,6 +86,19 @@ func TestSignoffCopiesTheTurnAsMarkdown(t *testing.T) {
 	}
 }
 
+// The rate sits right before the copy mark, after the turn's time and tools.
+func TestSignoffShowsItsRateBeforeTheCopyMark(t *testing.T) {
+	m := newTestChatModel(t, &daemon.Session{ID: "s"})
+	m.SetSize(80, 40)
+	m.appendSettledEntry(HistoryEntry{Kind: EntryAssistant, Text: "done", Timestamp: 1})
+	m.appendSettledEntry(HistoryEntry{Kind: EntryTurnEnd, Mood: moodDone, ElapsedMs: 5000, Tools: 1, TokensPerSecond: 84.2, Timestamp: 2})
+	m.refreshViewportContent()
+	row := ansi.Strip(m.frameLines[rowWith(t, m.frameLines, "⧉")])
+	if !strings.Contains(row, "1 tool · 84.2 tok/s · ⧉") {
+		t.Fatalf("signoff %q does not put the rate before the copy mark", row)
+	}
+}
+
 // Clicking a burst's summary lists every step in full, the commands the
 // summary only names included, and clicking it again folds them away.
 func TestClickingABurstListsItsSteps(t *testing.T) {

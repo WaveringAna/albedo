@@ -74,6 +74,10 @@ def reply(request):
     return text("first reply", usage=FIRST)
 
 
+def instant(timestamp):
+    return datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+
+
 class ProviderRequestsTest(unittest.TestCase):
     def rows(self, app, session, query=""):
         with app.api(f"/sessions/{session}/context?view=requests{query}") as response:
@@ -235,6 +239,27 @@ class ProviderRequestsTest(unittest.TestCase):
                     [row["sequence"] for row in rows[1:3]],
                 )
                 self.assertIsNotNone(second["next"])
+        finally:
+            provider.close()
+
+    def test_the_latest_usage_reports_its_calls_span_and_rate(self):
+        provider = Provider(reply)
+        try:
+            with Albedo(provider, protocol="responses") as app:
+                session = app.session()
+                app.prompt(session, "third").close()
+                app.idle(session)
+                row = self.rows(app, session)["items"][-1]
+                with app.api(f"/sessions/{session}?tail=0") as response:
+                    usage = json.load(response)["usage"]
+                started, ended = instant(row["started_at"]), instant(row["ended_at"])
+                span = round((ended - started).total_seconds() * 1000)
+                self.assertEqual(usage["completion_tokens"], 50)
+                self.assertEqual(usage["elapsed_ms"], span)
+                if span:
+                    self.assertAlmostEqual(usage["tokens_per_second"], 50 * 1000 / span)
+                else:
+                    self.assertIsNone(usage["tokens_per_second"])
         finally:
             provider.close()
 
