@@ -2,7 +2,6 @@
 //// `Runtime` handle, a session's `Session`, a prepared `Cached` composition.
 //// The helpers here read or step that state without talking to a kernel.
 
-import albedo/daemon/session_catalog
 import albedo/harness/client_api
 import albedo/harness/command
 import albedo/harness/extension
@@ -10,6 +9,7 @@ import albedo/harness/extension/composition
 import albedo/harness/extension/selection
 import albedo/harness/extensions/python/kernel as python
 import albedo/harness/extensions/work/ledger as work
+import albedo/harness/runtime/catalog as session_catalog
 import albedo/openai_api/types
 import albedo/shared.{type Shared}
 import gleam/dict.{type Dict}
@@ -65,6 +65,17 @@ pub type KernelUpgrade {
     warnings: List(String),
     failure: Option(String),
   )
+}
+
+/// The result after runtime ownership has settled, including a failed apply's
+/// surviving kernel. Saved preferences are independent of this outcome.
+pub type Application {
+  Applied(
+    session: Option(Session),
+    loaded_revision: Option(String),
+    warnings: List(String),
+  )
+  ApplyFailed(session: Option(Session), reason: String)
 }
 
 pub type Origin {
@@ -157,16 +168,6 @@ pub type BootRequest {
     previous: Option(Session),
     answer: fn(Result(KernelUpgrade, String)) -> Nil,
   )
-  RecomposeSelected(
-    id: String,
-    generation: Reference,
-    cwd: String,
-    selected: List(extension.Extension),
-    demanded: Option(String),
-    persist: fn(List(extension.Extension)) -> Result(Nil, String),
-    previous: Option(Session),
-    reply: Subject(Result(Option(Session), String)),
-  )
   /// Recompose from the saved desired selection, keeping the live kernel
   /// where its modules allow; `active_strategy` is the compaction the
   /// running composition has, which the new one must not silently drop.
@@ -176,7 +177,7 @@ pub type BootRequest {
     cwd: String,
     previous: Option(Session),
     active_strategy: Option(String),
-    reply: Subject(Result(Option(Session), String)),
+    reply: Subject(Application),
   )
   /// Swap the stale kernel an open found; the opener waits in `booting`.
   SwapStale(id: String, generation: Reference, cached: Cached, session: Session)
@@ -256,19 +257,14 @@ pub type Message {
     String,
     Subject(Result(#(List(command.Command), command.Context), String)),
   )
-  Reload(
-    String,
-    String,
-    selection.Change,
-    Subject(Result(Option(Session), String)),
-  )
-  ReloadDesired(String, String, Subject(Result(Option(Session), String)))
+  Reload(String, String, selection.Change, Subject(Application))
+  ReloadDesired(String, String, Subject(Application))
   Reloaded(
     String,
     Reference,
     Option(Session),
     Result(#(Cached, Option(Session)), String),
-    Subject(Result(Option(Session), String)),
+    Subject(Application),
   )
   Summaries(String, Subject(Result(List(extension.Summary), String)))
   ObserveComposition(

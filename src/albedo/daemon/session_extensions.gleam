@@ -8,101 +8,22 @@ import albedo/daemon/session_state
 import albedo/daemon/turn
 import albedo/harness/extension
 import albedo/harness/extension/selection
-import albedo/harness/extensions/python/kernel as python
 import albedo/harness/runtime
+import albedo/harness/runtime/state as runtime_state
 import gleam/list
 import gleam/option.{type Option, None, Some}
-
-/// The state once a fresh kernel replaces the old one: the next provider
-/// request has not been prepared against it.
-fn with_kernel(
-  state: session_state.State(message),
-  kernel: runtime.Session,
-) -> session_state.State(message) {
-  session_state.State(
-    ..state,
-    kernel: Some(kernel),
-    released: None,
-    context: session_state.unprepared(),
-  )
-}
 
 pub fn change(
   state: session_state.State(message),
   change: selection.Change,
 ) -> #(session_state.State(message), Result(List(extension.Summary), String)) {
-  case turn.running(state.activity) {
-    Some(_) -> #(state, Error("session must be idle to reload extensions"))
-    None -> {
-      let previous = runtime.peek_prompt(state.host, state.info.id)
-      let #(previous_tools, saved) = case state.kernel {
-        Some(kernel) -> #(
-          Some(runtime.tools(kernel)),
-          session_namespace.save_state_within(
-            state.home,
-            state.info.id,
-            kernel,
-            session_namespace.close_state_timeout,
-          ),
-        )
-        None -> #(None, Error("no active python namespace"))
-      }
-      case
-        runtime.change_extension(
-          state.host,
-          state.info.id,
-          state.info.cwd,
-          change,
-        )
-      {
-        Error(error) -> #(state, Error(error))
-        // A recorded choice that did not change the running extension set.
-        Ok(None) -> #(
-          state,
-          runtime.extension_summaries(state.host, state.info.id),
-        )
-        Ok(Some(kernel)) -> {
-          let restored = case
-            saved,
-            session_namespace.state_path(state.home, state.info.id)
-          {
-            Ok(_), Some(path) ->
-              runtime.load_state(kernel, path, session_namespace.state_timeout)
-            _, _ -> Error(python.Invalid("namespace snapshot unavailable"))
-          }
-          let namespace = case state.kernel, restored {
-            None, _ -> "new python namespace started"
-            _, Ok(saved) -> session_namespace.restored_text(saved)
-            _, Error(_) -> "python namespace reset; unsaved variables were lost"
-          }
-          let state = with_kernel(state, kernel)
-          let state = case previous_tools == Some(runtime.tools(kernel)) {
-            True ->
-              case session_prompt.pin_changed_prompt(state, previous) {
-                Ok(#(state, detail)) ->
-                  session_state.emit(
-                    state,
-                    view.note(
-                      "daemon",
-                      "extensions reloaded; " <> namespace <> detail,
-                    ),
-                  )
-                Error(error) ->
-                  session_prompt.reset_prompt_cache(state, namespace)
-                  |> session_state.emit(view.error(
-                    "extensions reloaded but the capability notice could not be saved: "
-                    <> error,
-                  ))
-              }
-            False -> session_prompt.reset_prompt_cache(state, namespace)
-          }
-          #(
-            session_prompt.remember_prompt(state),
-            runtime.extension_summaries(state.host, state.info.id),
-          )
-        }
-      }
-    }
+  let #(state, outcome) =
+    apply(state, "extensions reloaded", fn() {
+      runtime.apply_change(state.host, state.info.id, state.info.cwd, change)
+    })
+  case outcome {
+    Error(reason) -> #(state, Error(reason))
+    Ok(_) -> #(state, runtime.extension_summaries(state.host, state.info.id))
   }
 }
 
@@ -110,20 +31,42 @@ pub type Reloaded {
   Reloaded(loaded_revision: Option(String), warnings: List(String))
 }
 
-/// Apply persisted choices and fresh file discovery. Kernel replacement is
-/// complete before success; failures retain the previously loaded composition.
+/// Apply saved choices. The runtime reports the actual surviving kernel even
+/// when replacement failed after shutting down the previous namespace.
 pub fn reload(
   state: session_state.State(message),
   reason: String,
+) -> #(session_state.State(message), Result(Reloaded, String)) {
+  apply(state, reason, fn() {
+    runtime.apply_desired(state.host, state.info.id, state.info.cwd)
+  })
+}
+
+fn apply(
+  state: session_state.State(message),
+  reason: String,
+  run: fn() -> runtime_state.Application,
 ) -> #(session_state.State(message), Result(Reloaded, String)) {
   case turn.running(state.activity) != None || state.booting != None {
     True -> #(state, Error("session must be idle to reload"))
     False -> {
       let previous = runtime.peek_prompt(state.host, state.info.id)
       let previous_tools = option.map(state.kernel, runtime.tools)
-      case runtime.reload_desired(state.host, state.info.id, state.info.cwd) {
-        Error(error) -> #(state, Error(error))
-        Ok(kernel) -> {
+      case run() {
+        runtime_state.ApplyFailed(kernel, error) -> {
+          let state =
+            session_state.State(
+              ..state,
+              kernel: kernel,
+              context: session_state.unprepared(),
+            )
+          #(reloaded(state), Error(error))
+        }
+        runtime_state.Applied(kernel, loaded_revision, runtime_warnings) -> {
+          let state = case kernel {
+            Some(kernel) -> session_namespace.adopt(state, kernel)
+            None -> state
+          }
           let state =
             session_state.State(
               ..state,
@@ -166,20 +109,13 @@ pub fn reload(
               }
           }
           let state = session_prompt.remember_prompt(state)
-          let warnings =
-            list.append(warnings, case kernel {
-              Some(kernel) -> runtime.warnings(kernel)
-              None -> []
-            })
-          case
-            runtime.observe_composition(state.host, state.home, state.info.id)
-          {
-            Error(error) -> #(state, Error(error))
-            Ok(observed) -> #(
-              reloaded(state),
-              Ok(Reloaded(observed.loaded_revision, warnings)),
-            )
-          }
+          #(
+            reloaded(state),
+            Ok(Reloaded(
+              loaded_revision,
+              list.append(warnings, runtime_warnings),
+            )),
+          )
         }
       }
     }

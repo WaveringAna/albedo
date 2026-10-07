@@ -281,8 +281,7 @@ pub fn open_session_async(
   }
 }
 
-/// Reload an idle daemon session with a proposed extension composition. A replacement
-/// kernel and all context/modules are prepared before the persisted selection changes.
+/// Save a desired extension choice and apply it to an idle session.
 pub fn reload_extension(
   runtime: Runtime,
   id: String,
@@ -304,16 +303,15 @@ pub fn reload_extension(
   }
 }
 
-/// Applies an extension change for one session. A change that leaves this
-/// session's selection as it was is only recorded and answers `None`;
-/// otherwise the session gets a replacement kernel prepared and swapped in.
+/// Save and apply a choice. Callers owning a live session use `apply_change`
+/// so failures also update their kernel handle.
 pub fn change_extension(
   runtime: Runtime,
   id: String,
   cwd: String,
   change: selection.Change,
 ) -> Result(Option(Session), String) {
-  actor.call(runtime.subject, 30_000, runtime_state.Reload(id, cwd, change, _))
+  application_result(apply_change(runtime, id, cwd, change))
 }
 
 /// Prepare the saved composition before replacing the running one. A live
@@ -325,11 +323,36 @@ pub fn reload_desired(
   id: String,
   cwd: String,
 ) -> Result(Option(Session), String) {
+  application_result(apply_desired(runtime, id, cwd))
+}
+
+pub fn apply_change(
+  runtime: Runtime,
+  id: String,
+  cwd: String,
+  change: selection.Change,
+) -> runtime_state.Application {
+  actor.call(runtime.subject, 180_000, runtime_state.Reload(id, cwd, change, _))
+}
+
+pub fn apply_desired(
+  runtime: Runtime,
+  id: String,
+  cwd: String,
+) -> runtime_state.Application {
   actor.call(runtime.subject, 180_000, runtime_state.ReloadDesired(id, cwd, _))
 }
 
-/// Save and reload in the composition owner. No caller holds a settings lock
-/// while waiting for this actor, whose extension operations also persist choices.
+fn application_result(
+  outcome: runtime_state.Application,
+) -> Result(Option(Session), String) {
+  case outcome {
+    runtime_state.Applied(session, _, _) -> Ok(session)
+    runtime_state.ApplyFailed(_, reason) -> Error(reason)
+  }
+}
+
+/// The currently loaded prompt, without preparing or applying saved choices.
 pub fn peek_prompt(
   runtime: Runtime,
   id: String,

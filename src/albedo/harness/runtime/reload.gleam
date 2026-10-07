@@ -1,14 +1,12 @@
-//// Reloading a session's extensions: a proposed change or a changed desired
-//// selection is recomposed beside the running one, and the loser's kernel and
-//// composition are released only once the new ones are in place.
+//// Apply saved extension choices beside the loaded composition. Kernel
+//// shutdown is irreversible; every outcome reports the surviving handle.
 
-import albedo/daemon/session_catalog
 import albedo/harness/extension
 import albedo/harness/extension/composition
 import albedo/harness/extension/selection
 import albedo/harness/extensions/python/kernel as python
-import albedo/harness/extensions/python/link
 import albedo/harness/protect
+import albedo/harness/runtime/catalog as session_catalog
 import albedo/harness/runtime/kernels
 import albedo/harness/runtime/preparation
 import albedo/harness/runtime/state as runtime_state
@@ -29,7 +27,7 @@ pub fn orphaned(
     #(runtime_state.Cached, Option(runtime_state.Session)),
     String,
   ),
-  reply: Subject(Result(Option(runtime_state.Session), String)),
+  reply: Subject(runtime_state.Application),
 ) -> Nil {
   case outcome {
     Error(_) -> {
@@ -48,7 +46,10 @@ pub fn orphaned(
       composition.close(fresh.composition)
     }
   }
-  process.send(reply, Error("runtime owner stopped during reload"))
+  process.send(
+    reply,
+    runtime_state.ApplyFailed(None, "runtime owner stopped during reload"),
+  )
 }
 
 /// Why the daemon will not run this extension at all, if it quarantined it.
@@ -62,57 +63,36 @@ fn quarantine(state: runtime_state.State, name: String) -> Option(String) {
   })
 }
 
-/// The extension this change enables, if it enables one.
-fn demanded(change: selection.Change) -> Option(String) {
-  case change {
-    selection.SetSession(name, True) | selection.SetGlobal(name, True) ->
-      Some(name)
-    _ -> None
-  }
-}
-
-/// Reload one session's extension selection. The choice is persisted before
-/// the live session is touched; a change that alters the running set opens a
-/// replacement kernel alongside the old one first.
+/// Save the desired choice, then apply it through the same path as reload.
+/// A failed application leaves the preference available for a later retry.
 pub fn reload(
   state: runtime_state.State,
   id: String,
   cwd: String,
   change: selection.Change,
-  reply: Subject(Result(Option(runtime_state.Session), String)),
+  reply: Subject(runtime_state.Application),
 ) -> runtime_state.State {
   let installed = shared.read(state.installed)
-  let proposed = case quarantine(state, selection.change_name(change)) {
-    Some(error) -> Error(error)
-    None ->
-      selection.propose(
-        state.work,
-        installed.extensions,
-        installed.default_enabled,
-        id,
-        change,
-      )
-  }
-  let current =
-    selection.enabled(
+  let recorded = {
+    use _ <- result.try(case quarantine(state, selection.change_name(change)) {
+      Some(error) -> Error(error)
+      None -> Ok(Nil)
+    })
+    use selected <- result.try(selection.propose(
       state.work,
       installed.extensions,
       installed.default_enabled,
       id,
-    )
-  // Extensions carry function fields, so the running set compares by name.
-  let names = fn(selected: List(extension.Extension)) {
-    list.map(selected, fn(extension) { extension.name })
-  }
-  let unchanged = case proposed, current {
-    Ok(selected), Ok(running) -> names(selected) == names(running)
-    _, _ -> False
-  }
-  let ledger = state.work
-  let persist = fn(selected) {
-    use previous <- result.try(current)
+      change,
+    ))
+    use previous <- result.try(selection.enabled(
+      state.work,
+      installed.extensions,
+      installed.default_enabled,
+      id,
+    ))
     selection.record_selected(
-      ledger,
+      state.work,
       id,
       change,
       previous,
@@ -120,132 +100,38 @@ pub fn reload(
       installed.extensions,
     )
   }
-  case proposed, unchanged {
-    // Nothing this session runs changes: record the choice and keep the
-    // live kernel, its namespace, and its prompt cache.
-    Ok(selected), True -> {
-      process.send(reply, persist(selected) |> result.replace(None))
-      state
-    }
-    Error(error), _ -> {
-      process.send(reply, Error(error))
-      state
-    }
-    Ok(selected), False ->
-      reopen(state, id, cwd, selected, demanded(change), persist, reply)
-  }
-}
-
-/// The change alters the running set: the new composition and kernel are
-/// prepared alongside the old one; only the loser's resources are released,
-/// and only after the selection is persisted, so a rollback leaves the live
-/// session untouched.
-fn reopen(
-  state: runtime_state.State,
-  id: String,
-  cwd: String,
-  selected: List(extension.Extension),
-  demanded: Option(String),
-  persist: fn(List(extension.Extension)) -> Result(Nil, String),
-  reply: Subject(Result(Option(runtime_state.Session), String)),
-) -> runtime_state.State {
-  let previous = dict.get(state.sessions, id) |> option.from_result
-  let workspace =
-    option.map(previous, fn(session) { session.cwd }) |> option.unwrap(cwd)
-  let generation = reference.new()
-  let state =
-    runtime_state.without_session(state, id)
-    |> runtime_state.admit(id, generation, [])
-  runtime_state.State(
-    ..state,
-    waiting: list.append(state.waiting, [
-      runtime_state.RecomposeSelected(
-        id,
-        generation,
-        workspace,
-        selected,
-        demanded,
-        persist,
-        previous,
+  case recorded {
+    Error(reason) -> {
+      process.send(
         reply,
-      ),
-    ]),
-  )
+        runtime_state.ApplyFailed(
+          surviving(dict.get(state.sessions, id) |> option.from_result),
+          reason,
+        ),
+      )
+      state
+    }
+    Ok(_) -> start_desired_reload(state, id, cwd, reply)
+  }
 }
 
-pub fn recompose_selected(
-  inventory: session_catalog.Inventory,
-  retained: List(runtime_state.Desired),
-  id: String,
-  workspace: String,
-  selected: List(extension.Extension),
-  demanded: Option(String),
-  persist: fn(List(extension.Extension)) -> Result(Nil, String),
+/// Never restore a handle after its kernel has stopped during replacement.
+fn surviving(
   previous: Option(runtime_state.Session),
-) -> Result(#(runtime_state.Cached, Option(runtime_state.Session)), String) {
-  use recorded <- result.try(link.lookup(inventory.ledger, id))
-  use cached <- result.try(preparation.build_cached(
-    inventory,
-    id,
-    workspace,
-    Some(selected),
-    option.values([demanded]),
-    retained,
-  ))
-  case kernels.stage(inventory.ledger, id, cached) {
-    Error(error) -> {
-      composition.close(cached.composition)
-      Error("could not prepare replacement: " <> string.inspect(error))
+) -> Option(runtime_state.Session) {
+  option.then(previous, fn(session) {
+    case python.alive(session.kernel) {
+      True -> Some(session)
+      False -> None
     }
-    Ok(#(kernel, record)) -> {
-      let replacement =
-        kernels.session_over(
-          inventory.ledger,
-          id,
-          cached,
-          kernel,
-          runtime_state.Fresh,
-        )
-      let published = {
-        use observed <- result.try(
-          python.observation(replacement.kernel)
-          |> result.replace_error("replacement observation unavailable"),
-        )
-        use _ <- result.try(case observed.linked && observed.stale == None {
-          True -> Ok(Nil)
-          False -> Error("replacement is not current and attached")
-        })
-        use _ <- result.try(persist(selected))
-        use _ <- result.try(link.ready(inventory.ledger, record))
-        use _ <- result.try(case previous, recorded {
-          Some(session), _ -> python.stop(session.kernel)
-          None, Some(record) ->
-            python.stop_recorded_instance(inventory.ledger, record)
-          None, None -> Ok(Nil)
-        })
-        link.publish(inventory.ledger, record)
-      }
-      case published {
-        Error(reason) -> {
-          let cleanup = python.stop(replacement.kernel)
-          composition.close(cached.composition)
-          Error(case cleanup {
-            Ok(_) -> reason
-            Error(failure) ->
-              reason <> "; replacement cleanup failed: " <> failure
-          })
-        }
-        Ok(_) -> Ok(#(cached, Some(replacement)))
-      }
-    }
-  }
+  })
 }
 
 pub fn start_desired_reload(
   state: runtime_state.State,
   id: String,
   cwd: String,
-  reply: Subject(Result(Option(runtime_state.Session), String)),
+  reply: Subject(runtime_state.Application),
 ) -> runtime_state.State {
   let generation = reference.new()
   let previous = dict.get(state.sessions, id) |> option.from_result
@@ -375,7 +261,7 @@ pub fn reloaded(
     #(runtime_state.Cached, Option(runtime_state.Session)),
     String,
   ),
-  reply: Subject(Result(Option(runtime_state.Session), String)),
+  reply: Subject(runtime_state.Application),
 ) -> runtime_state.State {
   case runtime_state.current_waiters(state, id, generation) {
     Error(_) -> {
@@ -398,15 +284,27 @@ pub fn reloaded(
           composition.close(fresh.composition)
         }
       }
-      process.send(reply, Error("the session closed during reload"))
+      process.send(
+        reply,
+        runtime_state.ApplyFailed(None, "the session closed during reload"),
+      )
       state
     }
     Ok(waiters) ->
       case outcome {
         Error(reason) -> {
-          let state = case previous {
-            Some(session) -> runtime_state.holding(state, id, session)
-            None -> state
+          let retained = surviving(previous)
+          let state = case retained, previous {
+            Some(session), _ -> runtime_state.holding(state, id, session)
+            None, Some(_) -> {
+              kernels.close_cached_at(state, id)
+              runtime_state.State(
+                ..state,
+                compositions: dict.delete(state.compositions, id),
+                desired: dict.delete(state.desired, id),
+              )
+            }
+            None, None -> state
           }
           list.each(list.reverse(waiters), fn(answer) {
             answer(Error(python.Invalid(reason)))
@@ -417,7 +315,7 @@ pub fn reloaded(
               id,
               dict.get(state.compositions, id) |> result.replace_error(reason),
             )
-          process.send(reply, Error(reason))
+          process.send(reply, runtime_state.ApplyFailed(retained, reason))
           runtime_state.generation_over(state, id)
         }
         Ok(#(fresh, replacement)) -> {
@@ -430,7 +328,27 @@ pub fn reloaded(
               desired: dict.delete(state.desired, id),
             )
             |> preparation.finish_commands(id, Ok(fresh))
-          process.send(reply, Ok(replacement))
+          let carried_warnings = case replacement {
+            Some(runtime_state.Session(
+              origin: runtime_state.Upgraded(carried),
+              ..,
+            )) ->
+              list.map(carried.saved.missed, fn(item) {
+                item.0 <> ": " <> item.1
+              })
+            _ -> []
+          }
+          process.send(
+            reply,
+            runtime_state.Applied(
+              replacement,
+              fresh.loaded_revision,
+              list.append(
+                composition.warnings(fresh.composition),
+                carried_warnings,
+              ),
+            ),
+          )
           preparation.settled(
             state,
             id,

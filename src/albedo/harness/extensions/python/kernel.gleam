@@ -1,6 +1,7 @@
 //// One trusted CPython process per session. POSIX, Python 3.11+.
 
 import albedo/daemon/image
+import albedo/daemon/store
 import albedo/harness/extensions/python/link
 import albedo/harness/extensions/work/ledger as work
 import albedo/harness/extensions/work/rpc
@@ -468,6 +469,9 @@ pub fn open(
   host: fn(String) -> String,
   modules: List(String),
 ) -> Result(#(Kernel, Bool), Error) {
+  use _ <- result.try(
+    reconcile_stages(store, session) |> result.map_error(Unavailable),
+  )
   use #(modules, runs, boot) <- result.try(booter(store, cwd, host, modules))
   case reattach(store, session, cwd, modules, boot) {
     Some(kernel) -> Ok(#(kernel, True))
@@ -485,6 +489,9 @@ pub fn stage(
   host: fn(String) -> String,
   modules: List(String),
 ) -> Result(#(Kernel, link.Record), Error) {
+  use _ <- result.try(
+    reconcile_stages(store, session) |> result.map_error(Unavailable),
+  )
   use #(modules, runs, boot) <- result.try(booter(store, cwd, host, modules))
   boot_fresh(store, session, cwd, modules, runs, boot, True)
 }
@@ -836,6 +843,27 @@ pub fn upgrade(
           ))
       }
   }
+}
+
+/// A failed replacement may have left a staged process whose shutdown was
+/// not confirmed. Reap it before another boot can replace its durable identity.
+fn reconcile_stages(
+  storage: work.Store,
+  session: String,
+) -> Result(Nil, String) {
+  use tables <- result.try(store.read(
+    storage,
+    "SELECT name FROM sqlite_master WHERE type='table' AND name='kernel_stages'",
+    [],
+    decode.field(0, decode.string, decode.success),
+  ))
+  use stages <- result.try(case tables {
+    [] -> Ok([])
+    _ -> link.stages(storage)
+  })
+  stages
+  |> list.filter(fn(record) { record.session == session })
+  |> list.try_each(stop_recorded_instance(storage, _))
 }
 
 /// Reap unpublished candidates left by a daemon that stopped during staging.

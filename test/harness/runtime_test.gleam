@@ -8,10 +8,12 @@ import albedo/harness/extension/selection
 import albedo/harness/extensions/python/kernel as python
 import albedo/harness/extensions/python/link
 import albedo/harness/runtime
+import albedo/harness/runtime/state as runtime_state
 import gleam/erlang/process
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/string
 import gleeunit/should
 import harness/session_fixture
 
@@ -212,4 +214,50 @@ pub fn blocked_preparations_leave_session_capture_responsive_test() -> Nil {
   let assert Ok(captured) = outcome
   captured.info.id |> should.equal("reader")
   completed |> should.be_true
+}
+
+/// SQLite publication failure can only be placed precisely with an injected
+/// trigger. An ordinary daemon request cannot target the post-shutdown gap.
+pub fn failed_publication_never_restores_a_dead_kernel_test() -> Nil {
+  let workspace = temporary_workspace()
+  let assert Ok(host) =
+    runtime.start_with_extensions(":memory:", [
+      extension.python_module("module", "fixture", "run", "", []),
+    ])
+  session_fixture.initialise(host)
+  session_fixture.create(host, "publication", workspace)
+  let assert Ok(old) = runtime.open_session(host, "publication", workspace)
+  let ledger = runtime.ledger(host)
+  let assert Ok(_) =
+    store.query(ledger, fn(db) {
+      store.exec(
+        db,
+        "CREATE TRIGGER refuse_publication BEFORE INSERT ON kernel_links BEGIN SELECT RAISE(FAIL, 'publication refused'); END;",
+      )
+    })
+  let assert runtime_state.ApplyFailed(retained, reason) =
+    runtime.apply_change(
+      host,
+      "publication",
+      workspace,
+      selection.SetSession("module", False),
+    )
+  retained |> should.equal(None)
+  runtime.alive(old) |> should.be_false
+  string.contains(reason, "publication refused") |> should.be_true
+  let assert Ok(loaded) = runtime.observe_loaded(host, "publication")
+  loaded.loaded_revision |> should.equal(None)
+  loaded.kernel |> should.equal(None)
+  let assert Ok(chosen) = selection.overrides(ledger, "publication")
+  list.contains(chosen, #("module", False)) |> should.be_true
+  let assert Ok(stages) = link.stages(ledger)
+  stages |> should.equal([])
+  let assert Ok(_) =
+    store.query(ledger, fn(db) {
+      store.exec(db, "DROP TRIGGER refuse_publication")
+    })
+  let assert Ok(fresh) = runtime.open_session(host, "publication", workspace)
+  runtime.alive(fresh) |> should.be_true
+  runtime.stop(host)
+  cleanup_workspace(workspace)
 }

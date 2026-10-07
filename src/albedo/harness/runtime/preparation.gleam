@@ -432,9 +432,11 @@ pub fn abandon(state: runtime_state.State, id: String) -> runtime_state.State {
       runtime_state.AttachKernel(_, _, _, reply) -> process.send(reply, Nil)
       runtime_state.UpgradeKernel(_, _, _, _, answer) ->
         answer(Error("the session closed during kernel upgrade"))
-      runtime_state.RecomposeSelected(reply: reply, ..)
-      | runtime_state.RecomposeDesired(reply: reply, ..) ->
-        process.send(reply, Error("the session closed during reload"))
+      runtime_state.RecomposeDesired(reply: reply, ..) ->
+        process.send(
+          reply,
+          runtime_state.ApplyFailed(None, "the session closed during reload"),
+        )
       // Its opener waits in the generation and is answered with it below.
       runtime_state.SwapStale(..) -> Nil
       runtime_state.Compose(..) | runtime_state.BootKernel(..) -> Nil
@@ -446,7 +448,10 @@ pub fn abandon(state: runtime_state.State, id: String) -> runtime_state.State {
     case message {
       runtime_state.Reload(_, _, _, reply)
       | runtime_state.ReloadDesired(_, _, reply) ->
-        process.send(reply, Error("the session closed during reload"))
+        process.send(
+          reply,
+          runtime_state.ApplyFailed(None, "the session closed during reload"),
+        )
       runtime_state.Upgrade(_, answer) ->
         answer(Error("the session closed during kernel upgrade"))
       runtime_state.Reattach(_, _, reply) -> process.send(reply, Nil)

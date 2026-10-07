@@ -177,37 +177,6 @@ fn start(
           answer(Error("runtime owner stopped during kernel upgrade"))
         },
       )
-    runtime_state.RecomposeSelected(
-      id,
-      generation,
-      cwd,
-      selected,
-      demanded,
-      persist,
-      previous,
-      reply,
-    ) -> {
-      let retained = observation.retained_basis(state)
-      work(
-        self,
-        fn() {
-          protect.guarded(fn() {
-            reload.recompose_selected(
-              inventory,
-              retained,
-              id,
-              cwd,
-              selected,
-              demanded,
-              persist,
-              previous,
-            )
-          })
-        },
-        runtime_state.Reloaded(id, generation, previous, _, reply),
-        reload.orphaned(previous, _, reply),
-      )
-    }
     runtime_state.RecomposeDesired(
       id,
       generation,

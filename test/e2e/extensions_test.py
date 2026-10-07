@@ -1,6 +1,7 @@
 """Extension catalog, commands, live reload, and compaction through a real daemon."""
 
 import json
+import sqlite3
 from pathlib import Path
 import threading
 import unittest
@@ -773,6 +774,42 @@ class ExtensionTests(unittest.TestCase):
             "catalog-only fixture description", requests[-1]["instructions"]
         )
         self.assertIn("older conversation summary", json.dumps(requests[-1]["input"]))
+
+    def test_failed_snapshot_retains_kernel_and_saved_choice_for_retry(self):
+        self.turn("hot probe before reload", expected=2)
+        before = self.snapshot()["kernel"]["instance_id"]
+        with sqlite3.connect(self.app.home / "albedo.sqlite") as db:
+            (run_dir,) = db.execute(
+                "SELECT run_dir FROM kernel_links WHERE session=?", (self.sid,)
+            ).fetchone()
+        blocked = Path(run_dir) / "namespace.state" / "taken"
+        blocked.mkdir(parents=True)
+        self.change({"selection": {"extensions": {"skills": False}}})
+        refused = self.reload()["session"]
+        self.assertEqual(refused["state"], "failed", refused)
+        self.assertFalse(self.extensions()["skills"], "the desired choice stays saved")
+        self.assertEqual(self.snapshot()["kernel"]["instance_id"], before)
+        self.assertIsNotNone(refused["loaded_revision"])
+        blocked.rmdir()
+        blocked.parent.rmdir()
+        applied = self.reload()["session"]
+        self.assertEqual(applied["state"], "applied", applied)
+        self.assertNotEqual(self.snapshot()["kernel"]["instance_id"], before)
+        self.assertNotIn("/demo", [entry["slash_name"] for entry in self.commands()])
+
+    def test_compaction_applies_saved_strategy_and_keeps_matching_kernel(self):
+        self.turn("first turn")
+        self.turn("second turn")
+        before = self.snapshot()["kernel"]["instance_id"]
+        self.change({"selection": {"extensions": {"lcm": True}}})
+        # Saving is separate from applying. Named compaction must compare with
+        # the loaded strategy, even when the desired choice already matches.
+        report = self.compact("lcm")
+        self.assertTrue(report["selection_applied"], report)
+        self.assertEqual(report["effective_strategy"], "lcm", report)
+        self.assertEqual(report["state"], "compacted", report)
+        after = self.snapshot()["kernel"]["instance_id"]
+        self.assertEqual(after, before)
 
     # exclusive: restarts the daemon
     @exclusive

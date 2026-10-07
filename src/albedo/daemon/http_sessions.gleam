@@ -1480,9 +1480,28 @@ pub fn reload(
           |> result.map_error(http_api.failure),
         )
         let changed = session.reload(worker)
-        use loaded <- result.try(
-          runtime.observe_loaded(host, id) |> result.map_error(http_api.failure),
-        )
+        let observed = runtime.observe_loaded(host, id)
+        let loaded_revision = case changed {
+          Ok(value) -> value.loaded_revision
+          Error(_) ->
+            observed
+            |> result.map(fn(value) { value.loaded_revision })
+            |> result.unwrap(None)
+        }
+        let kernel =
+          observed
+          |> result.map(fn(value) { value.kernel })
+          |> result.unwrap(None)
+        let warnings = case changed {
+          Ok(value) ->
+            list.append(value.warnings, case observed {
+              Ok(_) -> []
+              Error(reason) -> [
+                "reloaded, but kernel observation failed: " <> reason,
+              ]
+            })
+          Error(_) -> []
+        }
         Ok(
           json.object([
             #(
@@ -1492,26 +1511,20 @@ pub fn reload(
                 Error(_) -> "failed"
               }),
             ),
-            #(
-              "loaded_revision",
-              json.nullable(loaded.loaded_revision, json.string),
-            ),
+            #("loaded_revision", json.nullable(loaded_revision, json.string)),
             #(
               "restart_required",
               json.bool(
-                option.map(loaded.kernel, fn(kernel) { kernel.stale != None })
+                option.map(kernel, fn(kernel) { kernel.stale != None })
                 |> option.unwrap(False),
               ),
             ),
             #(
               "warnings",
-              json.array(
-                case changed {
-                  Ok(value) -> list.take(value.warnings, 100)
-                  Error(_) -> []
-                },
-                http_api.reason("reload_warning", _),
-              ),
+              json.array(list.take(warnings, 100), http_api.reason(
+                "reload_warning",
+                _,
+              )),
             ),
             #("failure", case changed {
               Ok(_) -> json.null()

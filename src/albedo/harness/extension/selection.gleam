@@ -344,20 +344,22 @@ pub fn record_selected(
   case change, replacing {
     SetSession(..), True ->
       set_selection_with(ledger, session, previous, selected, #(name, True))
-    SetGlobal(..), True -> {
-      use _ <- result.try(
-        list.try_each(installed, fn(other) {
-          case other.name != name && is_compaction(other) {
-            True -> set_global(settings.home(), other.name, False)
-            False -> Ok(Nil)
-          }
-        }),
+    SetGlobal(..), True ->
+      set_globals(
+        settings.home(),
+        installed
+          |> list.filter(is_compaction)
+          |> list.map(fn(other) { #(other.name, other.name == name) }),
       )
-      record(ledger, session, change)
-    }
     _, _ -> record(ledger, session, change)
   }
 }
+
+@external(erlang, "albedo_extension_settings", "set_enabled_many")
+fn set_globals(
+  home: String,
+  choices: List(#(String, Bool)),
+) -> Result(Nil, String)
 
 fn set_selection_with(
   ledger: store.Store,
