@@ -2,11 +2,11 @@
 //// it: the discovery inventory, the desired selection and its revision, and
 //// the observation an HTTP caller or the session actor reads.
 
-import albedo/daemon/session_catalog
 import albedo/harness/extension
 import albedo/harness/extension/composition
 import albedo/harness/extension/selection
 import albedo/harness/protect
+import albedo/harness/runtime/catalog as session_catalog
 import albedo/harness/runtime/state as runtime_state
 import albedo/harness/settings
 import albedo/shared

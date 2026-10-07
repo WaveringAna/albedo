@@ -2,7 +2,6 @@
 //// its instructions and context, admitting the preparation, and settling it
 //// when the worker reports back or gives up.
 
-import albedo/daemon/session_catalog
 import albedo/harness/command
 import albedo/harness/extension
 import albedo/harness/extension/composition
@@ -10,6 +9,7 @@ import albedo/harness/extension/selection
 import albedo/harness/extensions/python/kernel as python
 import albedo/harness/instruction_files
 import albedo/harness/project_files
+import albedo/harness/runtime/catalog as session_catalog
 import albedo/harness/runtime/kernels
 import albedo/harness/runtime/observation
 import albedo/harness/runtime/state as runtime_state

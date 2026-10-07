@@ -1,9 +1,9 @@
 //// Import the previous per-session files once, then keep session choices in
 //// the database. The file owner removes imported fields after the SQL commit.
 
-import albedo/daemon/session_catalog
 import albedo/daemon/session_configuration
 import albedo/daemon/store
+import albedo/harness/runtime/catalog as session_catalog
 import gleam/dict
 import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
@@ -262,5 +262,5 @@ fn migrate_files(
   apply: fn(PreferencesImport) -> Result(Nil, String),
 ) -> Result(Nil, String)
 
-@external(erlang, "albedo_session_catalog", "fingerprint")
+@external(erlang, "albedo_runtime_catalog", "fingerprint")
 fn fingerprint(value: String) -> String

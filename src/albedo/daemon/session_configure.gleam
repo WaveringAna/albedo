@@ -2,7 +2,6 @@
 
 import albedo/daemon/configuration
 import albedo/daemon/conversation
-import albedo/daemon/session_catalog
 import albedo/daemon/session_configuration as config
 import albedo/daemon/session_history
 import albedo/daemon/session_provider
@@ -12,6 +11,7 @@ import albedo/daemon/turn
 import albedo/harness/extension
 import albedo/harness/extension/selection
 import albedo/harness/runtime
+import albedo/harness/runtime/catalog as session_catalog
 import gleam/dict
 import gleam/list
 import gleam/option.{None, Some}

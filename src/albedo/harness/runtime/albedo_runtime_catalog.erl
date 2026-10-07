@@ -1,4 +1,4 @@
--module(albedo_session_catalog).
+-module(albedo_runtime_catalog).
 -export([fingerprint/1, inputs/4, saved/1]).
 
 fingerprint(Value) -> binary:encode_hex(crypto:hash(sha256, Value), lowercase).

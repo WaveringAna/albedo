@@ -1,11 +1,11 @@
 //// Protocol 3 catalog encoding from native discovery facts.
 
 import albedo/daemon/http_api
-import albedo/daemon/session_catalog
 import albedo/harness/client_api
 import albedo/harness/command
 import albedo/harness/extension
 import albedo/harness/runtime
+import albedo/harness/runtime/catalog as session_catalog
 import gleam/json
 import gleam/list
 import gleam/option.{None}

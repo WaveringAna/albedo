@@ -39,7 +39,7 @@ type Source {
   Environment(Dynamic)
 }
 
-@external(erlang, "albedo_settings_http", "json_null")
+@external(erlang, "albedo_settings_read", "json_null")
 fn null() -> Dynamic
 
 fn object(fields: List(#(String, Dynamic))) -> Dynamic {

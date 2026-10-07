@@ -38,3 +38,10 @@ pub fn home() -> String
 
 @external(erlang, "albedo_extension_settings", "read")
 fn read(home: String) -> Result(BitArray, String)
+
+/// Read-only inputs used by composition discovery and admission checks.
+@external(erlang, "albedo_settings_read", "composition_revision")
+pub fn composition_revision(home: String) -> Result(String, String)
+
+@external(erlang, "albedo_settings_read", "mcp_definitions")
+pub fn mcp_definitions(home: String) -> Result(List(#(String, Bool)), String)

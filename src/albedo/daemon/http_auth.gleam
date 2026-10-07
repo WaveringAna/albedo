@@ -3,12 +3,13 @@
 import albedo/daemon/bus
 import albedo/daemon/http_api
 import albedo/daemon/registry.{type Config, type Message, Logins}
-import albedo/daemon/session_catalog
 import albedo/daemon/settings
 import albedo/harness/extension
 import albedo/harness/extension/selection
 import albedo/harness/oauth
 import albedo/harness/runtime
+import albedo/harness/runtime/catalog as session_catalog
+import albedo/harness/settings as extension_settings
 import gleam/bit_array
 import gleam/bytes_tree
 import gleam/dict
@@ -87,7 +88,7 @@ pub fn settings(
           |> result.unwrap(False)
         use before <- result.try(case composes {
           True ->
-            settings.composition_revision(config.home)
+            extension_settings.composition_revision(config.home)
             |> result.map(Some)
             |> result.map_error(http_api.failure)
           False -> Ok(None)
@@ -128,7 +129,7 @@ pub fn settings(
         )
         use fields <- result.try(http_api.fields(changed))
         use revision <- result.try(
-          settings.composition_revision(config.home)
+          extension_settings.composition_revision(config.home)
           |> result.map_error(http_api.failure),
         )
         use enabled <- result.try(

@@ -18,7 +18,6 @@ import albedo/daemon/registry.{
 }
 import albedo/daemon/requests
 import albedo/daemon/session
-import albedo/daemon/session_catalog
 import albedo/daemon/session_configuration
 import albedo/daemon/session_deletion
 import albedo/daemon/session_workspace
@@ -28,6 +27,7 @@ import albedo/daemon/usage
 import albedo/harness/cache_ttl
 import albedo/harness/command
 import albedo/harness/runtime
+import albedo/harness/runtime/catalog as session_catalog
 import albedo/openai_api/types
 import gleam/dynamic/decode
 import gleam/erlang/process.{type Subject}

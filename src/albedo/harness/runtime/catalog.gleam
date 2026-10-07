@@ -1,7 +1,6 @@
 //// Fresh native discovery. Reading it does not prepare a kernel or invoke a command.
 
 import albedo/daemon/conversation
-import albedo/daemon/settings
 import albedo/daemon/store
 import albedo/harness/capabilities
 import albedo/harness/capability_catalog
@@ -10,6 +9,7 @@ import albedo/harness/extension/selection
 import albedo/harness/extensions/skills/catalog as skills
 import albedo/harness/instruction_files
 import albedo/harness/project_files
+import albedo/harness/settings
 import gleam/dynamic/decode
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -132,7 +132,7 @@ fn saved_choices(
   })
 }
 
-@external(erlang, "albedo_session_catalog", "inputs")
+@external(erlang, "albedo_runtime_catalog", "inputs")
 fn native_inputs(
   home: String,
   workspace: String,
@@ -140,7 +140,7 @@ fn native_inputs(
   builtin: String,
 ) -> Result(#(String, String), String)
 
-@external(erlang, "albedo_session_catalog", "saved")
+@external(erlang, "albedo_runtime_catalog", "saved")
 fn native_saved(home: String) -> Result(String, String)
 
 pub fn inspect(
@@ -165,10 +165,7 @@ pub fn inspect(
     capability_catalog.extension_state(summaries),
     inventory.ledger,
   ))
-  use definitions <- result.try(
-    settings.mcp_definitions(home)
-    |> result.map_error(fn(_) { "MCP definitions are unavailable" }),
-  )
+  use definitions <- result.try(settings.mcp_definitions(home))
   use preferences <- result.try(capabilities.load(
     home,
     Some(#(inventory.ledger, id)),
@@ -298,5 +295,5 @@ pub fn composition_revision(
   )
 }
 
-@external(erlang, "albedo_session_catalog", "fingerprint")
+@external(erlang, "albedo_runtime_catalog", "fingerprint")
 fn fingerprint(value: String) -> String

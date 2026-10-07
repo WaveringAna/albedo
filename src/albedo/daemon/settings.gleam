@@ -2,7 +2,6 @@
 
 import albedo/harness/oauth
 import gleam/option.{type Option}
-import gleam/result
 
 pub type Group {
   Providers
@@ -45,16 +44,6 @@ pub fn observe_group(
   group: String,
 ) -> Result(GroupSnapshot, #(Int, String, String))
 
-@external(erlang, "albedo_settings_http", "composition_revision")
-fn saved_composition_revision(
-  home: String,
-) -> Result(String, #(Int, String, String))
-
-pub fn composition_revision(home: String) -> Result(String, String) {
-  saved_composition_revision(home)
-  |> result.map_error(fn(_) { "composition settings are unavailable" })
-}
-
 @external(erlang, "albedo_settings_http", "patch")
 pub fn patch_group(
   home: String,
@@ -67,8 +56,3 @@ pub fn patch_group(
   defaults: fn(List(#(String, Bool)), List(#(String, Option(Bool)))) ->
     Result(List(#(String, Bool)), #(Int, String, String)),
 ) -> Result(String, #(Int, String, String))
-
-@external(erlang, "albedo_settings_http", "mcp_definitions")
-pub fn mcp_definitions(
-  home: String,
-) -> Result(List(#(String, Bool)), #(Int, String, String))

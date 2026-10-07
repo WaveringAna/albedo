@@ -2,7 +2,6 @@
 
 import albedo/actor_call
 import albedo/daemon/configuration
-import albedo/daemon/session_catalog
 import albedo/daemon/store
 import albedo/harness/command
 import albedo/harness/compaction
@@ -17,6 +16,7 @@ import albedo/harness/extensions/work/ledger as work
 import albedo/harness/oauth
 import albedo/harness/protect
 import albedo/harness/runtime/boot
+import albedo/harness/runtime/catalog as session_catalog
 import albedo/harness/runtime/kernels
 import albedo/harness/runtime/preparation
 import albedo/harness/runtime/reload

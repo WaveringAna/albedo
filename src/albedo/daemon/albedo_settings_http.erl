@@ -1,13 +1,13 @@
 -module(albedo_settings_http).
--export([composition_revision/1, mcp_definitions/1, observe/2, patch/8, json_null/0]).
+-export([observe/2, patch/8]).
 -import(albedo_settings_store, [with_lock/2, object/2, check/1, commit_group/2]).
 
 %% These are HTTP boundary projections. Persisted names remain owned by the
 %% harness, including callers from trusted model tools.
 observe(Home, Group) -> with_lock(Home, fun() -> guarded(fun() ->
     Groups = case Group of
-        <<"ui">> -> #{<<"ui">> => projection('albedo@daemon@settings_projection':ui_group(albedo_settings_store:read(Home, <<"picker.json">>)))};
-        _ -> projection('albedo@daemon@settings_projection':groups(documents(Home)))
+        <<"ui">> -> #{<<"ui">> => projection('albedo@harness@settings@projection':ui_group(albedo_settings_store:read(Home, <<"picker.json">>)))};
+        _ -> projection('albedo@harness@settings@projection':groups(documents(Home)))
     end,
     Revisions = albedo_settings_store:read(Home, <<"settings-revisions.json">>),
     Value = case Group of
@@ -20,7 +20,7 @@ end) end).
 
 patch(Home, Group, Match, PatchJSON, Providers, Logins, Resolve, Defaults) ->
     Captured = with_lock(Home, fun() -> guarded(fun() ->
-        Docs = documents(Home), Groups = projection('albedo@daemon@settings_projection':groups(Docs)), Prior = group(Group, Groups),
+        Docs = documents(Home), Groups = projection('albedo@harness@settings@projection':groups(Docs)), Prior = group(Group, Groups),
         Revisions = albedo_settings_store:read(Home, <<"settings-revisions.json">>),
         match_group(Group, Match, Prior, Revisions),
         {ok, Patch} = albedo_http_api:parse(PatchJSON),
@@ -41,7 +41,7 @@ patch(Home, Group, Match, PatchJSON, Providers, Logins, Resolve, Defaults) ->
                 check(albedo_mcp:check_candidate(Name, Definition, Secret))
             end, Checked),
             with_lock(Home, fun() -> guarded(fun() ->
-                Docs = documents(Home), Prior = group(Group, projection('albedo@daemon@settings_projection':groups(Docs))),
+                Docs = documents(Home), Prior = group(Group, projection('albedo@harness@settings@projection':groups(Docs))),
                 Revisions = albedo_settings_store:read(Home, <<"settings-revisions.json">>),
                 match_group(Group, Match, Prior, Revisions),
                 {Next, Validation} = candidate(Home, Group, Patch, Docs, Resolve, Defaults),
@@ -67,7 +67,7 @@ checked_candidates(Patch, Docs) ->
         || {Name, Change} <- lists:sort(maps:to_list(object(<<"definitions">>, Patch))), Change =/= null].
 
 publish(Home, Group, Docs, Next, Validation, Revisions) ->
-    Value = group(Group, projection('albedo@daemon@settings_projection':groups(Next))),
+    Value = group(Group, projection('albedo@harness@settings@projection':groups(Next))),
     Changed = maps:filter(fun(File, V) -> V =/= maps:get(File, Docs) end, Next),
     NextRevisions = case map_size(Changed) of
         0 -> Revisions;
@@ -191,8 +191,8 @@ provider_fields() -> [{<<"extension">>, <<"extension">>}, {<<"endpoint">>, <<"ba
 translate(Map, Names) -> maps:from_list([{Stored, maps:get(Wire, Map)} || {Wire, Stored} <- Names, maps:is_key(Wire, Map)]).
 
 mcp_candidate(Patch, Prior, Secrets0) ->
-    fields(Patch, [Wire || {Wire, _} <- 'albedo@daemon@settings_projection':mcp_fields()] ++ [<<"environment">>, <<"headers">>, <<"secrets">>]),
-    Public0 = maps:merge(Prior, translate(Patch, 'albedo@daemon@settings_projection':mcp_fields())),
+    fields(Patch, [Wire || {Wire, _} <- 'albedo@harness@settings@projection':mcp_fields()] ++ [<<"environment">>, <<"headers">>, <<"secrets">>]),
+    Public0 = maps:merge(Prior, translate(Patch, 'albedo@harness@settings@projection':mcp_fields())),
     SecretPatch = object(<<"secrets">>, Patch), fields(SecretPatch, [<<"bearer_token">>, <<"environment">>, <<"headers">>]),
     {Public1, Secrets1} = lists:foldl(fun({Wire, Stored}, {Public, Secrets}) ->
         PublicChanges = maps:get(Wire, Patch, #{}), SecretChanges = maps:get(Wire, SecretPatch, #{}),
@@ -245,25 +245,6 @@ guarded(Run) -> try Run() catch
     _:_ -> {error, {400, <<"invalid_request">>, <<"invalid settings candidate">>}}
 end.
 
-mcp_definitions(Home) -> with_lock(Home, fun() -> guarded(fun() ->
-    Ext = albedo_settings_store:read(Home, <<"extensions.json">>),
-    Servers = object(<<"servers">>, object(<<"mcp">>, Ext)),
-    {ok, lists:sort([{Name, maps:get(<<"enabled">>, Definition, true)} || {Name, Definition} <- maps:to_list(Servers)])}
-end) end).
-
-%% Composition depends on these saved groups. Counters retain changes to
-%% write-only secrets without exposing secret values or hashes of them.
-composition_revision(Home) -> with_lock(Home, fun() -> guarded(fun() ->
-    Documents = maps:from_list([{File, albedo_settings_store:read(Home, File)} || File <-
-        [<<"extensions.json">>, <<"capabilities.json">>, <<"creds.json">>]]),
-    Groups = projection('albedo@daemon@settings_projection':composition_groups(Documents)),
-    Revisions = albedo_settings_store:read(Home, <<"settings-revisions.json">>),
-    Selected = [{Name, group_etag(Name, group(Name, Groups), Revisions)} ||
-        Name <- [<<"extensions">>, <<"mcp">>, <<"capabilities">>]],
-    {ok, binary:encode_hex(crypto:hash(sha256, term_to_binary(Selected)), lowercase)}
-end) end).
-
-
 validate_provider_accounts(Docs, Providers, Logins) ->
     Config = saved_config(maps:get(<<"config.json">>, Docs)), Creds = maps:get(<<"creds.json">>, Docs),
     Accounts = object(<<"accounts">>, Creds), Keys = object(<<"providers">>, Creds),
@@ -284,7 +265,6 @@ validate_provider_accounts(Docs, Providers, Logins) ->
     end, object(<<"providers">>, Config)).
 
 %% Gleam returns native JSON maps so validators retain the existing encoding.
-json_null() -> null.
 
 projection({ok, Value}) -> Value;
 projection({error, invalid_section}) -> throw({settings, <<"invalid settings section">>});
