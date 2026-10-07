@@ -15,6 +15,10 @@ pub fn event(data: String) -> Result(#(String, Dynamic), Nil)
 @external(erlang, "albedo_openai_json", "string_field")
 pub fn string(object: Dynamic, key: String) -> Result(String, Nil)
 
+/// `decode.at(path, decode.string)`.
+@external(erlang, "albedo_openai_json", "string_at")
+pub fn string_at(object: Dynamic, path: List(String)) -> Result(String, Nil)
+
 /// `decode.field(key, decode.int)`.
 @external(erlang, "albedo_openai_json", "int_field")
 pub fn int(object: Dynamic, key: String) -> Result(Int, Nil)

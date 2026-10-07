@@ -4,8 +4,10 @@
 %% started on first use. A finished exchange may release its connection
 %% before the response's last bytes (a chunked terminator) arrive; they are
 %% read here, at most ?DRAIN_BYTES within ?DRAIN_MS, so the caller never
-%% waits. An idle connection waits at most ?IDLE_MS, at most ?IDLE_PER_HOST
-%% per host; one that closes or sends anything meanwhile is dropped.
+%% waits, and a request to the same host meanwhile waits for it rather than
+%% opening another. An idle connection waits at most ?IDLE_MS, at most
+%% ?IDLE_PER_HOST per host; one that closes or sends anything meanwhile is
+%% dropped.
 
 -export([checkout/1, checkin/5]).
 
@@ -13,10 +15,14 @@
 -define(IDLE_PER_HOST, 8).
 -define(DRAIN_MS, 5000).
 -define(DRAIN_BYTES, 65536).
+%% How long a checkout waits for a connection that is still draining before
+%% opening its own; a new TLS connection costs about as much.
+-define(WAIT_MS, 50).
 -define(CALL_MS, 1000).
 
 %% An idle connection to Key ({Transport, Host, Port}), now owned by the
-%% caller and in passive mode, or none.
+%% caller and in passive mode, or none. When the only connections to Key are
+%% still reading the end of a response, waits up to ?WAIT_MS for one.
 checkout(Key) ->
     case whereis(?MODULE) of
         undefined -> none;
@@ -45,7 +51,7 @@ checkin(Key, Transport, Socket, Framing, Buffer) ->
 pool() ->
     case whereis(?MODULE) of
         undefined ->
-            Pid = spawn(fun() -> loop(#{}) end),
+            Pid = spawn(fun() -> loop(#{}, []) end),
             try register(?MODULE, Pid) of
                 true -> Pid
             catch error:badarg -> exit(Pid, kill), pool()
@@ -59,35 +65,57 @@ controlling_process(tls, Socket, Pid) -> ssl:controlling_process(Socket, Pid).
 
 %% Conns maps each socket to #{key, transport, phase, since, timer}, where
 %% phase is idle or {draining, Framing, Buffer, Read}: Read counts the body
-%% bytes drained so far.
-loop(Conns) ->
+%% bytes drained so far. Waiters are checkouts, oldest first, waiting for a
+%% connection to their host that is still draining.
+loop(Conns, Waiters) ->
     receive
         {checkout, From, Ref, Key} ->
-            {Reply, Next} = take(Key, From, Conns),
-            From ! {Ref, Reply},
-            loop(Next);
+            Timer = erlang:start_timer(?WAIT_MS, self(), {give_up, Ref}),
+            serve(Conns, Waiters ++ [{From, Ref, Key, Timer}]);
         {checkin, Key, Transport, Socket, Framing, Buffer} ->
             Conn = #{key => Key, transport => Transport, since => 0,
                      phase => {draining, Framing, <<>>, 0},
                      timer => timer(?DRAIN_MS, Socket)},
-            loop(settle(Socket, Conn, Buffer, Conns#{Socket => Conn}));
+            serve(settle(Socket, Conn, Buffer, Conns#{Socket => Conn}), Waiters);
         {Tag, Socket, Bytes} when Tag =:= tcp; Tag =:= ssl ->
             case Conns of
                 #{Socket := #{phase := {draining, _, _, _}} = Conn} ->
-                    loop(settle(Socket, Conn, Bytes, Conns));
-                #{} -> loop(drop(Socket, Conns))
+                    serve(settle(Socket, Conn, Bytes, Conns), Waiters);
+                #{} -> serve(drop(Socket, Conns), Waiters)
             end;
         {Tag, Socket} when Tag =:= tcp_closed; Tag =:= ssl_closed ->
-            loop(drop(Socket, Conns));
+            serve(drop(Socket, Conns), Waiters);
         {Tag, Socket, _} when Tag =:= tcp_error; Tag =:= ssl_error ->
-            loop(drop(Socket, Conns));
+            serve(drop(Socket, Conns), Waiters);
         {timeout, Timer, {expire, Socket}} ->
             case Conns of
-                #{Socket := #{timer := Timer}} -> loop(drop(Socket, Conns));
-                #{} -> loop(Conns)
+                #{Socket := #{timer := Timer}} -> serve(drop(Socket, Conns), Waiters);
+                #{} -> loop(Conns, Waiters)
             end;
-        _ -> loop(Conns)
+        {timeout, _, {give_up, Ref}} ->
+            {Gone, Rest} = lists:partition(fun({_, Id, _, _}) -> Id =:= Ref end, Waiters),
+            [From ! {Ref, none} || {From, _, _, _} <- Gone],
+            loop(Conns, Rest);
+        _ -> loop(Conns, Waiters)
     end.
+
+%% Answers every waiter that can be answered: with an idle connection to its
+%% host, or none once no connection to its host is draining.
+serve(Conns, Waiters) ->
+    {Next, Waiting} = lists:foldl(fun({From, Ref, Key, Timer} = Waiter, {Acc, Kept}) ->
+        case idle(Key, Acc) =:= [] andalso draining(Key, Acc) of
+            true -> {Acc, [Waiter | Kept]};
+            false ->
+                erlang:cancel_timer(Timer),
+                {Reply, Rest} = take(Key, From, Acc),
+                From ! {Ref, Reply},
+                {Rest, Kept}
+        end
+    end, {Conns, []}, Waiters),
+    loop(Next, lists:reverse(Waiting)).
+
+draining(Key, Conns) ->
+    lists:any(fun(#{key := K, phase := P}) -> K =:= Key andalso P =/= idle end, maps:values(Conns)).
 
 %% Reads Bytes into a draining connection; it turns idle once its response
 %% ends with nothing after it.

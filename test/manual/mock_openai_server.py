@@ -1,20 +1,26 @@
-"""A local OpenAI-compatible streaming server for transport benchmarks.
+"""A local streaming model server for transport benchmarks.
 
 Run explicitly: python3 test/manual/mock_openai_server.py [port] [cert key]
-The base URL picks the stream: http://127.0.0.1:PORT/<rate>/<tokens>/v1
-streams <tokens> text deltas at <rate> tokens per second (0 for as fast as
-the socket takes them), one SSE event per write, over HTTP/1.1 chunked
-encoding on kept-alive connections. With a certificate and key it serves
-https instead. Any request to /timings returns the send time (ns,
-CLOCK_REALTIME) of every delta of the last stream, so a client can compute
+The base URL picks the stream: http://127.0.0.1:PORT/<rate>/<tokens>[/<option>...]/v1
+streams <tokens> deltas at <rate> per second (0 for as fast as the socket
+takes them), one SSE event per write, over HTTP/1.1 chunked encoding on
+kept-alive connections. Options: t<percent> streams that share of the
+deltas as one python tool call's arguments after the text, and s<id> names
+the stream so parallel streams keep separate timings. The route picks the
+wire format: /responses, /chat/completions, or Anthropic's /messages. With
+a certificate and key it serves https instead. A request to /timings/<id>
+(or /timings for stream 0) returns the send time (ns, CLOCK_REALTIME) of
+every delta of that stream's last response, so a client can compute
 per-token latency.
 """
 
 import asyncio
 import json
+import random
 import ssl
 import sys
 import time
+from collections.abc import Iterator
 
 WORDS = [
     "the",
@@ -28,7 +34,10 @@ WORDS = [
     ".",
     "\n",
 ]
-timings: list[int] = []
+timings: dict[str, list[int]] = {}
+
+# Each stream yields (is_delta, event); deltas are paced and timed.
+Events = Iterator[tuple[bool, bytes]]
 
 
 def sse(name: str | None, payload: object) -> bytes:
@@ -39,6 +48,25 @@ def sse(name: str | None, payload: object) -> bytes:
 
 def chunked(body: bytes) -> bytes:
     return b"%x\r\n%s\r\n" % (len(body), body)
+
+
+def split(text: str, parts: int) -> list[str]:
+    """text in at most parts nonempty pieces of about equal size."""
+    if parts <= 0:
+        return []
+    size = -(-len(text) // parts)
+    chunks = [text[i * size : (i + 1) * size] for i in range(parts)]
+    return [chunk for chunk in chunks if chunk] or [text]
+
+
+def plan(count: int, tool_percent: int) -> tuple[list[str], list[str], str]:
+    """count deltas: text words, then tool_percent of them as pieces of one
+    python call's arguments, and those arguments whole."""
+    calls = count * tool_percent // 100
+    words = [WORDS[i % len(WORDS)] for i in range(count - calls)]
+    code = " ".join(f"print({i})" for i in range(max(calls, 1)))
+    arguments = json.dumps({"code": code})
+    return words, split(arguments, calls) if calls else [], arguments
 
 
 def message(text: str, status: str) -> dict:
@@ -52,7 +80,23 @@ def message(text: str, status: str) -> dict:
     }
 
 
-def responses(tokens: list[str]):
+def function_call(arguments: str, status: str) -> dict:
+    return {
+        "id": "fc_0001",
+        "type": "function_call",
+        "status": status,
+        "call_id": "call_0001",
+        "name": "python",
+        "arguments": arguments,
+    }
+
+
+def responses(words: list[str], calls: list[str], arguments: str) -> Events:
+    sequence = iter(range(1_000_000))
+
+    def event(kind: str, **fields: object) -> bytes:
+        return sse(kind, {"type": kind, "sequence_number": next(sequence), **fields})
+
     created = {
         "id": "resp_0001",
         "object": "response",
@@ -60,90 +104,104 @@ def responses(tokens: list[str]):
         "model": "mock",
         "output": [],
     }
+    yield False, event("response.created", response=created)
     yield (
-        None,
-        sse(
-            "response.created",
-            {"type": "response.created", "sequence_number": 0, "response": created},
+        False,
+        event(
+            "response.output_item.added",
+            output_index=0,
+            item=message("", "in_progress"),
         ),
     )
-    added = {
-        "type": "response.output_item.added",
-        "sequence_number": 1,
-        "output_index": 0,
-        "item": message("", "in_progress"),
-    }
-    yield None, sse("response.output_item.added", added)
-    for i, token in enumerate(tokens):
-        delta = {
-            "type": "response.output_text.delta",
-            "sequence_number": i + 2,
-            "item_id": "msg_0001",
-            "output_index": 0,
-            "content_index": 0,
-            "delta": token,
-            "logprobs": [],
-            "obfuscation": "x7Qp2LmN",
-        }
-        yield i, sse("response.output_text.delta", delta)
-    full = message("".join(tokens), "completed")
-    done = {
-        "type": "response.output_item.done",
-        "sequence_number": len(tokens) + 2,
-        "output_index": 0,
-        "item": full,
-    }
-    yield None, sse("response.output_item.done", done)
+    for word in words:
+        yield (
+            True,
+            event(
+                "response.output_text.delta",
+                item_id="msg_0001",
+                output_index=0,
+                content_index=0,
+                delta=word,
+                logprobs=[],
+                obfuscation="x7Qp2LmN",
+            ),
+        )
+    output = [message("".join(words), "completed")]
+    yield False, event("response.output_item.done", output_index=0, item=output[0])
+    if calls:
+        yield (
+            False,
+            event(
+                "response.output_item.added",
+                output_index=1,
+                item=function_call("", "in_progress"),
+            ),
+        )
+        for chunk in calls:
+            yield (
+                True,
+                event(
+                    "response.function_call_arguments.delta",
+                    item_id="fc_0001",
+                    output_index=1,
+                    delta=chunk,
+                    obfuscation="x7Qp2LmN",
+                ),
+            )
+        output.append(function_call(arguments, "completed"))
+        yield False, event("response.output_item.done", output_index=1, item=output[1])
     usage = {
         "input_tokens": 1200,
         "input_tokens_details": {"cached_tokens": 1000},
-        "output_tokens": len(tokens),
+        "output_tokens": len(words) + len(calls),
         "output_tokens_details": {"reasoning_tokens": 0},
-        "total_tokens": 1200 + len(tokens),
     }
-    final = {**created, "status": "completed", "output": [full], "usage": usage}
-    yield (
-        None,
-        sse(
-            "response.completed",
-            {
-                "type": "response.completed",
-                "sequence_number": len(tokens) + 3,
-                "response": final,
-            },
-        ),
-    )
+    final = {**created, "status": "completed", "output": output, "usage": usage}
+    yield False, event("response.completed", response=final)
 
 
-def chat(tokens: list[str]):
-    def chunk(delta: dict, finish: str | None) -> dict:
+def chat(words: list[str], calls: list[str], _arguments: str) -> Events:
+    def chunk(delta: dict, finish: str | None = None) -> bytes:
         choice = {"index": 0, "delta": delta, "logprobs": None, "finish_reason": finish}
-        return {
-            "id": "chatcmpl-0001",
-            "object": "chat.completion.chunk",
-            "created": 1700000000,
-            "model": "mock",
-            "service_tier": "default",
-            "system_fingerprint": "fp_0001",
-            "choices": [choice],
-            "usage": None,
-            "obfuscation": "x7Qp2LmN",
-        }
+        return sse(
+            None,
+            {
+                "id": "chatcmpl-0001",
+                "object": "chat.completion.chunk",
+                "created": 1700000000,
+                "model": "mock",
+                "service_tier": "default",
+                "system_fingerprint": "fp_0001",
+                "choices": [choice],
+                "usage": None,
+                "obfuscation": "x7Qp2LmN",
+            },
+        )
 
-    yield (
-        None,
-        sse(None, chunk({"role": "assistant", "content": "", "refusal": None}, None)),
-    )
-    for i, token in enumerate(tokens):
-        yield i, sse(None, chunk({"content": token}, None))
-    yield None, sse(None, chunk({}, "stop"))
+    yield False, chunk({"role": "assistant", "content": "", "refusal": None})
+    for word in words:
+        yield True, chunk({"content": word})
+    if calls:
+        opened = {
+            "index": 0,
+            "id": "call_0001",
+            "type": "function",
+            "function": {"name": "python", "arguments": ""},
+        }
+        yield False, chunk({"tool_calls": [opened]})
+        for piece in calls:
+            yield (
+                True,
+                chunk({"tool_calls": [{"index": 0, "function": {"arguments": piece}}]}),
+            )
+    yield False, chunk({}, "tool_calls" if calls else "stop")
     usage = {
         "prompt_tokens": 1200,
-        "completion_tokens": len(tokens),
+        "completion_tokens": len(words) + len(calls),
         "prompt_tokens_details": {"cached_tokens": 1000},
     }
     yield (
-        None,
+        False,
         sse(
             None,
             {
@@ -154,25 +212,94 @@ def chat(tokens: list[str]):
             },
         ),
     )
-    yield None, b"data: [DONE]\n\n"
+    yield False, b"data: [DONE]\n\n"
+
+
+def messages(words: list[str], calls: list[str], _arguments: str) -> Events:
+    def event(kind: str, **fields: object) -> bytes:
+        return sse(kind, {"type": kind, **fields})
+
+    start = {
+        "id": "msg_0001",
+        "type": "message",
+        "role": "assistant",
+        "model": "mock",
+        "content": [],
+        "stop_reason": None,
+        "usage": {
+            "input_tokens": 200,
+            "cache_read_input_tokens": 1000,
+            "output_tokens": 1,
+        },
+    }
+    yield False, event("message_start", message=start)
+    yield (
+        False,
+        event(
+            "content_block_start", index=0, content_block={"type": "text", "text": ""}
+        ),
+    )
+    for word in words:
+        yield (
+            True,
+            event(
+                "content_block_delta",
+                index=0,
+                delta={"type": "text_delta", "text": word},
+            ),
+        )
+    yield False, event("content_block_stop", index=0)
+    if calls:
+        block = {"type": "tool_use", "id": "toolu_0001", "name": "python", "input": {}}
+        yield False, event("content_block_start", index=1, content_block=block)
+        for piece in calls:
+            yield (
+                True,
+                event(
+                    "content_block_delta",
+                    index=1,
+                    delta={"type": "input_json_delta", "partial_json": piece},
+                ),
+            )
+        yield False, event("content_block_stop", index=1)
+    delta = {"stop_reason": "tool_use" if calls else "end_turn", "stop_sequence": None}
+    yield (
+        False,
+        event(
+            "message_delta",
+            delta=delta,
+            usage={"output_tokens": len(words) + len(calls)},
+        ),
+    )
+    yield False, event("message_stop")
 
 
 async def stream(writer: asyncio.StreamWriter, path: str) -> None:
-    _, rate, count, *_ = path.split("/")
-    tokens = [WORDS[i % len(WORDS)] for i in range(int(count))]
-    events = chat(tokens) if path.endswith("/chat/completions") else responses(tokens)
+    segments = path.split("/")
+    rate, count = float(segments[1]), int(segments[2])
+    options = segments[3 : segments.index("v1")]
+    name = next((option[1:] for option in options if option.startswith("s")), "0")
+    share = int(next((option[1:] for option in options if option.startswith("t")), "0"))
+    wire = (
+        chat
+        if path.endswith("/chat/completions")
+        else messages
+        if path.endswith("/messages")
+        else responses
+    )
     head = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ntransfer-encoding: chunked\r\n\r\n"
     writer.write(head.encode())
-    timings.clear()
-    interval = 1 / float(rate) if float(rate) > 0 else 0.0
-    started = time.monotonic()
-    for index, event in events:
-        if index is not None and interval:
-            delay = started + index * interval - time.monotonic()
+    sent = timings[name] = []
+    interval = 1 / rate if rate > 0 else 0.0
+    # A random phase, so parallel streams do not all send in the same instant.
+    started = time.monotonic() + random.random() * interval
+    for is_delta, event in wire(*plan(count, share)):
+        if is_delta and interval:
+            delay = started + len(sent) * interval - time.monotonic()
             if delay > 0:
                 await asyncio.sleep(delay)
-        if index is not None:
-            timings.append(time.time_ns())
+        if is_delta:
+            sent.append(time.time_ns())
         writer.write(chunked(event))
         await writer.drain()
     writer.write(b"0\r\n\r\n")
@@ -189,8 +316,10 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> 
                 if name.strip().lower() == "content-length":
                     length = int(value)
             await reader.readexactly(length)
-            if path.endswith("/timings"):
-                body = json.dumps(timings).encode()
+            if path.startswith("/timings"):
+                body = json.dumps(
+                    timings.get(path.removeprefix("/timings").strip("/") or "0", [])
+                ).encode()
                 head = f"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {len(body)}\r\n\r\n"
                 writer.write(head.encode() + body)
             else:

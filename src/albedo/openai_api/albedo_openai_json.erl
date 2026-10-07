@@ -2,7 +2,7 @@
 -export([encode/1, null/0, flatten/1, data_url/2, base64_string/1, semantically_empty/1, object_fields/1]).
 -export([event/1, string_field/2, optional_string_field/2, int_field/2,
          optional_int_field/2, int_field_or/3, list_field/2, object_field/2,
-         missing/2, empty_except/2]).
+         missing/2, empty_except/2, string_at/2]).
 
 encode(Value) -> json:encode(Value).
 
@@ -96,6 +96,15 @@ string_field(Object, Key) ->
         #{Key := Value} when is_binary(Value) -> {ok, Value};
         _ -> {error, nil}
     end.
+
+%% The string at a path of object keys.
+string_at(Value, []) when is_binary(Value) -> {ok, Value};
+string_at(Object, [Key | Path]) when is_map(Object) ->
+    case Object of
+        #{Key := Value} -> string_at(Value, Path);
+        _ -> {error, nil}
+    end;
+string_at(_, _) -> {error, nil}.
 
 int_field(Object, Key) ->
     case Object of

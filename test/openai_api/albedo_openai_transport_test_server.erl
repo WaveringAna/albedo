@@ -211,7 +211,7 @@ respond(Socket, keep_alive, Owner) ->
     next_request(Socket, keep_alive, Owner);
 respond(Socket, slow_end, Owner) ->
     ok = send(Socket, <<"HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n10\r\nhello world, all\r\n">>),
-    receive after 50 -> ok end,
+    receive after 10 -> ok end,
     case send(Socket, <<"0\r\n\r\n">>) of
         ok -> next_request(Socket, slow_end, Owner);
         {error, closed} -> Owner ! {fixture_closed, self()}

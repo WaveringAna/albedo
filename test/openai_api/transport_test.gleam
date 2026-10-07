@@ -5,7 +5,6 @@
 
 import albedo/openai_api/transport
 import gleam/bit_array
-import gleam/erlang/process
 import gleam/list
 import gleam/string
 import gleam/string_tree
@@ -93,12 +92,11 @@ pub fn a_kept_connection_the_server_dropped_is_replaced_test() -> Nil {
 }
 
 /// A stream that has its last event returns before the chunked terminator,
-/// which the fixture sends 50 ms later; once it has arrived, the connection
-/// serves the next request.
+/// which the fixture sends 10 ms later. A request sent at once waits for
+/// that connection instead of opening one the fixture would refuse.
 pub fn a_finished_exchange_keeps_its_connection_before_the_response_ends_test() -> Nil {
   let fixture = start(SlowEnd)
   first_chunk(url(fixture), Ok) |> should.equal(Ok(<<"hello world, all">>))
-  process.sleep(100)
   first_chunk(url(fixture), Ok) |> should.equal(Ok(<<"hello world, all">>))
   stop(fixture)
 }

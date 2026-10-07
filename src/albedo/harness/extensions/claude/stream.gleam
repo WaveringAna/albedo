@@ -2,6 +2,7 @@
 
 import albedo/harness/extensions/claude/wire
 import albedo/openai_api/decoding
+import albedo/openai_api/fields
 import albedo/openai_api/replay
 import albedo/openai_api/stream.{type Reducer}
 import albedo/openai_api/types
@@ -38,6 +39,17 @@ pub fn reducer(model: String, tools: List(types.Tool)) -> Reducer {
 }
 
 fn step(
+  state: State,
+  data: String,
+) -> Result(#(State, List(types.Event), Option(types.Turn)), types.Error) {
+  case fields.event(data) {
+    Ok(#(kind, value)) -> apply(state, kind, value)
+    Error(Nil) -> decode_step(state, data)
+  }
+}
+
+/// `step` for an event the field readers did not take, with its diagnostics.
+fn decode_step(
   state: State,
   data: String,
 ) -> Result(#(State, List(types.Event), Option(types.Turn)), types.Error) {
@@ -162,22 +174,18 @@ fn delta(
   state: State,
   value: Dynamic,
 ) -> Result(#(State, List(types.Event), Option(types.Turn)), types.Error) {
-  use index <- result.try(
-    decode.run(value, decode.at(["index"], decode.int))
-    |> result.map_error(fn(error) {
-      types.InvalidEvent(
-        "missing delta index: " <> decoding.decode_errors(error),
-      )
-    }),
-  )
-  use kind <- result.try(
-    decode.run(value, decode.at(["delta", "type"], decode.string))
-    |> result.map_error(fn(error) {
-      types.InvalidEvent(
-        "missing delta type: " <> decoding.decode_errors(error),
-      )
-    }),
-  )
+  use index <- result.try(read(
+    fields.int(value, "index"),
+    value,
+    decode.at(["index"], decode.int),
+    "missing delta index: ",
+  ))
+  use kind <- result.try(read(
+    fields.string_at(value, ["delta", "type"]),
+    value,
+    decode.at(["delta", "type"], decode.string),
+    "missing delta type: ",
+  ))
   let text = case kind {
     "input_json_delta" -> field(value, ["delta", "partial_json"])
     "signature_delta" -> field(value, ["delta", "signature"])
@@ -186,6 +194,24 @@ fn delta(
   }
   let #(blocks, events) = update(state.blocks, index, kind, text)
   emit(State(..state, blocks: blocks), events)
+}
+
+/// `fast` when the field readers took the value, else what `decoder` makes
+/// of it, its failure labelled.
+fn read(
+  fast: Result(a, Nil),
+  value: Dynamic,
+  decoder: decode.Decoder(a),
+  label: String,
+) -> Result(a, types.Error) {
+  case fast {
+    Ok(read) -> Ok(read)
+    Error(Nil) ->
+      decode.run(value, decoder)
+      |> result.map_error(fn(error) {
+        types.InvalidEvent(label <> decoding.decode_errors(error))
+      })
+  }
 }
 
 fn update(
@@ -425,7 +451,7 @@ fn refusal_detail(value: Dynamic) -> Option(String) {
 }
 
 fn field(value: Dynamic, path: List(String)) -> String {
-  decode.run(value, decode.at(path, decode.string)) |> result.unwrap("")
+  fields.string_at(value, path) |> result.unwrap("")
 }
 
 fn emit(

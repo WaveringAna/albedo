@@ -103,8 +103,9 @@ fn decode_chunk(value: dynamic.Dynamic) -> Result(Chunk, types.Error) {
 }
 
 /// The chunk most of a stream is, read without the decoders: one choice at
-/// index 0, no finish, usage or error, and a delta of only text, refusal
-/// and reasoning text. Error(Nil) for anything else, which they then read.
+/// index 0, no finish, usage or error, and a delta of only text, refusal,
+/// reasoning text, and tool call fragments. Error(Nil) for anything else,
+/// which they then read.
 fn text_chunk(value: dynamic.Dynamic) -> Result(Chunk, Nil) {
   use <- require(
     fields.missing(value, "error") && fields.missing(value, "usage"),
@@ -118,23 +119,48 @@ fn text_chunk(value: dynamic.Dynamic) -> Result(Chunk, Nil) {
   use index <- result.try(fields.int(choice, "index"))
   use <- require(index == 0 && fields.missing(choice, "finish_reason"))
   use delta <- result.try(fields.object(choice, "delta"))
-  use <- require(fields.empty_except(delta, text_fields))
+  use <- require(fields.empty_except(delta, delta_fields))
   use role <- result.try(fields.optional_string(delta, "role"))
   use <- require(role == None || role == Some("assistant"))
   use content <- result.try(fields.optional_string(delta, "content"))
   use refusal <- result.try(fields.optional_string(delta, "refusal"))
-  use reasoning <- result.map(reasoning.read_text(delta))
-  let delta = Delta(role, non_empty(content), non_empty(refusal), reasoning, [])
+  use reasoning <- result.try(reasoning.read_text(delta))
+  use tools <- result.map(case fields.missing(delta, "tool_calls") {
+    True -> Ok([])
+    False ->
+      fields.list(delta, "tool_calls") |> result.try(list.try_map(_, fragment))
+  })
+  let delta =
+    Delta(role, non_empty(content), non_empty(refusal), reasoning, tools)
   Chunk(id, [Choice(0, delta, None)], None)
 }
 
-const text_fields = [
+const delta_fields = [
   "role",
   "content",
   "refusal",
   "reasoning",
   "reasoning_content",
+  "tool_calls",
 ]
+
+/// What `tool_fragment_decoder` reads from a fragment of the usual shape.
+fn fragment(value: dynamic.Dynamic) -> Result(ToolFragment, Nil) {
+  use index <- result.try(fields.int(value, "index"))
+  use id <- result.try(fields.optional_string(value, "id"))
+  use kind <- result.try(fields.optional_string(value, "type"))
+  use <- require(kind == None || kind == Some("function"))
+  use #(name, arguments) <- result.map(case fields.missing(value, "function") {
+    True -> Ok(#(None, None))
+    False -> {
+      use function <- result.try(fields.object(value, "function"))
+      use name <- result.try(fields.optional_string(function, "name"))
+      use arguments <- result.map(fields.optional_string(function, "arguments"))
+      #(non_empty(name), non_empty(arguments))
+    }
+  })
+  ToolFragment(index, non_empty(id), name, arguments)
+}
 
 fn require(condition: Bool, next: fn() -> Result(a, Nil)) -> Result(a, Nil) {
   case condition {
