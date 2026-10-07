@@ -69,7 +69,10 @@ Session IDs can be shortened to any unique prefix. Run `albedo --help` or
 `albedo COMMAND --help` for command options.
 
 To inspect disk usage without starting the daemon, run `albedo storage --json`
-or `albedo storage --sessions`. To clean up local files, stop the daemon first:
+or `albedo storage --sessions`. Offline database inspection and cleanup use the
+local daemon executable without starting its server. Set `ALBEDO_DAEMON` to a
+packaged executable or `ALBEDO_ROOT` to a source checkout. These storage commands
+do not require Python. To clean up local files, stop the daemon first:
 
 ```sh
 albedo daemon --stop

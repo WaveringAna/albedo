@@ -15,7 +15,7 @@ decision to stop supporting that upgrade path.
 | Legacy item-count compaction state | Rolling's lazy compatibility reader | [rolling tests](../test/harness/rolling_test.gleam) |
 | Older Python namespace snapshots | Kernel snapshot reader | [kernel state scenarios](../test/e2e/kernel_state_test.py) |
 | Flat provider configuration and relocated credentials | Provider configuration and credential migration | [settings scenarios](../test/e2e/settings_test.py), [startup integration](../test/e2e/integration_test.py), [credential migration](../test/e2e/credentials_test.py) |
-| Older layouts inspected offline | Client storage diagnostic reader | [storage compatibility scenarios](../test/e2e/storage_test.py) |
+| Older layouts inspected offline | Daemon storage helper compatibility reader | [storage compatibility scenarios](../test/e2e/storage_test.py) |
 
 These are groups within feature suites, not a separate test lane. The normal
 gate runs them. Compatibility with another running daemon build and provider
@@ -31,13 +31,30 @@ extension-specific migration modules.
 
 `server.main` first claims `ALBEDO_HOME/daemon.lock` with `BEGIN EXCLUSIVE`.
 Offline cleanup in `cli/internal/storage` takes the same lock after confirmation,
-before it revalidates candidates. Its Python helper holds ownership through file
+before it revalidates candidates. Its Gleam helper holds ownership through file
 deletion and vacuum. Daemon startup refuses while maintenance owns the home,
 before it touches application storage. Neither owner commits the lock transaction,
 changes its journal mode, or replaces the lock file. Cleanup checks health for
 diagnostics; only exclusive ownership permits offline mutation. CLI cancellation
 or death stops the helper and releases ownership. Completed deletions remain
 deleted if later deletion or vacuum fails.
+
+The client invokes `albedo-daemon storage inspect <database> <scratch-directory>`
+and `albedo-daemon storage maintain <home>` through the same local executable
+selection as daemon startup. `daemon/storage_cli` owns both helper modes and
+dispatches before server startup. Inspection copies the database and WAL into
+the client's private scratch directory, compares native file identities before
+and after copying, then reads the snapshot without schema initialization or
+migrations. It supports older layouts independently of the live projection.
+The client removes scratch files and retains its filesystem accounting and
+cleanup revalidation. Helper metadata uses the native timestamp resolution.
+
+Maintenance exchanges newline-delimited JSON with the client. It captures
+candidate identities under the home lock, reports readiness, and waits for the
+client's authorization after revalidation. An EOF watcher terminates the helper
+VM during authorized work, including vacuum. Go keeps the pipe open until the
+helper exits and accepts a result only with a successful exit. These helper
+modes do not require Python or create a daemon discovery record.
 
 `runtime.start` installs the extension registry before `server.prepare_storage`.
 for each installed extension, `extension.install` first calls its table
