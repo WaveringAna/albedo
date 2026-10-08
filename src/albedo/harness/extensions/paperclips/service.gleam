@@ -402,7 +402,7 @@ fn actions() -> List(client_api.Action) {
     client_api.Action(
       id: "create",
       label: "add",
-      keyboard_hint: "a",
+      keyboard_hint: "ctrl+o",
       confirmation: None,
       fields: [
         client_api.choice_field("topic", False, [
@@ -425,7 +425,7 @@ fn actions() -> List(client_api.Action) {
     client_api.Action(
       id: "reply",
       label: "reply",
-      keyboard_hint: "n",
+      keyboard_hint: "ctrl+t",
       confirmation: None,
       fields: [
         client_api.Field(
@@ -448,7 +448,7 @@ fn actions() -> List(client_api.Action) {
     client_api.Action(
       id: "acknowledge",
       label: "acknowledge",
-      keyboard_hint: "a",
+      keyboard_hint: "ctrl+g",
       confirmation: None,
       fields: [],
       operation: client_api.Operation(
@@ -466,7 +466,7 @@ fn actions() -> List(client_api.Action) {
     client_api.Action(
       id: "resolve",
       label: "resolve",
-      keyboard_hint: "r",
+      keyboard_hint: "ctrl+y",
       confirmation: None,
       fields: [
         client_api.Field(
@@ -494,7 +494,7 @@ fn actions() -> List(client_api.Action) {
     client_api.Action(
       id: "dismiss",
       label: "dismiss",
-      keyboard_hint: "d",
+      keyboard_hint: "ctrl+x",
       confirmation: None,
       fields: [],
       operation: client_api.Operation(
@@ -512,7 +512,7 @@ fn actions() -> List(client_api.Action) {
     client_api.Action(
       id: "delete",
       label: "delete",
-      keyboard_hint: "x",
+      keyboard_hint: "ctrl+d",
       confirmation: Some("Delete this item?"),
       fields: [],
       operation: client_api.Operation(

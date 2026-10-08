@@ -107,7 +107,7 @@ fn descriptor(id: String, jobs: List(kernel.Job)) -> json.Json {
       client_api.Action(
         id: "stop",
         label: "stop",
-        keyboard_hint: "x",
+        keyboard_hint: "ctrl+x",
         confirmation: Some("stop this background job?"),
         fields: [],
         operation: client_api.Operation(

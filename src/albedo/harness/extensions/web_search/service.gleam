@@ -145,9 +145,9 @@ fn page(entries: List(#(order.Ranked, Int))) -> json.Json {
     empty_state: "no extension offers web search",
     glance: None,
     actions: [
-      change("up", "move up", "u"),
-      change("down", "move down", "d"),
-      change("toggle", "turn on or off", "t"),
+      change("up", "move up", "alt+up"),
+      change("down", "move down", "alt+down"),
+      change("toggle", "turn on or off", "ctrl+t"),
     ],
     rows: list.map(entries, fn(entry) {
       let #(ranked, index) = entry

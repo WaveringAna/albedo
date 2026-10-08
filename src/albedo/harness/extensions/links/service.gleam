@@ -379,7 +379,7 @@ pub fn page(group: ledger.Group, members: List(String)) -> client_api.Page {
       client_api.Action(
         id: "merge",
         label: "link",
-        keyboard_hint: "a",
+        keyboard_hint: "ctrl+o",
         confirmation: None,
         fields: [
           client_api.Field(
@@ -405,7 +405,7 @@ pub fn page(group: ledger.Group, members: List(String)) -> client_api.Page {
       client_api.Action(
         id: "unlink",
         label: "unlink",
-        keyboard_hint: "x",
+        keyboard_hint: "ctrl+d",
         confirmation: Some(
           "Unlink this workspace? Its memory and work items will remain.",
         ),

@@ -59,6 +59,9 @@ pub type Action {
   Action(
     id: String,
     label: String,
+    // The key chord the TUI binds to the action, spelled as it names keys
+    // ("ctrl+o"); empty leaves it to the actions menu. Never a bare letter:
+    // every list screen's search box takes those.
     keyboard_hint: String,
     confirmation: Option(String),
     fields: List(Field),

@@ -405,7 +405,7 @@ fn actions(session: String) -> List(client_api.Action) {
     client_api.Action(
       id: "create",
       label: "add",
-      keyboard_hint: "a",
+      keyboard_hint: "ctrl+o",
       confirmation: None,
       fields: fields,
       operation: client_api.Operation(
@@ -429,7 +429,7 @@ fn actions(session: String) -> List(client_api.Action) {
     client_api.Action(
       id: "edit",
       label: "edit",
-      keyboard_hint: "e",
+      keyboard_hint: "ctrl+e",
       confirmation: None,
       fields: [
         client_api.Field(
@@ -496,7 +496,7 @@ fn actions(session: String) -> List(client_api.Action) {
     client_api.Action(
       id: "delete",
       label: "delete",
-      keyboard_hint: "x",
+      keyboard_hint: "ctrl+d",
       confirmation: Some("Delete this item?"),
       fields: [],
       operation: client_api.Operation(
