@@ -107,7 +107,7 @@ class ApiDocsTest(unittest.TestCase):
         text = model_text()
         public = [
             name
-            for name in vars(run.Job)
+            for name, value in inspect.getmembers(run.Job, callable)
             if not name.startswith("_") and f"run.Job.{name}" not in INTERNAL
         ]
         fields = ["id", "command", "exit_code", "duration", "timed_out"]

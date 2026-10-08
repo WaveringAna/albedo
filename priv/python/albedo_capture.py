@@ -6,19 +6,20 @@ import base64
 import os
 import re
 import struct
+import tempfile
 import time
 from typing import BinaryIO
 
 import albedo_api
 import albedo_trace
 
-PREVIEW = 64 * 1024
+PREVIEW = albedo_api.OUTPUT_PREVIEW
 RETAIN = albedo_api.RETAIN
 MAX_IMAGES = 4
 # Base64 growth and the output preview must fit the 8 MiB result frame.
 MAX_IMAGE_BYTES = 5 * 1024 * 1024
-# A cell whose output passes the preview also gets it whole in a file, up to
-# this much; the kernel sets the directory and prunes files past SPILL_KEEP.
+# Cells spill past the preview, jobs past RETAIN. Files have the same disk cap
+# and lifetime; the kernel sets the directory and prunes files past SPILL_KEEP.
 SPILL_LIMIT = 16 * 1024 * 1024
 SPILL_KEEP = 14 * 24 * 3600  # seconds, the python state expiry
 SPILL_DIR: str | None = None
@@ -71,7 +72,7 @@ class Capture:
         self._spill_file: BinaryIO | None = None
 
     def spills(self) -> bool:
-        return self.kind == "cell" and SPILL_DIR is not None
+        return self.kind in {"cell", "job"} and SPILL_DIR is not None
 
     def write(self, text: str) -> None:
         room = RETAIN - len(self.data)
@@ -101,30 +102,45 @@ class Capture:
             else:
                 self._tail += data
                 del self._tail[:-PREVIEW]
-        if self.seen > PREVIEW and self.spills():
+        threshold = PREVIEW if self.kind == "cell" else RETAIN
+        if self.seen > threshold and self.spills():
             self._spill(data, size)
 
     def _spill(self, data: bytes | bytearray | memoryview, size: int) -> None:
         """Append `data` to the spill file, opening it with everything before
-        it on the first write past the preview. Unbuffered, so a backgrounded
+        it on the first write past the spill threshold. Unbuffered, so a backgrounded
         cell's file reads live. A file that will not open leaves `spill` unset."""
         if self._spill_file is None:
             if self.spill is not None or self.spilled or SPILL_DIR is None:
                 return  # closed, full, refused, or failed
-            path = os.path.join(SPILL_DIR, re.sub(r"[^\w.-]", "_", self.id) + ".txt")
             try:
-                self._spill_file = open(path, "wb", buffering=0)
+                fd, path = tempfile.mkstemp(
+                    prefix=re.sub(r"[^\w.-]", "_", self.id) + "-",
+                    suffix=".txt",
+                    dir=SPILL_DIR,
+                )
+                self._spill_file = os.fdopen(fd, "wb", buffering=0)
+                self.spill = path
                 # Before this write the stream fit in `data` whole.
-                self.spilled = self._spill_file.write(self.data[: self.seen - size])
+                prefix = self.data[: self.seen - size]
+                self.spilled = self._spill_file.write(prefix)
+                if self.spilled != len(prefix):
+                    raise OSError("incomplete output spill write")
             except OSError:
-                self._spill_file = None
+                self.end_spill()
+                self.spilled = -1  # do not retry after losing bytes
+                self.spill = None
                 return
-            self.spill = path
         try:
-            self.spilled += self._spill_file.write(data[: SPILL_LIMIT - self.spilled])
+            piece = data[: SPILL_LIMIT - self.spilled]
+            written = self._spill_file.write(piece)
+            self.spilled += written
+            if written != len(piece):
+                raise OSError("incomplete output spill write")
         except OSError:
             self.end_spill()
             self.spill = None  # a file missing its end is not offered
+            self.spilled = -1
             return
         if self.spilled >= SPILL_LIMIT:
             self.end_spill()
@@ -156,9 +172,27 @@ class Capture:
         source = self.data if self._tail is None else self._tail
         return bytes(source[-limit:])
 
+    @property
+    def retained(self) -> int:
+        return max(len(self.data), self.spilled if self.spill else 0)
+
+    def read_bytes(self, offset: int, limit: int) -> bytes:
+        if limit <= 0 or offset >= self.seen:
+            return b""
+        end = min(offset + limit, self.seen)
+        if end <= len(self.data):
+            return bytes(self.data[offset:end])
+        if self.spill is None or end > self.spilled:
+            raise ValueError("requested output was not retained")
+        with open(self.spill, "rb") as file:
+            file.seek(offset)
+            data = file.read(end - offset)
+        if len(data) != end - offset:
+            raise OSError(f"output spill file is incomplete: {self.spill}")
+        return data
+
     def read(self, offset: int = 0, limit: int = 4000) -> str:
-        start = max(0, offset)
-        return self.data[start : start + min(max(0, limit), PREVIEW)].decode(
+        return self.read_bytes(max(0, offset), min(max(0, limit), PREVIEW)).decode(
             "utf-8", errors="ignore"
         )
 

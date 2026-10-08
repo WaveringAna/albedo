@@ -93,20 +93,55 @@ is paged with `offset`. A single print longer than what could be retained
 is not encoded whole when it is ASCII: the buffers see both ends and the
 middle only counts (unless a spill file takes it, below).
 
+### job output
+
+`priv/python/albedo_output.py` owns `JobOutput`, shared by local jobs and
+SSH command-mode jobs. `head(n)` and `tail(n)` are previews: up to 64 KiB,
+with `lines=` taking precedence. Zero returns empty. An out-of-range request
+or a character/line request the retained window cannot satisfy raises with
+`job.read()` / `job.save(path)` as the recovery, never silently clamps.
+A line cut at a window boundary is not counted as a complete line.
+
+After completion, `job.read()` returns complete UTF-8 text up to 1 MiB;
+larger whole-text requests raise with the pagination call to bound allocations
+and remote result frames. `job.read(offset=..., limit=...)` reads byte-offset
+pages up to 64 KiB, including while running, and transparently reads spill files.
+`output.read(id, offset=..., limit=...)` uses the same disk-backed paging for jobs
+and cells. Non-UTF-8 bytes are ignored at page boundaries, as in existing previews;
+whole text reads decode with replacement.
+
+`job.save(path)` streams the exact bytes into a temporary file in 64 KiB chunks,
+atomically replaces the destination, and returns its absolute path. It never
+loads the whole spill file into memory. Running jobs, output lost past the disk
+cap, or unavailable spill files refuse rather than saving partial output; failed
+saves leave the destination untouched and remove the temporary file. Pages crossing
+lost output also refuse instead of returning a short page or false EOF. The error
+names the retained prefix and its pagination call. For artifacts beyond the disk
+cap, attach `.pipe("tee", path)` before awaiting; a late pipe cannot recover dropped
+bytes.
+
+`remote.connect()` mirrors the same 64 KiB tail window, coalesced at the existing
+interval. Larger reads and saves use the ordinary remote method transport. Remote
+spill files and saves live on the remote host; degraded SSH command-mode jobs
+spill and save locally, where their capture lives.
+
 ### spilled output
 
-A cell's output that passes the 64 KiB preview is also written whole to a
-file, up to `SPILL_LIMIT` (16 MiB), the first write past the preview opening
-it with everything before. The file is unbuffered, so a backgrounded cell's
-output reads live. The result's `output` ends with a note naming the file,
-`seen`, and whether all of it is there (`Capture.spill_note`); the python tool
-description says to read it with `files.read`. Only cells spill: a job's
-output stays on its handle. The directory sits beside the run directories,
-`$ALBEDO_HOME/output` for a local kernel and `~/.albedo-remote/output` for a
-remote one (a kernel over stdio uses `albedo-output` in the temp dir), so the
-file belongs to the host the cell ran on; a kernel prunes files older than
-`SPILL_KEEP` (14 days, the state expiry) when it boots. A file that will not
-open leaves the result as before, `truncated` with no note.
+`albedo_capture.Capture` owns spilling and byte reads. Cells spill past the 64 KiB
+preview, jobs past the 1 MiB in-memory prefix. Both retain up to `SPILL_LIMIT`
+(16 MiB) on disk. The first overflowing write opens a private spill file with
+all preceding bytes; subsequent writes append without buffering, so pages can
+read live output. Job completion closes the writer. Memory still holds only the
+first 1 MiB and rolling 64 KiB tail, irrespective of disk output size.
+
+Cell results name their spill file, `seen`, and whether all output is retained
+(`Capture.spill_note`). The directory sits beside the run directories:
+`$ALBEDO_HOME/output` locally, `~/.albedo-remote/output` remotely, and
+`albedo-output` in the temp dir for a kernel over stdio. Spill files survive output
+channel eviction and are pruned after `SPILL_KEEP` (14 days) on kernel boot.
+A spill creation or write failure does not interrupt the command: in-memory
+previews remain available, but pages beyond the retained prefix and whole-output
+saves refuse. Missing or shortened spill files raise visibly on reads and saves.
 
 ## memory cap
 

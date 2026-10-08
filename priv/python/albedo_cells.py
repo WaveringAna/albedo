@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import albedo_api
+import albedo_output
 import albedo_bundle
 import albedo_state
 from albedo_values import Unencodable, decode, encode
@@ -72,7 +73,7 @@ PENDING_OBJECTS: collections.OrderedDict[str, asyncio.Future[tuple[bool, object]
     collections.OrderedDict()
 )
 MIRROR_INTERVAL = 0.15  # seconds between output-tail mirror frames while data flows
-MIRROR_TAIL = 16 * 1024  # bytes of tail a mirror frame carries
+MIRROR_TAIL = PREVIEW  # the same bounded tail window as a local job
 BACKGROUND_SECONDS = max(
     0.01, float(os.environ.get("ALBEDO_CELL_BACKGROUND_SECONDS", "60"))
 )
@@ -430,6 +431,7 @@ class Output:
                 f"limit is at most {PREVIEW} per read; page through the rest with offset="
             )
         capture = retained(id)
+        result = albedo_output.read_page(capture, offset, limit)
         notify = READ_WATCHERS.get(id)
         if isinstance(notify, weakref.WeakMethod):
             notify = notify()
@@ -438,7 +440,7 @@ class Output:
                 notify()
             except Exception:
                 pass  # a plugin's bookkeeping must not fail the read
-        return albedo_api.Text(capture.read(offset, limit))
+        return result
 
     def list(self):
         """Every retained channel: cells, background jobs, and 'native'.
@@ -917,10 +919,12 @@ def retain(value: object) -> str:
 def _mirror_state(obj: object) -> dict[str, object]:
     """One snapshot of a captured object: what the owner's tail() and poll() answer from."""
     capture = cast(Capture, getattr(obj, "capture"))
+    tail = capture.tail(MIRROR_TAIL)
     return {
         "job": getattr(obj, "id", None),
         "seen": capture.seen,
-        "tail": capture.tail(MIRROR_TAIL).decode("utf-8", errors="replace"),
+        "tail": tail.decode("utf-8", errors="ignore"),
+        "tail_bytes": len(tail),
         "exit_code": getattr(obj, "exit_code", None),
         "timed_out": getattr(obj, "timed_out", False),
         "duration": getattr(obj, "duration", None),

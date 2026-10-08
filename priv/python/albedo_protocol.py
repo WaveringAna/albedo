@@ -117,6 +117,7 @@ class MirrorState(TypedDict, total=False):
     job: str | None
     seen: int
     tail: str
+    tail_bytes: int
     exit_code: int | None
     timed_out: bool
     duration: float | None
@@ -274,6 +275,7 @@ def _mirror(value: object, context: str) -> None:
         ("job", (str, type(None))),
         ("seen", int),
         ("tail", str),
+        ("tail_bytes", int),
         ("exit_code", (int, type(None))),
         ("timed_out", bool),
         ("duration", (int, float, type(None))),

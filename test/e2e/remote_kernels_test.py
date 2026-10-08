@@ -246,6 +246,228 @@ class RemoteKernelTests(unittest.TestCase):
         self.assertNotIn("welcome to the fake host", log)
         self.assertNotIn("you have no mail", log)
 
+    def test_remote_job_output_is_not_a_silently_shortened_patch(self):
+        session = self.create(str(self.app.workspace))["id"]
+        result = self.cell(
+            session,
+            r"""import sys
+rem = await remote.connect('fakehost')
+fallback = await remote.connect('oldhost')
+starts = [('local', run), ('remote', rem.run), ('fallback', fallback.run)]
+expected = ('first file\n' + 'line αβ\n' * 5000 + 'second file\n' + 'other line\n' * 8000).encode()
+program = "import sys; sys.stdout.buffer.write(('first file\\n' + 'line αβ\\n' * 5000 + 'second file\\n' + 'other line\\n' * 8000).encode())"
+for label, start in starts:
+    job = start(sys.executable, '-c', program)
+    await job
+    assert job.tail(60000) == expected.decode()[-60000:], label
+    assert await job.head(40000) == expected.decode()[:40000], label
+    assert await job.read() == expected.decode(), label
+    assert job.tail(65536) == expected.decode()[-65536:], label
+    assert await job.read(offset=17, limit=4000) == expected[17:4017].decode(errors='ignore'), label
+    # Byte offsets remain byte offsets, even when a page cuts through UTF-8.
+    offset = expected.index('α'.encode()) + 1
+    assert await job.read(offset=offset, limit=9) == expected[offset:offset+9].decode(errors='ignore'), label
+    for preview in (job.head, job.tail):
+        try:
+            await preview(3_000_000)
+        except Exception as error:
+            assert 'job.read()' in str(error) and 'job.save' in str(error), str(error)
+        else:
+            raise AssertionError('silently shortened a preview: ' + label)
+    path = await job.save(label + '.patch')
+    actual = await rem.read(path) if label == 'remote' else Path(path).read_bytes()
+    if isinstance(actual, str):
+        actual = actual.encode()
+    assert actual == expected, label
+
+async def refuses(call, *args, message, **kwargs):
+    try:
+        await call(*args, **kwargs)
+    except Exception as error:
+        assert message in str(error), str(error)
+    else:
+        raise AssertionError('accepted incomplete output')
+
+for label, start in starts:
+    job = start(sys.executable, '-c', "import sys; sys.stdout.buffer.write(b'begin\\xff\\x00' + b'x' * 140000 + b'end')")
+    await job
+    assert '\ufffd' in await job.read(), label
+    assert await job.tail(0) == '' and await job.head(lines=0) == '', label
+    await refuses(job.read, limit=65537, message='65536')
+    # No newline in the window: a line request must not return a fragment.
+    await refuses(job.tail, lines=1, message='job.read()')
+    await refuses(job.head, lines=1, message='job.read()')
+    path = await job.save(label + '.bin')
+    actual = await rem.read(path) if label == 'remote' else Path(path).read_bytes()
+    assert actual == b'begin\xff\x00' + b'x' * 140000 + b'end', label
+    overflow = start(sys.executable, '-c', "import sys; sys.stdout.buffer.write(b'z' * (2097152 + 10) + b'\\xff\\x00end')")
+    await overflow
+    await refuses(overflow.read, message='paginate with')
+    assert await overflow.read(offset=1048576, limit=10) == 'z' * 10, label
+    assert await overflow.read(offset=1048576-2, limit=10) == 'z' * 10, label
+    page_reader = rem.output.read if label == 'remote' else output.read
+    assert await page_reader(overflow.id, offset=1048576, limit=10) == 'z' * 10, label
+    pages = [await overflow.read(offset=offset, limit=65536)
+             for offset in range(0, 2097152 + 15, 65536)]
+    assert ''.join(pages) == 'z' * (2097152 + 10) + '\x00end', label
+    assert await overflow.read(offset=2097152+15, limit=65536) == '', label
+    await overflow.save(path)
+    saved = await rem.read(path) if label == 'remote' else Path(path).read_bytes()
+    assert saved == b'z' * (2097152 + 10) + b'\xff\x00end', label
+    # The disk cap is explicit; stored pages remain accessible, lost pages refuse.
+    capped = start(sys.executable, '-c', "import sys; sys.stdout.buffer.write(b'c' * (16777216 + 1))")
+    await capped
+    assert await capped.read(offset=16777217, limit=0) == '', label
+    await refuses(capped.read, message='refusing incomplete output')
+    await refuses(capped.save, path, message='refusing incomplete output')
+    preserved = await rem.read(path) if label == 'remote' else Path(path).read_bytes()
+    assert preserved == saved, 'overwrote destination with partial output: ' + label
+    assert await capped.read(offset=16777216-10, limit=10) == 'c' * 10, label
+    await refuses(capped.read, offset=16777216, limit=1, message='cannot be recovered by pagination')
+    await refuses(page_reader, capped.id, offset=16777216-2, limit=10, message='cannot be recovered by pagination')
+    unicode = start(sys.executable, '-c', "print('é' * 70000, end='')")
+    await unicode
+    await refuses(unicode.tail, 60000, message='job.read()')
+    await refuses(unicode.head, 60000, message='job.read()')
+    assert await unicode.tail(100) == 'é' * 100, label
+
+# A running job must not overwrite a completed artifact.
+protected = Path('protected.bin')
+protected.write_bytes(b'keep me')
+running = run(sys.executable, '-c', 'import time; time.sleep(0.5)')
+await refuses(running.read, message='await job')
+await refuses(running.save, protected, message='await job')
+assert protected.read_bytes() == b'keep me'
+await running
+# Streaming to a file recovers output larger than the retained buffers.
+streamed = run(sys.executable, '-c', "print('s' * 2000000, end='')").pipe('tee', 'whole.txt')
+await streamed
+assert Path('whole.txt').read_bytes() == b's' * 2000000
+# A failed atomic rename leaves the destination and no temporary output file.
+directory = Path('not-a-file')
+directory.mkdir()
+(directory / 'keep').write_bytes(b'preserved')
+before = set(Path('.').iterdir())
+await refuses(running.save, directory, message='directory')
+assert set(Path('.').iterdir()) == before
+assert (directory / 'keep').read_bytes() == b'preserved'
+print('refusals preserve destinations and exact binary output')
+
+await rem.close()
+await fallback.close()
+print('complete output preserved for all three job kinds')
+""",
+        )
+        self.assertEqual(result["status"], "ok", result)
+        self.assertIn("complete output preserved", result["output"])
+        self.assertIn("refusals preserve destinations", result["output"])
+
+    def test_job_spill_is_live_and_failures_preserve_artifacts(self):
+        session = self.create(str(self.app.workspace))["id"]
+        result = self.cell(
+            session,
+            r"""import albedo_capture
+import tempfile
+import time
+from unittest.mock import patch
+
+async def refuses(call, *args, message, **kwargs):
+    try:
+        await call(*args, **kwargs)
+    except Exception as error:
+        assert message in str(error), str(error)
+    else:
+        raise AssertionError('accepted incomplete output')
+
+protected = Path('protected-spill.bin')
+protected.write_bytes(b'keep me')
+release = Path('release-writer').absolute()
+program = f'''import sys, time
+from pathlib import Path
+sys.stdout.buffer.write(b'x' * 2097152)
+sys.stdout.flush()
+while not Path({str(release)!r}).exists():
+    time.sleep(0.01)
+sys.stdout.buffer.write(b'end')
+sys.stdout.flush()
+'''
+live = run(sys.executable, '-c', program)
+async def ready():
+    while live.capture.seen < 2097152:
+        await asyncio.sleep(0.01)
+await asyncio.wait_for(ready(), 5)
+assert live.duration is None
+assert live.read(offset=1048576-2, limit=10) == 'x' * 10
+assert output.read(live.id, offset=2097152-10, limit=10) == 'x' * 10
+await refuses(live.save, protected, message='await job')
+assert protected.read_bytes() == b'keep me'
+assert Path(live.capture.spill).stat().st_mode & 0o077 == 0
+
+# Simulate a disk write failure after a valid spill prefix has been captured.
+with patch.object(live.capture._spill_file, 'write', side_effect=OSError('disk full')):
+    release.touch()
+    await live
+assert live.capture._spill_file is None
+assert live.tail(3) == 'end'
+await refuses(live.read, offset=1048576, limit=1, message='refusing incomplete output')
+await refuses(live.save, protected, message='refusing incomplete output')
+assert protected.read_bytes() == b'keep me'
+
+# Creation failure keeps previews usable, and never retries from a lost prefix.
+blocked = Path('not-a-spill-directory')
+blocked.write_text('blocked')
+with patch.object(albedo_capture, 'SPILL_DIR', str(blocked)):
+    failed = run(sys.executable, '-c', "print('f' * 2097152, end='')")
+    await failed
+assert failed.tail(10) == 'f' * 10
+assert failed.capture.spill is None
+await refuses(failed.read, offset=1048576, limit=1, message='refusing incomplete output')
+await refuses(failed.save, protected, message='refusing incomplete output')
+assert protected.read_bytes() == b'keep me'
+
+# A missing or shortened spill must not become a short page or a partial save.
+for damage in ('shorten', 'remove'):
+    job = run(sys.executable, '-c', "print('s' * 2097152, end='')")
+    await job
+    assert job.capture._spill_file is None
+    spill = Path(job.capture.spill)
+    if damage == 'shorten':
+        spill.write_bytes(b'short')
+    else:
+        spill.unlink()
+    before = set(Path('.').iterdir())
+    await refuses(job.read, offset=1048576, limit=10,
+                  message='incomplete' if damage == 'shorten' else 'No such file')
+    await refuses(job.save, protected,
+                  message='incomplete' if damage == 'shorten' else 'No such file')
+    assert protected.read_bytes() == b'keep me'
+    assert set(Path('.').iterdir()) == before
+
+# Pruning deletes only expired spill files, not fresh files or directories.
+with tempfile.TemporaryDirectory() as directory:
+    old = Path(directory, 'old.txt')
+    old.write_text('old')
+    fresh = Path(directory, 'fresh.txt')
+    fresh.write_text('fresh')
+    nested = Path(directory, 'nested')
+    nested.mkdir()
+    (nested / 'keep.txt').write_text('keep')
+    stale = time.time() - albedo_capture.SPILL_KEEP - 1
+    os.utime(old, (stale, stale))
+    os.utime(nested, (stale, stale))
+    previous = albedo_capture.SPILL_DIR
+    try:
+        albedo_capture.prune_spills(directory)
+    finally:
+        albedo_capture.SPILL_DIR = previous
+    assert not old.exists() and fresh.read_text() == 'fresh'
+    assert (nested / 'keep.txt').read_text() == 'keep'
+print('live spill pages, disk failures, atomic saves, and pruning verified')
+""",
+        )
+        self.assertEqual(result["status"], "ok", result)
+        self.assertIn("pruning verified", result["output"])
+
     def test_a_first_visit_says_it_is_copying_the_kernel(self):
         self.slow_stage.touch()  # each copy of the bundle takes 3 s
         session = self.create(f"fakehost:{self.project}")["id"]

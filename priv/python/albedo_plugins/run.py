@@ -20,6 +20,8 @@ still owed when the retry lands share one notice, and so one turn.
 
 from __future__ import annotations
 
+from albedo_output import JobOutput
+
 from collections import OrderedDict
 from collections.abc import Callable, Generator
 from typing import cast
@@ -28,9 +30,7 @@ from albedo_api import (
     PythonApi,
     OutputCapture,
     Send,
-    Text,
     check_timeout,
-    excerpt,
 )
 import albedo_proc
 import albedo_shell
@@ -45,7 +45,7 @@ import uuid
 
 loop: asyncio.AbstractEventLoop
 capture_factory: Callable[[str], OutputCapture]
-preview_limit: int
+preview_limit: int  # internal file searches use the kernel preview budget
 jobs: dict[str, Job] = {}  # every handle the session can address
 active: dict[str, Job] = {}  # unfinished work: the bounded resource
 retained: OrderedDict[str, Job] = OrderedDict()  # finished handles, completion order
@@ -254,7 +254,7 @@ def _lower_priority() -> None:
         pass
 
 
-class Job:
+class Job(JobOutput):
     """One background program and the process group it owns."""
 
     def __init__(
@@ -418,6 +418,7 @@ class Job:
                     "cleanup": ending.as_json(),
                 }
             )
+            self.capture.end_spill()
             release(self)
             self._owe_unread()
         return self
@@ -461,21 +462,6 @@ class Job:
     def returncode(self) -> int | None:
         """`exit_code` under subprocess's name; both spellings answer."""
         return self.poll()
-
-    def tail(self, n: int = 4000, *, lines: int | None = None) -> Text:
-        """The last n characters of output, or its last `lines` lines."""
-        if self.exit_code is not None:
-            self._read = True
-        text = self.capture.tail().decode("utf-8", errors="replace")
-        return excerpt(text, min(n, preview_limit), lines, end=True)
-
-    def head(self, n: int = 4000, *, lines: int | None = None) -> Text:
-        """The first n characters of output, or its first `lines` lines."""
-        if self.exit_code is not None:
-            self._read = True
-        return excerpt(
-            self.capture.read(0, preview_limit), min(n, preview_limit), lines, end=False
-        )
 
     def _mark_read(self) -> None:
         """output.read reached this job's channel; a finished result is read."""

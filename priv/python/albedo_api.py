@@ -27,6 +27,7 @@ from albedo_protocol import (
 )
 
 RETAIN = 1024 * 1024  # output bytes kept per channel; a late pipe reads them
+OUTPUT_PREVIEW = 64 * 1024
 
 Host = Callable[[str, dict[str, object]], Awaitable[object]]
 Send = Callable[[dict[str, object]], None]
@@ -96,21 +97,45 @@ def check_timeout(timeout: float) -> None:
         )
 
 
-def excerpt(text: str, chars: int, lines: int | None, *, end: bool) -> Text:
-    """Output's first or last `lines` lines, else its first or last `chars`
-    characters: what a job handle's head() and tail() answer."""
-    if lines is not None:
-        kept = text.splitlines(keepends=True)
-        return Text(
-            "".join(kept[-lines:] if end else kept[:lines]) if lines > 0 else ""
+def excerpt(
+    text: str, chars: int, lines: int | None, *, end: bool, clipped: bool = False
+) -> Text:
+    """A requested preview, never silently reduced to the retained window."""
+    recovery = "use job.read() for complete text or job.save(path) for exact bytes"
+    if lines is None:
+        if not 0 <= chars <= OUTPUT_PREVIEW:
+            raise ValueError(f"0 <= n <= {OUTPUT_PREVIEW} for previews; {recovery}")
+        if clipped and chars > len(text):
+            raise ValueError(
+                f"the retained preview cannot supply {chars} characters; {recovery}"
+            )
+        return Text((text[-chars:] if end else text[:chars]) if chars else "")
+    if lines < 0:
+        raise ValueError("lines must be nonnegative")
+    kept = text.splitlines(keepends=True)
+    # A window cut through a line cannot count that fragment as a whole line.
+    if clipped and kept:
+        if end:
+            kept = kept[1:]
+        elif not kept[-1].endswith(("\n", "\r")):
+            kept = kept[:-1]
+    if clipped and lines > len(kept):
+        raise ValueError(
+            f"the retained preview cannot supply {lines} lines; {recovery}"
         )
-    chars = max(1, chars)
-    return Text(text[-chars:] if end else text[:chars])
+    return Text("".join(kept[-lines:] if end else kept[:lines]) if lines else "")
 
 
 class OutputCapture(Protocol):
     data: bytearray  # the retained start of the output, as written
     seen: int  # bytes written, retained or not
+
+    @property
+    def retained(self) -> int: ...
+
+    def read_bytes(self, offset: int, limit: int) -> bytes: ...
+
+    def end_spill(self) -> None: ...
 
     def write(self, text: str) -> None: ...
 

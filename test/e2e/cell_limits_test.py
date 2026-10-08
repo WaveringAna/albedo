@@ -44,6 +44,16 @@ class CellLimitsTests(unittest.TestCase):
                 self.results.append(json.loads(last["content"]))
                 return text("noted")
             user = user_text(request)
+            if "large spill" in user:
+                return python("print('p' * 2097152 + 'the end', end='')")
+            if "page spill" in user:
+                return python(
+                    f"id = {self.large_cell!r}\n"
+                    "assert output.read(id, offset=1048576-2, limit=10) == 'p' * 10\n"
+                    "assert output.read(id, offset=2097152, limit=65536) == 'the end'\n"
+                    "assert output.read(id, offset=2097159, limit=65536) == ''\n"
+                    "print('cell spill pages verified')"
+                )
             if "read the spill" in user:
                 return python(
                     f"print(files.read({self.spill!r}, start_line={LINES - 1}))"
@@ -96,6 +106,14 @@ class CellLimitsTests(unittest.TestCase):
         read = self.cell("read the spill")
         self.assertIn(f"line {LINES - 1:05d}", read["output"])
         self.assertIn("the last line", read["output"])
+
+    def test_cell_output_pages_its_spill_past_the_memory_prefix(self):
+        spilled = self.cell("large spill")
+        self.assertEqual(spilled["status"], "ok", spilled)
+        self.large_cell = spilled["cell_id"]
+        result = self.cell("page spill")
+        self.assertEqual(result["status"], "ok", result)
+        self.assertIn("cell spill pages verified", result["output"])
 
     def test_a_cell_past_the_memory_cap_is_interrupted_and_the_namespace_kept(self):
         hog = self.cell("hog")

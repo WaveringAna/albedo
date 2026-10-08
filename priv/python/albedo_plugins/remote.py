@@ -15,6 +15,8 @@ to command mode -- only rem.run() -- and says so at connect.
 
 from __future__ import annotations
 
+from albedo_output import JobOutput
+
 import asyncio
 import base64
 import contextlib
@@ -281,10 +283,18 @@ class RemoteRef:
     def tail(self, n: int = 4000, *, lines: int | None = None) -> Text:
         """The recent output of the remote job this reference holds: the last
         n characters, or its last `lines` lines."""
-        state = self._mirror()
-        return excerpt(
-            str(state.get("tail", "")) if state else "", min(n, 16384), lines, end=True
+        state = self._mirror(read=False)
+        text = str(state.get("tail", "")) if state else ""
+        size = state.get("tail_bytes", len(text.encode())) if state else 0
+        result = excerpt(
+            text,
+            n,
+            lines,
+            end=True,
+            clipped=bool(state and state.get("seen", 0) > size),
         )
+        self._mirror()
+        return result
 
     def poll(self) -> int | None:
         """The remote job's exit status so far, from the mirrored stream."""
@@ -319,7 +329,7 @@ class RemoteRef:
         state = self._mirror()
         return state.get("job") if state else None
 
-    def _mirror(self) -> dict[str, Any] | None:
+    def _mirror(self, *, read: bool = True) -> dict[str, Any] | None:
         if (failure := self._failure()) is not None:
             raise failure
         if self._handle is None:
@@ -328,7 +338,8 @@ class RemoteRef:
         # A finished job read through its mirror is consumed on the remote side
         # too, or its kernel would keep retrying a wake this read satisfies.
         if (
-            state is not None
+            read
+            and state is not None
             and state.get("exit_code") is not None
             and not self._withdrawn
         ):
@@ -1082,7 +1093,7 @@ def _remote_path(connection: RemoteConnection, path: str) -> str:
     return path
 
 
-class FallbackJob:
+class FallbackJob(JobOutput):
     """One command over the control connection when no kernel could boot.
 
     The same shape as a run job: await it, tail() it, stop() it. Killing the
@@ -1166,6 +1177,7 @@ class FallbackJob:
             )
         finally:
             copying.cancel()
+            self.capture.end_spill()
             self.duration = loop.time() - self.started
             _fallback_live.discard(self.id)
             _report_live()
@@ -1261,21 +1273,6 @@ class FallbackJob:
     def returncode(self) -> int | None:
         """`exit_code` under subprocess's name; both spellings answer."""
         return self.poll()
-
-    def tail(self, n: int = 4000, *, lines: int | None = None) -> Text:
-        if self.exit_code is not None:
-            self._read = True
-        return excerpt(
-            self.capture.tail().decode("utf-8", errors="replace"),
-            min(n, 65536),
-            lines,
-            end=True,
-        )
-
-    def head(self, n: int = 4000, *, lines: int | None = None) -> Text:
-        if self.exit_code is not None:
-            self._read = True
-        return excerpt(self.capture.read(0, 65536), min(n, 65536), lines, end=False)
 
     async def stop(self) -> None:
         """End the ssh client; the remote command's fate is reported, not assumed."""
