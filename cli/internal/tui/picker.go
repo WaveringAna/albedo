@@ -116,13 +116,6 @@ func (m *PickerModel) applyFilter() {
 	m.Cursor = max(0, slices.IndexFunc(m.Filtered, func(item PickerItem) bool { return item.ID == old }))
 }
 
-func inkWrap(text string, width int) string {
-	if width <= 0 {
-		return text
-	}
-	return ansi.Wrap(text, width, " ")
-}
-
 // selectableRows is a bottom-anchored list window with the selected row on
 // the selection surface.
 func selectableRows(lines []string, selected, height, limit, width int) string {

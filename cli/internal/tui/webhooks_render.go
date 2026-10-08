@@ -152,3 +152,9 @@ func (m WebhooksPageModel) details(hook webhookEntry, width int) []string {
 	}
 	return append(lines, factRows("inbox", inbox, width)...)
 }
+
+// scrolled is the window of rows lines that keeps line at in view.
+func scrolled(lines []string, at, rows int) []string {
+	start := max(0, at-rows+1)
+	return lines[start:min(len(lines), start+rows)]
+}
