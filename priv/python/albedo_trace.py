@@ -5,7 +5,7 @@ This is observation, not a sandbox. External processes and native writes may byp
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator
 from typing import Protocol, cast
 import albedo_shell
 import contextlib
@@ -20,7 +20,7 @@ LIMIT = 128 * 1024
 
 
 @contextlib.contextmanager
-def unobserved() -> Iterator[None]:
+def unobserved() -> Generator[None, None, None]:
     """Harness bookkeeping inside this block, and tasks created in it, stay out of the trace."""
     token = GUARD.set(True)
     try:

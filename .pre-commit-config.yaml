@@ -26,6 +26,6 @@ repos:
         name: ty check
         entry: ty check
         language: python
-        additional_dependencies: [ty==0.0.84]
+        additional_dependencies: [ty==0.0.85]
         pass_filenames: false
         files: ^((priv/python|test)/.*\.py$|pyproject\.toml$)

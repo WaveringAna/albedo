@@ -34,7 +34,7 @@ def main():
   <div id="app"></div>
   <script type="module">
     import {{ createApiReference }} from
-      'https://cdn.jsdelivr.net/npm/@scalar/api-reference@1.72.4/esm.js';
+      'https://cdn.jsdelivr.net/npm/@scalar/api-reference@1.73.1/esm.js';
     createApiReference('#app', {encoded});
   </script>
 </body>
