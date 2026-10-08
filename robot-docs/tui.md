@@ -76,6 +76,10 @@ each screen calls `registerShots("<screen>", states...)` from its `shot_<screen>
 
 cover every state a person would want to look at: the list, a filter typed, no match, each confirm, loading, empty, load failed, a notice, a form open. look at the sheets after a layout change; text dumps hid a patchwork selection and a collapsed footer that the pictures showed at once.
 
+## terminal output
+
+transcript rows carry private `albedo:` APC marks for copy, wrap joining and click targets. they stay in the chat's internal rows, but `AppModel.View` removes them from the final content before Bubble Tea sees it. ultraviolet preserves APC payloads; terminal.app prints unknown ones, which corrupts the layout. remove only our private marks, not styling, hyperlinks or graphics sequences. the real-daemon TUI driver's view assertion checks the raw content before `ansi.Strip` can hide a leak.
+
 ## tests
 
 unit tests here catch what the daemon e2e cannot drive: key routing, stale replies, in-flight save rendering, footer fitting. the screen-level scenarios in `cli/test/e2e` drive the real daemon through the same keys. when a screen changes keys, update both and the gallery state that shows the footer.

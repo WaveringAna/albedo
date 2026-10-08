@@ -1,3 +1,4 @@
+result/
 *.beam
 !test/fixtures/build-digest/ebin/**/*.beam
 *.ez
