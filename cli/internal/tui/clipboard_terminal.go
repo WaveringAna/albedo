@@ -13,14 +13,65 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-// OSC 5522 replies travel through Bubble Tea's reader, never a second TTY reader.
+// kittyClipboardMode is the DEC private mode a terminal reports (DECRQM) when it
+// implements the kitty clipboard protocol and its paste events.
+const kittyClipboardMode ansi.DECMode = 5522
+
+// A local terminal answers the probe within milliseconds. Terminals that never
+// answer fall back to the environment, so waiting longer buys nothing.
+const clipboardProbeTimeout = 500 * time.Millisecond
+
+// terminalClipboardRead is the one pending paste: first the capability probe,
+// then the read. OSC 5522 replies travel through Bubble Tea's reader, never a
+// second TTY reader.
 // https://sw.kovidgoyal.net/kitty/clipboard/
 type terminalClipboardRead struct {
 	id       string
+	probing  bool
 	mime     string
 	data     []byte
 	received int
 	started  bool
+}
+
+type terminalClipboardProbeTimeoutMsg struct {
+	SessionID  string
+	ID         string
+	Generation int64
+}
+
+// pasteImage asks the terminal whether it can hand over its clipboard, because
+// that terminal, not this machine, holds what the user copied: over ssh, mosh,
+// or an attach from another device the two differ. A terminal that does not
+// answer is trusted to be local unless the environment says otherwise.
+func (m *ChatModel) pasteImage() tea.Cmd {
+	if m.terminalClipboard.id != "" {
+		return nil
+	}
+	id := newClipboardID()
+	m.terminalClipboard = terminalClipboardRead{id: id, probing: true}
+	timeout := terminalClipboardProbeTimeoutMsg{m.SessionID, id, m.Generation}
+	return tea.Batch(
+		terminalRaw(ansi.RequestMode(kittyClipboardMode)),
+		tea.Tick(clipboardProbeTimeout, func(time.Time) tea.Msg { return timeout }),
+	)
+}
+
+func (m *ChatModel) finishClipboardProbe(supported bool) tea.Cmd {
+	m.terminalClipboard = terminalClipboardRead{}
+	if supported || isRemote() {
+		return m.readTerminalClipboard()
+	}
+	return PasteClipboardImageCmd(m.SessionID, m.Generation)
+}
+
+func newClipboardID() string { return fmt.Sprintf("albedo-%d", nextPageGeneration()) }
+
+func terminalRaw(sequence string) tea.Cmd {
+	if os.Getenv("TMUX") != "" {
+		sequence = ansi.TmuxPassthrough(sequence)
+	}
+	return tea.Raw(sequence)
 }
 
 type terminalClipboardTimeoutMsg struct {
@@ -33,19 +84,33 @@ func (m *ChatModel) readTerminalClipboard() tea.Cmd {
 	if m.terminalClipboard.id != "" {
 		return nil
 	}
-	id := fmt.Sprintf("albedo-%d", nextPageGeneration())
+	id := newClipboardID()
 	m.terminalClipboard = terminalClipboardRead{id: id}
 	request := "\x1b]5522;type=read:id=" + id + ";" +
 		base64.StdEncoding.EncodeToString([]byte("image/png image/jpeg")) + "\x1b\\"
-	if os.Getenv("TMUX") != "" {
-		request = ansi.TmuxPassthrough(request)
-	}
 	timeout := terminalClipboardTimeoutMsg{m.SessionID, id, m.Generation}
-	return tea.Batch(tea.Raw(request), tea.Tick(30*time.Second, func(time.Time) tea.Msg { return timeout }))
+	return tea.Batch(terminalRaw(request), tea.Tick(30*time.Second, func(time.Time) tea.Msg { return timeout }))
 }
 
 func (m *ChatModel) handleTerminalClipboard(msg tea.Msg) (tea.Cmd, bool) {
 	switch msg := msg.(type) {
+	case terminalClipboardProbeTimeoutMsg:
+		if msg.SessionID != m.SessionID || msg.Generation != m.Generation || msg.ID != m.terminalClipboard.id || !m.terminalClipboard.probing {
+			return nil, true
+		}
+		return m.finishClipboardProbe(false), true
+	case tea.ModeReportMsg:
+		if msg.Mode != kittyClipboardMode {
+			return nil, false
+		}
+		if !m.terminalClipboard.probing {
+			return nil, true
+		}
+		switch msg.Value {
+		case ansi.ModeSet, ansi.ModeReset, ansi.ModePermanentlySet:
+			return m.finishClipboardProbe(true), true
+		}
+		return m.finishClipboardProbe(false), true
 	case terminalClipboardTimeoutMsg:
 		if msg.SessionID != m.SessionID || msg.Generation != m.Generation || msg.ID != m.terminalClipboard.id {
 			return nil, true

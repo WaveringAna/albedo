@@ -86,10 +86,7 @@ func (m *ChatModel) handleInput(msg tea.Msg) (tea.Cmd, bool) {
 				return tea.Batch(cmds...), true
 			}
 		case "ctrl+v":
-			if isRemote() {
-				return m.readTerminalClipboard(), true
-			}
-			return PasteClipboardImageCmd(m.SessionID, m.Generation), true
+			return m.pasteImage(), true
 		case "backspace", "ctrl+h", "ctrl+w", "alt+backspace", "ctrl+backspace":
 			if m.deleteMarker(true) {
 				return nil, true

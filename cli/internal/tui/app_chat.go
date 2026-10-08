@@ -40,6 +40,10 @@ func (m *AppModel) handleChatLifecycle(msg tea.Msg) (tea.Cmd, bool) {
 		sid, forward = sm.SessionID, true
 	case terminalClipboardTimeoutMsg:
 		sid, forward = sm.SessionID, true
+	case terminalClipboardProbeTimeoutMsg:
+		sid, forward = sm.SessionID, true
+	case tea.ModeReportMsg:
+		sid, forward = m.Chat.SessionID, sm.Mode == kittyClipboardMode
 	case uv.UnknownOscEvent:
 		sid, forward = m.Chat.SessionID, true
 	case ChatStreamEventMsg:
