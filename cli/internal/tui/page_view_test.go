@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -34,7 +35,8 @@ func detailFixture() *PageDocument {
 func pageAt(width, height int, doc *PageDocument) PageViewModel {
 	m := NewPageViewModel(nil, "s", "/paperclips")
 	m.SetSize(width, height)
-	m.Doc, m.Busy = doc, false
+	m.setDoc(doc)
+	m.Busy = false
 	return m
 }
 
@@ -55,7 +57,7 @@ func TestPageFitsEveryTerminal(t *testing.T) {
 
 func TestWidePageShowsDetailBesideTheList(t *testing.T) {
 	view := ansi.Strip(pageAt(120, 30, detailFixture()).View())
-	for _, want := range []string{"ruff not on PATH", "│", "suggestion: document the canonical invocation", "open · #1"} {
+	for _, want := range []string{"ruff not on PATH", "│", "suggestion: document", "open · #1"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("wide view lost %q:\n%s", want, view)
 		}
@@ -79,5 +81,33 @@ func TestRowsWithoutDetailKeepTheFullWidth(t *testing.T) {
 	view := ansi.Strip(pageAt(120, 30, doc).View())
 	if strings.Contains(view, "│") || strings.Contains(view, "open · #1") {
 		t.Fatalf("a page without details should keep the list alone:\n%s", view)
+	}
+}
+
+// Actions are chords and never bare letters: a letter typed into a page
+// filters its rows, and only a chord asks for a question or runs one. E2E
+// cannot see which keys reach the filter, so these drive the model directly.
+func TestPageBareLetterFiltersInsteadOfActing(t *testing.T) {
+	doc := detailFixture()
+	doc.Actions = []PageAction{{ID: "delete", Key: "ctrl+d", Label: "delete", Row: true, Confirm: true, Confirmation: "Delete this item?"}}
+	m := pageAt(120, 30, doc)
+	m, _ = m.Update(tea.KeyPressMsg{Code: 'd', Text: "d"})
+	if m.Mode != modeBrowse || m.CurrentAction != nil || m.listView.input.Value() != "d" {
+		t.Fatalf("a bare letter should only filter: mode %v, action %v, filter %q", m.Mode, m.CurrentAction, m.listView.input.Value())
+	}
+	m, _ = m.Update(tea.KeyPressMsg{Code: 'd', Mod: tea.ModCtrl})
+	if m.Mode != modeConfirm || m.CurrentAction == nil || !m.Confirming() {
+		t.Fatal("the chord should ask before deleting")
+	}
+	if !strings.Contains(ansi.Strip(m.View()), "Delete this item?") {
+		t.Fatalf("the question should read in the footer:\n%s", ansi.Strip(m.View()))
+	}
+	m, _ = m.Update(tea.KeyPressMsg{Code: 'x', Text: "x"})
+	if m.Mode != modeConfirm || m.listView.input.Value() != "d" {
+		t.Fatal("a stray key should neither answer nor reach the filter while asking")
+	}
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	if m.Mode != modeBrowse || m.CurrentAction != nil || m.Confirming() {
+		t.Fatal("esc should drop the question")
 	}
 }

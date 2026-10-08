@@ -2,6 +2,7 @@ package tui
 
 import (
 	"albedo/cli/internal/daemon"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -66,9 +67,10 @@ type PageViewModel struct {
 	CurrentAction *PageAction
 	SessionID     string
 	Command       string
-	SelectedID    string
 	TextInput     textinput.Model
-	page
+	pageStatus
+	listView
+	confirm
 	Mode                    pageModeKind
 	ChoiceIndex             int
 	FieldIndex, ActionIndex int
@@ -78,24 +80,28 @@ type PageViewModel struct {
 
 func NewPageViewModel(conn *daemon.Connection, sessionID, command string) PageViewModel {
 	return PageViewModel{
-		Conn:      conn,
-		SessionID: sessionID,
-		Command:   command,
-		TextInput: newField(),
-		page:      startPage(false),
-		Busy:      true,
+		Conn:       conn,
+		SessionID:  sessionID,
+		Command:    command,
+		TextInput:  newField(),
+		pageStatus: newPageStatus(false),
+		listView:   newListView("Search " + strings.TrimPrefix(command, "/")),
+		Busy:       true,
 	}
 }
 
 func (m *PageViewModel) SetSize(width, height int) {
-	m.Width = width
-	m.Height = height
+	m.pageStatus.SetSize(width, height)
+	m.listView.setSize(width, height)
 	m.TextInput.SetWidth(max(10, width-20))
 }
 
 func (m PageViewModel) Init() tea.Cmd {
 	return m.loadPageCmd(m.Generation)
 }
+
+// Confirming reports a question waiting for enter or esc.
+func (m PageViewModel) Confirming() bool { return m.confirm.asking() }
 
 func (m PageViewModel) loadPageCmd(gen int) tea.Cmd {
 	previous := m.Doc
@@ -139,20 +145,45 @@ func (m PageViewModel) executeActionCmd(act PageAction, row *PageRow, gen int) t
 	}
 }
 
+// currentRow is the row under the cursor, nil when none is shown.
 func (m PageViewModel) currentRow() *PageRow {
-	if m.Doc == nil || len(m.Doc.Rows) == 0 {
+	row, ok := m.highlighted()
+	if !ok || m.Doc == nil {
 		return nil
 	}
-	return &m.Doc.Rows[m.currentIndex()]
+	i := slices.IndexFunc(m.Doc.Rows, func(r PageRow) bool { return r.ID == row.key })
+	if i < 0 {
+		return nil
+	}
+	return &m.Doc.Rows[i]
 }
 
-func (m PageViewModel) currentIndex() int {
-	if m.Doc != nil {
-		if i := slices.IndexFunc(m.Doc.Rows, func(r PageRow) bool { return r.ID == m.SelectedID }); i >= 0 {
-			return i
-		}
+// target names the row an action applies to, for the question and prompt.
+func (m PageViewModel) target(act PageAction) string {
+	row := m.currentRow()
+	if !act.Row || row == nil {
+		return ""
 	}
-	return 0
+	target := " "
+	if id := rowID(*row); id != "" {
+		target += id + " "
+	}
+	return target + row.Text
+}
+
+// ask opens act's question; enter in it runs the action and esc drops it.
+func (m *PageViewModel) ask(act PageAction) {
+	m.Notice, m.Error = "", ""
+	m.CurrentAction, m.Mode = &act, modeConfirm
+	target := m.target(act)
+	m.confirm.ask(act.ID, target, act.Label, cmp.Or(act.Confirmation, act.Label+target+"?"))
+}
+
+// cancelPrompt drops whatever a prompt or question was collecting.
+func (m *PageViewModel) cancelPrompt() {
+	m.Mode, m.CurrentAction, m.FormValues, m.FieldIndex = modeBrowse, nil, nil, 0
+	m.TextInput.Reset()
+	m.confirm.dismiss()
 }
 
 // runAction marks the page busy and asks the daemon to run act.
@@ -211,11 +242,8 @@ func (m PageViewModel) Update(msg tea.Msg) (PageViewModel, tea.Cmd) {
 		if !m.settle(msg.Gen, msg.Err, &m.Busy) {
 			return m, nil
 		}
-		m.Doc = msg.Doc
+		m.setDoc(msg.Doc)
 		m.Error = ""
-		if row := m.currentRow(); row != nil {
-			m.SelectedID = row.ID
-		}
 		return m, nil
 
 	case pageShortcutPreparedMsg:
@@ -223,15 +251,14 @@ func (m PageViewModel) Update(msg tea.Msg) (PageViewModel, tea.Cmd) {
 			return m, nil
 		}
 		prepared := msg.Prepared
-		m.Doc = prepared.Page
+		m.setDoc(prepared.Page)
 		m.Error = ""
 		if prepared.Request.Row != nil {
-			m.SelectedID = prepared.Request.Row.ID
+			m.focusRow(prepared.Request.Row.ID)
 		}
 		act := prepared.Request.Action
 		if act.Confirm {
-			m.CurrentAction = &act
-			m.Mode = modeConfirm
+			m.ask(act)
 			return m, nil
 		}
 		m.FormValues = prepared.Request.Form
@@ -246,11 +273,9 @@ func (m PageViewModel) Update(msg tea.Msg) (PageViewModel, tea.Cmd) {
 			return m, nil
 		}
 		if msg.Prepared != nil {
-			m.Doc = msg.Prepared
-			m.Mode = modeBrowse
-			m.Busy = false
-			m.CurrentAction = nil
-			m.SelectedID = ""
+			m.setDoc(msg.Prepared)
+			m.Cursor = 0
+			m.Mode, m.Busy, m.CurrentAction = modeBrowse, false, nil
 			return m, nil
 		}
 		m.Notice = pageNotice(msg)
@@ -263,118 +288,143 @@ func (m PageViewModel) Update(msg tea.Msg) (PageViewModel, tea.Cmd) {
 		)
 
 	case tea.KeyPressMsg:
-		if msg.String() == "ctrl+c" || msg.String() == "esc" {
-			if m.Mode == modeBrowse {
-				return m, func() tea.Msg { return PageCancelMsg{} }
-			}
-			m.Mode = modeBrowse
-			m.CurrentAction = nil
-			m.FormValues = nil
-			m.TextInput.Reset()
-			m.FieldIndex = 0
-			return m, nil
-		}
-		if m.Busy {
-			return m, nil
-		}
-		if m.Doc == nil {
-			if strings.ToLower(msg.String()) == "r" {
-				m.Busy = true
-				m.Error = ""
-				m.Generation = nextPageGeneration()
-				return m, m.loadPageCmd(m.Generation)
-			}
-			return m, nil
-		}
-		switch m.Mode {
-		case modeConfirm:
-			if msg.String() == "enter" && m.CurrentAction != nil {
-				act := *m.CurrentAction
-				m.CurrentAction = nil
-				m.Mode = modeBrowse
-				return m, m.beginAction(act, false)
-			}
-		case modeChoice:
-			if opts := m.fieldChoices(); len(opts) > 0 {
-				switch msg.String() {
-				case "left", "up":
-					m.ChoiceIndex = (m.ChoiceIndex - 1 + len(opts)) % len(opts)
-				case "right", "down":
-					m.ChoiceIndex = (m.ChoiceIndex + 1) % len(opts)
-				case "enter":
-					return m, m.runAction(*m.CurrentAction, opts[m.ChoiceIndex])
-				}
-			}
-		case modeText:
-			if msg.String() != "enter" {
-				var cmd tea.Cmd
-				m.TextInput, cmd = m.TextInput.Update(msg)
-				return m, cmd
-			}
-			if val := m.TextInput.Value(); m.CurrentAction != nil {
-				act := *m.CurrentAction
-				m.TextInput.Reset()
-				return m, m.runAction(act, val)
-			}
-		case modeActions:
-			switch msg.String() {
-			case "up", "ctrl+p":
-				m.ActionIndex = max(0, m.ActionIndex-1)
-			case "down", "ctrl+n":
-				m.ActionIndex = min(len(m.Doc.Actions)-1, m.ActionIndex+1)
-			case "enter":
-				if len(m.Doc.Actions) > 0 {
-					act := m.Doc.Actions[m.ActionIndex]
-					if act.Row && m.currentRow() == nil {
-						m.Error = "Select a row for this action."
-						break
-					}
-					if act.Confirm {
-						m.CurrentAction = &act
-						m.Mode = modeConfirm
-					} else {
-						return m, m.beginAction(act, true)
-					}
-				}
-			}
-			return m, nil
-		case modeBrowse:
-			idx := m.currentIndex()
-			switch msg.String() {
-			case "ctrl+a":
-				m.Mode = modeActions
-				m.ActionIndex = 0
-				return m, nil
-			case "up", "ctrl+p":
-				if idx > 0 {
-					m.SelectedID = m.Doc.Rows[idx-1].ID
-				}
-			case "down", "ctrl+n":
-				if idx < len(m.Doc.Rows)-1 {
-					m.SelectedID = m.Doc.Rows[idx+1].ID
-				}
-			default:
-				for _, act := range m.Doc.Actions {
-					if act.Key != msg.String() {
-						continue
-					}
-					if act.Row && m.currentRow() == nil {
-						continue
-					}
-					if act.Confirm {
-						m.Notice, m.Error = "", ""
-						m.Mode = modeConfirm
-						m.CurrentAction = &act
-						return m, nil
-					}
-					return m, m.beginAction(act, true)
-				}
-			}
-		}
+		return m.keyPress(msg)
 	}
-	if m.Mode == modeText && m.TextInput.Focused() {
+	if m.Mode == modeText {
 		var cmd tea.Cmd
 		m.TextInput, cmd = m.TextInput.Update(msg)
+		return m, cmd
+	}
+	cmd := m.listView.update(msg)
+	return m, cmd
+}
+
+// keyPress routes a key by the mode the page is in. A bare letter only ever
+// reaches the filter or a prompt; actions run from chords.
+func (m PageViewModel) keyPress(msg tea.KeyPressMsg) (PageViewModel, tea.Cmd) {
+	key := msg.String()
+	if m.Mode == modeConfirm {
+		if m.confirm.key(msg) {
+			act := *m.CurrentAction
+			m.CurrentAction, m.Mode = nil, modeBrowse
+			m.confirm.dismiss()
+			cmd := m.beginAction(act, false)
+			return m, cmd
+		}
+		if !m.confirm.asking() {
+			m.CurrentAction, m.Mode = nil, modeBrowse
+		}
+		return m, nil
+	}
+	if key == "esc" || key == "ctrl+c" {
+		if m.Mode == modeBrowse {
+			return m, func() tea.Msg { return PageCancelMsg{} }
+		}
+		m.cancelPrompt()
+		return m, nil
+	}
+	if m.Busy {
+		return m, nil
+	}
+	switch m.Mode {
+	case modeText:
+		if key != "enter" {
+			var cmd tea.Cmd
+			m.TextInput, cmd = m.TextInput.Update(msg)
+			return m, cmd
+		}
+		if m.CurrentAction == nil {
+			return m, nil
+		}
+		act, val := *m.CurrentAction, m.TextInput.Value()
+		m.TextInput.Reset()
+		cmd := m.runAction(act, val)
+		return m, cmd
+	case modeChoice:
+		return m.choiceKey(key)
+	case modeActions:
+		return m.actionsKey(key)
+	}
+	return m.browseKey(msg)
+}
+
+// browseKey runs a chord, opens the menu, reloads, or moves and types in the
+// filter.
+func (m PageViewModel) browseKey(msg tea.KeyPressMsg) (PageViewModel, tea.Cmd) {
+	key := msg.String()
+	if key == "ctrl+r" {
+		m.Busy, m.Error = true, ""
+		m.Generation = nextPageGeneration()
+		return m, m.loadPageCmd(m.Generation)
+	}
+	if m.Doc == nil {
+		return m, nil
+	}
+	if key == "ctrl+a" {
+		if len(m.Doc.Actions) > 0 {
+			m.Mode, m.ActionIndex = modeActions, 0
+		}
+		return m, nil
+	}
+	if act, ok := m.chord(key); ok {
+		if act.Confirm {
+			m.ask(act)
+			return m, nil
+		}
+		cmd := m.beginAction(act, true)
+		return m, cmd
+	}
+	cmd := m.listView.update(msg)
+	return m, cmd
+}
+
+// chord is the action bound to key that applies to the row under the cursor.
+func (m PageViewModel) chord(key string) (PageAction, bool) {
+	for _, act := range m.Doc.Actions {
+		if act.Key == key && (!act.Row || m.currentRow() != nil) {
+			return act, true
+		}
+	}
+	return PageAction{}, false
+}
+
+// actionsKey moves through the actions menu and runs the one entered on.
+func (m PageViewModel) actionsKey(key string) (PageViewModel, tea.Cmd) {
+	switch key {
+	case "up", "ctrl+p":
+		m.ActionIndex = max(0, m.ActionIndex-1)
+	case "down", "ctrl+n":
+		m.ActionIndex = min(len(m.Doc.Actions)-1, m.ActionIndex+1)
+	case "enter":
+		act := m.Doc.Actions[m.ActionIndex]
+		if act.Row && m.currentRow() == nil {
+			m.Error = "Select a row for this action."
+			return m, nil
+		}
+		m.Mode = modeBrowse
+		if act.Confirm {
+			m.ask(act)
+			return m, nil
+		}
+		cmd := m.beginAction(act, true)
+		return m, cmd
+	}
+	return m, nil
+}
+
+// choiceKey moves through a choice field's options and applies the one chosen.
+func (m PageViewModel) choiceKey(key string) (PageViewModel, tea.Cmd) {
+	opts := m.fieldChoices()
+	if len(opts) == 0 {
+		return m, nil
+	}
+	switch key {
+	case "left", "up":
+		m.ChoiceIndex = (m.ChoiceIndex - 1 + len(opts)) % len(opts)
+	case "right", "down":
+		m.ChoiceIndex = (m.ChoiceIndex + 1) % len(opts)
+	case "enter":
+		cmd := m.runAction(*m.CurrentAction, opts[m.ChoiceIndex])
 		return m, cmd
 	}
 	return m, nil

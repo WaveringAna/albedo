@@ -83,7 +83,8 @@ func (m *AppModel) handleCommandResults(msg tea.Msg) (tea.Cmd, bool) {
 		}
 		if msg.Page != nil && m.State == AppStateChat && m.ActiveSession != nil {
 			m.PageView = NewPageViewModel(m.Conn, m.ActiveSession.ID, msg.Name)
-			m.PageView.Doc, m.PageView.Busy = msg.Page, false
+			m.PageView.setDoc(msg.Page)
+			m.PageView.Busy = false
 			m.PageView.SetSize(m.Width, m.Height)
 			m.State = AppStatePageView
 			return nil, true

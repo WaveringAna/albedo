@@ -86,11 +86,11 @@ func TestPageFocusedInputReceivesPasteAndCursorCommands(t *testing.T) {
 		t.Run(inputKind, func(t *testing.T) {
 			page := NewPageViewModel(nil, "s", "/notes")
 			page.Busy = false
-			page.Doc = &PageDocument{Actions: []PageAction{{Key: "e", Label: "edit", Fields: []daemon.FormField{{Name: "value", Label: "value", Type: inputKind}}}}}
+			page.setDoc(&PageDocument{Actions: []PageAction{{Key: "ctrl+e", Label: "edit", Fields: []daemon.FormField{{Name: "value", Label: "value", Type: inputKind}}}}})
 			styles := page.TextInput.Styles()
 			styles.Cursor.Blink = true
 			page.TextInput.SetStyles(styles)
-			page, _ = page.Update(tea.KeyPressMsg{Code: 'e', Text: "e"})
+			page, _ = page.Update(tea.KeyPressMsg{Code: 'e', Mod: tea.ModCtrl})
 			page, _ = page.Update(tea.PasteMsg{Content: "pasted value"})
 			if page.TextInput.Value() != "pasted value" {
 				t.Fatal("bracketed paste was lost")

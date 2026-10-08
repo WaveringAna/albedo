@@ -10,173 +10,84 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-// pageLayout places the list and the selected row's detail under the title
-// the way the sessions view does: side by side when there is room, the
-// detail under the list when there is not, and the list alone when no row
-// has one or the stack would leave the detail too little.
-type pageLayout struct {
-	list, pane int // widths side by side; pane is 0 when stacked or alone
-	listRows   int // rows the list keeps
-	paneRows   int // rows the detail keeps under the list; 0 unless stacked
-}
-
-func (m PageViewModel) layout(body, listed int) pageLayout {
-	l := pageLayout{list: m.Width, listRows: body}
-	if !slices.ContainsFunc(m.Doc.Rows, func(r PageRow) bool { return r.Detail != "" }) {
-		return l
-	}
-	if m.Width >= 96 && m.Height >= 14 {
-		l.list = m.Width / 2
-		l.pane = m.Width - l.list - ansi.StringWidth(svSep())
-		return l
-	}
-	// Stacked, the list keeps what it needs up to two fifths of the body, or
-	// more when the detail is short, and the rule between them takes a row.
-	rows := min(listed, max(3, body*2/5, body-1-len(m.detailLines(m.Width))))
-	if body-rows-1 >= 4 {
-		l.listRows, l.paneRows = rows, body-rows-1
-	}
-	return l
-}
-
-// list is the rows grouped under a rule per run of one badge, at exactly
-// width × height, scrolled to keep the selection in view.
-func (m PageViewModel) list(width, height int) []string {
-	return scrollWindow(m.listLines(width, height), m.selectedAt(height), width, height)
-}
-
-func (m PageViewModel) listLines(width, height int) []string {
-	if len(m.Doc.Rows) == 0 {
-		return []string{DefaultStyles.Faint.Render("   " + m.Doc.Empty)}
-	}
-	idW := 0
-	for _, row := range m.Doc.Rows {
-		idW = max(idW, ansi.StringWidth(rowID(row)))
-	}
-	selected := m.currentIndex()
-	var lines []string
-	for i, row := range m.Doc.Rows {
-		if i == 0 || row.Badge != m.Doc.Rows[i-1].Badge {
-			if i > 0 && height >= 10 {
-				lines = append(lines, "")
-			}
-			run := 1
-			for run < len(m.Doc.Rows)-i && m.Doc.Rows[i+run].Badge == row.Badge {
-				run++
-			}
-			lines = append(lines, sectionRule(row.Badge, run, width))
+// setDoc takes a document and its rows, keeping the cursor on the row it was on.
+func (m *PageViewModel) setDoc(doc *PageDocument) {
+	m.Doc = doc
+	var rows []listEntry
+	if doc != nil {
+		rows = make([]listEntry, len(doc.Rows))
+		for i, row := range doc.Rows {
+			rows[i] = pageEntry(row)
 		}
-		lines = append(lines, m.row(row, i == selected, width, idW))
 	}
-	return lines
+	m.setRows(rows)
 }
 
-// selectedAt is where the selected row sits in listLines.
-func (m PageViewModel) selectedAt(height int) int {
-	if len(m.Doc.Rows) == 0 {
-		return 0
+// focusRow moves the cursor to row id when the list shows it.
+func (m *PageViewModel) focusRow(id string) {
+	if i := slices.IndexFunc(m.shown, func(s listShown) bool { return m.rows[s.row].key == id }); i >= 0 {
+		m.Cursor = i
 	}
-	return m.lineOf(m.currentIndex(), height)
 }
 
-// listed is how many lines listLines makes, without drawing them.
-func (m PageViewModel) listed(height int) int {
-	return max(1, m.lineOf(len(m.Doc.Rows)-1, height)+1)
+// pageEntry is how a row reads in the list: its tone dot in front, its text,
+// its quiet #id at the edge, grouped under its badge.
+func pageEntry(row PageRow) listEntry {
+	tag := ""
+	if id := rowID(row); id != "" {
+		tag = DefaultStyles.Faint.Render(id)
+	}
+	return listEntry{
+		key:     row.ID,
+		section: row.Badge,
+		lead:    toneGlyph(row.Tone),
+		name:    row.Text,
+		tag:     tag,
+		search:  []string{row.ID, row.Badge},
+		detail:  func(width int) []string { return pageDetail(row, width) },
+	}
 }
 
-// lineOf is where row n sits in listLines.
-func (m PageViewModel) lineOf(n, height int) int {
-	at := 0
-	for i, row := range m.Doc.Rows[:n+1] {
-		if i == 0 || row.Badge != m.Doc.Rows[i-1].Badge {
-			at++
-			if i > 0 && height >= 10 {
-				at++
-			}
-		}
-		at++
+// toneGlyph is the dot a row wears for its tone; plain rows get a quiet one.
+func toneGlyph(tone PageTone) string {
+	switch tone {
+	case ToneWarning, ToneActive:
+		return toneStyle(tone).Render("●")
 	}
-	return at - 1
+	return DefaultStyles.Faint.Render("·")
 }
 
-// rowID is the quiet #id a row shows, unless its id is its text.
-func rowID(row PageRow) string {
-	if row.ID != row.Text {
-		return "#" + row.ID
+// pageDetail is a row's pane: its text over its badge and id, then its
+// detail paragraphs wrapped to the pane.
+func pageDetail(row PageRow, width int) []string {
+	meta := row.Badge
+	if id := rowID(row); id != "" {
+		meta += " · " + id
 	}
-	return ""
-}
-
-// row is one page row in the sessions view's grammar: bar, a glyph in the
-// row's tone, the title, then its id right-aligned in idW columns.
-func (m PageViewModel) row(row PageRow, selected bool, width, idW int) string {
-	glyph, glyphStyle := "· ", DefaultStyles.Faint
-	switch {
-	case selected:
-		glyph, glyphStyle = "◆ ", DefaultStyles.Agent
-	case row.Tone == ToneWarning:
-		glyph, glyphStyle = "● ", DefaultStyles.Warning
-	case row.Tone == ToneActive:
-		glyph, glyphStyle = "● ", DefaultStyles.Success
-	}
-	textStyle := lipgloss.NewStyle()
-	switch {
-	case selected:
-		textStyle = DefaultStyles.Bold
-	case row.Tone == ToneMuted:
-		textStyle = DefaultStyles.Faint
-	}
-	textW := width - 4
-	if idW > 0 {
-		textW -= idW + 2
-	}
-	textW = max(1, textW)
-	marker := " "
-	if selected {
-		marker = selectBar()
-	}
-	line := marker + glyphStyle.Render(glyph) + " " + textStyle.Render(svCell(row.Text, textW, false))
-	if idW > 0 {
-		line += "  " + DefaultStyles.Faint.Render(svCell(rowID(row), idW, true))
-	}
-	if selected {
-		return selectedLine(line, width)
-	}
-	return line
-}
-
-// detail is the selected row at exactly width × height: its title and badge
-// over a rule, then its detail wrapped to the pane, cut short with ··· when
-// it runs past the bottom.
-func (m PageViewModel) detail(width, height int) []string {
-	lines := m.detailLines(width)
-	if len(lines) > height && height > 0 {
-		lines = append(lines[:height-1], DefaultStyles.Faint.Render("···"))
-	}
-	return paneBox(lines, max(1, width-2), width, height)
-}
-
-func (m PageViewModel) detailLines(width int) []string {
-	inner := max(1, width-2)
-	row := m.currentRow()
-	if row == nil {
-		return nil
-	}
-	var lines []string
-	for _, l := range svWrap(row.Text, inner, 2) {
-		lines = append(lines, DefaultStyles.Bold.Render(l))
-	}
-	meta := []string{toneStyle(row.Tone).Render(row.Badge)}
-	if id := rowID(*row); id != "" {
-		meta = append(meta, DefaultStyles.Faint.Render(id))
-	}
-	lines = append(lines, strings.Join(meta, DefaultStyles.Decor.Render(" · ")), DefaultStyles.Decor.Render(strings.Repeat("─", inner)))
+	lines := paneTitle(row.Text, meta, width)
 	for paragraph := range strings.SplitSeq(row.Detail, "\n\n") {
 		if paragraph = strings.TrimSpace(paragraph); paragraph != "" {
-			lines = append(append(lines, ""), strings.Split(ansi.Wrap(paragraph, inner, " -"), "\n")...)
+			lines = append(lines, "")
+			lines = append(lines, strings.Split(ansi.Wrap(paragraph, width, " -"), "\n")...)
 		}
 	}
 	return lines
+}
+
+// hasDetail reports whether any row has a detail, the only case the pane shows.
+func (m PageViewModel) hasDetail() bool {
+	return m.Doc != nil && slices.ContainsFunc(m.Doc.Rows, func(r PageRow) bool { return r.Detail != "" })
+}
+
+// emptyText is what the list says when it has no rows.
+func (m PageViewModel) emptyText() string {
+	switch {
+	case m.Doc != nil:
+		return m.Doc.Empty
+	case m.Error != "":
+		return strings.TrimPrefix(m.Command, "/") + " did not load"
+	}
+	return "loading " + strings.TrimPrefix(m.Command, "/") + "…"
 }
 
 // toneStyle is the color a badge wears for its tone.
@@ -192,6 +103,14 @@ func toneStyle(tone PageTone) lipgloss.Style {
 	return DefaultStyles.Muted
 }
 
+// rowID is the quiet #id a row shows, unless its id is its text.
+func rowID(row PageRow) string {
+	if row.ID != row.Text {
+		return "#" + row.ID
+	}
+	return ""
+}
+
 // pageNotice picks the wording for a finished action: the daemon's message
 // when it sent one, else the action's label.
 func pageNotice(msg pageActionExecutedMsg) string {
@@ -202,95 +121,128 @@ func pageNotice(msg pageActionExecutedMsg) string {
 	return notice
 }
 
+// View draws the rows beside the highlighted row's detail; a prompt or a
+// question takes the footer, and the filter steps aside while one is open.
 func (m PageViewModel) View() string {
-	width, height := cmp.Or(m.Width, 80), cmp.Or(m.Height, 24)
-	summary := ""
+	width := cmp.Or(m.Width, 80)
+	lv := m.listView
+	lv.Empty = m.emptyText()
+	right := ""
 	if m.Doc != nil {
-		summary = DefaultStyles.Faint.Render(m.Doc.Summary)
+		right = DefaultStyles.Faint.Render(m.Doc.Summary)
 	}
-	lines := []string{" " + titleRule(width-1, brand("albedo")+" "+DefaultStyles.Muted.Render(m.Command), summary), ""}
-	tail := []string{m.prompt(), m.footer(width)}
-	body := max(1, height-len(lines)-len(tail))
-	switch m.Doc {
-	case nil:
-		note := "loading " + m.Command + "…"
-		if m.Error != "" {
-			note = "r retry · esc back"
-		}
-		lines = append(lines, " "+DefaultStyles.Faint.Render(note))
-		lines = append(lines, make([]string, max(0, body-1))...)
-	default:
-		l := m.layout(body, m.listed(body))
-		list := m.list(l.list, l.listRows)
-		if l.pane > 0 {
-			pane := m.detail(l.pane, l.listRows)
-			for i := range list {
-				list[i] += svSep() + pane[i]
-			}
-		}
-		lines = append(lines, list...)
-		if l.paneRows > 0 {
-			lines = append(lines, DefaultStyles.Decor.Render(strings.Repeat("─", width)))
-			lines = append(lines, m.detail(width, l.paneRows)...)
-		}
+	f := lv.frame(brand("albedo")+" "+DefaultStyles.Muted.Render(m.Command), right, m.footer(width))
+	if m.Mode != modeBrowse {
+		f.filter = ""
 	}
-	lines = append(lines, tail...)
-	if len(lines) > height {
-		lines = append(lines[:max(0, height-1)], lines[len(lines)-1])
+	if !m.hasDetail() {
+		f.pane = nil
 	}
-	for i, line := range lines {
-		lines[i] = ansi.Truncate(line, width, "…")
-	}
-	return strings.Join(lines, "\n")
+	return f.view(m.Width, m.Height)
 }
 
-// prompt is the line above the footer where an action asks what it needs,
-// blank while browsing.
+// prompt is the line above the keys where an action asks for what it needs,
+// blank while browsing or asking a question.
 func (m PageViewModel) prompt() string {
 	if m.Mode == modeActions {
-		var labels []string
+		labels := make([]string, len(m.Doc.Actions))
 		for i, action := range m.Doc.Actions {
-			label := action.Label
+			labels[i] = action.Label
 			if i == m.ActionIndex {
-				label = "[" + label + "]"
+				labels[i] = "[" + action.Label + "]"
 			}
-			labels = append(labels, label)
 		}
 		return " Actions: " + strings.Join(labels, " · ")
 	}
-	act, row := m.CurrentAction, m.currentRow()
+	act := m.CurrentAction
 	if act == nil {
 		return ""
 	}
 	target := ""
-	if act.Row && row != nil {
-		target = " "
+	if row := m.currentRow(); act.Row && row != nil {
 		if id := rowID(*row); id != "" {
-			target += id + " "
+			target = " " + id
 		}
-		target += row.Text
 	}
 	switch m.Mode {
-	case modeConfirm:
-		return " " + DefaultStyles.Warning.Render(cmp.Or(act.Confirmation, act.Label+target+"?"))
 	case modeChoice:
-		var choice strings.Builder
-		choice.WriteByte(' ')
-		choice.WriteString(DefaultStyles.Prompt.Render(act.Label + target))
-		choice.WriteByte(' ')
-		choice.WriteString(promptLead())
+		var options []string
 		for i, opt := range m.fieldChoices() {
 			label := " " + opt + " "
 			if i == m.ChoiceIndex {
 				label = selectedLine(label, 0)
 			}
-			choice.WriteString(label)
+			options = append(options, label)
 		}
-		return choice.String()
+		return " " + DefaultStyles.Prompt.Render(act.Label+target) + " " + promptLead() + strings.Join(options, "")
 	case modeText:
-		return " " + DefaultStyles.Prompt.Render(act.Label+target+" · "+cmp.Or(m.currentField().Label, act.Label)) + " " + promptLead() + m.TextInput.View()
+		field := cmp.Or(m.currentField().Label, act.Label)
+		return " " + DefaultStyles.Prompt.Render(act.Label+target+" · "+field) + " " + promptLead() + m.TextInput.View()
 	}
 	return ""
+}
+
+// footer is the prompt or question above the keys and one status: a failure,
+// a notice, or work in flight.
+func (m PageViewModel) footer(width int) string {
+	if m.Mode == modeConfirm {
+		return m.confirm.footer(width, m.Error)
+	}
+	status, urgent := m.status()
+	line := footerLine(width, m.hints(), status, urgent)
+	if prompt := m.prompt(); prompt != "" {
+		return prompt + "\n" + line
+	}
+	return line
+}
+
+// status is the footer's state beside the keys; an urgent one takes a row of
+// its own when the keys do not leave room for it.
+func (m PageViewModel) status() (string, bool) {
+	switch {
+	case m.Error != "":
+		return DefaultStyles.Error.Render(m.Error), true
+	case m.Busy:
+		return DefaultStyles.Busy.Render("working…"), true
+	case m.Notice != "":
+		return DefaultStyles.Warning.Render(m.Notice), true
+	}
+	return "", false
+}
+
+// hints is the keys for the mode the page is in, most important first.
+func (m PageViewModel) hints() []hint {
+	switch {
+	case m.Busy:
+		return []hint{{"esc", "back"}}
+	case m.Doc == nil:
+		return []hint{{"ctrl+r", "retry"}, {"esc", "back"}}
+	case m.Mode == modeText:
+		return []hint{{"enter", "save"}, {"esc", "cancel"}}
+	case m.Mode == modeChoice:
+		return []hint{{"←→", "choose"}, {"enter", "apply"}, {"esc", "cancel"}}
+	case m.Mode == modeActions:
+		return []hint{{"↑↓", "action"}, {"enter", "choose"}, {"esc", "cancel"}}
+	}
+	return m.browseHints()
+}
+
+// browseHints lists the row's chords with their labels, then the menu,
+// refresh, and esc last.
+func (m PageViewModel) browseHints() []hint {
+	var hints []hint
+	if len(m.rows) > 1 {
+		hints = append(hints, hint{"↑↓", "move"})
+	}
+	for _, act := range m.Doc.Actions {
+		if act.Key != "" && (!act.Row || m.currentRow() != nil) {
+			hints = append(hints, hint{act.Key, act.Label})
+		}
+	}
+	if len(m.Doc.Actions) > 0 {
+		hints = append(hints, hint{"ctrl+a", "actions"})
+	}
+	return append(hints, hint{"ctrl+r", "refresh"}, hint{"esc", "back"})
 }
 
 // fitHints is " " and the hints in room columns. A screen lists its hints
@@ -322,53 +274,4 @@ func fitHints(hints []hint, room int) string {
 		}
 	}
 	return ""
-}
-
-// footer is the keys on the left and the last outcome on the right, the
-// way the folder picker words it; a long outcome takes the whole line.
-func (m PageViewModel) footer(width int) string {
-	var hints []hint
-	switch {
-	case m.Busy:
-		hints = []hint{{"working…", ""}}
-	case m.Doc == nil:
-		hints = []hint{{"esc", "back"}}
-	case m.Mode == modeActions:
-		return " " + keyHints(hint{"↑↓", "action"}, hint{"enter", "choose"}, hint{"esc", "cancel"})
-	case m.Mode == modeBrowse:
-		if len(m.Doc.Actions) > 0 {
-			hints = append(hints, hint{"ctrl+a", "actions"})
-		}
-		if len(m.Doc.Rows) > 1 {
-			hints = append(hints, hint{"↑↓", "move"})
-		}
-		for _, act := range m.Doc.Actions {
-			if act.Key != "" && (!act.Row || m.currentRow() != nil) {
-				hints = append(hints, hint{act.Key, act.Label})
-			}
-		}
-		hints = append(hints, hint{"esc", "back"})
-	case m.Mode == modeText:
-		hints = []hint{{"enter", "save"}, {"esc", "cancel"}}
-	case m.Mode == modeChoice:
-		hints = []hint{{"←→", "choose"}, {"enter", "apply"}, {"esc", "cancel"}}
-	default:
-		hints = []hint{{"enter", "confirm"}, {"esc", "cancel"}}
-	}
-	var right string
-	switch {
-	case m.Error != "":
-		right = DefaultStyles.Error.Render(m.Error)
-	case m.Notice != "":
-		right = DefaultStyles.Faint.Render(m.Notice)
-	}
-	room := width - 1
-	if right != "" {
-		room = width - ansi.StringWidth(right) - 3
-	}
-	left := fitHints(hints, room)
-	if left == "" && right == "" {
-		left = " " + ansi.Truncate(keyHints(hints...), width-2, "…")
-	}
-	return left + strings.Repeat(" ", max(1, width-ansi.StringWidth(left)-ansi.StringWidth(right)-1)) + right
 }

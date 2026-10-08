@@ -14,13 +14,13 @@ import (
 
 func TestPageSecretInputIsMasked(t *testing.T) {
 	doc := &PageDocument{Title: "webhooks", Actions: []PageAction{
-		{ID: "rotate", Key: "k", Label: "rotate", Fields: []daemon.FormField{{Name: "secret", Label: "replacement", Type: "secret", Required: true}}},
+		{ID: "rotate", Key: "ctrl+t", Label: "rotate", Fields: []daemon.FormField{{Name: "secret", Label: "replacement", Type: "secret", Required: true}}},
 	}}
 	m := NewPageViewModel(nil, "session", "/webhooks")
-	m.Doc = doc
+	m.setDoc(doc)
 	m.Busy = false
 	m.SetSize(80, 24)
-	m, _ = m.Update(tea.KeyPressMsg{Code: 'k', Text: "k"})
+	m, _ = m.Update(tea.KeyPressMsg{Code: 't', Mod: tea.ModCtrl})
 	if m.Mode != modeText || m.TextInput.EchoMode != textinput.EchoPassword {
 		t.Fatalf("secret action should mask input: %+v", m)
 	}
