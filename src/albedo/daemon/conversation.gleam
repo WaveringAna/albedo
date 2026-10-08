@@ -11,6 +11,7 @@ import albedo/daemon/requests
 import albedo/daemon/session_configuration
 import albedo/daemon/session_workspace
 import albedo/daemon/store
+import albedo/daemon/tool_results
 import albedo/daemon/transcript
 import albedo/daemon/usage
 import albedo/harness/cache_fade
@@ -569,6 +570,208 @@ pub fn heal_in(
     <> " could not be read; its bytes moved to transcript_quarantine",
   )
   Ok(note)
+}
+
+/// Moves saved rows of `session` by (from, to) seqs, and with them the rows
+/// other tables key by seq. Positions stay; only what sits at them changes.
+fn move_rows_in(
+  db: sqlight.Connection,
+  session: String,
+  moves: List(#(Int, Int)),
+) -> Result(Nil, String) {
+  use <- bool.guard(moves == [], Ok(Nil))
+  let from = list.map(moves, fn(move) { move.0 })
+  let marks = marks(from)
+  let keyed = [sqlight.text(session), ..list.map(from, sqlight.int)]
+  use rows <- result.try(store.rows(
+    db,
+    "SELECT seq,payload,timestamp,provider,thought_ms,row_class,turn_id,calls_indexed,summary_indexed FROM transcript WHERE session=? AND seq IN ("
+      <> marks
+      <> ")",
+    keyed,
+    moved_row_decoder(),
+  ))
+  use _ <- result.try(
+    list.try_each(moves, fn(move) {
+      case list.find(rows, fn(row) { row.0 == move.0 }) {
+        Error(_) -> Error("transcript row to move is missing")
+        Ok(#(_, values)) ->
+          store.run(
+            db,
+            "UPDATE transcript SET payload=?,timestamp=?,provider=?,thought_ms=?,row_class=?,turn_id=?,calls_indexed=?,summary_indexed=? WHERE session=? AND seq=?",
+            list.append(values, [sqlight.text(session), sqlight.int(move.1)]),
+          )
+      }
+    }),
+  )
+  let remap = fn(column) {
+    column
+    <> "=CASE "
+    <> column
+    <> string.repeat(" WHEN ? THEN ?", list.length(moves))
+    <> " END"
+  }
+  let pairs =
+    list.flat_map(moves, fn(move) { [sqlight.int(move.0), sqlight.int(move.1)] })
+  use _ <- result.try(
+    list.try_each(
+      [
+        "transcript_calls", "submission_events", "continuation_markers",
+        "provider_requests",
+      ],
+      fn(table) {
+        store.run(
+          db,
+          "UPDATE "
+            <> table
+            <> " SET "
+            <> remap("seq")
+            <> " WHERE session=? AND seq IN ("
+            <> marks
+            <> ")",
+          list.append(pairs, keyed),
+        )
+      },
+    ),
+  )
+  use _ <- result.try(store.run(
+    db,
+    "UPDATE operations SET "
+      <> remap("committed_seq")
+      <> " WHERE committed_seq IN ("
+      <> marks
+      <> ")",
+    list.append(pairs, list.map(from, sqlight.int)),
+  ))
+  // A quarantined row is keyed by its seq, so moved ones step aside first.
+  use _ <- result.try(store.run(
+    db,
+    "UPDATE transcript_quarantine SET seq=-seq WHERE session=? AND seq IN ("
+      <> marks
+      <> ")",
+    keyed,
+  ))
+  store.run(
+    db,
+    "UPDATE transcript_quarantine SET "
+      <> remap("seq")
+      <> " WHERE session=? AND seq<0",
+    list.append(
+      list.flat_map(moves, fn(move) {
+        [sqlight.int(-move.0), sqlight.int(move.1)]
+      }),
+      [sqlight.text(session)],
+    ),
+  )
+}
+
+/// One `?` per value, for an `IN (...)` list.
+fn marks(values: List(a)) -> String {
+  string.join(list.map(values, fn(_) { "?" }), ",")
+}
+
+fn moved_row_decoder() -> decode.Decoder(#(Int, List(sqlight.Value))) {
+  use seq <- decode.field(0, decode.int)
+  use payload <- decode.field(1, decode.bit_array)
+  use timestamp <- decode.field(2, decode.optional(decode.int))
+  use provider <- decode.field(3, decode.optional(decode.string))
+  use thought_ms <- decode.field(4, decode.optional(decode.int))
+  use row_class <- decode.field(5, decode.optional(decode.string))
+  use turn_id <- decode.field(6, decode.optional(decode.string))
+  use calls_indexed <- decode.field(7, decode.int)
+  use summary_indexed <- decode.field(8, decode.int)
+  decode.success(
+    #(seq, [
+      sqlight.blob(payload),
+      sqlight.nullable(sqlight.int, timestamp),
+      sqlight.nullable(sqlight.text, provider),
+      sqlight.nullable(sqlight.int, thought_ms),
+      sqlight.nullable(sqlight.text, row_class),
+      sqlight.nullable(sqlight.text, turn_id),
+      sqlight.int(calls_indexed),
+      sqlight.int(summary_indexed),
+    ]),
+  )
+}
+
+/// Saves the moves `tool_results.settle_entries` made to a loaded transcript.
+pub fn move_rows(
+  store: store.Store,
+  session: String,
+  moves: List(#(Int, Int)),
+) -> Result(Nil, String) {
+  use <- bool.guard(moves == [], Ok(Nil))
+  store.query(store, fn(db) {
+    store.transaction(db, fn() { move_rows_in(db, session, moves) })
+  })
+}
+
+/// Settles the rows since the calls that `inputs` answer, so a note saved
+/// while those calls ran moves after their results. Rows that cannot be read
+/// leave the transcript as it is.
+fn settle_results_in(
+  db: sqlight.Connection,
+  session: String,
+  inputs: List(types.Input),
+) -> Result(Nil, String) {
+  let answered = tool_results.answered(inputs)
+  use <- bool.guard(answered == [], Ok(Nil))
+  use start <- result.try(store.one(
+    db,
+    "SELECT MIN(seq) FROM (SELECT MAX(seq) AS seq FROM transcript_calls WHERE session=? AND call_id IN ("
+      <> marks(answered)
+      <> ") GROUP BY call_id)",
+    [sqlight.text(session), ..list.map(answered, sqlight.text)],
+    decode.field(0, decode.optional(decode.int), decode.success),
+    "tool call position",
+  ))
+  case start {
+    None -> Ok(Nil)
+    Some(start) -> settle_since_in(db, session, start)
+  }
+}
+
+fn settle_since_in(
+  db: sqlight.Connection,
+  session: String,
+  start: Int,
+) -> Result(Nil, String) {
+  use rows <- result.try(
+    store.rows(
+      db,
+      "SELECT seq,payload,row_class FROM transcript WHERE session=? AND seq>=? ORDER BY seq",
+      [sqlight.text(session), sqlight.int(start)],
+      {
+        use seq <- decode.field(0, decode.int)
+        use payload <- decode.field(1, decode.bit_array)
+        use row_class <- decode.field(2, decode.optional(decode.string))
+        decode.success(#(seq, payload, row_class))
+      },
+    ),
+  )
+  let entries =
+    list.try_map(rows, fn(row) {
+      let #(seq, payload, row_class) = row
+      // Only provider items and tool results are read; any other row only
+      // has to stay a row that is neither.
+      let input = case row_class {
+        Some("other") | None -> unpack(payload, unread)
+        Some(_) -> Ok(types.User(""))
+      }
+      use input <- result.map(input)
+      transcript.Entry(
+        input,
+        None,
+        None,
+        None,
+        Some(transcript.SourceRef(session, seq)),
+      )
+    })
+  case entries {
+    Error(_) -> Ok(Nil)
+    Ok(entries) ->
+      move_rows_in(db, session, tool_results.settle_entries(entries).1)
+  }
 }
 
 /// Index saved rows in bounded store turns. Indexed rows are skipped, so
@@ -2154,6 +2357,7 @@ fn commit_with_letters(
         seq,
         turn_id,
       ))
+      use _ <- result.try(settle_results_in(db, id, inputs))
       // COALESCE keeps the old title when no new user message suggests one.
       store.run(
         db,

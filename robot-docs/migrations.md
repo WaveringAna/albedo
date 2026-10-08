@@ -112,8 +112,18 @@ the upgraded schema. embedding hosts call
   `conversation`'s startup indexing, is healed by `conversation.heal_in`: its
   bytes move to `transcript_quarantine` (one row per sequence ID, deleted with
   its session), and the row becomes a user-role system note saying it was set
-  aside, classed `user`. Startup continues. Healing is the only payload rewrite;
-  the backfill adds no migration marker. It runs after the image migration.
+  aside, classed `user`. Startup continues. The backfill adds no migration
+  marker. It runs after the image migration.
+- a tool result saved after rows that are neither calls nor results (a
+  capability note written while the call ran, then the result recovered after a
+  restart) moves back beside its call: providers reject a call whose result does
+  not follow it. `tool_results.settle` is the one rule. `conversation` applies it
+  when it commits results, `session_history` applies it to the live history and to
+  a transcript when it loads, and saves the moves from that load. A move keeps
+  every seq and moves row contents between them, and remaps `transcript_calls`,
+  `submission_events`, `continuation_markers`, `provider_requests`,
+  `operations.committed_seq`, and `transcript_quarantine` with them. LCM source
+  ranges are not remapped.
 - `transcript_pending_class` indexes unclassified sequence IDs.
   `transcript_users` indexes `(session,seq)` for user and image-fit rows;
   `transcript_fits` indexes `(session,seq)` for image-fit rows alone. Completed

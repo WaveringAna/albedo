@@ -4,6 +4,7 @@ import json
 import sqlite3
 from pathlib import Path
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.parse
@@ -59,11 +60,35 @@ def scripted(request):
             "assert hot_marker == 'kernel-kept-running', 'kernel was restarted'\n"
             "print('AFTER_RELOAD_OK')"
         )
+    if "hold a cell across a crash" in prompt:
+        return python(
+            "import asyncio\nfrom pathlib import Path\n"
+            "Path('held-cell-started').write_text('')\n"
+            "await asyncio.sleep(30)"
+        )
     if "lcm tool probe" in prompt:
         return python("first turn", tool_name="lcm_grep")
     if "fold list probe" in prompt:
         return python("", tool_name="lcm_list")
     return text("older conversation summary")
+
+
+def assert_result_follows_call(test, request):
+    """The call's result comes right after it, and the capability note saved
+    while the call ran comes after that."""
+    items = request["input"]
+    (call,) = [i for i, item in enumerate(items) if item.get("type") == "function_call"]
+    following = items[call + 1]
+    test.assertEqual(
+        (following.get("type"), following.get("call_id")),
+        ("function_call_output", items[call]["call_id"]),
+    )
+    (note,) = [
+        i
+        for i, item in enumerate(items)
+        if "capabilities changed" in str(item.get("content", ""))
+    ]
+    test.assertGreater(note, call + 1)
 
 
 def capability_notes(request):
@@ -747,6 +772,70 @@ class ExtensionTests(unittest.TestCase):
         (request,) = self.turn("unchanged restart")
         self.assertEqual(request["instructions"], sent["instructions"])
         self.assertEqual(capability_notes(request), updates)
+
+    # exclusive: crashes and restarts the daemon
+    @exclusive
+    def test_a_capability_note_saved_during_a_call_follows_its_result(self):
+        self.app.prompt(self.sid, "hold a cell across a crash").close()
+        started = self.app.workspace / "held-cell-started"
+        deadline = time.monotonic() + 15
+        while not started.exists():
+            self.assertLess(time.monotonic(), deadline, "the held cell never started")
+            time.sleep(0.05)
+        self.skill.write_text(
+            SKILL.replace("catalog-only fixture description", "edited during a call")
+        )
+        before = len(self.provider.requests)
+        # The reattached kernel brings the edited prompt, whose note is saved
+        # before the resumed turn records the interrupted call's result.
+        self.app.restart(crash=True)
+        self.app.idle(self.sid)
+        assert_result_follows_call(self, self.provider.requests[before]["request"])
+        self.restart()
+        (request,) = self.turn("after a clean restart")
+        assert_result_follows_call(self, request)
+
+        def follows_call(db):
+            (call,) = db.execute(
+                "SELECT seq FROM transcript_calls WHERE session=?", (self.sid,)
+            ).fetchone()
+            return [
+                seq
+                for (seq,) in db.execute(
+                    "SELECT seq FROM transcript WHERE session=? AND seq>? ORDER BY seq LIMIT 2",
+                    (self.sid, call),
+                )
+            ]
+
+        # A transcript saved before this fix keeps the note between them.
+        def unsettle(app):
+            columns = "payload,timestamp,provider,thought_ms,row_class,turn_id,calls_indexed,summary_indexed"
+            with sqlite3.connect(app.home / "albedo.sqlite") as db:
+                result, note = follows_call(db)
+                saved = {
+                    seq: db.execute(
+                        f"SELECT {columns} FROM transcript WHERE seq=?", (seq,)
+                    ).fetchone()
+                    for seq in (result, note)
+                }
+                assignments = ",".join(f"{c}=?" for c in columns.split(","))
+                for seq, other in ((result, note), (note, result)):
+                    db.execute(
+                        f"UPDATE transcript SET {assignments} WHERE seq=?",
+                        (*saved[other], seq),
+                    )
+
+        self.app.restart(prepare=unsettle)
+        (request,) = self.turn("after an unsettled restart")
+        assert_result_follows_call(self, request)
+        with sqlite3.connect(self.app.home / "albedo.sqlite") as db:
+            classes = [
+                db.execute(
+                    "SELECT row_class FROM transcript WHERE seq=?", (seq,)
+                ).fetchone()[0]
+                for seq in follows_call(db)
+            ]
+        self.assertEqual(classes, ["other", "user"])
 
     # exclusive: changes global compaction settings and restarts the daemon
     @exclusive

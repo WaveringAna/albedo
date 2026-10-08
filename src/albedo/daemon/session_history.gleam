@@ -8,6 +8,7 @@ import albedo/daemon/image_fit
 import albedo/daemon/message_content
 import albedo/daemon/projection
 import albedo/daemon/session_state
+import albedo/daemon/tool_results
 import albedo/daemon/transcript
 import albedo/harness/runtime
 import albedo/openai_api/types
@@ -57,13 +58,7 @@ pub fn recover_pending(
     Some(history) -> history |> list.reverse |> raw_inputs
     None -> []
   }
-  let completed =
-    list.filter_map(inputs, fn(input) {
-      case input {
-        types.ToolOutput(id, _, _) -> Ok(id)
-        _ -> Error(Nil)
-      }
-    })
+  let completed = tool_results.answered(inputs)
   let pending =
     list.flat_map(inputs, message_content.calls)
     |> list.filter(fn(call) { !list.contains(completed, call.id) })
@@ -75,9 +70,13 @@ pub fn ensure_history(
 ) -> Result(session_state.State(message), String) {
   case state.history {
     Some(_) -> Ok(state)
-    None ->
-      conversation.load_entries(runtime.ledger(state.host), state.info.id)
-      |> result.map(fn(entries) {
+    None -> {
+      let ledger = runtime.ledger(state.host)
+      use entries <- result.try(conversation.load_entries(ledger, state.info.id))
+      // Transcripts saved before results were kept beside their calls.
+      let #(entries, moves) = tool_results.settle_entries(entries)
+      use _ <- result.try(conversation.move_rows(ledger, state.info.id, moves))
+      Ok(
         session_state.State(
           ..state,
           history: Some(
@@ -85,8 +84,9 @@ pub fn ensure_history(
             |> tag_unknown_provider(state.info.provider)
             |> list.reverse,
           ),
-        )
-      })
+        ),
+      )
+    }
   }
 }
 
@@ -162,7 +162,10 @@ pub fn remember_response(
     Some(history) ->
       session_state.State(
         ..state,
-        history: Some(list.append(list.reverse(entries), history)),
+        history: Some(settle_recent(
+          list.append(list.reverse(entries), history),
+          inputs,
+        )),
       )
     None -> state
   }
@@ -186,6 +189,52 @@ pub fn remember_response(
           }
         }),
       )
+  }
+}
+
+/// Newest-first `history` with the results in `inputs` settled beside their
+/// calls, as `conversation` settles the saved rows: from the oldest of the
+/// latest calls they answer.
+fn settle_recent(
+  history: List(transcript.Entry),
+  inputs: List(types.Input),
+) -> List(transcript.Entry) {
+  let answered = tool_results.answered(inputs)
+  case reach(history, answered, 0, 0) {
+    0 -> history
+    depth -> {
+      let #(recent, older) = list.split(history, depth)
+      let #(recent, _) = tool_results.settle_entries(list.reverse(recent))
+      list.append(list.reverse(recent), older)
+    }
+  }
+}
+
+/// How many newest entries reach back to the latest call of every id found.
+fn reach(
+  history: List(transcript.Entry),
+  ids: List(String),
+  depth: Int,
+  reached: Int,
+) -> Int {
+  case ids, history {
+    [], _ | _, [] -> reached
+    _, [entry, ..rest] -> {
+      let found =
+        message_content.calls(entry.input)
+        |> list.map(fn(call) { call.id })
+        |> list.filter(list.contains(ids, _))
+      case found {
+        [] -> reach(rest, ids, depth + 1, reached)
+        _ ->
+          reach(
+            rest,
+            list.filter(ids, fn(id) { !list.contains(found, id) }),
+            depth + 1,
+            depth + 1,
+          )
+      }
+    }
   }
 }
 
