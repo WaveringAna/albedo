@@ -70,7 +70,7 @@ An extension bundles plugins: context (system instructions), tool (model tools +
 - **`cli/internal/storage`** — offline usage inspection and approved cleanup plans with revalidation
 - **`cli/internal/config`** — connection home, settings value types, and immediate form validation
 - **`cli/internal/daemon`** — daemon lifecycle (find or start, auth token) and the typed API client
-- **`cli/internal/tui`** — the bubbletea UI: chat, model picker, orchestrator view, page screens, forms
+- **`cli/internal/tui`** — the bubbletea UI: chat, model picker, orchestrator view, page screens, forms (list screens share one frame, filter, confirm and key set; see `robot-docs/tui.md` before adding or changing one)
 - **`cli/test/e2e`** — the Go e2e suite against the real binary and a hermetic daemon
 
 ### `priv/` and `native/`
@@ -82,7 +82,7 @@ An extension bundles plugins: context (system instructions), tool (model tools +
 
 ### robot-docs/
 
-`robot-docs/` is one model-facing doc per subsystem (agents, auth, settings, kernel-state, migrations, cache-ttl, cache-warming, commands, compaction, context, extensions, files, kernel, mcp, models, paperclips, provider-requests, proxy, quota, runtime, shims, skills, usage-feed, web-search, webhooks, workspaces). This file is the map; those are the details. When you change a subsystem's behavior, update its doc in the same change; when you need to understand one, read it there first.
+`robot-docs/` is one model-facing doc per subsystem (agents, auth, settings, kernel-state, migrations, cache-ttl, cache-warming, commands, compaction, context, extensions, files, kernel, mcp, models, paperclips, provider-requests, proxy, quota, runtime, shims, skills, tui, usage-feed, web-search, webhooks, workspaces). This file is the map; those are the details. When you change a subsystem's behavior, update its doc in the same change; when you need to understand one, read it there first.
 
 Shared clock, Unicode scalar, zero-copy shared value, and native-boundary rules live in `robot-docs/runtime.md`. Read it before adding runtime helpers, passing a catalog between processes, or moving logic across the Gleam/Erlang boundary.
 
