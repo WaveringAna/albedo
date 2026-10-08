@@ -363,7 +363,7 @@ func (m SessionViewer) row(item PickerItem, s daemon.Session, sec int, selected 
 		glyph, iconStyle = "● ", DefaultStyles.Success
 	}
 	gap := st(lipgloss.NewStyle()).Render("  ")
-	title := markedCell(item.Label, item.hits, cols.title, st(titleStyle))
+	title := st(titleStyle).Render(svCell(item.Label, cols.title, false))
 	if editing {
 		title = m.rename.view(cols.title)
 	}

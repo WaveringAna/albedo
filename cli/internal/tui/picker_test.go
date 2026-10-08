@@ -1,7 +1,6 @@
-// The shared filter ranks within a group and keeps the groups in the order
-// they were listed. A session list's sections and action rows depend on that
-// while a search is typed, and no e2e scenario types a query and reads the
-// order back.
+// The sessions search is a plain substring match on every word, in the order
+// the sessions are listed, so a scattered run of letters never matches. No e2e
+// scenario types a query and reads the list back.
 package tui
 
 import (
@@ -17,25 +16,26 @@ func filteredIDs(m PickerModel) []string {
 	return ids
 }
 
-func TestPickerFilterRanksWithinGroupsAndKeepsTheirOrder(t *testing.T) {
+func TestPickerFilterIsSubstringPerWordInListedOrder(t *testing.T) {
 	items := []PickerItem{
-		{ID: "loose", Label: "a long note about parsers", Group: 1},
-		{ID: "tight", Label: "parse", Group: 1},
-		{ID: "old", Label: "parse", Group: 2},
-		{ID: "other", Label: "unrelated", Group: 2},
+		{ID: "scattered", Label: "yellow elephant hat"},
+		{ID: "literal", Label: "yeh"},
+		{ID: "detail", Label: "other", Detail: "/work/yeh-notes"},
 	}
 	m := NewPickerModel("", items, true, "")
-	m.SearchInput.SetValue("parse")
+	m.SearchInput.SetValue("yeh")
 	m.applyFilter()
-	if got := filteredIDs(m); !slices.Equal(got, []string{"tight", "loose", "old"}) {
-		t.Fatalf("search order = %v, want the tight match first within its group and groups in order", got)
+	if got := filteredIDs(m); !slices.Equal(got, []string{"literal", "detail"}) {
+		t.Fatalf("search = %v, want only the literal matches, in listed order", got)
 	}
-	if len(m.Filtered[0].hits) == 0 {
-		t.Fatal("the best match has no characters to highlight")
+	m.SearchInput.SetValue("OTHER yeh")
+	m.applyFilter()
+	if got := filteredIDs(m); !slices.Equal(got, []string{"detail"}) {
+		t.Fatalf("two words = %v, want only the item containing both", got)
 	}
 	m.SearchInput.SetValue("")
 	m.applyFilter()
-	if got := filteredIDs(m); !slices.Equal(got, []string{"loose", "tight", "old", "other"}) {
-		t.Fatalf("empty search order = %v, want the listed order", got)
+	if got := filteredIDs(m); len(got) != 3 {
+		t.Fatalf("empty search = %v, want everything", got)
 	}
 }

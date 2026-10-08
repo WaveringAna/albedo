@@ -13,13 +13,8 @@ type PickerItem struct {
 	ID     string
 	Label  string
 	Detail string
-	// Group ranks its items apart from the other groups under a search;
-	// groups keep the order they were listed in.
-	Group int
 	// Note is what a detail pane says about the item, where a list has one.
 	Note string
-	// hits are the characters of Label the search matched.
-	hits []int
 }
 
 type PickerSelectMsg struct {
@@ -76,41 +71,20 @@ func (m *PickerModel) SetSize(width, height int) {
 	m.SearchInput.SetWidth(max(1, width-8))
 }
 
-// applyFilter keeps the items the search matches, ranked within their group
-// by the shared fuzzy matcher. Groups keep their order, and an empty search
-// keeps the listed order.
+// applyFilter keeps the items whose id, label and detail contain every word
+// of the search, in the order they were listed.
 func (m *PickerModel) applyFilter() {
 	item, ok := m.Highlighted()
 	old := ""
 	if ok {
 		old = item.ID
 	}
-	words := searchWords(m.SearchInput.Value())
-	type scored struct {
-		item PickerItem
-		rank matchRank
-	}
-	var order []int
-	groups := map[int][]scored{}
-	for _, it := range m.Items {
-		rank, hits, ok := matchFields(words, it.Label, it.ID, it.Detail)
-		if !ok {
-			continue
-		}
-		if _, seen := groups[it.Group]; !seen {
-			order = append(order, it.Group)
-		}
-		it.hits = hits
-		groups[it.Group] = append(groups[it.Group], scored{it, rank})
-	}
+	tokens := strings.Fields(strings.ToLower(m.SearchInput.Value()))
 	m.Filtered = nil
-	for _, group := range order {
-		matches := groups[group]
-		if len(words) > 0 {
-			slices.SortStableFunc(matches, func(a, b scored) int { return b.rank.compare(a.rank) })
-		}
-		for _, s := range matches {
-			m.Filtered = append(m.Filtered, s.item)
+	for _, item := range m.Items {
+		haystack := strings.ToLower(item.ID + " " + item.Label + " " + item.Detail)
+		if !slices.ContainsFunc(tokens, func(token string) bool { return !strings.Contains(haystack, token) }) {
+			m.Filtered = append(m.Filtered, item)
 		}
 	}
 	m.Cursor = max(0, slices.IndexFunc(m.Filtered, func(item PickerItem) bool { return item.ID == old }))

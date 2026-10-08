@@ -274,7 +274,7 @@ func (m *SessionViewer) rebuild() {
 	}
 	for _, s := range visible {
 		if m.ArchiveView == m.archivedIDs[s.ID] {
-			items = append(items, PickerItem{ID: s.ID, Label: sessionTitle(s), Detail: sessionText(s.Workspace + " " + s.Model + " " + s.Provider), Group: m.section[s.ID]})
+			items = append(items, PickerItem{ID: s.ID, Label: sessionTitle(s), Detail: sessionText(s.Workspace + " " + s.Model + " " + s.Provider)})
 		}
 	}
 	m.Items = items

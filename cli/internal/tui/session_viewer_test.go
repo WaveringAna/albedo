@@ -149,19 +149,15 @@ func TestSessionViewerArchiveKeepsCursorSlot(t *testing.T) {
 	}
 }
 
-func TestSessionViewerFilterMatchesFuzzily(t *testing.T) {
+func TestSessionViewerFilterMatchesSubstrings(t *testing.T) {
 	m := NewSessionViewer("/work/current")
 	m.SetSize(120, 30)
-	m.SetSessions([]daemon.Session{{ID: "a", Title: "Fix the parser"}, {ID: "b", Title: "Zebra notes"}}, nil)
-	for _, r := range "fxprs" {
+	m.SetSessions([]daemon.Session{{ID: "a", Title: "Fix the parser", Pinned: true}, {ID: "b", Title: "yeh"}, {ID: "c", Title: "yellow elephant hat"}}, nil)
+	for _, r := range "yeh" {
 		m, _ = m.Update(tea.KeyPressMsg{Code: r, Text: string(r)})
 	}
-	i := slices.IndexFunc(m.Filtered, func(item PickerItem) bool { return item.ID == "a" })
-	if i < 0 || slices.ContainsFunc(m.Filtered, func(item PickerItem) bool { return item.ID == "b" }) {
-		t.Fatalf("fuzzy search kept the wrong rows: %v", filteredIDs(m.PickerModel))
-	}
-	if len(m.Filtered[i].hits) == 0 {
-		t.Fatal("the matched title has no characters to light up")
+	if got := filteredIDs(m.PickerModel); !slices.Equal(got, []string{"b"}) {
+		t.Fatalf("search kept %v, want only the session titled yeh", got)
 	}
 }
 
