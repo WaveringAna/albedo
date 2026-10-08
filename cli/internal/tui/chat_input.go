@@ -314,7 +314,7 @@ func (m *ChatModel) isRecognizedCommand(input string) bool {
 	case "/a", "/agents", "/sessions", "/q", "/quit", "/exit", "/new", "/model", "/extensions",
 		"/plugins", "/tree", "/context", "/t", "/thinking", "/v", "/verbose",
 		"/status", "/login", "/mouse", "/skills", "/instructions", "/mcp", "/cd", "/effort", "/compact", "/kernel", "/reload",
-		"/work", "/paperclips":
+		"/work", "/paperclips", "/webhooks":
 		return true
 	}
 	// Text after a command that declares no arguments is a prompt that

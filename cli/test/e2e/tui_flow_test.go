@@ -162,6 +162,40 @@ func TestTUISendsTextAfterAnArgumentlessCommandAsAPrompt(t *testing.T) {
 	}
 }
 
+func TestTUIWebhooksShortcutOpensSettingsWithoutACatalog(t *testing.T) {
+	providerRoute(t, echoReply)
+	session := daemonSession(t, newSession(t, t.TempDir()))
+	if _, err := daemon.SelectExtension(t.Context(), conn(t), session.ID, daemon.ExtensionSelectionRequest{Name: "webhooks", Scope: "session", Enabled: new(false), ETag: session.ETag}); err != nil {
+		t.Fatal(err)
+	}
+	session = daemonSession(t, session.ID)
+	d := driveTUI(t, &session)
+	defer d.App.Chat.Close()
+	d.connected()
+
+	d.Type("/web")
+	if view := d.View(); !strings.Contains(view, "/webhooks") {
+		t.Fatalf("the command menu has no webhooks settings shortcut:\n%s", view)
+	}
+	d.Dispatch(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if d.App.State != tui.AppStateWebhooksPage || !strings.Contains(d.App.WebhooksPage.Error, "webhooks are off") {
+		t.Fatalf("the disabled extension did not open its settings guidance:\n%s", d.View())
+	}
+	d.Dispatch(tea.KeyPressMsg{Code: tea.KeyEscape})
+	if d.App.State != tui.AppStateChat {
+		t.Fatalf("Escape did not return to chat:\n%s", d.View())
+	}
+
+	enableExtension(t, conn(t), session.ID, "webhooks")
+	d.Type("/webhooks")
+	// Dismiss completion so Enter exercises local command recognition too.
+	d.Dispatch(tea.KeyPressMsg{Code: tea.KeyEscape})
+	d.Dispatch(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if d.App.State != tui.AppStateWebhooksPage || d.App.WebhooksPage.Error != "" || d.App.WebhooksPage.Loading {
+		t.Fatalf("the typed shortcut did not load webhooks settings:\n%s", d.View())
+	}
+}
+
 func TestTUIExtensionPickerSwitchesCompactionStrategies(t *testing.T) {
 	profile := providerRoute(t, echoReply)
 	t.Parallel()

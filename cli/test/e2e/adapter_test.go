@@ -398,6 +398,22 @@ func TestAttachedWebhookScreenCreatesConfiguresDisablesAndDeletesHook(t *testing
 	if selected < 0 {
 		t.Fatal("created hook did not appear after secret dismissal")
 	}
+	driver.Update(tea.WindowSizeMsg{Width: 70, Height: 20})
+	for _, enabled := range []bool{true, false} {
+		if view := driver.View(); !strings.Contains(view, "ctrl+t") || !strings.Contains(view, "agent access") {
+			t.Fatalf("agent access is hidden on a narrow webhook page:\n%s", view)
+		}
+		driver.Dispatch(tea.KeyPressMsg{Code: 't', Mod: tea.ModCtrl})
+		permission, permissionErr := daemon.GetWebhookPermission(t.Context(), attached, session.ID)
+		if permissionErr != nil || permission.AgentManagement != enabled || driver.App.WebhooksPage.AgentManagement != enabled {
+			t.Fatalf("agent access toggle did not persist %t: %+v, %v\n%s", enabled, permission, permissionErr, driver.View())
+		}
+		driver.Dispatch(tea.KeyPressMsg{Code: tea.KeyEscape})
+		driver.Dispatch(tui.ChatOpenWebhooksPageMsg{})
+		if driver.App.WebhooksPage.Error != "" || driver.App.WebhooksPage.AgentManagement != enabled {
+			t.Fatalf("reopened page lost agent access %t:\n%s", enabled, driver.View())
+		}
+	}
 	driver.Dispatch(tea.KeyPressMsg{Code: 'r', Mod: tea.ModCtrl})
 	page.Cursor = selected
 	driver.Dispatch(tea.KeyPressMsg{Code: tea.KeyEnter})

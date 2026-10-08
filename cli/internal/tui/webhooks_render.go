@@ -60,22 +60,21 @@ func (m WebhooksPageModel) status() (string, bool) {
 	return "", false
 }
 
-// browseHints is ordered by what a narrow terminal must keep: esc first, then
-// the row's own keys, then the rest.
+// browseHints keeps the main hook action and session agent access visible first.
 func (m WebhooksPageModel) browseHints() []hint {
 	if !m.Loaded {
-		return []hint{{"esc", "back"}, {"ctrl+r", "retry"}}
+		return []hint{{"ctrl+r", "retry"}, {"esc", "back"}}
 	}
 	_, selected := m.current()
-	hints := []hint{{"esc", "back"}}
+	var hints []hint
 	if selected {
-		hints = append(hints, hint{"enter", "on/off"}, hint{"ctrl+e", "edit"})
+		hints = append(hints, hint{"enter", "on/off"})
 	}
-	hints = append(hints, hint{"ctrl+o", "add hook"})
+	hints = append(hints, hint{"ctrl+t", "agent access " + onOff(m.AgentManagement)}, hint{"ctrl+o", "add hook"})
 	if selected {
-		hints = append(hints, hint{"ctrl+d", "delete"}, hint{"ctrl+g", "new secret"}, hint{"ctrl+l", "copy url"})
+		hints = append(hints, hint{"ctrl+e", "edit"}, hint{"ctrl+d", "delete"}, hint{"ctrl+g", "new secret"}, hint{"ctrl+l", "copy url"})
 	}
-	return append(hints, hint{"ctrl+t", "agent access " + onOff(m.AgentManagement)}, hint{"ctrl+r", "refresh"})
+	return append(hints, hint{"ctrl+r", "refresh"}, hint{"esc", "back"})
 }
 
 // formFooter is the form's keys, with a failure or the save in flight above them.
