@@ -185,5 +185,9 @@ func (d *tuiDriver) pasteImage(image *daemon.ImageAttachment) {
 // View returns the rendered terminal contents without styling.
 func (d *tuiDriver) View() string {
 	d.t.Helper()
-	return ansi.Strip(d.App.View().Content)
+	content := d.App.View().Content
+	if strings.Contains(content, "\x1b_albedo:") {
+		d.t.Fatalf("private row marks reached the terminal: %q", content)
+	}
+	return ansi.Strip(content)
 }

@@ -9,9 +9,9 @@ import (
 	"github.com/rivo/uniseg"
 )
 
-// Row marks are APC strings, which draw nothing: Bubble Tea drops them on
-// the way to the screen, and widths and ansi.Strip skip them. They tell a
-// copy what a row is beyond its text.
+// Row marks are zero-width APC strings that widths and ansi.Strip skip.
+// They tell a copy what a row is beyond its text. AppModel.View removes them
+// before Bubble Tea renders; they must never reach the terminal.
 const (
 	// markChrome labels the transcript rather than being part of it: who
 	// speaks, a turn's signoff, tool glances.

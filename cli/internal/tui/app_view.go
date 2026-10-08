@@ -1,15 +1,20 @@
 package tui
 
 import (
+	"regexp"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
 )
 
+// Private APC marks describe rows for selection and clicks, not the terminal.
+// Ultraviolet preserves APC payloads, and Terminal.app prints unknown ones.
+var privateRowMarks = regexp.MustCompile(`\x1b_albedo:[^\x1b]*\x1b\\`)
+
 // View captures the mouse only in chat, where it scrolls and selects; every
 // other screen leaves it to the terminal.
 func (m *AppModel) View() tea.View {
-	v := tea.NewView(m.content())
+	v := tea.NewView(privateRowMarks.ReplaceAllString(m.content(), ""))
 	v.MouseMode = tea.MouseModeNone
 	if m.State == AppStateChat {
 		v.MouseMode = tea.MouseModeCellMotion

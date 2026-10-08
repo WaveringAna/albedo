@@ -12,8 +12,9 @@ import (
 )
 
 // A row action is a click target. Like the copy marks in selection.go, its
-// mark is an APC string that draws nothing, so the row itself says what a
-// click on it does and survives wrapping, trimming, and rebuilds.
+// mark is a zero-width APC string, so the row itself says what a click on it
+// does and survives wrapping, trimming, and rebuilds. AppModel.View removes
+// it before rendering to the terminal.
 const (
 	// verbCopy copies a turn's replies as the markdown they were written in.
 	verbCopy = "copy"
