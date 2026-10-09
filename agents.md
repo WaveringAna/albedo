@@ -93,4 +93,4 @@ Read the page for a subsystem before you edit it, and name the module that owns 
 - **`test/`** — `e2e/` (default suite, shared harness), `harness/` (invariant and logic unit tests, Gleam and Python), `daemon/` (Gleam daemon suites), `openai_api/` (transport), `manual/` (opt-in)
 - **`flake/`**, **`default.nix`** — nix packaging and dev shell (`nix develop` ships gleam, go, cargo, python, and pre-commit); `nix build .#albedo` produces a self-contained package
 - **`.agents/skills/`** — repo-local agent skills (`writing-tests`, `charm-tui`, `gleam-design`, `tg`)
-- **`priv/skills/`** — skills shipped with albedo (`customize-albedo`, `research`, `orchestrating-agents`, `complexity-review`, `design-preflight`); a same-named skill in a project or home directory replaces one
+- **`priv/skills/`** — skills shipped with albedo (`customize-albedo`, `research`, `orchestrating-agents`, `complexity-review`, `design-preflight`, `running-experiments`); a same-named skill in a project or home directory replaces one

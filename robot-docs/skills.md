@@ -13,7 +13,7 @@ The extension scans immediate child directories in this order:
 2. `<workspace>/.agents/skills`
 3. `~/.albedo/skills`
 4. `~/.agents/skills`
-5. `priv/skills` in the install: skills shipped with albedo (currently `customize-albedo`)
+5. `priv/skills` in the install: skills shipped with albedo (`customize-albedo`, `research`, `design-preflight`, `complexity-review`, `orchestrating-agents`, and `running-experiments`)
 
 A valid workspace skill wins over a user skill with the same frontmatter `name`, and either replaces a built-in one without a diagnostic. Earlier roots win within the same scope. Entries and the final catalog are sorted deterministically. Invalid metadata and collisions appear as bounded catalog diagnostics rather than disappearing silently.
 
