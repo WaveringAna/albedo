@@ -15,6 +15,8 @@ Read the project's instructions (`AGENTS.md`, a contributing guide) and the doc 
 
 Say which module, package, or layer owns this behavior, and which way dependencies are allowed to point. Put the code where its owner lives, not where it is convenient. Look for something that already does a similar job and reuse it. If two places could own it, that is a decision for the user, not a coin flip.
 
+For example, a web form and a CLI both change a saved account setting. Validating only in the form is convenient, but lets the CLI save invalid state. The shared settings service owns the validity rule; both clients can offer early feedback, but neither replaces that check. Test that an invalid CLI update leaves the old setting intact. If the clients intentionally allow different values, ask which contract is intended before moving the rule.
+
 ## 3. Place the work on the right path
 
 State how often it runs and what triggers it. Work that only matters when something changes belongs where the change happens, not in a loop that runs every turn, request, or render. Check that nothing it needs to scan grows with history or file size.

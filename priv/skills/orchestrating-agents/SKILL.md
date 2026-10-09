@@ -10,12 +10,9 @@ Children multiply throughput and mistakes equally. You own the plan, the shared 
 ## Plan
 
 - Order work by dependency. Build what the rest is judged against first (a harness, an API, a coverage map), verify it, then fan out the work that relies on it.
-- A newly spawned child may report `running=False` and have no transcript while
-  its kernel is being prepared. Neither proves failure. End your turn and wait
-  for mail; do not cancel it solely on those observations.
 - Split by disjoint file ownership. Two children share a file only if one of them only reads it. Give shared infrastructure one owner, or allow only small additive edits to it.
 - Cap concurrency from the machine, not the task count: three is a sane default for build-heavy work. Pair different toolchains rather than two of the same, since builds contend for the same locks. Queue the rest.
-- Choose models deliberately. List what is available (`agents.models()`), pick explicitly, and confirm a model can actually run on this account before relying on it; a child that cannot start costs a whole round. A small, fast model is enough for reading and summarizing. Use a stronger one for judgment, implementation, and review. If a child stalls, asks permission for its core task, or hands in hollow work twice, replace it with a stronger model and the same brief instead of coaching a third attempt.
+- Choose models deliberately. List what is available (`agents.models()`), pick explicitly, and confirm a model can actually run on this account before relying on it; a child that cannot start costs a whole round. A small, fast model is enough for reading and summarizing. Use a stronger one for judgment, implementation, and review.
 
 ## Write the brief
 
@@ -29,6 +26,8 @@ Every brief carries:
 6. The finish line: which commands must pass, the real output to paste, and an itemised account of what changed. Say that required tests are part of done, that partial replies are for named blockers only, and that "no time" is not a blocker. End with how to report back (`mail.submit("parent", ...)`).
 
 ## Supervise
+
+- If a child stalls, asks permission for its core task, or hands in hollow work twice, replace it with a stronger model and the same brief instead of coaching a third attempt.
 
 - Check claims against the source, with numbers. Compare test and assertion counts before and after; a port that passes with a quarter of the old assertions lost coverage. Read the diff, not the summary. Build the evidence a claim needs yourself when a child's conclusion drives a decision (for example inventory what is actually stored before accepting "this cannot be removed").
 - Run the full suite yourself before relaying "green". Children's final runs miss flakes and ordering effects. Use `git status`, not `git diff --stat`: new files do not appear in a diff.

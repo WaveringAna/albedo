@@ -30,6 +30,8 @@ Name only the criteria that could change the answer: the use-site you want (the 
 
 If a statement can be checked, check it before you make it: run the command, the example, the build, the request. A claim you only inferred ("that account is out of quota", "this library can't stream") has been wrong before. Say which statements you ran and which you inferred.
 
+When comparing a collection, name what you inspected and keep conclusions within that scope, including in conversational follow-ups. Before generalizing, inspect a likely counterexample: an unread member that is larger or does a different job. An index description is not evidence about the implementation.
+
 ## Report
 
 Lead with the answer. Then give only what bears on the decision:
