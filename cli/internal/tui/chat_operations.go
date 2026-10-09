@@ -114,6 +114,14 @@ func (m ChatModel) operationRecoverable(id string) bool {
 	return exists && !pending.Expired
 }
 
+func (m *ChatModel) reconcileStopped() {
+	if m.Stopping && !m.isSending && !m.interruptDeferred && m.pendingSendCount() == 0 && (!m.Status.Running || m.Status.Idle) {
+		m.Stopping = false
+		m.Stopped = true
+		m.clearAction()
+	}
+}
+
 func (m *ChatModel) applyInputReceipt(receipt daemon.InputReceipt) {
 	m.Status.InputOrder = max(m.Status.InputOrder, receipt.InputOrder())
 	for i := range m.pendingUsers {
@@ -122,12 +130,14 @@ func (m *ChatModel) applyInputReceipt(receipt daemon.InputReceipt) {
 			if receipt.Settled() {
 				m.pendingUsers = slices.Delete(m.pendingUsers, i, i+1)
 			}
+			m.reconcileStopped()
 			return
 		}
 	}
 	if receipt.Settled() {
 		delete(m.pendingContinuations, receipt.ID)
 	}
+	m.reconcileStopped()
 }
 
 func (m *ChatModel) handleOperationResults(msg tea.Msg) (tea.Cmd, bool) {
@@ -168,6 +178,7 @@ func (m *ChatModel) handleOperationResults(msg tea.Msg) (tea.Cmd, bool) {
 				m.pendingUsers = slices.Delete(m.pendingUsers, index, index+1)
 			}
 			m.refreshViewportContent()
+			m.reconcileStopped()
 			return nil, true
 		}
 		if msg.Err == nil {
@@ -249,6 +260,8 @@ func (m *ChatModel) handleOperationResults(msg tea.Msg) (tea.Cmd, bool) {
 			m.interruptDeferred = false
 			m.Stopping = true
 			cmds = append(cmds, m.interruptCmd())
+		} else {
+			m.reconcileStopped()
 		}
 		return tea.Batch(cmds...), true
 	case ChatInterruptMsg:
@@ -261,6 +274,7 @@ func (m *ChatModel) handleOperationResults(msg tea.Msg) (tea.Cmd, bool) {
 				m.appendSettledEntry(HistoryEntry{Kind: EntryError, Text: "Could not stop the current reply: " + msg.Err.Error()})
 			}
 		}
+		m.reconcileStopped()
 		return nil, true
 	}
 	return nil, false

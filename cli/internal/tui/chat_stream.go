@@ -166,6 +166,7 @@ func (m *ChatModel) handleStreamEvent(evt daemon.StreamEvent) {
 			m.Status.Running = evt.Status.Running
 			m.Status.Idle = evt.Status.Idle
 			m.Status.RunID = evt.Status.RunID
+			m.reconcileStopped()
 		}
 	case "input", daemon.EventTurnMembership:
 		if evt.Receipt != nil {

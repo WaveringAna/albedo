@@ -78,11 +78,11 @@ func (m *ChatModel) handleInput(msg tea.Msg) (tea.Cmd, bool) {
 			if m.isSending {
 				m.interruptDeferred = true
 				m.Stopping = true
-				return nil, true
+				return m.startAnimation(), true
 			}
 			if m.Status.Running || len(m.pendingUsers) > 0 {
 				m.Stopping = true
-				cmds = append(cmds, m.interruptCmd())
+				cmds = append(cmds, m.interruptCmd(), m.startAnimation())
 				return tea.Batch(cmds...), true
 			}
 		case "ctrl+v":

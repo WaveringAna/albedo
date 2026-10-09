@@ -365,6 +365,7 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 				}
 				m.refreshViewportContent()
 			}
+			m.reconcileStopped()
 		}
 		home := m.hostHomeCmd()
 		return m, tea.Batch(m.startAnimation(), m.statusPollCmd(), home)
