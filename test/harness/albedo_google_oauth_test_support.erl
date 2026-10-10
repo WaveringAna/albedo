@@ -33,38 +33,36 @@ file_text(Path) ->
     {ok, Text} = file:read_file(Path),
     Text.
 
+%% A one-shot token endpoint. The request reaches the parent before the
+%% answer goes out, so by the time the client has its answer `Await` already
+%% holds it; closing the listener ends a server nobody called.
 serve(Status, Body) ->
     {ok, Listen} = gen_tcp:listen(0, [binary, {active, false}, {packet, http_bin}, {ip, {127, 0, 0, 1}}]),
     {ok, {_, Port}} = inet:sockname(Listen),
     Parent = self(),
     Ref = make_ref(),
     spawn(fun() ->
-        {ok, Socket} = accept(Listen),
-        {ok, {http_request, _, _, _}} = gen_tcp:recv(Socket, 0, 5000),
-        Length = headers(Socket, 0),
-        ok = inet:setopts(Socket, [{packet, raw}]),
-        {ok, Form} = gen_tcp:recv(Socket, Length, 5000),
-        ok = gen_tcp:send(Socket, ["HTTP/1.1 ", integer_to_list(Status), " X\r\nContent-Type: application/json\r\n",
-            "Connection: close\r\nContent-Length: ", integer_to_list(byte_size(Body)), "\r\n\r\n", Body]),
-        gen_tcp:close(Socket),
-        Parent ! {Ref, Form}
+        case gen_tcp:accept(Listen) of
+            {ok, Socket} ->
+                {ok, {http_request, _, _, _}} = gen_tcp:recv(Socket, 0, 30000),
+                Length = headers(Socket, 0),
+                ok = inet:setopts(Socket, [{packet, raw}]),
+                {ok, Form} = gen_tcp:recv(Socket, Length, 30000),
+                Parent ! {Ref, Form},
+                ok = gen_tcp:send(Socket, ["HTTP/1.1 ", integer_to_list(Status), " X\r\nContent-Type: application/json\r\n",
+                    "Connection: close\r\nContent-Length: ", integer_to_list(byte_size(Body)), "\r\n\r\n", Body]),
+                gen_tcp:close(Socket);
+            {error, _} -> ok
+        end
     end),
     Url = "http://127.0.0.1:" ++ integer_to_list(Port) ++ "/token",
     {Url, fun() ->
-        receive {Ref, Form} -> gen_tcp:close(Listen), Form
-        after 3000 -> gen_tcp:close(Listen), <<"no request">>
-        end
+        ok = gen_tcp:close(Listen),
+        receive {Ref, Form} -> Form after 0 -> <<"no request">> end
     end}.
 
-%% A refresh that needs no request leaves the server waiting; it ends quietly.
-accept(Listen) ->
-    case gen_tcp:accept(Listen, 2000) of
-        {ok, _} = Accepted -> Accepted;
-        {error, _} -> exit(normal)
-    end.
-
 headers(Socket, Length) ->
-    case gen_tcp:recv(Socket, 0, 5000) of
+    case gen_tcp:recv(Socket, 0, 30000) of
         {ok, http_eoh} -> Length;
         {ok, {http_header, _, 'Content-Length', _, Value}} -> headers(Socket, binary_to_integer(Value));
         {ok, {http_header, _, _, _, _}} -> headers(Socket, Length)
