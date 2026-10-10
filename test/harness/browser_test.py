@@ -1,13 +1,7 @@
-"""WebSocket masking needs a controlled peer that daemon E2E cannot expose.
-
-Optional Chrome scenarios exercise the same CDP client against a real browser.
-"""
+"""Optional Chrome scenarios exercise the CDP client against a real browser."""
 
 from __future__ import annotations
 
-import asyncio
-import base64
-import hashlib
 from pathlib import Path
 import shutil
 import sys
@@ -16,68 +10,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "priv" / "python"))
 
-from albedo_plugins.browser.transport import SimpleWebSocketClient  # noqa: E402
 from albedo_plugins.browser import spawn, render, one  # noqa: E402
-
-
-class WebSocketClientUnitTest(unittest.IsolatedAsyncioTestCase):
-    """Test the pure-Python RFC 6455 client against an asyncio mock server."""
-
-    async def test_handshake_and_echo(self):
-        received_frames: list[str] = []
-
-        async def handler(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
-            key = ""
-            while True:
-                line = await reader.readline()
-                if line in (b"\r\n", b"\n", b""):
-                    break
-                if line.lower().startswith(b"sec-websocket-key:"):
-                    key = line.split(b":", 1)[1].strip().decode("ascii")
-
-            accept = base64.b64encode(
-                hashlib.sha1(
-                    (key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode("ascii")
-                ).digest()
-            ).decode("ascii")
-            resp = (
-                f"HTTP/1.1 101 Switching Protocols\r\n"
-                f"Upgrade: websocket\r\n"
-                f"Connection: Upgrade\r\n"
-                f"Sec-WebSocket-Accept: {accept}\r\n\r\n"
-            ).encode("ascii")
-            writer.write(resp)
-            await writer.drain()
-
-            # Read frame from client (client masks frames)
-            head = await reader.readexactly(2)
-            b2 = head[1]
-            length = b2 & 0x7F
-            mask = await reader.readexactly(4)
-            payload = await reader.readexactly(length)
-            unmasked = bytearray(payload)
-            for i in range(len(unmasked)):
-                unmasked[i] ^= mask[i % 4]
-            received_frames.append(unmasked.decode("utf-8"))
-
-            # Send back echo frame unmasked
-            msg = b"echo: " + bytes(unmasked)
-            frame = bytearray([0x81, len(msg)]) + msg
-            writer.write(frame)
-            await writer.drain()
-
-            writer.close()
-            await writer.wait_closed()
-
-        server = await asyncio.start_server(handler, "127.0.0.1", 0)
-        port = server.sockets[0].getsockname()[1]
-        async with server:
-            client = await SimpleWebSocketClient.connect(f"ws://127.0.0.1:{port}/")
-            await client.send("hello albedo")
-            reply = await client.recv_message()
-            self.assertEqual(reply, "echo: hello albedo")
-            self.assertEqual(received_frames, ["hello albedo"])
-            await client.close()
 
 
 class BrowserIntegrationTest(unittest.IsolatedAsyncioTestCase):

@@ -3,7 +3,7 @@
 %% verified TLS with SNI derived from the URL for https, plain for http.
 %% Callers keep their own status matching and error strings.
 
--export([get/4, post/6, request/6, tls_options/1, locations/2]).
+-export([get/4, post/6, request/6, fetch/4, failure/3, tls_options/1, locations/2]).
 
 get(Url, Headers, Timeout, Connect) ->
     request(get, Url, Headers, none, Timeout, Connect).
@@ -26,6 +26,21 @@ request(Method, Url, Headers, Body, Timeout, Connect) ->
             {ok, {Status, ResponseHeaders, ResponseBody}};
         Error -> Error
     end.
+
+%% A sign-in or account call: {ok, Status, Body}, or an error naming the host
+%% that could not be reached.
+fetch(Method, Url0, Headers, Body) ->
+    case request(Method, Url0, Headers, Body, 30000, 10000) of
+        {ok, {Status, _, Response}} -> {ok, Status, Response};
+        _ ->
+            Url = unicode:characters_to_list(Url0),
+            Host = unicode:characters_to_binary(maps:get(host, uri_string:parse(Url), "")),
+            {error, <<"could not reach ", Host/binary>>}
+    end.
+
+%% What a failed call says: the first 2 KiB of the body after the status.
+failure(What, Status, Body) ->
+    iolist_to_binary(io_lib:format("~s failed (~B): ~s", [What, Status, binary:part(Body, 0, min(byte_size(Body), 2048))])).
 
 %% Where each url redirects to, all asked at once with HEAD and not followed:
 %% the url itself when it does not redirect, fails, or takes past Timeout.

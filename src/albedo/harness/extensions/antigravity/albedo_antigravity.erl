@@ -9,11 +9,6 @@
 -define(KEY, <<"google-antigravity">>).
 -define(CLIENT_ID, <<"MTA3MTAwNjA2MDU5MS10bWhzc2luMmgyMWxjcmUyMzV2dG9sb2poNGc0MDNlcC5hcHBzLmdvb2dsZXVzZXJjb250ZW50LmNvbQ==">>).
 -define(CLIENT_SECRET, <<"R09DU1BYLUs1OEZXUjQ4NkxkTEoxbUxCOHNYQzR6NnFEQWY=">>).
--define(TOKEN_URL, "https://oauth2.googleapis.com/token").
--define(REFRESH_SKEW_MS, 60000).
-%% Google access tokens live an hour; store them as expiring five minutes early.
--define(EXPIRY_MARGIN_MS, 300000).
--define(HTTP_TIMEOUT_MS, 15000).
 -define(CATALOG, "antigravity.json").
 -define(CATALOG_MAX_AGE_MS, 21600000).
 -define(REFRESH_PROCESS, albedo_antigravity_refresh).
@@ -51,14 +46,7 @@ access(Home, Session0, Profile) ->
 
 first_usable([], _, _) -> {error, ?SIGNED_OUT};
 first_usable([Credential | Rest], Path, Session) ->
-    Outcome = case usable(Credential) of
-        fresh -> {ok, Credential};
-        stale -> albedo_settings_lock:with_lock(filename:dirname(Path),
-                     fun() -> refresh_current(Path, identity(Credential)) end,
-                     fun() -> {error, <<"credential store is busy">>} end);
-        invalid -> {error, invalid}
-    end,
-    case Outcome of
+    case albedo_google_oauth:ensure(app(), Path, Credential) of
         {ok, Access} ->
             albedo_accounts:remember(?SCOPE, Session, account_id(Access)),
             {ok, iolist_to_binary(json:encode(maps:with(
@@ -84,16 +72,9 @@ accounts(Home) ->
     end.
 
 refreshed_account(Path, Credential) ->
-    case usable(Credential) of
-        fresh -> Credential;
-        stale ->
-            case albedo_settings_lock:with_lock(filename:dirname(Path),
-                    fun() -> refresh_current(Path, identity(Credential)) end,
-                    fun() -> {error, busy} end) of
-                {ok, Updated} -> Updated;
-                _ -> Credential
-            end;
-        invalid -> Credential
+    case albedo_google_oauth:ensure(app(), Path, Credential) of
+        {ok, Updated} -> Updated;
+        _ -> Credential
     end.
 
 entry(Value) ->
@@ -107,22 +88,6 @@ field(Value, Key) ->
     case maps:get(Key, Value, <<>>) of
         Text when is_binary(Text) -> Text;
         _ -> <<>>
-    end.
-
-usable(Credential) ->
-    Valid = fun(Key) -> case maps:get(Key, Credential, <<>>) of <<_, _/binary>> -> true; _ -> false end end,
-    Expires = maps:get(<<"expires">>, Credential, 0),
-    Now = erlang:system_time(millisecond),
-    case lists:all(Valid, [<<"access">>, <<"refresh">>, <<"projectId">>]) andalso is_integer(Expires) of
-        false -> invalid;
-        true when Expires > Now + ?REFRESH_SKEW_MS -> fresh;
-        true -> stale
-    end.
-
-identity(Credential) ->
-    case maps:get(<<"email">>, Credential, <<>>) of
-        <<_, _/binary>> = Email -> {email, string:lowercase(Email)};
-        _ -> {refresh, maps:get(<<"refresh">>, Credential, <<>>)}
     end.
 
 %% Records a Cloud Code Assist 429 against the account whose token received
@@ -211,7 +176,7 @@ unit(<<"ms">>) -> 1.
 
 %% The account's stable id: its email, or a hash of its refresh token.
 account_id(Credential) ->
-    case identity(Credential) of
+    case albedo_google_oauth:identity(Credential) of
         {email, Email} -> Email;
         {refresh, Refresh} -> binary:encode_hex(binary:part(crypto:hash(sha256, Refresh), 0, 8), lowercase)
     end.
@@ -220,72 +185,6 @@ account_id(Credential) ->
 %% it; a revoked refresh token then leaves the account signed out.
 expire(Home, Access) ->
     albedo_credentials:expire_access(albedo_credentials:creds_path(Home), ?KEY, Access).
-
-%% Re-read under the lock: a concurrent session may already have refreshed.
-refresh_current(Path, Identity) ->
-    case albedo_credentials:accounts(Path) of
-        {ok, Data} ->
-            Values = maps:get(?KEY, Data, []),
-            Listed = is_list(Values),
-            All = case Listed of true -> Values; false -> [Values] end,
-            case [V || V <- credentials(Data), identity(V) =:= Identity] of
-                [] -> {error, <<"credential changed during refresh">>};
-                [Current | _] ->
-                    case usable(Current) of
-                        fresh -> {ok, Current};
-                        invalid -> {error, <<"stored Antigravity credential is invalid">>};
-                        stale ->
-                            case refresh_token(Current) of
-                                {ok, Updated} ->
-                                    Replaced = [case is_map(V) andalso identity(V) =:= Identity of
-                                                    true -> Updated;
-                                                    false -> V
-                                                end || V <- All],
-                                    Stored = case Listed of true -> Replaced; false -> hd(Replaced) end,
-                                    case albedo_credentials:put_accounts(Path, Data#{?KEY => Stored}) of
-                                        ok -> {ok, Updated};
-                                        {error, _} -> {error, <<"could not persist refreshed Antigravity credential">>}
-                                    end;
-                                Error -> Error
-                            end
-                    end
-            end;
-        Error -> Error
-    end.
-
-refresh_token(Credential) ->
-    Body = uri_string:compose_query([
-        {<<"client_id">>, client_id()},
-        {<<"client_secret">>, client_secret()},
-        {<<"refresh_token">>, maps:get(<<"refresh">>, Credential)},
-        {<<"grant_type">>, <<"refresh_token">>}
-    ]),
-    case albedo_http:post(?TOKEN_URL, [{"accept", "application/json"}],
-                          "application/x-www-form-urlencoded", binary_to_list(Body),
-                          ?HTTP_TIMEOUT_MS, 10000) of
-        {ok, {200, _, Response}} -> refreshed(Response, Credential);
-        {ok, {Status, _, _}} ->
-            {error, iolist_to_binary(io_lib:format("Antigravity token refresh failed (~B)", [Status]))};
-        _ -> {error, <<"Antigravity token refresh failed">>}
-    end.
-
-refreshed(Response, Previous) ->
-    try json:decode(Response) of
-        #{<<"access_token">> := <<_, _/binary>> = Access, <<"expires_in">> := In} = Token
-          when is_integer(In), In > 0 ->
-            Refresh = case maps:get(<<"refresh_token">>, Token, <<>>) of
-                <<_, _/binary>> = Rotated -> Rotated;
-                _ -> maps:get(<<"refresh">>, Previous)
-            end,
-            {ok, Previous#{
-                <<"access">> => Access,
-                <<"refresh">> => Refresh,
-                <<"expires">> => erlang:system_time(millisecond) + In * 1000 - ?EXPIRY_MARGIN_MS
-            }};
-        _ -> {error, <<"Antigravity token refresh response is incomplete">>}
-    catch
-        _:_ -> {error, <<"Antigravity token refresh response is invalid">>}
-    end.
 
 %% ---- sign-in ------------------------------------------------------------
 
@@ -296,49 +195,18 @@ client_secret() -> base64:decode(?CLIENT_SECRET).
 -define(ONBOARD_BUDGET_MS, 30000).
 -define(METADATA, #{<<"ideType">> => <<"ANTIGRAVITY">>}).
 
+app() ->
+    #{name => <<"Antigravity">>, client_id => client_id(), client_secret => client_secret(),
+      key => ?KEY, required => [<<"access">>, <<"refresh">>, <<"projectId">>]}.
+
 %% Endpoints is the Gleam record {endpoints, TokenUrl, UserinfoUrl, CloudCodeUrl}.
 exchange(Code, Redirect, Progress, {endpoints, TokenUrl, UserinfoUrl, _} = Endpoints) ->
-    Form = uri_string:compose_query([
-        {<<"client_id">>, client_id()},
-        {<<"client_secret">>, client_secret()},
-        {<<"code">>, Code},
-        {<<"grant_type">>, <<"authorization_code">>},
-        {<<"redirect_uri">>, Redirect}
-    ]),
-    case http(post, TokenUrl, [], {"application/x-www-form-urlencoded", Form}) of
-        {ok, 200, Body} ->
-            case json:decode(Body) of
-                #{<<"access_token">> := <<_, _/binary>> = Access,
-                  <<"refresh_token">> := <<_, _/binary>> = Refresh,
-                  <<"expires_in">> := In} when is_integer(In), In > 0 ->
-                    Progress(<<"getting user info">>),
-                    Email = email(UserinfoUrl, Access),
-                    case discover(Access, Endpoints, Progress, Email) of
-                        {ok, Project} ->
-                            {ok, json:encode(maps:merge(Email, #{
-                                <<"type">> => <<"oauth">>,
-                                <<"access">> => Access,
-                                <<"refresh">> => Refresh,
-                                <<"expires">> => erlang:system_time(millisecond) + In * 1000 - ?EXPIRY_MARGIN_MS,
-                                <<"projectId">> => Project
-                            }))};
-                        {error, _} = Error -> Error
-                    end;
-                #{<<"access_token">> := _} -> {error, <<"no refresh token received; sign in again">>};
-                _ -> {error, <<"Antigravity token exchange response is incomplete">>}
-            end;
-        {ok, Status, Body} -> {error, failure(<<"Antigravity token exchange">>, Status, Body)};
-        {error, Reason} -> {error, Reason}
-    end.
-
-email(Url, Access) ->
-    case http(get, Url, [{"authorization", "Bearer " ++ binary_to_list(Access)}], none) of
-        {ok, 200, Body} ->
-            try json:decode(Body) of
-                #{<<"email">> := <<_, _/binary>> = Email} -> #{<<"email">> => string:lowercase(Email)};
-                _ -> #{}
-            catch _:_ -> #{} end;
-        _ -> #{}
+    maybe
+        {ok, #{<<"access">> := Access} = Tokens} ?= albedo_google_oauth:exchange(app(), TokenUrl, Code, Redirect),
+        Progress(<<"getting user info">>),
+        Email = albedo_google_oauth:email(UserinfoUrl, Access),
+        {ok, Project} ?= discover(Access, Endpoints, Progress, Email),
+        {ok, json:encode(maps:merge(Email, Tokens#{<<"type">> => <<"oauth">>, <<"projectId">> => Project}))}
     end.
 
 %% Finds the account's Cloud Code Assist project, provisioning the free tier
@@ -421,7 +289,7 @@ cloud_code(Method, Base, Path, Access, Body, Email) ->
         none -> none;
         _ -> {"application/json", json:encode(Body)}
     end,
-    case http(Method, <<Base/binary, Path/binary>>, Headers, Encoded) of
+    case albedo_http:fetch(Method, <<Base/binary, Path/binary>>, Headers, Encoded) of
         {ok, 200, Response} ->
             try {ok, json:decode(Response)}
             catch _:_ -> {error, <<"Cloud Code Assist returned invalid JSON">>}
@@ -429,13 +297,10 @@ cloud_code(Method, Base, Path, Access, Body, Email) ->
         {ok, Status, Response} ->
             case 'albedo@harness@extensions@antigravity@errors':verification_url(Response) of
                 {ok, Url} -> {error, verification(Url, Email)};
-                {error, nil} -> {error, failure(Path, Status, Response)}
+                {error, nil} -> {error, albedo_http:failure(Path, Status, Response)}
             end;
         Error -> Error
     end.
-
-failure(What, Status, Body) ->
-    iolist_to_binary(io_lib:format("~s failed (~B): ~s", [What, Status, binary:part(Body, 0, min(byte_size(Body), 2048))])).
 
 %% Google asks some accounts to verify before Cloud Code Assist serves them.
 verification(Link, Email) ->
@@ -445,15 +310,6 @@ verification(Link, Email) ->
     end,
     For = case Email of #{<<"email">> := E} -> <<" for ", E/binary>>; _ -> <<>> end,
     <<"Account verification required", For/binary, ". Visit ", Url/binary, " to continue, then sign in again.">>.
-
-http(Method, Url0, Headers, Body) ->
-    case albedo_http:request(Method, Url0, Headers, Body, 30000, 10000) of
-        {ok, {Status, _, Response}} -> {ok, Status, Response};
-        {error, _} ->
-            Url = unicode:characters_to_list(Url0),
-            Host = unicode:characters_to_binary(maps:get(host, uri_string:parse(Url), "")),
-            {error, <<"could not reach ", Host/binary>>}
-    end.
 
 %% How /login lists a stored Antigravity account.
 account(Credential) when is_map(Credential) ->

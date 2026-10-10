@@ -449,6 +449,12 @@ with backoff and `resume_kernels` treat an ssh drop as a bridge that exited.
   agent socket, wraps commands in the remote login shell and stages the
   bundle. the model's `remote` plugin imports it, so the daemon and
   `remote.connect()` share masters and the staged bundle.
+- **aliases**: `albedo_ssh.alias(host, ssh_options, environment)` names a host
+  this kernel process reaches without `~/.ssh/config`: its `-o` values go
+  before albedo's defaults (ssh keeps the first value it is given) and its
+  environment reaches ssh and the `ProxyCommand` it spawns, which is how a
+  token stays out of every command line. it is per process, so the daemon's
+  own remote kernels never see one. colab.md uses it.
 - **the user's masters**: when the user's ssh config names a `ControlPath`
   for the host (`ssh -G`, which reads no network), albedo uses that path and
   its `ControlPersist` (600 when it says no), so a master the user opened in

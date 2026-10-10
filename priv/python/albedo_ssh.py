@@ -39,6 +39,8 @@ CONNECT_TIMEOUT = 10  # seconds ssh may take to reach a host
 PROBE_TIMEOUT = 30  # seconds for the whole probe command
 STAGE_TIMEOUT = 120  # seconds to move the bundle over one ssh stream
 MINIMUM_PYTHON = (3, 11)
+# host -> (ssh -o values, environment) for hosts named by alias()
+ALIASES: dict[str, tuple[list[str], dict[str, str]]] = {}
 STAGED_DIR = ".albedo-remote"
 
 
@@ -80,9 +82,23 @@ def multiplexing(target: str) -> tuple[str, str]:
     return path.replace("%", "%%"), "600" if persist in ("no", "0") else persist
 
 
+def alias(host: str, ssh_options: list[str], environment: dict[str, str]) -> None:
+    """Name a host this process reaches without ~/.ssh/config, as a ProxyCommand
+    does: `ssh_options` are `-o` values, `environment` is added for ssh and the
+    command it spawns, which is how a token stays out of the command line."""
+    ALIASES[host] = (ssh_options, environment)
+
+
+def unalias(host: str) -> None:
+    ALIASES.pop(host, None)
+
+
 def base(target: str) -> list[str]:
-    """The ssh argv prefix for `target`, up to the target itself."""
-    return options(*multiplexing(target))
+    """The ssh argv prefix for `target`, up to the target itself. An alias's
+    options come first: ssh keeps the first value it is given for an option."""
+    argv = options(*multiplexing(target))
+    named = ALIASES.get(target, ([], {}))[0]
+    return [argv[0], *(arg for value in named for arg in ("-o", value)), *argv[1:]]
 
 
 def sign_in(target: str) -> list[str]:
@@ -137,9 +153,9 @@ def agent_socket() -> str | None:
     return None
 
 
-def env() -> dict[str, str]:
-    """The local environment for ssh client processes."""
-    environment = dict(os.environ)
+def env(target: str | None = None) -> dict[str, str]:
+    """The local environment for ssh client processes, with the alias's for `target`."""
+    environment = {**os.environ, **ALIASES.get(target or "", ([], {}))[1]}
     socket = agent_socket()
     if socket is not None:
         environment["SSH_AUTH_SOCK"] = socket

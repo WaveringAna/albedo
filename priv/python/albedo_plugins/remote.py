@@ -201,7 +201,7 @@ async def ssh_run(
         else asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
-        env=ssh_env(),
+        env=ssh_env(target),
     )
     try:
         stdout, stderr = await asyncio.wait_for(process.communicate(stdin), timeout)
@@ -584,7 +584,7 @@ class RemoteConnection:
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            env=ssh_env(),
+            env=ssh_env(self.host),
         )
         self._stdin, self._stdout = self._process.stdin, self._process.stdout
         self._drain = loop.create_task(self._drain_stderr())
@@ -1156,7 +1156,7 @@ class FallbackJob(JobOutput):
             else asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
-            env=ssh_env(),
+            env=ssh_env(host),
         )
         self._process = process
         if stdin is not None and process.stdin is not None:
