@@ -218,10 +218,16 @@ maintenance_json(Id) ->
     {ok, Owner} = 'gleam@erlang@process':subject_owner(Session),
     Module = 'albedo@daemon@maintenance',
     {module, Module} = code:ensure_loaded(Module),
-    erlang:suspend_process(Owner),
+    %% The registry admits one maintenance worker at a time, so the probe
+    %% observes the run slot empty before it suspends anything: a worker
+    %% already inside run would hold the admission slot across the suspend,
+    %% its call untraced, and the entry window would see no run at all.
+    %% Tracing goes on first, so every run call is traced from the wait on.
     erlang:trace_pattern({Module, run, 1}, true, [local]),
     erlang:trace(all, true, [call, {tracer, self()}]),
     try
+        await_run_slot(Module, erlang:monotonic_time(millisecond) + 15000),
+        erlang:suspend_process(Owner),
         Worker = receive
             {trace, Pid, call, {Module, run, [_]}} -> Pid
         after 3000 -> error(maintenance_not_started)
@@ -248,4 +254,39 @@ maintenance_calls(Module, Deadline, Workers) ->
         {trace, Pid, call, {Module, run, [_]}} ->
             maintenance_calls(Module, Deadline, [Pid | Workers])
     after Remaining -> Workers
+    end.
+
+%% No process is inside maintenance:run/1 when the probe suspends the owner.
+%% Calls traced while waiting belong to workers that finished before the
+%% suspend and are drained uncounted: the admission window starts at the
+%% suspend. A call that slips past the last drain comes from a worker at run
+%% entry by construction, so it still meets the held owner.
+await_run_slot(Module, Deadline) ->
+    drain_run_calls(Module),
+    case run_slot_busy(Module) of
+        false -> ok;
+        true ->
+            case erlang:monotonic_time(millisecond) >= Deadline of
+                true -> error(maintenance_worker_stuck);
+                false ->
+                    receive after 50 -> ok end,
+                    await_run_slot(Module, Deadline)
+            end
+    end.
+
+drain_run_calls(Module) ->
+    receive
+        {trace, _, call, {Module, run, [_]}} -> drain_run_calls(Module)
+    after 0 -> ok
+    end.
+
+run_slot_busy(Module) ->
+    lists:any(fun(Pid) -> in_run(Pid, Module) end, erlang:processes()).
+
+in_run(Pid, Module) ->
+    case process_info(Pid, current_stacktrace) of
+        {current_stacktrace, Frames} ->
+            lists:any(fun({M, F, A, _}) -> {M, F, A} =:= {Module, run, 1} end,
+                Frames);
+        undefined -> false
     end.
