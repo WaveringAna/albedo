@@ -14,6 +14,9 @@ export ALBEDO_NO_BROWSER=1
 # a detached kernel a suite left behind ends soon after, not in an hour
 export ALBEDO_KERNEL_GRACE_SECONDS=20
 
+# treefmt (Go, Nix and the other formatters CI runs); it rewrites what it fixes
+# and fails when it had to, so commit the result
+nix fmt -- --fail-on-change --no-cache
 ruff check
 ruff format --check priv/python test
 ty check

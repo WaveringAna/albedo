@@ -12,6 +12,12 @@ repos:
         language: system
         pass_filenames: false
         files: ^((src|test)/.*\.gleam$|gleam\.toml$|test/gleam-lint\.sh$|flake/.*\.nix$|flake\.(nix|lock)$)
+  - repo: local
+    hooks:
+      - id: treefmt
+        name: treefmt
+        entry: nix fmt -- --fail-on-change --no-cache
+        language: system
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.16.10
     hooks:
