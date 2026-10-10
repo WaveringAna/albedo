@@ -9,13 +9,21 @@ measure and point at it:
     ALBEDO_TEST_DAEMON=$(test/snapshot-daemon.sh /tmp/bench/old) \
         python3 test/manual/json_roundtrip_bench.py
 
-Then run it again with the other build's launcher and compare the medians.
+Or compare builds in one run, interleaved ABBA so a busy machine slows both
+alike (give each build a label):
+
+    python3 test/manual/json_roundtrip_bench.py \\
+        --daemon old=/tmp/bench/old/albedo-daemon --daemon new=/tmp/bench/new/albedo-daemon
+
+reductions and gc_words barely move with contention; cpu_ms and wall_s do, so
+read those only on a quiet machine.
 cpu_ms is the VM's CPU time, reductions its work, gc_words the heap the
 collector reclaimed (garbage made), peak_mb the daemon's highest resident set
 sampled every 50 ms.
 """
 
 import argparse
+import os
 import re
 import statistics
 import subprocess
@@ -30,16 +38,23 @@ import harness  # noqa: E402
 from harness import Albedo, Provider, python, text  # noqa: E402
 from inspect_support import Inspection  # noqa: E402
 
-CODE = "len(await commands.catalog())"
+CALL = "len(await commands.catalog())"
 ANSWER = "a streamed word " * 200
 
 
-def script(calls):
+def cell(kilobytes):
+    """The cell's source: the host call, after `kilobytes` KiB of padding that
+    the kernel's command carries (the daemon once decoded all of it per cell)."""
+    pad = f'PAD = "{"x" * 1024 * kilobytes}"\n' if kilobytes else ""
+    return pad + CALL
+
+
+def script(calls, code):
     def reply(request):
         used = sum(
             1 for message in request["messages"] if message.get("role") == "tool"
         )
-        return python(CODE) if used < calls else text(ANSWER)
+        return python(code) if used < calls else text(ANSWER)
 
     return reply
 
@@ -99,47 +114,96 @@ def load(app, sessions, meter):
     return wall, peak[0]
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    parser.add_argument("--sessions", type=int, default=8)
-    parser.add_argument("--calls", type=int, default=25)
-    parser.add_argument("--repeat", type=int, default=5)
-    args = parser.parse_args()
-
+def measure(launcher, args):
+    """Boot one daemon from `launcher` and run the load: one row per run."""
+    harness._executable = launcher
     daemon = harness.Daemon("bench")
     daemon.env["ALBEDO_INSPECT"] = "1"
-    provider = Provider(script(args.calls), chunk_size=20)
+    provider = Provider(script(args.calls, cell(args.code_kb)), chunk_size=20)
+    rows = []
     with harness.on_daemon(daemon):
         app = Albedo(provider)
         app.__enter__()
         try:
             meter = Meter(Inspection(app), daemon._pid)
-            rows = []
             for index in range(args.repeat + 1):
                 sessions = [app.session() for _ in range(args.sessions)]
                 before = meter.read()
                 wall, peak = load(app, sessions, meter)
                 after = meter.read()
-                row = {
-                    "wall_s": wall,
-                    "cpu_ms": after[0] - before[0],
-                    "reductions": after[1] - before[1],
-                    "gc_words": after[2] - before[2],
-                    "peak_mb": peak,
-                }
-                print(("warmup " if index == 0 else f"run {index}  ") + format_row(row))
-                if index:
-                    rows.append(row)
-            print(
-                "median "
-                + format_row(
-                    {k: statistics.median(r[k] for r in rows) for k in rows[0]}
-                )
-            )
+                if index:  # the first run warms the daemon
+                    rows.append(
+                        {
+                            "wall_s": wall,
+                            "cpu_ms": after[0] - before[0],
+                            "reductions": after[1] - before[1],
+                            "gc_words": after[2] - before[2],
+                            "peak_mb": peak,
+                        }
+                    )
         finally:
             app.__exit__(None, None, None)
             provider.close()
             daemon.discard()
+    return rows
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    parser.add_argument("--sessions", type=int, default=8)
+    parser.add_argument("--calls", type=int, default=25)
+    parser.add_argument("--repeat", type=int, default=4, help="runs per boot")
+    parser.add_argument("--code-kb", type=int, default=0, help="padding in each cell")
+    parser.add_argument(
+        "--daemon",
+        action="append",
+        metavar="LABEL=LAUNCHER",
+        help="a build to measure; give two or more to compare them",
+    )
+    parser.add_argument(
+        "--rounds", type=int, default=2, help="boots of each build, ABBA order"
+    )
+    args = parser.parse_args()
+    builds = [tuple(item.split("=", 1)) for item in args.daemon or []] or [
+        ("daemon", os.environ["ALBEDO_TEST_DAEMON"])
+    ]
+    labels = [label for label, _ in builds]
+    order = []
+    for round_ in range(args.rounds):
+        order += labels if round_ % 2 == 0 else labels[::-1]
+    rows = {label: [] for label in labels}
+    launchers = dict(builds)
+    for label in order:
+        taken = measure(launchers[label], args)
+        rows[label] += taken
+        print(
+            f"{label:>10} boot: " + format_row(statistics_of(taken, statistics.median))
+        )
+    print()
+    for label, taken in rows.items():
+        print(
+            f"{label:>10} median: "
+            + format_row(statistics_of(taken, statistics.median))
+        )
+        print(f"{label:>10} min..max: " + spread(taken))
+    if len(builds) == 2:
+        (first, one), (second, two) = rows.items()
+        print()
+        for key in ("reductions", "gc_words", "cpu_ms", "peak_mb", "wall_s"):
+            a = statistics.median(r[key] for r in one)
+            b = statistics.median(r[key] for r in two)
+            print(f"{key:>10}: {second} vs {first} {100 * (b - a) / a:+.1f}%")
+
+
+def statistics_of(rows, fold):
+    return {key: fold(row[key] for row in rows) for key in rows[0]}
+
+
+def spread(rows):
+    return "  ".join(
+        f"{key} {min(r[key] for r in rows):.4g}..{max(r[key] for r in rows):.4g}"
+        for key in ("reductions", "gc_words", "cpu_ms", "peak_mb")
+    )
 
 
 def format_row(row):
