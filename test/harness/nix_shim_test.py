@@ -1,8 +1,13 @@
-"""How the nix shim rewrites a command line in a jj workspace without .git.
-Each case costs a real nix evaluation end to end, and the mistakes are
-quiet: a lock file written over the workspace's (`--inputs-from .` once
-wrote nixpkgs' empty lock into it), a flake inserted into a command that takes
-none, or a lock written into the main checkout the ref names."""
+"""How the nix shim rewrites a command line in a jj workspace without .git,
+and what a cached dev shell must carry. Each rewrite case costs a real nix
+evaluation end to end, and the mistakes are quiet: a lock file written over
+the workspace's (`--inputs-from .` once wrote nixpkgs' empty lock into it),
+a flake inserted into a command that takes none, or a lock written into the
+main checkout the ref names. The carry cases run a fake nix whose
+print-dev-env writes a script shaped like nix's own: a cached shell dropped
+every variable whose value the capture's own environment already held
+(mkShell's env.* among them), so `nix develop -c env` showed no CGO_ENABLED
+and a cgo link failed."""
 
 import os
 from pathlib import Path
@@ -101,6 +106,84 @@ class RewriteTest(unittest.TestCase):
         for line in ["frobnicate .", "build --frobnicate"]:
             with self.subTest(line), self.assertRaises(albedo_nix.Unreadable):
                 self.read(line)
+
+
+class ExportTest(unittest.TestCase):
+    def test_exports_are_the_scripts_own(self):
+        script = (
+            'nix_saved_PATH="$PATH"\n'
+            "PATH=''\n"
+            "export PATH\n"
+            "CC='clang'\n"
+            "export CC\n"
+            "HOME='/homeless-shelter'\n"  # assigned, not exported: the caller keeps theirs
+            "declare -a outputs=('out')\n"
+            "f ()\n"
+            "{\n"
+            '    export SOURCE_DATE_EPOCH="$time";\n'  # a function body: does not run
+            "}\n"
+            'export NIX_LDFLAGS${role_post}+=" -L$1/lib";\n'
+            'export NIX_BUILD_TOP="$(mktemp -d)"\n'
+        )
+        self.assertEqual(albedo_nix.exported(script), {"CC", "NIX_BUILD_TOP"})
+
+
+class DeltaTest(unittest.TestCase):
+    def test_a_matching_value_is_kept_only_when_the_shell_provides_it(self):
+        change = albedo_nix.delta(
+            {"CGO_ENABLED": "1", "TERM": "xterm"},
+            {"CGO_ENABLED": "1", "TERM": "xterm"},
+            frozenset({"CGO_ENABLED"}),
+        )
+        self.assertEqual(change["set"], {"CGO_ENABLED": "1"})
+
+
+class CaptureTest(unittest.TestCase):
+    SCRIPT = """\
+nix_saved_PATH="$PATH"
+nix_saved_XDG_DATA_DIRS="$XDG_DATA_DIRS"
+PATH='/shell/bin'
+export PATH
+CGO_ENABLED='1'
+export CGO_ENABLED
+export CGO_LDFLAGS='-L/shell/lib'
+shellHook='export HOOKED=from-hook'
+export shellHook
+PATH="$PATH${nix_saved_PATH:+:$nix_saved_PATH}"
+XDG_DATA_DIRS="$XDG_DATA_DIRS${nix_saved_XDG_DATA_DIRS:+:$nix_saved_XDG_DATA_DIRS}"
+export NIX_BUILD_TOP="$(mktemp -d -t nix-shell.XXXXXX)"
+export TMP="$NIX_BUILD_TOP"
+export TMPDIR="$NIX_BUILD_TOP"
+export TEMP="$NIX_BUILD_TOP"
+export TEMPDIR="$NIX_BUILD_TOP"
+eval "${shellHook:-}"
+"""
+
+    FAKE = """#!/bin/sh
+while [ $# -gt 0 ]; do
+  if [ "$1" = "--profile" ]; then profile=$2; shift; fi
+  shift
+done
+cat > "$profile" <<'JSON'
+{"variables": {}}
+JSON
+cat <<'RC'
+"""
+
+    def test_a_capture_inside_the_shell_still_carries_its_exports(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            fake = Path(scratch, "nix")
+            fake.write_text(self.FAKE + self.SCRIPT + "RC\n")
+            fake.chmod(0o755)
+            with mock.patch.dict(os.environ, {"CGO_ENABLED": "1"}):
+                change = albedo_nix.capture(
+                    str(fake), ["installable"], Path(scratch, "profile"), Path(scratch)
+                )
+            self.assertEqual(change["set"]["CGO_ENABLED"], "1")
+            self.assertEqual(change["set"]["CGO_LDFLAGS"], "-L/shell/lib")
+            self.assertEqual(change["set"]["HOOKED"], "from-hook")
+            self.assertNotIn("HOME", change["set"])
+            self.assertEqual(change["prepend"]["PATH"], "/shell/bin")
 
 
 if __name__ == "__main__":

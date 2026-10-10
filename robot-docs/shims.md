@@ -87,7 +87,15 @@ unchanged; nix-formatted locks keep their content.
 which runs the shellHook (its output goes to stderr), removes `$NIX_BUILD_TOP`,
 and dumps `env -0`. what is kept is the difference from the job's environment
 (`delta`): variables set, prefixes put before a list the shell kept (PATH,
-XDG_DATA_DIRS) and variables unset. `TMPDIR`, `NIX_BUILD_TOP` and the like
+XDG_DATA_DIRS) and variables unset. every variable the script exports is kept
+even where the capture's own environment already held its value (mkShell
+`env.*` values, `CC`, `NIX_CFLAGS_COMPILE`, ...): what `nix develop -c` gives a
+program does not depend on who ran it, and a capture run inside the very shell
+it was capturing kept nothing of it once (`nix develop -c env` showed no
+`CGO_ENABLED`, and a cgo link failed). the script's function bodies do not run,
+so their exports do not count; the paths it composes from the caller's own (it
+saves them as `nix_saved_<name>`) stay prefixes; and what the script leaves
+alone (`HOME`, `TERM`) is the caller's. `TMPDIR`, `NIX_BUILD_TOP` and the like
 (`VOLATILE`) are dropped. `applied` lays it over each later job's environment.
 a build prints `albedo: building the dev shell for <dir>` first; a cached run
 prints nothing of its own.
@@ -100,9 +108,11 @@ content of every tracked `SHELL_FILES` file (`*.nix`, `flake.lock`,
 or `git ls-files`, a walk outside version control). so an unchanged flake
 costs one `jj file list` and no nix call (60 ms), and every checkout of the
 same repository at the same shell files shares one entry. a build that wrote
-the lock file is stored under the key after it too. the 32 most recently used
-entries are kept; a flake elsewhere (`nixpkgs#hello`) is keyed by its name and
-kept a day. shims building the same key at once wait on one `flock`.
+the lock file is stored under the key after it too. a record another capture
+shape wrote (it may carry too little) is rebuilt when next wanted, not
+replayed. the 32 most recently used entries are kept; a flake elsewhere
+(`nixpkgs#hello`) is keyed by its name and kept a day. shims building the same
+key at once wait on one `flock`.
 
 limits: a dev shell made of other files (built from Cargo.lock or
 pyproject.toml) is not rebuilt when only those change; a shellHook with side

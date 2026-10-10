@@ -47,6 +47,9 @@ SHELL_FILES = ("*.nix", "flake.lock", "rust-toolchain", "rust-toolchain.toml")
 UNWALKED = {"node_modules", "target", "build", "_build", "dist", "result"}
 CACHE_LIMIT = 32  # cached shells; the least recently used goes first
 REMOTE_TTL = 86400  # seconds a shell from a flake elsewhere (github:...) is kept
+# the capture a record's delta describes; an older one missed exports and is
+# rebuilt rather than replayed
+FORMAT = "exports"
 STEP_TIMEOUT = 600  # seconds for one jj or git call, or a shellHook
 # Set by sourcing the shell script, meaningless outside the bash that did it.
 VOLATILE = {"NIX_BUILD_TOP", "TMP", "TMPDIR", "TEMP", "TEMPDIR"}
@@ -451,14 +454,35 @@ def _key(flake: Flake, attribute: str) -> str:
     return digest.hexdigest()[:32]
 
 
-def delta(before: dict[str, str], after: dict[str, str]) -> Change:
+# one `export NAME` of a dev shell script, and one of its `nix_saved_NAME`
+EXPORT = re.compile(r"^export ([A-Za-z_][A-Za-z0-9_]*)(?:[ \t]*[=;]|[ \t]*$)", re.M)
+SAVED = re.compile(r"^nix_saved_([A-Za-z_][A-Za-z0-9_]*)=", re.M)
+
+
+def exported(script: str) -> frozenset[str]:
+    """The variables a dev shell gives every program in it: what its script
+    exports at the top level (the function bodies do not run), minus the
+    search paths it composes from the caller's own, saved as
+    `nix_saved_<name>`. `nix develop` exports these whatever the caller's
+    environment held, so a cached shell carries them all."""
+    return frozenset(EXPORT.findall(script)) - frozenset(SAVED.findall(script))
+
+
+def delta(
+    before: dict[str, str],
+    after: dict[str, str],
+    provided: frozenset[str] = frozenset(),
+) -> Change:
     """What a dev shell did to an environment: variables it set, prefixes it
-    put before a list it kept (PATH), and variables it unset."""
+    put before a list it kept (PATH), and variables it unset. `provided` is
+    what the shell gives every program (exported()); those stay in even where
+    the capture's own environment already held the same value, which is how a
+    cached shell came to drop mkShell's env.* values."""
     changed: dict[str, str] = {}
     prepended: dict[str, str] = {}
     for name, value in after.items():
         old = before.get(name)
-        if name in VOLATILE or old == value:
+        if name in VOLATILE or (old == value and name not in provided):
             continue
         if old and value.endswith(":" + old):
             prepended[name] = value[: -len(old) - 1]
@@ -504,6 +528,7 @@ def capture(nix: str, arguments: list[str], profile: Path, cwd: Path | None) -> 
             )
         if built.returncode != 0:
             raise NixError(f"nix print-dev-env failed (exit {built.returncode})")
+        provided = exported(script.read_text())
         variables = json.loads(Path(os.path.realpath(profile)).read_text()).get(
             "variables", {}
         )
@@ -533,7 +558,7 @@ def capture(nix: str, arguments: list[str], profile: Path, cwd: Path | None) -> 
         for item in sourced.stdout.decode("utf-8", "surrogateescape").split("\0")
         if "=" in item
     )
-    change = delta(dict(os.environ), after)
+    change = delta(dict(os.environ), after, provided)
     wrapper = sorted((n, v) for n, v in after.items() if n.startswith(WRAPPER))
     if wrapper:  # the shell's compiler-wrapper flags, for the cargo shim
         digest = hashlib.sha256(json.dumps(wrapper).encode()).hexdigest()[:16]
@@ -550,6 +575,8 @@ def _cached(key: str, ttl: float | None) -> dict[str, Any] | None:
     try:
         record = json.loads(entry.read_text())
     except (OSError, ValueError):
+        return None
+    if record.get("format") != FORMAT:
         return None
     profile = _cache() / record.get("profile", key)
     stale = ttl is not None and time.time() - float(record.get("created", 0)) > ttl
@@ -613,7 +640,12 @@ def dev_shell(nix: str, installable: str, cwd: Path) -> Change | None:
                 file=sys.stderr,
             )
             change = capture(nix, arguments, _cache() / key, where)
-            record = {"ref": arguments[0], "delta": change, "profile": key}
+            record = {
+                "ref": arguments[0],
+                "delta": change,
+                "profile": key,
+                "format": FORMAT,
+            }
             _keep(key, record)
             # nix may have written the lock file it locked, a shell file too
             if flake is not None and (written := _key(flake, attribute)) != key:
