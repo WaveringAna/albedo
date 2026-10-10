@@ -93,7 +93,7 @@ pub type Message {
   Existing(String, Subject(Result(Option(session.Session), String)))
   SessionDeleted(String)
   /// What an agent asks of other sessions, through the agents seam.
-  AgentOp(agents.Op, Subject(Result(json.Json, String)))
+  AgentOp(agents.Op, Subject(Result(agents.Reply, String)))
   List(Subject(List(conversation.Info)))
   Logins(Subject(List(oauth.Login)))
   Host(Subject(Result(runtime.Runtime, String)))
@@ -929,7 +929,7 @@ fn create_child(
 fn agent_op(
   state: State,
   op: agents.Op,
-) -> #(State, Result(json.Json, String)) {
+) -> #(State, Result(agents.Reply, String)) {
   let worker = fn(id) {
     case dict.get(state.sessions, id) {
       Ok(#(_, Some(active))) -> Some(active)
@@ -939,17 +939,9 @@ fn agent_op(
   case op {
     agents.Spawn(parent, name, task, model) -> {
       let #(state, created) = create_child(state, parent, name, task, model)
-      #(
-        state,
-        result.map(created, fn(pair) {
-          json.object([
-            #("member", member_json(pair.1)),
-            #("model", json.string({ pair.0 }.model)),
-          ])
-        }),
-      )
+      #(state, result.map(created, fn(pair) { agents.Spawned(pair.1) }))
     }
-    agents.Running(id) -> #(state, Ok(json.bool(bus.is_running(id))))
+    agents.Running(id) -> #(state, Ok(agents.RunningState(bus.is_running(id))))
     // The registry never waits on a session: interrupts and releases run in
     // their own processes, and running state comes from the status cache.
     agents.Stop(id) -> {
@@ -961,7 +953,7 @@ fn agent_op(
         }
         _, _ -> Nil
       }
-      #(state, Ok(json.bool(running)))
+      #(state, Ok(agents.Stopped(running)))
     }
     agents.Close(id) -> {
       // Close the durable family row before the asynchronous kernel cleanup.
@@ -984,7 +976,7 @@ fn agent_op(
         }
         Error(_) -> Nil
       }
-      #(state, closed |> result.replace(json.bool(True)))
+      #(state, closed |> result.replace(agents.Closed))
     }
     agents.Models(id) -> {
       let listed = case dict.get(state.sessions, id) {
@@ -1006,19 +998,9 @@ fn agent_op(
           list.unique([info.model, ..list.append(same_models, other_models)])
         }
       }
-      #(state, Ok(json.array(listed, json.string)))
+      #(state, Ok(agents.AvailableModels(listed)))
     }
   }
-}
-
-fn member_json(member: family.Member) -> json.Json {
-  json.object([
-    #("session", json.string(member.session)),
-    #("parent", json.string(member.parent)),
-    #("name", json.string(member.name)),
-    #("depth", json.int(member.depth)),
-    #("closed", json.bool(member.closed)),
-  ])
 }
 
 /// The registry remembering a session, live or not.

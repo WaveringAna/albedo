@@ -3,7 +3,7 @@
 //// Extensions reach the registry through this seam, so the harness never
 //// imports the server; the server registers the handler when it starts.
 
-import gleam/json
+import albedo/daemon/family
 
 pub type Op {
   /// `parent` starts a child named `name` on `model` ("" for its own) with
@@ -19,8 +19,16 @@ pub type Op {
   Models(session: String)
 }
 
+pub type Reply {
+  Spawned(member: family.Member)
+  RunningState(Bool)
+  Stopped(Bool)
+  Closed
+  AvailableModels(List(String))
+}
+
 @external(erlang, "albedo_agents", "call")
-pub fn call(op: Op) -> Result(json.Json, String)
+pub fn call(op: Op) -> Result(Reply, String)
 
 @external(erlang, "albedo_agents", "register")
-pub fn register(handler: fn(Op) -> Result(json.Json, String)) -> Nil
+pub fn register(handler: fn(Op) -> Result(Reply, String)) -> Nil

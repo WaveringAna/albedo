@@ -91,7 +91,13 @@ fn dispatch(
       use me <- result.try(family.get(db, session))
       Ok(handle_json(db, session, me))
     }
-    "agents.models" -> agents.call(agents.Models(session))
+    "agents.models" ->
+      case agents.call(agents.Models(session)) {
+        Ok(agents.AvailableModels(models)) ->
+          Ok(json.array(models, json.string))
+        Ok(_) -> Ok(json.array([], json.string))
+        Error(error) -> Error(error)
+      }
     "agents.spawn" -> {
       use task <- result.try(text(args, "task"))
       use name <- result.try(text(args, "name"))
@@ -104,12 +110,11 @@ fn dispatch(
       use spawned <- result.try(
         agents.call(agents.Spawn(session, name, task, model)),
       )
-      use child <- result.try(
-        read(spawned, decode.at(["member", "session"], decode.string))
-        |> result.replace_error("spawn answered without a session"),
-      )
-      use member <- result.try(family.get(db, child))
-      Ok(handle_json(db, child, member))
+      case spawned {
+        agents.Spawned(member) ->
+          Ok(handle_json(db, member.session, Some(member)))
+        _ -> Error("spawn answered unexpectedly")
+      }
     }
     "agents.get" -> {
       use to <- result.try(text(args, "to"))
@@ -135,6 +140,7 @@ fn dispatch(
     "agents.close" -> {
       use child <- result.try(own_child(db, session, args))
       agents.call(agents.Close(child.session))
+      |> result.replace(json.bool(True))
     }
     "agents.cancel" -> {
       use child <- result.try(own_child(db, session, args))
@@ -239,12 +245,11 @@ fn stop_each(
   tree: Bool,
 ) -> Result(List(String), String) {
   list.try_fold(members, [], fn(stopped, member) {
-    use running <- result.try(
-      agents.call(agents.Stop(member.session))
-      |> result.try(fn(answer) {
-        read(answer, decode.bool) |> result.replace_error("stop answered oddly")
-      }),
-    )
+    use reply <- result.try(agents.call(agents.Stop(member.session)))
+    let running = case reply {
+      agents.Stopped(running) -> running
+      _ -> False
+    }
     let stopped = case running {
       True -> list.append(stopped, [member.session])
       False -> stopped
@@ -331,8 +336,8 @@ fn status_fields(
   member: Option(family.Member),
 ) -> List(#(String, json.Json)) {
   let running = case agents.call(agents.Running(session)) {
-    Ok(value) -> read(value, decode.bool) |> result.unwrap(False)
-    Error(_) -> False
+    Ok(agents.RunningState(running)) -> running
+    _ -> False
   }
   let closed =
     option.map(member, fn(member) { member.closed }) |> option.unwrap(False)
@@ -367,9 +372,4 @@ fn found_json(db: store.Store, found: sessions.Found) -> json.Json {
 
 fn member_status(db: store.Store, member: family.Member) -> json.Json {
   status_json(db, member.session, Some(member))
-}
-
-/// A seam answer read back as data.
-fn read(value: json.Json, decoder: decode.Decoder(a)) -> Result(a, Nil) {
-  json.parse(json.to_string(value), decoder) |> result.replace_error(Nil)
 }
