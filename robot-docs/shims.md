@@ -12,6 +12,14 @@ Nested daemon jobs must not resolve one shim generation through another.
 there is no nix API for the model to learn: it types `nix develop -c cargo
 test` or `nix build .#x` and the shim makes that safe and fast.
 
+a daemon started with a thin PATH (a GUI or launchd start never ran the user's
+profile) would see no nix at all, so `prepend` first looks for each program of
+`FALLBACKS` that PATH lacks and appends the first directory holding it
+(`/nix/var/nix/profiles/default/bin`, then `~/.nix-profile/bin`). it goes last,
+so it never shadows the user's PATH, and it joins before the shim check so the
+shim still goes in front. it covers job environments only: `shutil.which` in a
+cell reads the kernel process's own PATH.
+
 ## nix
 
 ### why

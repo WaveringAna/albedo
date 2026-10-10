@@ -64,7 +64,24 @@ exec nix "$@"
 
 # directory (named for the program a shim needs on PATH) -> (shim, script)
 SHIMS = {"nix": ("nix", NIX), "mbx": ("cargo", CARGO)}
+# where a program lives when the process that started the daemon had a thin
+# PATH (a GUI or launchd start never ran the user's profile)
+FALLBACKS = {"nix": ("/nix/var/nix/profiles/default/bin", "~/.nix-profile/bin")}
 _written: set[Path] = set()
+
+
+def _with_fallbacks(entries: list[str]) -> list[str]:
+    """`entries`, plus the directory providing each program of FALLBACKS that
+    PATH lacks. It goes last, so it never shadows what the user put on PATH, and
+    only the first directory that holds the program is added, not a whole profile."""
+    for program, directories in FALLBACKS.items():
+        if shutil.which(program, path=os.pathsep.join(entries)):
+            continue
+        for directory in map(os.path.expanduser, directories):
+            if os.access(os.path.join(directory, program), os.X_OK):
+                entries = [*entries, directory]
+                break
+    return entries
 
 
 def _directory(needs: str) -> Path:
@@ -96,7 +113,7 @@ def prepend(environment: dict[str, str] | None) -> dict[str, str] | None:
         for entry in entries
         if not (Path(entry).name in SHIMS and Path(entry).parent.name == "shims")
     ]
-    path = os.pathsep.join(entries)
+    path = os.pathsep.join(_with_fallbacks(entries))
     shims = [
         str(_directory(needs))
         for needs in SHIMS
