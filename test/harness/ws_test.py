@@ -78,6 +78,7 @@ class WebSocketClientTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_text_and_binary_messages(self):
         received: list[tuple[int, bytes]] = []
+        answered = asyncio.Event()
         big = os.urandom(70_000)
 
         async def handler(reader, writer):
@@ -91,6 +92,7 @@ class WebSocketClientTest(unittest.IsolatedAsyncioTestCase):
             await writer.drain()
             pong = await read_frame(reader)
             received.append(pong)
+            answered.set()
             writer.close()
 
         server = await asyncio.start_server(handler, "127.0.0.1", 0)
@@ -103,6 +105,10 @@ class WebSocketClientTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(await client.recv_message(), "echo: hello albedo")
             self.assertEqual(await client.recv_bytes(), b"\xff\x00\xfe")
             await client.close()
+            # Closing the client does not wait for the server to read the
+            # pong, and leaving `async with server` waits for handlers only
+            # from Python 3.12.
+            await asyncio.wait_for(answered.wait(), 10)
         self.assertEqual(
             received[:2], [(0x1, b"hello albedo"), (0x2, b"\x00\x01binary")]
         )
