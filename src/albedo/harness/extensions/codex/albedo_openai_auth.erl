@@ -42,7 +42,7 @@ codex_exchange(Code, Verifier, Redirect) ->
                         <<"expires">> => erlang:system_time(millisecond) + round(In * 1000)
                     }),
                     case maps:is_key(<<"accountId">>, Credential) of
-                        true -> {ok, json:encode(Credential)};
+                        true -> {ok, Credential};
                         false -> {error, <<"codex token has no ChatGPT account id">>}
                     end;
                 _ -> {error, <<"codex token exchange response is incomplete">>}

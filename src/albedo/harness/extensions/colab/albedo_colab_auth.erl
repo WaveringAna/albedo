@@ -21,7 +21,7 @@ exchange(Code, Redirect, Progress) ->
         {ok, #{<<"access">> := Access} = Tokens} ->
             Progress(<<"getting user info">>),
             Email = albedo_google_oauth:email(?USERINFO_URL, Access),
-            {ok, json:encode(maps:merge(Email, Tokens#{<<"type">> => <<"oauth">>}))};
+            {ok, maps:merge(Email, Tokens#{<<"type">> => <<"oauth">>})};
         {error, _} = Error -> Error
     end.
 

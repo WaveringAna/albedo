@@ -2,8 +2,8 @@
 //// describes its provider; `albedo_oauth` owns the callback listener, the
 //// race with a pasted code, and locked creds.json storage.
 
+import gleam/dict.{type Dict}
 import gleam/dynamic.{type Dynamic}
-import gleam/json.{type Json}
 import gleam/option.{type Option}
 import gleam/uri
 
@@ -25,7 +25,8 @@ pub type Login {
     authorize: fn(Grant) -> String,
     /// Trades the code for the credential object to store. `progress`
     /// reports slow follow-up steps such as account provisioning.
-    exchange: fn(Grant, String, fn(String) -> Nil) -> Result(Json, String),
+    exchange: fn(Grant, String, fn(String) -> Nil) ->
+      Result(Dict(String, Dynamic), String),
     /// Names a stored credential. Equal ids are the same account.
     account: fn(Dynamic) -> Account,
   )

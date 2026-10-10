@@ -14,9 +14,9 @@ import albedo/harness/settings
 import albedo/harness/web_search
 import albedo/openai_api
 import albedo/openai_api/types
+import gleam/dict.{type Dict}
 import gleam/dynamic.{type Dynamic}
 import gleam/int
-import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -296,7 +296,7 @@ fn native_exchange(
   redirect: String,
   progress: fn(String) -> Nil,
   endpoints: Endpoints,
-) -> Result(json.Json, String)
+) -> Result(Dict(String, Dynamic), String)
 
 @external(erlang, "albedo_antigravity", "account")
 fn native_account(credential: Dynamic) -> oauth.Account

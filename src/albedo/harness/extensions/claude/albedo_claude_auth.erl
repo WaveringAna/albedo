@@ -10,16 +10,10 @@
 -define(EXPIRY_MARGIN_MS, 300000).
 
 exchange(Code, State, Verifier, Redirect) ->
-    post_token(#{<<"grant_type">> => <<"authorization_code">>,
+    post_token_map(#{<<"grant_type">> => <<"authorization_code">>,
                  <<"client_id">> => ?CLIENT_ID, <<"code">> => Code,
                  <<"state">> => State, <<"redirect_uri">> => Redirect,
                  <<"code_verifier">> => Verifier}, exchange).
-
-post_token(Params, Kind) ->
-    case post_token_map(Params, Kind) of
-        {ok, Credential} -> encode_credential(Credential);
-        Error -> Error
-    end.
 
 post_token_map(Params, Kind) ->
     case albedo_http:post(?TOKEN_URL, [{"accept", "application/json"}], "application/json", json:encode(Params), ?HTTP_TIMEOUT_MS, 10000) of
@@ -44,19 +38,8 @@ token_map(Response) ->
         _ -> {error, <<"Anthropic token response is incomplete">>}
     catch _:_ -> {error, <<"Anthropic token response is invalid">>} end.
 
-%% token/1 keeps its shape for callers: response in, storable binary out.
-token(Response) ->
-    case token_map(Response) of
-        {ok, Credential} -> encode_credential(Credential);
-        Error -> Error
-    end.
-
-%% json:encode builds each map member as `[comma, key, colon | value]', and a
-%% number value encodes to a bare binary, leaving an improper tail: legal
-%% iodata for iolist_to_binary, but json:decode rejects any list. Encoding is
-%% centralized here so no caller ever sees the tree.
-encode_credential(Credential) ->
-    {ok, iolist_to_binary(json:encode(Credential))}.
+%% The credential a token response buys, as the map stored in creds.json.
+token(Response) -> token_map(Response).
 
 account(Credential) when is_map(Credential) ->
     Selected = maps:get(<<"selected">>, Credential, false) =:= true,

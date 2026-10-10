@@ -206,7 +206,7 @@ exchange(Code, Redirect, Progress, {endpoints, TokenUrl, UserinfoUrl, _} = Endpo
         Progress(<<"getting user info">>),
         Email = albedo_google_oauth:email(UserinfoUrl, Access),
         {ok, Project} ?= discover(Access, Endpoints, Progress, Email),
-        {ok, json:encode(maps:merge(Email, Tokens#{<<"type">> => <<"oauth">>, <<"projectId">> => Project}))}
+        {ok, maps:merge(Email, Tokens#{<<"type">> => <<"oauth">>, <<"projectId">> => Project})}
     end.
 
 %% Finds the account's Cloud Code Assist project, provisioning the free tier

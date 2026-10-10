@@ -1,6 +1,7 @@
 // OAuth callback races, state validation, and fixed-port contention are timing-sensitive and cannot be scripted as an E2E model turn.
 import albedo/daemon/http_api
 import albedo/harness/oauth
+import gleam/dict
 import gleam/dynamic
 import gleam/dynamic/decode
 import gleam/erlang/process
@@ -32,10 +33,10 @@ fn fake(callback: oauth.Callback) -> oauth.Login {
         "bad" -> Error("exchange rejected")
         _ ->
           Ok(
-            json.object([
-              #("type", json.string("oauth")),
-              #("access", json.string("access-" <> code)),
-              #("email", json.string(code <> "@example.com")),
+            dict.from_list([
+              #("type", dynamic.string("oauth")),
+              #("access", dynamic.string("access-" <> code)),
+              #("email", dynamic.string(code <> "@example.com")),
             ]),
           )
       }

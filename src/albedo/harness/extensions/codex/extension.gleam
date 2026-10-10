@@ -11,8 +11,8 @@ import albedo/harness/web_search
 import albedo/openai_api
 import albedo/openai_api/types
 import gleam/bool
+import gleam/dict.{type Dict}
 import gleam/dynamic.{type Dynamic}
-import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -286,7 +286,7 @@ fn native_exchange(
   code: String,
   verifier: String,
   redirect: String,
-) -> Result(json.Json, String)
+) -> Result(Dict(String, Dynamic), String)
 
 @external(erlang, "albedo_openai_auth", "codex_account")
 fn native_account(credential: Dynamic) -> oauth.Account

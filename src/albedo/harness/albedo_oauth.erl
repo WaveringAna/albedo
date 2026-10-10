@@ -86,8 +86,8 @@ owner_loop(Flows) ->
                 end
             end, Flows),
             From ! {Ref, Reply}, owner_loop(Next);
-        {From, Ref, {identified_store, Id, Home, Store, Json, Account}} ->
-            {Reply, Next} = http_guard(fun() -> store_identified(Id, Home, Store, Json, Account, Flows) end, Flows),
+        {From, Ref, {identified_store, Id, Home, Store, Credential, Account}} ->
+            {Reply, Next} = http_guard(fun() -> store_identified(Id, Home, Store, Credential, Account, Flows) end, Flows),
             From ! {Ref, Reply}, owner_loop(Next);
         {From, Ref, {identified_terminal, Id, Status}} ->
             Next = update(Flows, Id, Status),
@@ -417,7 +417,7 @@ create_identified(Home, Id, Provider, Login0, Intent, Flows) ->
             {{ok, {false, encode_login(Home, Flow, Logins)}}, Next};
         {new, Flow, Login} ->
             Owner = self(),
-            Save = fun(Store, Json, Account) -> owner_store(Owner, Id, Home, Store, Json, Account) end,
+            Save = fun(Store, Credential, Account) -> owner_store(Owner, Id, Home, Store, Credential, Account) end,
             Pid = spawn(fun() -> run_flow(Owner, Id, Login, Save) end), erlang:monitor(process, Pid),
             Started = receive
                 {Id, ready, Url} ->
@@ -462,21 +462,21 @@ identified_flow(Home, Id, _Logins, Flows) ->
     end),
     {Flow, case terminal(Flow) of true -> maps:remove(Id, Flows); false -> Flows end}.
 
-owner_store(Owner, Id, Home, Store, Json, Account) ->
-    Ref = erlang:monitor(process, Owner), Owner ! {self(), Ref, {identified_store, Id, Home, Store, Json, Account}},
+owner_store(Owner, Id, Home, Store, Credential, Account) ->
+    Ref = erlang:monitor(process, Owner), Owner ! {self(), Ref, {identified_store, Id, Home, Store, Credential, Account}},
     receive
         {Ref, {ok, Value}} -> erlang:demonitor(Ref, [flush]), {ok, Value};
         {Ref, {error, _}} -> erlang:demonitor(Ref, [flush]), {error, <<"Could not store provider account.">>};
         {'DOWN', Ref, process, _, _} -> {error, <<"Sign-in owner stopped.">>}
     after ?CALL_MS -> erlang:demonitor(Ref, [flush]), {error, <<"Provider account storage is busy.">>} end.
 
-store_identified(Id, Home, Store, Json, Account, Flows) ->
+store_identified(Id, Home, Store, Credential0, Account, Flows) ->
     #{Id := #{home := Home} = Active} = Flows,
     Completed = locked(Home, fun() ->
         Records = records(Home), Flow = maps:get(Id, Records),
         ensure(not terminal(Flow) andalso maps:get(<<"expires">>, Flow) > erlang:system_time(millisecond),
             409, <<"login_ended">>, <<"Provider sign-in has ended.">>),
-        Credential0 = json:decode(iolist_to_binary(Json)), true = is_map(Credential0),
+        true = is_map(Credential0),
         RawId = id(Account, Credential0), true = is_binary(RawId) andalso byte_size(RawId) > 0,
         Creds = albedo_settings_store:read(Home, <<"creds.json">>),
         Accounts = albedo_settings_store:object(<<"accounts">>, Creds), Values = albedo_credentials:values(Accounts, Store),

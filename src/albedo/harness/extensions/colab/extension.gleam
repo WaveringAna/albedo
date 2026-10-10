@@ -5,6 +5,7 @@ import albedo/harness/host
 import albedo/harness/oauth
 import albedo/harness/rpc
 import albedo/harness/settings
+import gleam/dict.{type Dict}
 import gleam/dynamic.{type Dynamic}
 import gleam/json
 import gleam/result
@@ -102,7 +103,7 @@ fn native_exchange(
   code: String,
   redirect: String,
   progress: fn(String) -> Nil,
-) -> Result(json.Json, String)
+) -> Result(Dict(String, Dynamic), String)
 
 @external(erlang, "albedo_colab_auth", "account")
 fn native_account(credential: Dynamic) -> oauth.Account

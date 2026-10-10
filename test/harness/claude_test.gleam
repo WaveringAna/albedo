@@ -723,16 +723,11 @@ pub fn claude_first_user_surrogates_do_not_crash_the_billing_sample_test() -> Ni
   assert hash == billing_hash(unsigned)
 }
 
-pub fn claude_token_encodes_to_a_decodable_binary_test() -> Nil {
-  // OTP's json:encode leaves `colon | value' unflattened, and a number value
-  // encodes to a bare binary, so the encoded credential is an improper list
-  // that json:decode rejects; token/1 must hand back a flat binary. This
-  // crashed the session actor on every token refresh.
-  let assert Ok(credential) =
+pub fn claude_token_response_becomes_the_stored_credential_test() -> Nil {
+  let assert Ok(value) =
     claude_token(
       "{\"access_token\":\"tok\",\"refresh_token\":\"r\",\"expires_in\":86400}",
     )
-  let assert Ok(value) = json.parse(credential, decode.dynamic)
   let assert Ok("oauth") = decode.run(value, decode.at(["type"], decode.string))
   let assert Ok("tok") = decode.run(value, decode.at(["access"], decode.string))
   let assert Ok(expires) = decode.run(value, decode.at(["expires"], decode.int))
@@ -760,7 +755,7 @@ pub fn claude_billing_hash_matches_reference_vectors_test() -> Nil {
 }
 
 @external(erlang, "albedo_claude_auth", "token")
-fn claude_token(response: String) -> Result(String, String)
+fn claude_token(response: String) -> Result(Dynamic, String)
 
 /// The ledger records `wire.cache_marks` as what a Claude request asked to
 /// cache; it must name exactly the cache_control markers `encode` sends.
