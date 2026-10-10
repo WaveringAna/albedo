@@ -5,7 +5,6 @@ import albedo/daemon/mail
 import albedo/daemon/store
 import albedo/harness/extension
 import albedo/harness/host
-import albedo/harness/rpc
 import gleam/dynamic/decode
 import gleam/json
 import gleam/result
@@ -21,8 +20,8 @@ pub fn extension() -> extension.Extension {
         [],
         ["mail"],
         [
-          #("mail", fn(context: host.Context, request) {
-            handle(context.store, context.session, request)
+          #("mail", fn(context: host.Context, method, args) {
+            handle(context.store, context.session, method, args)
           }),
         ],
       ),
@@ -31,22 +30,28 @@ pub fn extension() -> extension.Extension {
   )
 }
 
-fn handle(db: store.Store, session: String, request: String) -> String {
-  let decoder = {
-    use method <- decode.field("method", decode.string)
-    use to <- decode.subfield(["args", "to"], decode.string)
-    use body <- decode.subfield(["args", "body"], decode.string)
-    decode.success(#(method, to, body))
+fn handle(
+  db: store.Store,
+  session: String,
+  method: String,
+  args: decode.Dynamic,
+) -> Result(json.Json, #(String, String)) {
+  case method {
+    "mail.submit" -> {
+      let decoder = {
+        use to <- decode.field("to", decode.string)
+        use body <- decode.field("body", decode.string)
+        decode.success(#(to, body))
+      }
+      case decode.run(args, decoder) {
+        Ok(#(to, body)) ->
+          mail.send(db, session, to, body)
+          |> result.map(mail.receipt_json)
+          |> result.map_error(fn(m) { #("invalid", m) })
+        Error(_) ->
+          Error(#("invalid", "mail.submit(to, body) takes two strings"))
+      }
+    }
+    _ -> Error(#("invalid", "mail.submit(to, body) takes two strings"))
   }
-  case json.parse(request, decoder) {
-    Ok(#("mail.submit", to, body)) ->
-      mail.send(db, session, to, body)
-      |> result.map(mail.receipt_json)
-      |> answer
-    _ -> answer(Error("mail.submit(to, body) takes two strings"))
-  }
-}
-
-fn answer(result: Result(json.Json, String)) -> String {
-  rpc.reply(result |> result.map_error(fn(m) { #("invalid", m) }))
 }

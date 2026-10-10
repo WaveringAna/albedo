@@ -36,10 +36,14 @@ const instructions =
 
 /// The kernel's `colab` binding: `colab.account` is the signed-in account's
 /// access token and email, refreshed here so the kernel never reads creds.json.
-fn route(_context: host.Context, request: String) -> String {
+fn route(
+  _context: host.Context,
+  method: String,
+  args: Dynamic,
+) -> Result(json.Json, #(String, String)) {
   rpc.serve(
-    request,
-    #("invalid", "invalid Colab request"),
+    method,
+    args,
     fn(method, _args) {
       case method {
         "colab.account" ->

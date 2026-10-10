@@ -40,9 +40,9 @@ pub fn extension() -> extension.Extension {
         use context <- result.try(load(links.group(store, workspace)))
         Ok(
           extension.Managed(..extension.empty(), context: context, routes: [
-            #("memory", fn(context: host.Context, request) {
+            #("memory", fn(context: host.Context, method, args) {
               let store = context.store
-              handle(workspace, links.group(store, workspace), request)
+              handle(workspace, links.group(store, workspace), method, args)
             }),
           ]),
         )
@@ -52,10 +52,15 @@ pub fn extension() -> extension.Extension {
   )
 }
 
-fn handle(own: String, group: List(String), request: String) -> String {
+fn handle(
+  own: String,
+  group: List(String),
+  method: String,
+  args: decode.Dynamic,
+) -> Result(json.Json, #(String, String)) {
   rpc.serve(
-    request,
-    "invalid memory request",
+    method,
+    args,
     fn(method, args) {
       let text = fn(field) {
         rpc.args(

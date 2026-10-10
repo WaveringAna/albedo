@@ -15,11 +15,12 @@ pub fn handle(
   store: paperclips.Store,
   cwd: String,
   session: String,
-  request: String,
-) -> String {
+  method: String,
+  args: dynamic.Dynamic,
+) -> Result(json.Json, #(String, String)) {
   rpc.serve(
-    request,
-    paperclips.Invalid("invalid host request"),
+    method,
+    args,
     fn(method, args) { dispatch(store, cwd, session, method, args) },
     describe,
   )

@@ -25,8 +25,8 @@ pub fn extension() -> extension.Extension {
     ["python"],
     [
       extension.ToolPlugin(instructions, [], ["web_search"], [
-        #("web_search", fn(context: host.Context, request) {
-          handle(context.searches, context.session, request)
+        #("web_search", fn(context: host.Context, method, args) {
+          handle(context.searches, context.session, method, args)
         }),
       ]),
       extension.CommandPlugin([
@@ -68,11 +68,12 @@ const instructions =
 fn handle(
   providers: List(web_search.Provider),
   session: String,
-  request: String,
-) -> String {
+  method: String,
+  args: decode.Dynamic,
+) -> Result(json.Json, #(String, String)) {
   rpc.serve(
-    request,
-    #("invalid", "invalid web search request"),
+    method,
+    args,
     fn(method, args) {
       case method {
         "web_search.search" -> {

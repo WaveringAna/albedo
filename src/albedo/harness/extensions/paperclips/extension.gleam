@@ -83,8 +83,14 @@ pub fn extension() -> harness_extension.Extension {
       harness_extension.ManagedPlugin(fn(_, _, workspace) {
         Ok(
           harness_extension.Managed(..harness_extension.empty(), routes: [
-            #("paperclips", fn(context: host.Context, request) {
-              rpc.handle(context.store, workspace, context.session, request)
+            #("paperclips", fn(context: host.Context, method, args) {
+              rpc.handle(
+                context.store,
+                workspace,
+                context.session,
+                method,
+                args,
+              )
             }),
           ]),
         )

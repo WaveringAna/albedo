@@ -1,4 +1,4 @@
-//// The kernel's host-call envelope: a request `{"method", "args"}` in, and
+//// The kernel's host calls: a method and native arguments in, and
 //// `{"ok": true, "value"}` or `{"ok": false, "code", "message"}` out.
 
 import albedo/harness/host
@@ -13,29 +13,16 @@ import gleam/string
 pub fn handle(
   routes: List(host.Route),
   context: host.Context,
-  request: String,
+  method: String,
+  args: Dynamic,
 ) -> String {
-  let found = {
-    use method <- result.try(
-      json.parse(request, decode.field("method", decode.string, decode.success))
-      |> result.replace_error(Nil),
-    )
+  let found =
     list.find(routes, fn(route) { string.starts_with(method, route.0 <> ".") })
-  }
   case found {
-    Ok(#(_, run)) -> run(context, request)
-    Error(_) -> refuse("unavailable", "extension capability unavailable")
+    Ok(#(_, run)) -> run(context, method, args)
+    Error(_) -> Error(#("unavailable", "extension capability unavailable"))
   }
-}
-
-/// One call's method and still-undecoded arguments.
-pub fn decode(request: String) -> Result(#(String, Dynamic), Nil) {
-  json.parse(request, {
-    use method <- decode.field("method", decode.string)
-    use args <- decode.field("args", decode.dynamic)
-    decode.success(#(method, args))
-  })
-  |> result.replace_error(Nil)
+  |> reply
 }
 
 /// Decodes one call's arguments, failing with `invalid` when they do not fit.
@@ -47,20 +34,15 @@ pub fn args(
   decode.run(args, decoder) |> result.replace_error(invalid)
 }
 
-/// Serves one call: decodes the envelope, dispatches on its method, and
-/// encodes the answer, with `describe` naming each failure's code and message.
+/// Serves one call: dispatches on its method, mapping errors to their code and message.
 pub fn serve(
-  request: String,
-  invalid: e,
+  method: String,
+  args: Dynamic,
   dispatch: fn(String, Dynamic) -> Result(Json, e),
   describe: fn(e) -> #(String, String),
-) -> String {
-  case decode(request) {
-    Ok(#(method, args)) -> dispatch(method, args)
-    Error(_) -> Error(invalid)
-  }
+) -> Result(Json, #(String, String)) {
+  dispatch(method, args)
   |> result.map_error(describe)
-  |> reply
 }
 
 pub fn reply(answer: Result(Json, #(String, String))) -> String {
@@ -74,8 +56,4 @@ pub fn reply(answer: Result(Json, #(String, String))) -> String {
       ])
   }
   |> json.to_string
-}
-
-pub fn refuse(code: String, message: String) -> String {
-  reply(Error(#(code, message)))
 }

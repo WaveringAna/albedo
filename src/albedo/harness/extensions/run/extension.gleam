@@ -32,8 +32,8 @@ pub fn extension() -> harness_extension.Extension {
         service.handle,
       )),
       harness_extension.ToolPlugin(instructions, [], ["run"], [
-        #("jobs", fn(context: host.Context, request) {
-          route(context.store, context.session, request)
+        #("jobs", fn(context: host.Context, method, args) {
+          route(context.store, context.session, method, args)
         }),
       ]),
       harness_extension.CommandPlugin([command()]),
@@ -74,9 +74,14 @@ pub type Wake {
 /// the submit closure its session registered turns the notice into an ordinary
 /// user turn, so the model never polls for completion. The reply's code is the
 /// kernel's retry signal: "busy" retries, anything else gives up.
-fn route(_store: store.Store, session: String, request: String) -> String {
-  case rpc.decode(request) {
-    Ok(#("jobs.completed", args)) ->
+fn route(
+  _store: store.Store,
+  session: String,
+  method: String,
+  args: decode.Dynamic,
+) -> Result(json.Json, #(String, String)) {
+  case method {
+    "jobs.completed" ->
       case rpc.args(args, notice_decoder(), Nil) {
         Ok(#(display, text)) ->
           case deliver(session, display, text) {
@@ -88,7 +93,6 @@ fn route(_store: store.Store, session: String, request: String) -> String {
       }
     _ -> Error(#("invalid", "unknown jobs operation"))
   }
-  |> rpc.reply
 }
 
 fn notice_decoder() -> decode.Decoder(#(String, String)) {

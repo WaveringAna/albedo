@@ -10,6 +10,7 @@ import albedo/harness/host
 import albedo/harness/rpc
 import albedo/harness/runtime/state as runtime_state
 import gleam/dict
+import gleam/dynamic.{type Dynamic}
 import gleam/io
 import gleam/option.{type Option}
 import gleam/result
@@ -67,7 +68,7 @@ pub fn kernel_routes(
   owner: store.Store,
   id: String,
   composed: composition.Composition,
-) -> fn(String) -> String {
+) -> fn(String, Dynamic) -> String {
   // Partial application captures its expressions, not just their results.
   // Keep only this session's routes: the callback is copied for every RPC.
   let routes = composition.routes(composed)
@@ -77,7 +78,7 @@ pub fn kernel_routes(
       id,
       extension.searches(composition.extensions(composed)),
     )
-  rpc.handle(routes, context, _)
+  fn(method, args) { rpc.handle(routes, context, method, args) }
 }
 
 /// Boot a kernel over one composition. A failed boot keeps the composition:

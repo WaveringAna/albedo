@@ -7,6 +7,7 @@ import albedo/harness/location
 import albedo/harness/settings
 import albedo/harness/ssh
 import albedo/openai_api/types
+import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
 import gleam/erlang/process
 import gleam/int
@@ -95,7 +96,7 @@ type Boot {
     python: String,
     bridge: String,
     cwd: String,
-    host: fn(String) -> String,
+    host: fn(String, Dynamic) -> String,
     modules: String,
     link: link.Link,
     run_dir: String,
@@ -384,7 +385,10 @@ pub fn detach(kernel: Kernel) -> Nil
 /// sibling routes resolve against the new catalog immediately. A host call
 /// already in flight finishes on the routes it captured.
 @external(erlang, "albedo_python", "rebind")
-pub fn rebind(kernel: Kernel, host: fn(String) -> String) -> Result(Nil, Error)
+pub fn rebind(
+  kernel: Kernel,
+  host: fn(String, Dynamic) -> String,
+) -> Result(Nil, Error)
 
 /// Drain up to 100 background completion notifications.
 @external(erlang, "albedo_python", "events")
@@ -445,7 +449,7 @@ fn read_images(encoded: List(String)) -> #(List(types.Image), List(String)) {
 pub fn local_with_plugins(
   store: store.Store,
   cwd: String,
-  host: fn(String) -> String,
+  host: fn(String, Dynamic) -> String,
   modules: List(String),
 ) -> Result(Kernel, Error) {
   open(store, "local-" <> new_id(), cwd, host, modules)
@@ -470,7 +474,7 @@ pub fn open(
   store: store.Store,
   session: String,
   cwd: String,
-  host: fn(String) -> String,
+  host: fn(String, Dynamic) -> String,
   modules: List(String),
 ) -> Result(#(Kernel, Bool), Error) {
   use _ <- result.try(
@@ -490,7 +494,7 @@ pub fn stage(
   store: store.Store,
   session: String,
   cwd: String,
-  host: fn(String) -> String,
+  host: fn(String, Dynamic) -> String,
   modules: List(String),
 ) -> Result(#(Kernel, link.Record), Error) {
   use _ <- result.try(
@@ -555,7 +559,7 @@ pub fn resume(
   store: store.Store,
   session: String,
   cwd: String,
-  host: fn(String) -> String,
+  host: fn(String, Dynamic) -> String,
   modules: List(String),
 ) -> Option(Kernel) {
   case booter(store, cwd, host, modules) {
@@ -578,7 +582,7 @@ pub fn recorded(store: store.Store) -> List(#(String, String)) {
 fn booter(
   store: store.Store,
   cwd: String,
-  host: fn(String) -> String,
+  host: fn(String, Dynamic) -> String,
   modules: List(String),
 ) -> Result(
   #(
@@ -750,7 +754,7 @@ pub fn upgrade(
   store: store.Store,
   session: String,
   cwd: String,
-  host: fn(String) -> String,
+  host: fn(String, Dynamic) -> String,
   modules: List(String),
   old: Kernel,
 ) -> Result(#(Kernel, Carried), UpgradeFailure) {

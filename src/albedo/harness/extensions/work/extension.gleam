@@ -78,7 +78,9 @@ pub fn extension() -> harness_extension.Extension {
       harness_extension.ManagedPlugin(fn(store, _, workspace) {
         Ok(
           harness_extension.Managed(..harness_extension.empty(), routes: [
-            #("work", fn(_, request) { rpc.handle(store, workspace, request) }),
+            #("work", fn(_, method, args) {
+              rpc.handle(store, workspace, method, args)
+            }),
           ]),
         )
       }),

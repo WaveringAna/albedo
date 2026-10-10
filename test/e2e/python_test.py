@@ -41,6 +41,26 @@ class PythonToolsTests(unittest.TestCase):
     def execute(self, code):
         return self.run_cell(code, self.app.session())["output"]
 
+    def test_host_replies_preserve_escaped_call_ids_and_argument_errors(self):
+        output = self.execute(
+            "kernel = sys.modules['__main__']\n"
+            "key = 'host reply \" \\\\ λ\\n'\n"
+            "pending = asyncio.get_running_loop().create_future()\n"
+            "kernel.PENDING[key] = pending\n"
+            "try:\n"
+            "    kernel.send({'type': 'call', 'id': key, 'method': 'mail.submit', 'args': []})\n"
+            "    print(json.dumps(await asyncio.wait_for(pending, 5)))\n"
+            "finally:\n    kernel.PENDING.pop(key, None)"
+        )
+        self.assertEqual(
+            json.loads(output),
+            {
+                "ok": False,
+                "code": "invalid",
+                "message": "mail.submit(to, body) takes two strings",
+            },
+        )
+
     def test_deleting_shadowed_tools_recovers_the_original_bindings(self):
         (self.app.workspace / "note.txt").write_text("recovered\n")
         session = self.app.session()

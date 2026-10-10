@@ -9,24 +9,26 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 
 /// Session metadata is requested by plugins at boot, not injected into the kernel environment.
-pub fn session(cwd: String, request: String) -> String {
-  rpc.serve(
-    request,
-    "unknown session operation",
-    fn(method, _) {
-      case method {
-        "session.cwd" -> Ok(json.string(cwd))
-        _ -> Error("unknown session operation")
-      }
-    },
-    fn(message) { #("session", message) },
-  )
+pub fn session(
+  cwd: String,
+  method: String,
+  _args: dynamic.Dynamic,
+) -> Result(json.Json, #(String, String)) {
+  case method {
+    "session.cwd" -> Ok(json.string(cwd))
+    _ -> Error(#("session", "unknown session operation"))
+  }
 }
 
-pub fn handle(store: store.Store, session: String, request: String) -> String {
+pub fn handle(
+  store: store.Store,
+  session: String,
+  method: String,
+  args: dynamic.Dynamic,
+) -> Result(json.Json, #(String, String)) {
   rpc.serve(
-    request,
-    "unknown cells operation",
+    method,
+    args,
     fn(method, args) {
       case method {
         "cells.completed" -> {

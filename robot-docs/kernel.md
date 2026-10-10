@@ -7,6 +7,17 @@ restart, keeping its namespace and its background jobs. the daemon connects
 to it directly, or through a bridge when it runs on another host, and every message between the two travels through a small
 session layer that neither loses nor repeats a message across a reconnect.
 
+## host calls
+
+`albedo_python.erl` decodes the Python call frame once and passes its method
+and native arguments to `host.Route`. Routes return
+`Result(Json, #(code, message))`; `rpc.handle` dispatches by namespace and
+`rpc.reply` encodes the answer once. The port owner embeds that answer in the
+reply frame, encoding the call id separately. Host failure and restart replies
+use the same `rpc.reply` shape. A frame without a string method or an `args`
+field is refused with `invalid` / `invalid host request`; argument validation
+stays in each route. The Python JSON boundary is unchanged.
+
 ## tool bindings
 
 Cells also see the common standard-library modules (`asyncio base64 collections datetime functools hashlib itertools json math os re shutil sys textwrap time`, and `Path`) without importing them; these live in the same session-private builtins, so they are not saved as user variables. `import albedo` and `from albedo import files` answer the injected bindings (`albedo_cells.Bindings`).

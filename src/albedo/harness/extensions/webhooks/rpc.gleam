@@ -8,10 +8,15 @@ import gleam/json
 import gleam/option.{None}
 import gleam/result
 
-pub fn handle(db: store.Store, session: String, request: String) -> String {
+pub fn handle(
+  db: store.Store,
+  session: String,
+  method: String,
+  args: dynamic.Dynamic,
+) -> Result(json.Json, #(String, String)) {
   rpc.serve(
-    request,
-    hooks.Invalid("invalid request"),
+    method,
+    args,
     fn(method, args) { dispatch(db, session, method, args) },
     describe,
   )

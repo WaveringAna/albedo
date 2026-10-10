@@ -374,7 +374,7 @@ call(Pid, Request) ->
 %% Swap the live host RPC closure: a refreshed extension snapshot rebinds the
 %% routes Python reaches without restarting the kernel. A host call already in
 %% flight finishes on the closure it captured; the swap lands between calls.
-rebind(Pid, Host) when is_function(Host, 1) -> call(Pid, {rebind, Host}).
+rebind(Pid, Host) when is_function(Host, 2) -> call(Pid, {rebind, Host}).
 
 loop(S = #{port := Port, active := Active}) ->
     receive
@@ -413,7 +413,7 @@ loop(S = #{port := Port, active := Active}) ->
                     verdict(supervise(S, [target_spec(<<"job ", Id/binary>>, Group)], ?TERM_MS, ?KILL_MS))
             end,
             From ! {Ref, Reply}, loop(S);
-        {call, From, Ref, {rebind, Host}} when is_function(Host, 1) ->
+        {call, From, Ref, {rebind, Host}} when is_function(Host, 2) ->
             From ! {Ref, {ok, nil}}, loop(S#{host => Host});
         {call, From, Ref, events} ->
             From ! {Ref, {ok, lists:reverse(maps:get(events, S))}}, loop(S#{events => []});
@@ -622,8 +622,7 @@ handle_frame(#{<<"type">> := <<"done">>, <<"id">> := Id} = Done, S = #{host := H
     %% A result nobody waits for any more: the caller gave up while the kernel
     %% was out of reach. Journal it, so the retained cell shows what happened.
     spawn(fun() ->
-        host_call(Host, #{type => <<"call">>, id => Id, method => <<"cells.finish">>,
-                          args => #{id => Id, outcome => Done}})
+        host_call(Host, <<"cells.finish">>, #{<<"id">> => Id, <<"outcome">> => Done})
     end),
     S;
 handle_frame(#{<<"type">> := <<"call">>, <<"id">> := Id} = Message, S = #{host := Host, calls := Calls}) ->
@@ -632,13 +631,17 @@ handle_frame(#{<<"type">> := <<"call">>, <<"id">> := Id} = Message, S = #{host :
         true -> S;
         answered -> S;
         unknown ->
-            host_reply(Id, #{ok => false, code => <<"unknown">>,
-                             message => <<"albedo restarted while this call ran; its outcome is unknown">>}, S);
+            host_reply(Id, host_error(<<"unknown">>,
+                                      <<"albedo restarted while this call ran; its outcome is unknown">>), S);
         fresh ->
-            Parent = self(),
-            %% Work requests never block interrupt/timeout handling of the kernel.
-            spawn(fun() -> Parent ! {host_reply, Id, host_call(Host, Message)} end),
-            S#{calls => Calls#{Id => true}}
+            case Message of
+                #{<<"method">> := Method, <<"args">> := Args} when is_binary(Method) ->
+                    Parent = self(),
+                    %% Work requests never block interrupt/timeout handling of the kernel.
+                    spawn(fun() -> Parent ! {host_reply, Id, host_call(Host, Method, Args)} end),
+                    S#{calls => Calls#{Id => true}};
+                _ -> host_reply(Id, host_error(<<"invalid">>, <<"invalid host request">>), S)
+            end
     end;
 handle_frame(#{<<"type">> := <<"job">>} = Message, S) ->
     journal(Message, track(Message, S));
@@ -657,16 +660,20 @@ handle_frame(Message, S) -> track(Message, S).
 
 host_reply(Id, Reply, S = #{calls := Calls, out := Out}) ->
     Seq = Out + 1,
-    Frame = iolist_to_binary(json:encode(#{type => <<"reply">>, id => Id, value => Reply})),
+    Frame = iolist_to_binary([<<"{\"type\":\"reply\",\"id\":">>, json:encode(Id),
+                              <<",\"value\":">>, Reply, <<"}">>]),
     link_reply(S, Id, Seq, Frame),
     write_envelope(S, Seq, Frame),
     S#{calls => maps:remove(Id, Calls), out => Seq, acked => maps:get(in, S)}.
 
-%% One host call's decoded reply, with the fixed fallback when the host itself
-%% fails to answer.
-host_call(Host, Message) ->
-    try json:decode(Host(iolist_to_binary(json:encode(Message))))
-    catch _:_ -> #{ok => false, code => <<"unavailable">>, message => <<"runtime unavailable">>} end.
+%% One host call's reply, with the fixed fallback when the host itself fails to answer.
+host_call(Host, Method, Args) ->
+    try Host(Method, Args)
+    catch _:_ -> host_error(<<"unavailable">>, <<"runtime unavailable">>)
+    end.
+
+host_error(Code, Message) ->
+    'albedo@harness@rpc':reply({error, {Code, Message}}).
 
 %% Job ownership bookkeeping shared by the main loop and the startup and
 %% shutdown drains: a started job's group is recorded; a job proven gone

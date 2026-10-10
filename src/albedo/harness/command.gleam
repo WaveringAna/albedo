@@ -10,7 +10,6 @@
 import albedo/harness/extensions/python/kernel
 import albedo/harness/host
 import albedo/harness/protect
-import albedo/harness/rpc
 import gleam/dict.{type Dict}
 import gleam/dynamic/decode
 import gleam/int
@@ -457,8 +456,8 @@ pub fn context_block(commands: List(Command)) -> String {
 /// boot; `commands.run` executes outside any session actor.
 pub fn routes(commands: List(Command)) -> List(host.Route) {
   [
-    #("commands", fn(context: host.Context, request) {
-      respond(commands, context.session, request)
+    #("commands", fn(context: host.Context, method, args) {
+      respond(commands, context.session, method, args)
     }),
   ]
 }
@@ -466,13 +465,13 @@ pub fn routes(commands: List(Command)) -> List(host.Route) {
 fn respond(
   commands: List(Command),
   session: String,
-  request: String,
-) -> String {
-  case rpc.decode(request) {
-    Ok(#("commands.list", _)) -> rpc.reply(Ok(catalog_json(commands)))
-    Ok(#("commands.run", args)) -> run_request(commands, session, args)
-    Ok(_) -> rpc.refuse("commands", "unknown commands operation")
-    Error(_) -> rpc.refuse("invalid", "invalid commands host request")
+  method: String,
+  args: decode.Dynamic,
+) -> Result(json.Json, #(String, String)) {
+  case method {
+    "commands.list" -> Ok(catalog_json(commands))
+    "commands.run" -> run_request(commands, session, args)
+    _ -> Error(#("commands", "unknown commands operation"))
   }
 }
 
@@ -480,9 +479,9 @@ fn run_request(
   commands: List(Command),
   session: String,
   args: decode.Dynamic,
-) -> String {
+) -> Result(json.Json, #(String, String)) {
   case decode_run(["name", "args", "arguments"], args) {
-    Error(message) -> rpc.refuse("commands", message)
+    Error(message) -> Error(#("commands", message))
     Ok(#(name, supplied, raw)) ->
       case
         call(
@@ -495,10 +494,10 @@ fn run_request(
           raw,
         )
       {
-        Ok(Data(value)) -> rpc.reply(Ok(value))
+        Ok(Data(value)) -> Ok(value)
         Ok(Turn(_, _)) ->
-          rpc.refuse("commands", "command submitted a turn from the model")
-        Error(message) -> rpc.refuse("commands", message)
+          Error(#("commands", "command submitted a turn from the model"))
+        Error(message) -> Error(#("commands", message))
       }
   }
 }

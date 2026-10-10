@@ -7,10 +7,14 @@ import gleam/dynamic/decode
 import gleam/json
 import gleam/result
 
-pub fn handle(snapshot: catalog.Catalog, request: String) -> String {
+pub fn handle(
+  snapshot: catalog.Catalog,
+  method: String,
+  args: dynamic.Dynamic,
+) -> Result(json.Json, #(String, String)) {
   rpc.serve(
-    request,
-    "invalid skills host request",
+    method,
+    args,
     fn(method, args) { dispatch(snapshot, method, args) },
     fn(message) { #("skills", message) },
   )

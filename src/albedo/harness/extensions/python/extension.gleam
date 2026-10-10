@@ -186,15 +186,17 @@ pub fn extension() -> extension.Extension {
         [extension.Tool(definition(), invoke, recover)],
         [],
         [
-          #("cells", fn(context: host.Context, request) {
-            cells.handle(context.store, context.session, request)
+          #("cells", fn(context: host.Context, method, args) {
+            cells.handle(context.store, context.session, method, args)
           }),
         ],
       ),
       extension.ManagedPlugin(fn(_, _, workspace) {
         Ok(
           extension.Managed(..extension.empty(), routes: [
-            #("session", fn(_, request) { cells.session(workspace, request) }),
+            #("session", fn(_, method, args) {
+              cells.session(workspace, method, args)
+            }),
           ]),
         )
       }),

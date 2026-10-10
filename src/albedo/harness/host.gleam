@@ -2,6 +2,8 @@
 
 import albedo/daemon/store
 import albedo/harness/web_search
+import gleam/dynamic.{type Dynamic}
+import gleam/json.{type Json}
 
 pub type Context {
   Context(
@@ -12,4 +14,4 @@ pub type Context {
 }
 
 pub type Route =
-  #(String, fn(Context, String) -> String)
+  #(String, fn(Context, String, Dynamic) -> Result(Json, #(String, String)))

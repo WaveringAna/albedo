@@ -33,8 +33,8 @@ pub fn extension() -> extension.Extension {
     ["python", "mail"],
     [
       extension.ToolPlugin(instructions, [], ["agents"], [
-        #("agents", fn(context: host.Context, request) {
-          handle(context.store, context.session, request)
+        #("agents", fn(context: host.Context, method, args) {
+          handle(context.store, context.session, method, args)
         }),
       ]),
       // A child learns who it is and how to answer; a root needs no context.
@@ -63,10 +63,15 @@ fn doctrine(db: store.Store, session: String) -> String {
   }
 }
 
-fn handle(db: store.Store, session: String, request: String) -> String {
+fn handle(
+  db: store.Store,
+  session: String,
+  method: String,
+  args: dynamic.Dynamic,
+) -> Result(json.Json, #(String, String)) {
   rpc.serve(
-    request,
-    "invalid agents request",
+    method,
+    args,
     fn(method, args) { dispatch(db, session, method, args) },
     fn(message) { #("invalid", message) },
   )
