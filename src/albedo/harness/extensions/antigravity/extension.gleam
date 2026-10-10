@@ -15,7 +15,6 @@ import albedo/harness/web_search
 import albedo/openai_api
 import albedo/openai_api/types
 import gleam/dynamic.{type Dynamic}
-import gleam/dynamic/decode
 import gleam/int
 import gleam/json
 import gleam/list
@@ -152,9 +151,7 @@ fn connect(
   session: String,
   profile: String,
 ) -> Result(Access, String) {
-  use encoded <- result.try(native_access(home, session, profile))
-  json.parse(encoded, access_decoder())
-  |> result.replace_error("invalid Antigravity credential response")
+  native_access(home, session, profile)
 }
 
 /// Streams on `access`, and on sibling Google accounts when it hits a limit.
@@ -288,13 +285,6 @@ fn limit_message(account: String, limit: rotation.Limited) -> String {
   )
 }
 
-fn access_decoder() -> decode.Decoder(Access) {
-  use token <- decode.field("access", decode.string)
-  use project <- decode.field("projectId", decode.string)
-  use email <- decode.optional_field("email", "", decode.string)
-  decode.success(Access(token, project, email))
-}
-
 @external(erlang, "albedo_antigravity", "user_agent")
 fn user_agent(home: String) -> String
 
@@ -320,7 +310,7 @@ fn native_access(
   home: String,
   session: String,
   profile: String,
-) -> Result(String, String)
+) -> Result(Access, String)
 
 @external(erlang, "albedo_antigravity", "limited")
 fn native_limited(

@@ -49,8 +49,10 @@ first_usable([Credential | Rest], Path, Session) ->
     case albedo_google_oauth:ensure(app(), Path, Credential) of
         {ok, Access} ->
             albedo_accounts:remember(?SCOPE, Session, account_id(Access)),
-            {ok, iolist_to_binary(json:encode(maps:with(
-                [<<"access">>, <<"projectId">>, <<"email">>], Access)))};
+            Token = maps:get(<<"access">>, Access),
+            Project = maps:get(<<"projectId">>, Access, <<>>),
+            Email = maps:get(<<"email">>, Access, <<>>),
+            {ok, {access, Token, Project, Email}};
         {error, _} -> first_usable(Rest, Path, Session)
     end.
 
@@ -393,8 +395,7 @@ refresh(Home) ->
 reload(Home) ->
     try
         case access(Home) of
-            {ok, Access} ->
-                #{<<"access">> := Token} = json:decode(Access),
+            {ok, {access, Token, _, _}} ->
                 Version = manifest_version(),
                 case fetch_models(Token, Version) of
                     {ok, Models, Renamed} ->
