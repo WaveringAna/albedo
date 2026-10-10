@@ -9,7 +9,7 @@ It is enabled by default and contributes no model tools and no prompt context.
 
 ## cache
 
-The catalog is cached at `$ALBEDO_HOME/models.json` (default `~/.albedo/models.json`). Albedo refreshes it when it is missing or older than the refresh window, in the background, and writes it by rename so a partial download is never readable. A failed fetch keeps the previous cache. The cached JSON keeps only the fields used by lookups and lists. Fetching, revision caching, and the persisted reduced index stay in `harness/extensions/models/albedo_models.erl`.
+The catalog is cached at `$ALBEDO_HOME/models.json` (default `~/.albedo/models.json`). Albedo refreshes it when it is missing or older than the refresh window, in the background, and writes it by rename so a partial download is never readable. The warm runs in its own process, spawned by the models initialiser when the runtime starts and never waited on: its settings read may queue 20s on the home settings lock, which the runtime's 10s start ack must not sit behind. A crash in it is not an install failure, so it does not quarantine the extension. Every lookup, list, and `/reload models` refreshes the cache again. A failed fetch keeps the previous cache. The cached JSON keeps only the fields used by lookups and lists. Fetching, revision caching, and the persisted reduced index stay in `harness/extensions/models/albedo_models.erl`.
 
 ```json
 { "models": { "url": "https://models.dev/api.json", "refreshHours": 24 } }

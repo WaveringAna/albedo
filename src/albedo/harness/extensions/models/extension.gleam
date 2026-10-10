@@ -6,6 +6,7 @@ import albedo/harness/extension
 import albedo/harness/extensions/models/catalog.{type LookupError, MissingModel}
 import albedo/harness/settings
 import gleam/dynamic/decode
+import gleam/erlang/process
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
@@ -61,7 +62,11 @@ pub fn extension() -> extension.Extension {
 }
 
 fn initialise(_ledger: store.Store) -> Result(Nil, String) {
-  refresh()
+  // The warm is opportunistic, so it runs beside the initialiser rather than
+  // inside its ack: its settings read may wait 20s for the home lock, and
+  // runtime.start gives installation 10s. It starts at boot exactly as it
+  // did synchronously, and every lookup, list and reload refreshes again.
+  let _ = process.spawn_unlinked(refresh)
   Ok(Nil)
 }
 

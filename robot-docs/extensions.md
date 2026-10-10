@@ -125,7 +125,9 @@ under the owning extension, not `daemon/migrations/`.
 its tables, then applies that owner's schema callbacks on the serialized store
 connection before proceeding to the next owner. an owner whose initialiser or
 schema callback fails or raises is quarantined rather than stopping the daemon;
-see [broken extensions](#broken-extensions). `runtime.migrate(host, backup)`
+see [broken extensions](#broken-extensions). an initialiser establishes
+storage: work that may wait on the home settings lock (20s) is spawned and not
+awaited, as the models catalog warm is, so the start ack never sits behind it. `runtime.migrate(host, backup)`
 collects and applies data callbacks in registry/plugin order after the daemon's
 core data upgrades and before sessions start. `run(ledger, backup)` returns a
 rewritten-row count. installed-but-disabled extensions still upgrade their
