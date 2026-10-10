@@ -178,7 +178,7 @@ candidate(_, <<"mcp">>, Patch, Docs, _, _) ->
             null -> {maps:remove(Name, Definitions0), maps:remove(Name, Secrets0)};
             _ ->
                 {Definition, Secret} = mcp_candidate(Change, maps:get(Name, Definitions0, #{}), maps:get(Name, Secrets0, #{})),
-                {ok, nil} = albedo_mcp:validate_settings(Name, {some, encode(Definition)}, encode(Secret)),
+                {ok, nil} = albedo_mcp:validate_settings(Name, {some, Definition}, Secret),
                 {Definitions0#{Name => Definition}, Secrets0#{Name => Secret}}
         end
     end, {object(<<"servers">>, MCP), object(<<"mcp">>, Creds)}, object(<<"definitions">>, Patch)),
