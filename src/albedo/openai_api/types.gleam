@@ -66,6 +66,13 @@ pub type ImageLimits {
 /// states none of its own.
 pub const any_images = ImageLimits(max_image_edge, None)
 
+/// Anthropic takes an 8000px image alone, but once a request carries more
+/// than 20 images every one of them, old turns and tool results included,
+/// must fit in 2000px. A working session passes 20 quickly, so that is the
+/// bound an image is held to from the start. A request carries at most 100.
+/// It is Anthropic's rule, so it follows the model family to every route.
+pub const anthropic_images = ImageLimits(max_edge: 2000, max_images: Some(100))
+
 /// Why a provider held to `limits` refuses `image`, or `None` when it takes it.
 pub fn image_refusal(limits: ImageLimits, image: Image) -> Option(String) {
   let #(_, width, height, _) = image_meta(image)

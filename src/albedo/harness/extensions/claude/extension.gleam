@@ -134,15 +134,9 @@ fn resolve(
     },
     fn() { Some(owner) },
     wire.cache_marks,
-    images,
+    types.anthropic_images,
   ))
 }
-
-/// Anthropic takes an 8000px image alone, but once a request carries more
-/// than 20 images every one of them, old turns and tool results included,
-/// must fit in 2000px. A working session passes 20 quickly, so that is the
-/// bound an image is held to from the start. A request carries at most 100.
-const images = types.ImageLimits(max_edge: 2000, max_images: Some(100))
 
 /// `query` searched by the session's Claude account, with the model the
 /// `searchModel` setting names, else the newest listed model.

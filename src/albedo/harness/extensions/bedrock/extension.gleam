@@ -27,11 +27,6 @@ type Config {
   Config(base_url: String, api_key: String)
 }
 
-/// Anthropic's own rule, not Bedrock's: once a request carries more than 20
-/// images, every image in it must fit this edge. The same model family on
-/// Bedrock gets the `claude` extension's declaration.
-const images = types.ImageLimits(2000, Some(100))
-
 pub fn extension() -> extension.Extension {
   extension.Extension(
     "bedrock",
@@ -92,7 +87,7 @@ fn resolve(
       explain,
       fn() { None },
       fn(_) { [] },
-      images,
+      types.anthropic_images,
     ))
   })
 }

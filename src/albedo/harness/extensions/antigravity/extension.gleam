@@ -184,6 +184,10 @@ fn upstream(
     fn(access, error) { explain(home, access, error) },
     // The Google account's email; blank credentials report no account.
     fn(access) { access.email },
+    case catalog.family(model) {
+      catalog.Claude -> types.anthropic_images
+      catalog.Gemini -> types.any_images
+    },
   )
 }
 

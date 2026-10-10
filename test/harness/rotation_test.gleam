@@ -3,6 +3,7 @@
 
 import albedo/clock
 import albedo/harness/accounts
+import albedo/harness/extension as harness_extension
 import albedo/harness/extensions/alibaba/extension as alibaba
 import albedo/harness/extensions/antigravity/extension as antigravity
 import albedo/harness/oauth
@@ -110,6 +111,36 @@ pub fn antigravity_quota_moves_the_request_to_a_sibling_test() -> Nil {
     antigravity.explain(home, last, types.HttpError(429, quota))
   string.contains(message, "quota exhausted") |> should.be_true
   string.contains(message, "no other Google account") |> should.be_true
+  cleanup(root)
+}
+
+/// Claude behind Cloud Code Assist is held to Anthropic's 2000px rule, so an
+/// oversized image is fitted before the request rather than refused after it.
+pub fn antigravity_claude_declares_anthropic_image_limits_test() -> Nil {
+  let #(root, _, home) = fixture()
+  let _ = write(home, "creds.json", google_accounts)
+  let assert [harness_extension.ModelProviderPlugin(provider)] =
+    list.filter(antigravity.extension().plugins, fn(plugin) {
+      case plugin {
+        harness_extension.ModelProviderPlugin(_) -> True
+        _ -> False
+      }
+    })
+  let images = fn(model) {
+    let assert Some(Ok(upstream)) =
+      provider.resolve(harness_extension.ModelContext(
+        home,
+        "image-session",
+        "",
+        "antigravity",
+        model,
+        types.ChatCompletions,
+        None,
+      ))
+    upstream.images
+  }
+  images("claude-sonnet-4-6") |> should.equal(types.anthropic_images)
+  images("gemini-3-flash") |> should.equal(types.any_images)
   cleanup(root)
 }
 

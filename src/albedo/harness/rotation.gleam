@@ -112,7 +112,15 @@ pub fn client_upstream(
   explain: fn(types.Client, types.Error) -> Option(String),
   label: fn(types.Client) -> String,
 ) -> extension.Upstream {
-  upstream(first.base_url, first.protocol, pool, first, explain, label)
+  upstream(
+    first.base_url,
+    first.protocol,
+    pool,
+    first,
+    explain,
+    label,
+    types.any_images,
+  )
 }
 
 /// A non-secret account label for a key-authenticated client: the first
@@ -157,7 +165,8 @@ const waits = [4000, 8000, 15_000, 30_000]
 
 /// An upstream that rotates through `pool` starting from `first`. `explain`
 /// is given the account the failing attempt went to, not necessarily `first`;
-/// `label` names the account that served, without naming its credential.
+/// `label` names the account that served, without naming its credential;
+/// `images` is what the model behind the pool accepts.
 pub fn upstream(
   endpoint: String,
   protocol: types.Protocol,
@@ -165,6 +174,7 @@ pub fn upstream(
   first: account,
   explain: fn(account, types.Error) -> Option(String),
   label: fn(account) -> String,
+  images: types.ImageLimits,
 ) -> extension.Upstream {
   let slot = new_slot()
   extension.Upstream(
@@ -184,7 +194,7 @@ pub fn upstream(
       }
     },
     fn(_) { [] },
-    types.any_images,
+    images,
   )
 }
 
