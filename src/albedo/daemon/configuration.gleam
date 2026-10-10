@@ -2,7 +2,6 @@ import albedo/openai_api/types
 import gleam/dict.{type Dict}
 import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
-import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -89,11 +88,16 @@ fn configured(config: Configuration, name: String) -> Result(Provider, String) {
 }
 
 fn load(home: String) -> Result(Configuration, String) {
-  use bytes <- result.try(
+  use raw <- result.try(
     read_config(home)
-    |> result.replace_error(not_configured),
+    |> result.map_error(fn(error) {
+      case error {
+        Missing -> not_configured
+        Invalid -> invalid_config
+      }
+    }),
   )
-  json.parse_bits(bytes, configuration_decoder())
+  decode.run(raw, configuration_decoder())
   |> result.replace_error(invalid_config)
 }
 
@@ -164,12 +168,17 @@ pub fn settings(
   name: String,
   decoder: decode.Decoder(a),
 ) -> Result(a, String) {
-  use bytes <- result.try(
+  use raw <- result.try(
     read_config(home)
-    |> result.replace_error(not_configured),
+    |> result.map_error(fn(error) {
+      case error {
+        Missing -> not_configured
+        Invalid -> invalid_config
+      }
+    }),
   )
   use root <- result.try(
-    json.parse_bits(bytes, decode.dict(decode.string, decode.dynamic))
+    decode.run(raw, decode.dict(decode.string, decode.dynamic))
     |> result.replace_error(invalid_config),
   )
   let value = case dict.get(root, "providers") {
@@ -180,9 +189,7 @@ pub fn settings(
         dict.get(providers, name)
         |> result.replace_error(not_configured)
       })
-    Error(_) if name == "default" ->
-      json.parse_bits(bytes, decode.dynamic)
-      |> result.replace_error(invalid_config)
+    Error(_) if name == "default" -> Ok(raw)
     Error(_) -> Error(not_configured)
   }
   use value <- result.try(value |> result.replace_error(not_configured))
@@ -197,8 +204,13 @@ pub fn select_default(
   model: String,
 ) -> Result(Nil, String)
 
+type ConfigFile {
+  Missing
+  Invalid
+}
+
 @external(erlang, "albedo_daemon", "read_config")
-fn read_config(home: String) -> Result(BitArray, Nil)
+fn read_config(home: String) -> Result(Dynamic, ConfigFile)
 
 /// Validate profiles at the daemon boundary without reporting secret values.
 pub fn validate_profile(

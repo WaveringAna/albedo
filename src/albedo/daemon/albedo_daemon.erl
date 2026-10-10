@@ -32,13 +32,14 @@ free_port() ->
     {ok, Port} = inet:port(Socket),
     ok = gen_tcp:close(Socket),
     Port.
-%% config.json with each profile's saved apiKey filled in from creds.json. A
-%% file that is not a JSON object is passed on as it is, to fail decoding.
+%% config.json with each profile's saved apiKey filled in from creds.json.
+%% Returns {error, invalid} when config.json is not a valid JSON object,
+%% and {error, missing} when it is absent or unreadable.
 read_config(Home) ->
     case albedo_credentials:config(Home) of
-      {ok,Config} -> {ok,iolist_to_binary(json:encode(Config))};
-      {error,invalid} -> file:read_file(filename:join(Home,<<"config.json">>));
-      {error,_} -> {error,nil}
+      {ok,Config} -> {ok,Config};
+      {error,invalid} -> {error,invalid};
+      {error,_} -> {error,missing}
     end.
 directory(Path) -> filename:pathtype(Path) =:= absolute andalso filelib:is_dir(Path).
 %% The content digest of this daemon's own build: sha256 over the sorted

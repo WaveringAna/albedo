@@ -832,6 +832,60 @@ class SettingsTest(unittest.TestCase):
                         caught.exception.headers["WWW-Authenticate"], "Bearer"
                     )
 
+    # exclusive: corrupt vs missing config.json errors
+    @exclusive
+    def test_corrupt_and_missing_config_file_errors(self):
+        config_path = self.app.home / "config.json"
+        prior = config_path.read_bytes()
+        route = f"/sessions/{operation_id()}"
+        body = {
+            "kind": "new",
+            "workspace": str(self.app.workspace),
+            "provider_profile": self.app.profile,
+        }
+        try:
+            # 1. Non-JSON corrupt content
+            config_path.write_bytes(b"not valid json")
+            with self.assertRaises(urllib.error.HTTPError) as caught:
+                self.app.api(route, body, method="PUT", headers={"If-None-Match": "*"})
+            self.assertEqual(caught.exception.code, 409)
+            self.assertIn(
+                "provider configuration is invalid; run /login",
+                caught.exception.read().decode(),
+            )
+
+            # 2. Valid JSON but not a JSON object
+            config_path.write_bytes(b"[1, 2]")
+            with self.assertRaises(urllib.error.HTTPError) as caught:
+                self.app.api(
+                    f"/sessions/{operation_id()}",
+                    body,
+                    method="PUT",
+                    headers={"If-None-Match": "*"},
+                )
+            self.assertEqual(caught.exception.code, 409)
+            self.assertIn(
+                "provider configuration is invalid; run /login",
+                caught.exception.read().decode(),
+            )
+
+            # 3. Missing config.json
+            config_path.unlink()
+            with self.assertRaises(urllib.error.HTTPError) as caught:
+                self.app.api(
+                    f"/sessions/{operation_id()}",
+                    body,
+                    method="PUT",
+                    headers={"If-None-Match": "*"},
+                )
+            self.assertEqual(caught.exception.code, 409)
+            self.assertIn(
+                "provider is not configured; run /login",
+                caught.exception.read().decode(),
+            )
+        finally:
+            config_path.write_bytes(prior)
+
     def test_busy_session_rejects_settings_before_persistence(self):
         entered, release = threading.Event(), threading.Event()
 
