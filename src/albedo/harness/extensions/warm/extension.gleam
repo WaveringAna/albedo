@@ -49,8 +49,7 @@ type Warmer {
 
 type Message {
   Observed(extension.Session, extension.SessionEvent)
-  /// A ping is due. `latest_ms` is the last moment it still beats the cache's
-  /// expiry with half its margin to spare.
+  /// A ping is due. `latest_ms` is the last moment it still goes out.
   Tick(generation: Int, latest_ms: Int)
 }
 
@@ -201,7 +200,7 @@ fn schedule(
     False -> finished_ms
   }
   let at = anchor + plan.interval_ms
-  let latest = at + { plan.ttl_ms - plan.interval_ms } / 2
+  let latest = latest_ms(at, plan.ttl_ms, plan.interval_ms)
   let delay = int.max(0, at - requests.now())
   let _ = process.send_after(inbox, delay, Tick(warmer.generation, latest))
   Nil
@@ -346,6 +345,24 @@ fn tier_write(entry: Option(cache_ttl.Entry), ttl_seconds: Int) -> Float {
       }
     None -> default_write
   }
+}
+
+/// What a ping needs after it goes out to land before the cache expires: the
+/// request's flight to the provider.
+const landing_ms = 5000
+
+/// Scheduler jitter does not shrink with the TTL, so a tick this late is a
+/// loaded machine, not a sleeping one: the grace never drops below it. Real
+/// TTLs leave tens of seconds; it is the short fixture TTL it is for.
+const jitter_floor_ms = 2000
+
+/// The last moment a ping due at `at` still goes out: the margin the interval
+/// leaves before the cache expires, less the ping's landing time, but at
+/// least the jitter floor. Later than that the cache is probably gone and a
+/// ping would pay for a rewrite; earlier, dropping the tick would let a cache
+/// that is still alive expire.
+pub fn latest_ms(at: Int, ttl_ms: Int, interval_ms: Int) -> Int {
+  at + int.max(ttl_ms - interval_ms - landing_ms, jitter_floor_ms)
 }
 
 /// Ping at the smaller of ten percent and ten seconds under the TTL, so the

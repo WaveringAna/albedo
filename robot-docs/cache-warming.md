@@ -51,7 +51,7 @@ ping at `min(0.9 × ttl, ttl − 10)` seconds after the previous send — from t
 
 a warm cache bills the next turn about `read × cached` input, a cold one about `write × cached` — `write` the matching tier's write multiplier (default 1.0), `read` the entry's read multiplier (default 0.1) — and each ping costs another `read × cached`. `n` pings pay for themselves while `(n + 1) × read ≤ write`, so at most `floor(write / read) − 1` consecutive pings per idle stretch, then it stops and lets the cache go cold: ski rental, with the break-even at Claude's 5-minute tier at 1.25 / 0.1 − 1 = 11 pings, one every 270 s, keeping the cache for about 54 minutes. a write priced under twice the read means no warming. a new turn resets the budget.
 
-a tick that fires late (a sleeping machine, a blocked scheduler) past half the margin left before expiry sends nothing: the cache is probably gone, and a ping would pay for a rewrite.
+a tick that fires late (a sleeping machine, a blocked scheduler) past the margin left before expiry, less 5s for the ping to land (never less than 2s: jitter does not shrink with the TTL), sends nothing: the cache is probably gone, and a ping would pay for a rewrite. inside it the ping goes out, since the cache is still alive to keep: at the 5m tier a tick up to 25s late pings.
 
 warming also stops when:
 
