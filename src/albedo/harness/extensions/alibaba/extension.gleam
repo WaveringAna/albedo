@@ -5,9 +5,7 @@ import albedo/harness/extensions/alibaba/catalog
 import albedo/harness/rotation
 import albedo/openai_api
 import albedo/openai_api/types
-import gleam/dynamic/decode
 import gleam/int
-import gleam/json
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
@@ -73,17 +71,10 @@ fn connect(
   profile: String,
   session: String,
 ) -> Result(types.Client, String) {
-  use encoded <- result.try(native_access(home, profile, session))
-  let decoder = {
-    use base_url <- decode.field("baseUrl", decode.string)
-    use api_key <- decode.field("apiKey", decode.string)
-    decode.success(#(base_url, api_key))
-  }
-  case json.parse(encoded, decoder) {
-    Ok(#(base_url, _)) if base_url == "" -> Error("Alibaba base URL is invalid")
-    Ok(#(base_url, api_key)) ->
-      Ok(openai_api.client(types.ChatCompletions, base_url, api_key))
-    Error(_) -> Error("invalid Alibaba credential response")
+  use #(base_url, api_key) <- result.try(native_access(home, profile, session))
+  case base_url {
+    "" -> Error("Alibaba base URL is invalid")
+    _ -> Ok(openai_api.client(types.ChatCompletions, base_url, api_key))
   }
 }
 
@@ -149,7 +140,7 @@ fn native_access(
   home: String,
   profile: String,
   session: String,
-) -> Result(String, String)
+) -> Result(#(String, String), String)
 
 @external(erlang, "albedo_alibaba", "limited")
 fn native_limited(

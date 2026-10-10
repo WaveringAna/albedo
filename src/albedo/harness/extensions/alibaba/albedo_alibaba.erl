@@ -129,7 +129,7 @@ write_cache(Path, Ids) ->
 
 %% ---- key pool -----------------------------------------------------------
 
-%% The session's key as {"baseUrl", "apiKey"} JSON. Every Alibaba key albedo
+%% The session's key as {BaseUrl, ApiKey}. Every Alibaba key albedo
 %% can see is a sibling: other alibaba profiles, creds.json's "alibaba"
 %% account entry or list, and the environment. The key this profile would
 %% use on its own comes first; limited keys go last.
@@ -140,7 +140,7 @@ access(Home0, Profile0, Session0) ->
         Keys ->
             [First | _] = albedo_accounts:order(?SCOPE, Keys, Session, fun id/1),
             albedo_accounts:remember(?SCOPE, Session, id(First)),
-            {ok, iolist_to_binary(json:encode(maps:with([<<"baseUrl">>, <<"apiKey">>], First)))}
+            {ok, {maps:get(<<"baseUrl">>, First), maps:get(<<"apiKey">>, First)}}
     end.
 
 %% Records a 429 against the key that received it. Every Alibaba 429 is a
