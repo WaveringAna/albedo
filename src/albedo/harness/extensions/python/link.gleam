@@ -10,9 +10,9 @@
 //// has its reply, so a replayed call never runs twice.
 
 import albedo/daemon/store
+import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
 import gleam/io
-import gleam/json
 import gleam/list
 import gleam/option.{type Option}
 import gleam/result
@@ -56,7 +56,7 @@ pub type Link {
     pending: fn() -> List(#(Int, String)),
     call: fn(String) -> CallState,
     reply: fn(String, Int, String) -> Nil,
-    record: fn(String) -> Nil,
+    record: fn(Dynamic) -> Nil,
     forget: fn() -> Result(Nil, String),
     own: fn(String) -> Nil,
   )
@@ -498,7 +498,7 @@ pub fn reply(
 fn identify(
   storage: store.Store,
   record: Record,
-  fields: String,
+  fields: Dynamic,
 ) -> Result(Nil, String) {
   let decoder = {
     use pid <- decode.optional_field(
@@ -520,7 +520,7 @@ fn identify(
     decode.success(#(pid, pgid, leader, epoch))
   }
   use #(pid, pgid, leader, epoch) <- result.try(
-    json.parse(fields, decoder)
+    decode.run(fields, decoder)
     |> result.replace_error("invalid kernel identity"),
   )
   store.write(

@@ -580,8 +580,8 @@ hello(Hello, S0) ->
         #{kack := Ack} -> [write_envelope(S, Seq, Frame) || {Seq, Frame} <- link_pending(S), Seq > Ack]
     end,
     Target = target_of(Hello),
-    link_record(S, #{pid => maps:get(pid, Target), pgid => maps:get(pgid, Target),
-                     leader => maps:get(leader, Target), epoch => maps:get(<<"epoch">>, Hello, 0)}),
+    link_record(S, #{<<"pid">> => maps:get(pid, Target), <<"pgid">> => maps:get(pgid, Target),
+                     <<"leader">> => maps:get(leader, Target), <<"epoch">> => maps:get(<<"epoch">>, Hello, 0)}),
     Jobs = [Job || Job <- maps:get(<<"jobs">>, Hello, []), is_map(Job)],
     S1 = lists:foldl(fun track/2, S#{target => Target}, Jobs),
     Cells = case maps:get(<<"cells">>, Hello, 0) of
@@ -751,7 +751,7 @@ link_call(S = #{link := {link, _, _, _, Call, _, _, _, _}}, Id) ->
     end.
 link_reply(S = #{link := {link, _, _, _, _, Reply, _, _, _}}, Id, Seq, Frame) -> guarded(S, fun() -> Reply(Id, Seq, Frame) end).
 link_record(S = #{link := {link, _, _, _, _, _, Record, _, _}}, Fields) ->
-    guarded(S, fun() -> Record(iolist_to_binary(json:encode(maps:filter(fun(_, V) -> V =/= nil end, Fields)))) end).
+    guarded(S, fun() -> Record(maps:filter(fun(_, V) -> V =/= nil end, Fields)) end).
 link_forget(S = #{link := {link, _, _, _, _, _, _, Forget, _}}) -> guarded(S, Forget).
 link_own(S = #{link := {link, _, _, _, _, _, _, _, Own}}, Groups) -> guarded(S, fun() -> Own(iolist_to_binary(Groups)) end).
 
