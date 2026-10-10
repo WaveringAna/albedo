@@ -21,7 +21,7 @@
       "read": 0.1,
       "evidence": "documented",
       "source": "https://code.claude.com/docs/en/prompt-caching",
-      "note": "Claude OAuth. Claude Code writes the main conversation at 1h on a subscription and 5m once on usage credits; albedo's own marks are in each ledger row. Lifetime counts from request start, so streaming time uses it up.",
+      "note": "Claude OAuth. Albedo's Claude requests use the 1h cache-write TTL for subscription and usage-credit paths; the provider still reports 5m writes for other clients. Lifetime counts from request start, so streaming time uses it up.",
       "checked": "2026-09-28"
     },
     {

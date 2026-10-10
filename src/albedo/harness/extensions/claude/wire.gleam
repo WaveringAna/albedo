@@ -521,11 +521,11 @@ fn image_block(files: Files, image: types.Image, cache: Bool) -> Json {
   ])
 }
 
-/// The stable head (tools, system) is cached for an hour; the moving tail
-/// takes Anthropic's default five minutes.
+/// Claude cache writes use the one-hour TTL for both stable and moving
+/// prefixes.
 const head_ttl_seconds = 3600
 
-const tail_ttl_seconds = 300
+const tail_ttl_seconds = 3600
 
 /// The prefixes `encode` marks for caching: through the last tool, through
 /// the system prompt, and through the last input unless it is a replayed
@@ -571,7 +571,13 @@ fn mark_last(items: List(a), mapper: fn(a, Bool) -> b) -> List(b) {
 }
 
 fn tail_cache() -> #(String, Json) {
-  #("cache_control", json.object([#("type", json.string("ephemeral"))]))
+  #(
+    "cache_control",
+    json.object([
+      #("type", json.string("ephemeral")),
+      #("ttl", json.string("1h")),
+    ]),
+  )
 }
 
 /// Albedo MCP tool names need Claude Code's MCP namespace on OAuth requests.

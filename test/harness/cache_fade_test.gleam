@@ -17,12 +17,12 @@ fn temporary_database() -> String
 @external(erlang, "albedo_runtime_test_support", "cleanup")
 fn cleanup(path: String) -> Nil
 
-/// The marks Claude requests carry: the tools and system prompt for an
-/// hour, the moving tail for five minutes.
+/// The marks Claude requests carry: tools, system prompt, and moving tail
+/// all use the one-hour TTL.
 const marks = [
   types.CacheMark(types.ToolsSpan, 3600),
   types.CacheMark(types.SystemSpan, 3600),
-  types.CacheMark(types.InputSpan(3), 300),
+  types.CacheMark(types.InputSpan(3), 3600),
 ]
 
 fn claude() -> cache_ttl.Entry {
@@ -66,30 +66,20 @@ fn fade(
 
 pub fn the_tail_expires_into_the_measured_head_test() -> Nil {
   // The head is read whole with a cached tail after it, as on a fork or a
-  // rewound branch: once the tail's five minutes pass, only the head the
+  // rewound branch: after the one-hour tail expires, only the head the
   // ledger measured is left to read, counted from the send.
   fade(usage(25_000, 3000, 0), fn() { Some(20_000) })
-  |> should.equal(
-    Some(
-      Fade(1000, True, [Step(300_000, Some(20_000)), Step(3_600_000, Some(0))]),
-    ),
-  )
+  |> should.equal(Some(Fade(1000, True, [Step(3_600_000, Some(0))])))
   // No call has measured the head: what survives the tail is unknown.
   fade(usage(25_000, 3000, 0), fn() { None })
-  |> should.equal(
-    Some(Fade(1000, True, [Step(300_000, None), Step(3_600_000, Some(0))])),
-  )
+  |> should.equal(Some(Fade(1000, True, [Step(3_600_000, Some(0))])))
 }
 
 pub fn a_call_that_writes_the_head_keeps_all_it_read_test() -> Nil {
   // A changed system prompt: the tools were read, the rest of the head
-  // written, so every token read survives the tail, whatever the ledger says.
+  // written, so every token read survives the one-hour tail.
   fade(usage(8000, 5000, 14_000), fn() { panic as "the call measured itself" })
-  |> should.equal(
-    Some(
-      Fade(1000, True, [Step(300_000, Some(8000)), Step(3_600_000, Some(0))]),
-    ),
-  )
+  |> should.equal(Some(Fade(1000, True, [Step(3_600_000, Some(0))])))
 }
 
 pub fn the_ledger_measures_a_head_across_sessions_test() -> Nil {
