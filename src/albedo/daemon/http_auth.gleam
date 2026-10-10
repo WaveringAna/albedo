@@ -12,7 +12,8 @@ import albedo/harness/runtime/catalog as session_catalog
 import albedo/harness/settings as extension_settings
 import gleam/bit_array
 import gleam/bytes_tree
-import gleam/dict
+import gleam/dict.{type Dict}
+import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
 import gleam/erlang/process.{type Subject}
 import gleam/http.{Get, Patch, Put}
@@ -20,7 +21,7 @@ import gleam/http/request
 import gleam/http/response
 import gleam/json
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 import gleam/result
 import gleam/string
@@ -342,8 +343,8 @@ pub fn account(
 fn resolve_global_capabilities(
   home: String,
   host: runtime.Runtime,
-  submitted: String,
-) -> Result(String, String) {
+  submitted: Dynamic,
+) -> Result(Dict(String, Dict(String, Option(Bool))), String) {
   let decoder = {
     use id <- decode.field("catalog_session_id", decode.string)
     use revision <- decode.field("catalog_revision", decode.string)
@@ -354,7 +355,7 @@ fn resolve_global_capabilities(
     decode.success(#(id, revision, choices))
   }
   use #(id, revision, choices) <- result.try(
-    json.parse(submitted, decoder)
+    decode.run(submitted, decoder)
     |> result.replace_error("invalid capability choices"),
   )
   use catalog <- result.try(session_catalog.inspect(
@@ -394,21 +395,20 @@ fn resolve_global_capabilities(
     }),
   )
   Ok(
-    json.object(
+    dict.from_list(
       list.map(["skills", "instructions", "mcp"], fn(kind) {
         #(
           kind,
-          json.object(
+          dict.from_list(
             list.filter_map(resolved, fn(change) {
               case change.0 == kind {
-                True -> Ok(#(change.1, json.nullable(change.2, json.bool)))
+                True -> Ok(#(change.1, change.2))
                 False -> Error(Nil)
               }
             }),
           ),
         )
       }),
-    )
-    |> json.to_string,
+    ),
   )
 }

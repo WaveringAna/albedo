@@ -153,16 +153,16 @@ candidate(_, <<"ui">>, Patch, Docs, _, _) ->
     {Docs#{<<"picker.json">> => maps:merge(Picker, Patch)}, <<"not_applicable">>};
 candidate(_, <<"capabilities">>, Patch, Docs, Resolve, _) ->
     fields(Patch, [<<"catalog_session_id">>, <<"catalog_revision">>, <<"choices">>]),
-    ResolvedJSON = case Resolve(encode(Patch)) of
+    Resolved = case Resolve(Patch) of
         {ok, Value} -> Value;
         {error, Detail} -> refusal(409, <<"catalog_changed">>, Detail)
     end,
-    Resolved = json:decode(ResolvedJSON),
     Caps = maps:get(<<"capabilities.json">>, Docs), Global = object(<<"global">>, Caps),
     Next = maps:fold(fun(Kind, Changes, Acc) ->
-        case map_size(Changes) of
+        NativeChanges = maps:map(fun(_, {some, Bool}) -> Bool; (_, none) -> null end, Changes),
+        case map_size(NativeChanges) of
             0 -> Acc;
-            _ -> Acc#{Kind => boolean_choices(object(Kind, Acc), Changes)}
+            _ -> Acc#{Kind => boolean_choices(object(Kind, Acc), NativeChanges)}
         end
     end, Global, Resolved),
     Updated = Caps#{<<"global">> => Next}, albedo_settings_store:validate_caps(Updated),

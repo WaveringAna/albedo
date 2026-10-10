@@ -1,6 +1,8 @@
 //// Daemon-owned persisted settings. Wire values are decoded before mutation.
 
 import albedo/harness/oauth
+import gleam/dict.{type Dict}
+import gleam/dynamic.{type Dynamic}
 import gleam/option.{type Option}
 
 pub type Group {
@@ -52,7 +54,8 @@ pub fn patch_group(
   patch: String,
   providers: List(String),
   logins: List(oauth.Login),
-  resolve: fn(String) -> Result(String, String),
+  resolve: fn(Dynamic) ->
+    Result(Dict(String, Dict(String, Option(Bool))), String),
   defaults: fn(List(#(String, Bool)), List(#(String, Option(Bool)))) ->
     Result(List(#(String, Bool)), #(Int, String, String)),
 ) -> Result(String, #(Int, String, String))
