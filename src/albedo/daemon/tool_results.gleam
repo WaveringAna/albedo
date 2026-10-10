@@ -8,6 +8,7 @@ import gleam/int
 import gleam/list
 import gleam/option.{Some}
 import gleam/order
+import gleam/set
 
 /// Scan state: each row's sort key and index (newest first), the block of
 /// consecutive provider items being read and whether only its results have
@@ -119,4 +120,52 @@ fn step(scan: Scan, input: types.Input, index: Int) -> Scan {
       }
     _ -> Scan(..scan, keys: kept, in_block: False, in_run: False)
   }
+}
+
+/// The result a request carries for a call whose output nothing carries.
+pub const unpaired_result = "interrupted, no output"
+
+/// Every call id the provider items in `inputs` make, once each, in order.
+fn declared_calls(inputs: List(types.Input)) -> List(String) {
+  let #(ids, _) =
+    list.flat_map(inputs, message_content.calls)
+    |> list.fold(#([], set.new()), fn(seen, call) {
+      case set.contains(seen.1, call.id) {
+        True -> seen
+        False -> #([call.id, ..seen.0], set.insert(seen.1, call.id))
+      }
+    })
+  list.reverse(ids)
+}
+
+/// `inputs` in chronological order, paired for a request: every call the
+/// provider items make carries exactly one tool result immediately after the
+/// block that made it. A late result moves there, a call no result answers
+/// gets `unpaired_result`, and results whose call nothing carries — dropped
+/// by a projection, or a second answer to one call — stay out of the request:
+/// providers reject a tool_use without its tool_result and a tool_result
+/// without its tool_use alike. `settle` is the order; this is the pairing.
+pub fn pair(inputs: List(types.Input)) -> List(types.Input) {
+  let declared = declared_calls(inputs)
+  let known = set.from_list(declared)
+  let #(kept, answered_ids) =
+    list.fold(inputs, #([], set.new()), fn(scan, input) {
+      case input {
+        types.ToolOutput(id, _, _) ->
+          case set.contains(known, id) && !set.contains(scan.1, id) {
+            True -> #([input, ..scan.0], set.insert(scan.1, id))
+            False -> scan
+          }
+        _ -> #([input, ..scan.0], scan.1)
+      }
+    })
+  let missing =
+    list.filter(declared, fn(id) { !set.contains(answered_ids, id) })
+  settle(
+    list.append(
+      list.reverse(kept),
+      list.map(missing, fn(id) { types.ToolOutput(id, unpaired_result, []) }),
+    ),
+    fn(input) { input },
+  )
 }

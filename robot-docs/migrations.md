@@ -124,6 +124,16 @@ the upgraded schema. embedding hosts call
   `submission_events`, `continuation_markers`, `provider_requests`,
   `operations.committed_seq`, and `transcript_quarantine` with them. LCM source
   ranges are not remapped.
+- the request builder pairs the same way at the request boundary:
+  `tool_results.pair` gives every call a request's provider items make exactly
+  one tool result right after the block that made it. A late result moves
+  there, a call no result answers gets `tool_results.unpaired_result`
+  ("interrupted, no output"), and a result whose call nothing carries — one a
+  projection dropped, or a second answer to a call already answered — stays
+  out of the request: providers reject a `tool_use` without its `tool_result`
+  and a `tool_result` without its `tool_use` alike. The transcript is left
+  as it is: the pairing is applied again to every request, so a session an
+  older fold left unpaired sends valid history without a repair.
 - `transcript_pending_class` indexes unclassified sequence IDs.
   `transcript_users` indexes `(session,seq)` for user and image-fit rows;
   `transcript_fits` indexes `(session,seq)` for image-fit rows alone. Completed
