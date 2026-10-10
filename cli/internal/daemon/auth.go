@@ -14,13 +14,13 @@ import (
 
 type SignIn struct {
 	Provider, Label, Detail, Protocol, Kind string
-	Flows                             []string
-	Fields                            []FormField
+	Flows                                   []string
+	Fields                                  []FormField
 }
 type Account struct {
 	Provider, ID, Label, Detail, Kind string
-	Selected                    bool
-	SelectedByProfiles          []string
+	Selected                          bool
+	SelectedByProfiles                []string
 }
 type SignIns struct {
 	Logins   []SignIn

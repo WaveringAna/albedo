@@ -153,4 +153,3 @@ func TestServiceAccountAndSignInNotesInChoosePicker(t *testing.T) {
 		t.Fatalf("unexpected service sign-in note: %+v", signInItem)
 	}
 }
-
