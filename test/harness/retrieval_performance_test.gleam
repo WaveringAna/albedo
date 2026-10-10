@@ -26,7 +26,12 @@ fn measure(owner: process.Pid, run: fn() -> a) -> #(a, Counts)
 fn pack(input: types.Input) -> BitArray
 
 fn fixture() -> #(runtime.Runtime, store.Store) {
-  let assert Ok(host) = runtime.start(":memory:")
+  // No extensions: this module measures store, search, graph and tool reads
+  // directly, so the default install would put 43 extensions' initialisers
+  // and schema migrations inside runtime.start's 10s start ack for tables
+  // none of the queries touch. The two schemas the queries need are created
+  // below.
+  let assert Ok(host) = runtime.start_with_extensions(":memory:", [])
   let ledger = runtime.ledger(host)
   let assert Ok(_) = conversation.initialise(ledger)
   let assert Ok(_) = graph.initialise(ledger)
