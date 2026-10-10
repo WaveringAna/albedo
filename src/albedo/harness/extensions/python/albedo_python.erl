@@ -18,7 +18,7 @@
 %% and it returns a structured verdict instead of kill(1) exit statuses the
 %% supervisor would have to guess at.
 -module(albedo_python).
--export([start/1, execute/3, interrupt/1, stop/1, detach/1, events/1, alive/1, os_pid/1, job_count/1, stop_job/2, local_paths/0, paths/0, grace/0, rebind/2, clean_environment/0]).
+-export([start/1, execute/4, interrupt/1, stop/1, detach/1, events/1, alive/1, os_pid/1, job_count/1, stop_job/2, local_paths/0, paths/0, grace/0, rebind/2, clean_environment/0]).
 -export([stale/1, mark_stale/2]).
 -export([observation/1, stop_recorded/2, stop_jobs/1]).
 
@@ -277,7 +277,7 @@ detached_start(S, Parent, Ref) ->
 startup_fail(S, Parent, Ref, Error) ->
     reap_start(S), Parent ! {Ref, {error, Error}}.
 
-execute(Pid, Data, Timeout) -> call(Pid, {execute, Data, Timeout}).
+execute(Pid, Id, Data, Timeout) -> call(Pid, {execute, Id, Data, Timeout}).
 
 %% Background jobs whose groups are still owned: local job groups plus the
 %% remote jobs the remote plugin reported through "jobs" frames, plus running
@@ -378,12 +378,11 @@ rebind(Pid, Host) when is_function(Host, 1) -> call(Pid, {rebind, Host}).
 
 loop(S = #{port := Port, active := Active}) ->
     receive
-        {call, From, Ref, {execute, Data, Timeout}} when Active =:= none ->
+        {call, From, Ref, {execute, Id, Data, Timeout}} when Active =:= none ->
             Timer = erlang:send_after(Timeout, self(), {deadline, Ref}),
             Caller = monitor(process, From),
-            Id = maps:get(<<"id">>, json:decode(Data)),
             loop((send_encoded(Data, S))#{active => {From, Ref, Timer, Caller, Id}});
-        {call, From, Ref, {execute, _, _}} ->
+        {call, From, Ref, {execute, _, _, _}} ->
             From ! {Ref, {error, busy}}, loop(S);
         {call, From, Ref, os_pid} ->
             %% A remote kernel's pid means nothing to this machine's ps.

@@ -171,7 +171,7 @@ fn run(
           #("timeout_ms", json.int(timeout_ms)),
         ])
         |> json.to_string
-      use response <- result.try(execute_native(kernel, command, timeout_ms))
+      use response <- result.try(execute_native(kernel, id, command, timeout_ms))
       json.parse(response, outcome_decoder())
       |> result.replace_error(Unavailable("invalid kernel response"))
     }
@@ -181,6 +181,7 @@ fn run(
 @external(erlang, "albedo_python", "execute")
 fn execute_native(
   kernel: Kernel,
+  id: String,
   command: String,
   timeout_ms: Int,
 ) -> Result(String, Error)
@@ -227,7 +228,7 @@ fn state(
       #("path", json.string(path)),
     ])
     |> json.to_string
-  use response <- result.try(execute_native(kernel, command, timeout_ms))
+  use response <- result.try(execute_native(kernel, kind, command, timeout_ms))
   json.parse(response, decode.field("state", saved_decoder(), decode.success))
   |> result.replace_error(Unavailable("invalid kernel response"))
   |> result.flatten
