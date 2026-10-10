@@ -22,6 +22,7 @@ type Account struct {
 
 	// ID Opaque identity. Never infer a resource type or route from its contents.
 	ID    ID     `json:"id"`
+	Kind  string `json:"kind"`
 	Label string `json:"label"`
 
 	// Provider Opaque identity. Never infer a resource type or route from its contents.
@@ -1228,6 +1229,7 @@ type LoginProvider struct {
 
 	// ID Opaque identity. Never infer a resource type or route from its contents.
 	ID    ID     `json:"id"`
+	Kind  string `json:"kind"`
 	Label string `json:"label"`
 }
 

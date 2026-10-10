@@ -67,7 +67,7 @@ pub fn login(endpoints: Endpoints) -> oauth.Login {
     "antigravity",
     "add google antigravity account",
     "oauth · gemini 3, claude",
-    types.ChatCompletions,
+    oauth.Model,
     "google-antigravity",
     oauth.Callback("127.0.0.1", 51_121, "/oauth-callback", False),
     fn(grant) {

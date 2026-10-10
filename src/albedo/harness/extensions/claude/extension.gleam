@@ -56,7 +56,7 @@ fn login() -> oauth.Login {
     "claude",
     "add claude account",
     "oauth · claude pro/max",
-    types.ChatCompletions,
+    oauth.Model,
     "anthropic",
     oauth.Callback("localhost", 53_692, "/callback", True),
     fn(grant) {

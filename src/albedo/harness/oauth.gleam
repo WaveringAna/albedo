@@ -2,11 +2,15 @@
 //// describes its provider; `albedo_oauth` owns the callback listener, the
 //// race with a pasted code, and locked creds.json storage.
 
-import albedo/openai_api/types
 import gleam/dynamic.{type Dynamic}
 import gleam/json.{type Json}
 import gleam/option.{type Option}
 import gleam/uri
+
+pub type LoginKind {
+  Model
+  Service
+}
 
 pub type Login {
   Login(
@@ -14,8 +18,7 @@ pub type Login {
     provider: String,
     label: String,
     detail: String,
-    /// The protocol a profile for this provider is saved with.
-    protocol: types.Protocol,
+    kind: LoginKind,
     /// The creds.json accounts key holding one account object or an array of them.
     store: String,
     callback: Callback,

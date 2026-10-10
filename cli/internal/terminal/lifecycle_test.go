@@ -35,7 +35,7 @@ func TestLoginProgramExitCancelsCreationCompletedAfterShutdown(t *testing.T) {
 		case r.URL.Path == "/settings":
 			_ = json.NewEncoder(w).Encode(testwire.Settings())
 		case r.URL.Path == "/auth":
-			_, _ = io.WriteString(w, `{"providers":[{"id":"provider","label":"Provider","detail":"","flows":["browser"],"fields":[]}],"accounts":[]}`)
+			_, _ = io.WriteString(w, `{"providers":[{"id":"provider","label":"Provider","detail":"","kind":"model","flows":["browser"],"fields":[]}],"accounts":[]}`)
 		case strings.HasPrefix(r.URL.Path, "/auth/logins/"):
 			id := strings.TrimPrefix(r.URL.Path, "/auth/logins/")
 			if r.Method == http.MethodDelete {

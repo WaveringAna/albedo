@@ -13,7 +13,7 @@
 -define(CALL_MS, 5000).
 
 %% Login is the Gleam oauth.Login record:
-%% {login, Provider, Label, Detail, Protocol, Store, {callback, Host, Port, Path, Fixed}, Authorize, Exchange, Account}
+%% {login, Provider, Label, Detail, Kind, Store, {callback, Host, Port, Path, Fixed}, Authorize, Exchange, Account}
 start_identified(Home, Id, Provider, Login, Intent) -> http_call({create_identified, Home, Id, Provider, Login, Intent}).
 get_identified(Home, Id, Logins) -> http_call({get_identified, Home, Id, Logins}).
 input_identified(Home, Id, Match, Text, Logins) -> http_call({input_identified, Home, Id, Match, Text, Logins}).
@@ -513,6 +513,7 @@ encode_login(Home, Flow, Logins) ->
 auth_snapshot(Home, Logins) ->
     try locked(Home, fun() ->
         Providers = [#{<<"id">> => element(2, Login), <<"label">> => element(3, Login), <<"detail">> => element(4, Login),
+            <<"kind">> => atom_to_binary(element(5, Login), utf8),
             <<"flows">> => [<<"browser">>, <<"manual">>], <<"fields">> => []} || Login <- Logins],
         {ok, iolist_to_binary(json:encode(#{<<"providers">> => Providers, <<"accounts">> => account_projection(Home, Logins)}))}
     end) catch throw:{http, S, C, D} -> {error, {S,C,D}}; _:_ -> {error, {503, <<"auth_unavailable">>, <<"Provider account storage is unavailable.">>}} end.
@@ -525,7 +526,8 @@ account_projection(Home, Logins) ->
         Next = [begin
             {account, _, Label, Detail, _} = Account(V),
             V#{<<"_albedo_account_id">> => maps:get(<<"_albedo_account_id">>, V, token(16)),
-               <<"_albedo_account_meta">> => #{<<"provider">> => element(2, Login), <<"label">> => bounded(Label,256), <<"detail">> => bounded(Detail,4096)}}
+               <<"_albedo_account_meta">> => #{<<"provider">> => element(2, Login), <<"label">> => bounded(Label,256), <<"detail">> => bounded(Detail,4096),
+                   <<"kind">> => atom_to_binary(element(5, Login), utf8)}}
         end || V <- Values],
         albedo_credentials:put_values(Acc, Store, Next)
     end, Accounts, Logins),

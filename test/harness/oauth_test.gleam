@@ -1,7 +1,6 @@
 // OAuth callback races, state validation, and fixed-port contention are timing-sensitive and cannot be scripted as an E2E model turn.
 import albedo/daemon/http_api
 import albedo/harness/oauth
-import albedo/openai_api/types
 import gleam/dynamic
 import gleam/dynamic/decode
 import gleam/erlang/process
@@ -17,7 +16,7 @@ fn fake(callback: oauth.Callback) -> oauth.Login {
     "fake",
     "add fake account",
     "",
-    types.ChatCompletions,
+    oauth.Model,
     "fake-accounts",
     callback,
     fn(grant) {
@@ -118,6 +117,19 @@ pub fn a_pasted_redirect_races_the_callback_test() -> Nil {
   // Terminal outcome remains durable after the flow process has stopped.
   let assert Ok(retained) = oauth.get_identified(home, id, [login])
   assert retained == complete
+  let assert Ok(snapshot) = oauth.auth_snapshot(home, [login])
+  let assert Ok([provider_kind]) =
+    json.parse(
+      snapshot,
+      decode.at(["providers"], decode.list(decode.at(["kind"], decode.string))),
+    )
+  assert provider_kind == "model"
+  let assert Ok([account_kind]) =
+    json.parse(
+      snapshot,
+      decode.at(["accounts"], decode.list(decode.at(["kind"], decode.string))),
+    )
+  assert account_kind == "model"
   cleanup(root)
 }
 

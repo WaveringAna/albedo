@@ -7,6 +7,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -214,6 +216,22 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 		switch msg.State {
 		case "complete":
 			m.LoginID = ""
+			for _, account := range msg.Accounts {
+				if i := slices.IndexFunc(m.Accounts, func(a daemon.Account) bool { return a.ID == account.ID }); i >= 0 {
+					m.Accounts[i] = account
+				} else {
+					m.Accounts = append(m.Accounts, account)
+				}
+			}
+			if login, ok := m.signInFor(m.Provider); (ok && login.Kind == "service") || (len(msg.Accounts) > 0 && msg.Accounts[0].Kind == "service") {
+				label := m.Provider
+				if ok && login.Label != "" {
+					label = login.Label
+				}
+				m.Status = fmt.Sprintf("Signed in to %s!", label)
+				m.Error = ""
+				return m, m.backToChoose()
+			}
 			if len(msg.Accounts) > 0 {
 				m.Draft.AccountID = &msg.Accounts[0].ID
 			}

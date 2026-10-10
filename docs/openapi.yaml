@@ -8663,12 +8663,16 @@ components:
         detail:
           type: string
           maxLength: 4096
+        kind:
+          type: string
+          enum: [model, service]
+          default: model
         selected_by_profiles:
           type: array
           items:
             $ref: '#/components/schemas/ID'
           maxItems: 200
-      required: [id, provider, label, detail, selected_by_profiles]
+      required: [id, provider, label, detail, kind, selected_by_profiles]
       additionalProperties: false
     LoginProvider:
       type: object
@@ -8681,6 +8685,10 @@ components:
         detail:
           type: string
           maxLength: 4096
+        kind:
+          type: string
+          enum: [model, service]
+          default: model
         flows:
           type: array
           items:
@@ -8692,7 +8700,7 @@ components:
           items:
             $ref: '#/components/schemas/FormField'
           maxItems: 100
-      required: [id, label, detail, flows, fields]
+      required: [id, label, detail, kind, flows, fields]
       additionalProperties: false
     Auth:
       type: object

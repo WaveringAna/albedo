@@ -193,6 +193,8 @@ func (m LoginModel) footer(width int) string {
 	status := ""
 	if m.CatalogNote != "" && (m.Step == StepModels || m.Step == StepOAuthModels) {
 		status = DefaultStyles.Faint.Render(m.CatalogNote)
+	} else if m.Status != "" && m.Step == StepChoose {
+		status = DefaultStyles.Faint.Render(m.Status)
 	}
 	return footerLine(width, m.hints(), status, false)
 }

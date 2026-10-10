@@ -13,12 +13,12 @@ import (
 )
 
 type SignIn struct {
-	Provider, Label, Detail, Protocol string
+	Provider, Label, Detail, Protocol, Kind string
 	Flows                             []string
 	Fields                            []FormField
 }
 type Account struct {
-	Provider, ID, Label, Detail string
+	Provider, ID, Label, Detail, Kind string
 	Selected                    bool
 	SelectedByProfiles          []string
 }
@@ -33,7 +33,7 @@ type SignInStatus struct {
 }
 
 func accountValue(w protocol.Account) Account {
-	return Account{Provider: w.Provider, ID: w.ID, Label: w.Label, Detail: w.Detail, Selected: len(w.SelectedByProfiles) > 0, SelectedByProfiles: w.SelectedByProfiles}
+	return Account{Provider: w.Provider, ID: w.ID, Label: w.Label, Detail: w.Detail, Kind: w.Kind, Selected: len(w.SelectedByProfiles) > 0, SelectedByProfiles: w.SelectedByProfiles}
 }
 func SignInList(ctx context.Context, conn *Connection) (SignIns, error) {
 	var result SignIns
@@ -47,7 +47,7 @@ func SignInList(ctx context.Context, conn *Connection) (SignIns, error) {
 		}
 		result = SignIns{Logins: []SignIn{}, Accounts: []Account{}}
 		for _, p := range w.Providers {
-			result.Logins = append(result.Logins, SignIn{Provider: p.ID, Label: p.Label, Detail: p.Detail, Flows: p.Flows, Fields: p.Fields})
+			result.Logins = append(result.Logins, SignIn{Provider: p.ID, Label: p.Label, Detail: p.Detail, Kind: p.Kind, Flows: p.Flows, Fields: p.Fields})
 		}
 		for _, a := range w.Accounts {
 			result.Accounts = append(result.Accounts, accountValue(a))

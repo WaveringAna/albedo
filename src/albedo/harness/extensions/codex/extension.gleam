@@ -116,7 +116,7 @@ fn login() -> oauth.Login {
     "codex",
     "add chatgpt codex account",
     "oauth · supports multiple accounts",
-    types.Responses,
+    oauth.Model,
     "openai-codex",
     oauth.Callback("localhost", 1455, "/auth/callback", True),
     fn(grant) {

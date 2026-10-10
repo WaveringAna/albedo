@@ -60,13 +60,21 @@ func (m *LoginModel) buildChoosePicker() {
 		items = append(items, PickerItem{ID: "use:" + name, Label: name, Detail: detail, Note: "a saved provider profile; enter makes it the one new sessions use"})
 	}
 	for index, account := range m.Accounts {
-		items = append(items, PickerItem{ID: "account:" + strconv.Itoa(index), Label: account.Label, Detail: account.Detail, Note: "a signed-in account; enter picks the profile it runs under"})
+		note := "a signed-in account; enter picks the profile it runs under"
+		if account.Kind == "service" {
+			note = "service account for tools; its tokens stay in creds.json"
+		}
+		items = append(items, PickerItem{ID: "account:" + strconv.Itoa(index), Label: account.Label, Detail: account.Detail, Note: note})
 	}
 	for _, p := range customProviders {
 		items = append(items, PickerItem{ID: p.ID, Label: p.Label, Detail: p.Detail, Note: "creates or updates a provider profile"})
 	}
 	for _, login := range m.SignIns {
-		items = append(items, PickerItem{ID: "signin:" + login.Provider, Label: login.Label, Detail: login.Detail, Note: "signs in through the daemon; its tokens stay in the daemon's credential store"})
+		note := "signs in through the daemon; its tokens stay in the daemon's credential store"
+		if login.Kind == "service" {
+			note = "service sign-in for tools; its tokens stay in creds.json"
+		}
+		items = append(items, PickerItem{ID: "signin:" + login.Provider, Label: login.Label, Detail: login.Detail, Note: note})
 	}
 	m.ChoosePicker = newLoginPick("Provider for new sessions", items, "use:"+m.Profiles.Active, m.Width, m.Height)
 }
@@ -139,6 +147,10 @@ func (m LoginModel) selectAccountCmd(account daemon.Account) tea.Cmd {
 }
 
 func (m *LoginModel) chooseAccount(account daemon.Account) tea.Cmd {
+	if account.Kind == "service" {
+		m.Status = fmt.Sprintf("%s is ready for use with tools; ctrl+d removes it", account.Label)
+		return nil
+	}
 	var names []string
 	for name, profile := range m.Profiles.Providers {
 		if profile.Extension == account.Provider {

@@ -5,6 +5,7 @@
 package tui
 
 import (
+	"albedo/cli/internal/daemon"
 	"strings"
 	"testing"
 
@@ -77,3 +78,79 @@ func TestLoginKeyEntryTakesLettersAsInput(t *testing.T) {
 		t.Fatalf("typing into the key step went elsewhere: %q on step %v", m.TextInput.Value(), m.Step)
 	}
 }
+func TestServiceSignInCompletionSkipsModelsAndReturnsToChoose(t *testing.T) {
+	m := loginModel(120, 30)
+	serviceLogin := daemon.SignIn{Provider: "colab", Label: "Google Colab", Kind: "service", Flows: []string{"browser"}}
+	m.SignIns = append(m.SignIns, serviceLogin)
+	m.startSignIn(serviceLogin)
+
+	serviceAcc := daemon.Account{ID: "acc-colab", Provider: "colab", Label: "colab-user@example.com", Kind: "service"}
+	m, _ = m.Update(signInStatusMsg{
+		State:    "complete",
+		Accounts: []daemon.Account{serviceAcc},
+		Gen:      m.Generation,
+	})
+
+	if m.Step != StepChoose {
+		t.Fatalf("service login completion did not return to StepChoose, got: %v", m.Step)
+	}
+	if !strings.Contains(m.Status, "Signed in to Google Colab") {
+		t.Fatalf("unexpected status after service login completion: %q", m.Status)
+	}
+	if m.Error != "" {
+		t.Fatalf("unexpected error after service login completion: %q", m.Error)
+	}
+	found := false
+	for _, acc := range m.Accounts {
+		if acc.ID == "acc-colab" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("new service account was not stored in model accounts")
+	}
+}
+
+func TestServiceAccountSelectionDoesNotDraftModelProfile(t *testing.T) {
+	m := loginModel(120, 30)
+	serviceAcc := daemon.Account{ID: "acc-colab", Provider: "colab", Label: "colab-user@example.com", Kind: "service"}
+	m.Accounts = append(m.Accounts, serviceAcc)
+	m.buildChoosePicker()
+
+	cmd := m.chooseAccount(serviceAcc)
+	if cmd != nil {
+		t.Fatalf("expected nil cmd for service account choose, got %v", cmd)
+	}
+	if m.Step != StepChoose {
+		t.Fatalf("expected to remain on StepChoose, got %v", m.Step)
+	}
+	if !strings.Contains(m.Status, "ready for use with tools") {
+		t.Fatalf("unexpected status: %q", m.Status)
+	}
+}
+
+func TestServiceAccountAndSignInNotesInChoosePicker(t *testing.T) {
+	m := loginModel(120, 30)
+	m.SignIns = append(m.SignIns, daemon.SignIn{Provider: "colab", Label: "Google Colab", Kind: "service"})
+	m.Accounts = append(m.Accounts, daemon.Account{ID: "acc-colab", Provider: "colab", Label: "colab-user@example.com", Kind: "service"})
+	m.buildChoosePicker()
+
+	var accountItem, signInItem *PickerItem
+	for i := range m.ChoosePicker.items {
+		item := &m.ChoosePicker.items[i]
+		if strings.HasPrefix(item.ID, "account:") && item.Label == "colab-user@example.com" {
+			accountItem = item
+		}
+		if item.ID == "signin:colab" {
+			signInItem = item
+		}
+	}
+	if accountItem == nil || accountItem.Note != "service account for tools; its tokens stay in creds.json" {
+		t.Fatalf("unexpected service account note: %+v", accountItem)
+	}
+	if signInItem == nil || signInItem.Note != "service sign-in for tools; its tokens stay in creds.json" {
+		t.Fatalf("unexpected service sign-in note: %+v", signInItem)
+	}
+}
+

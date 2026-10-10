@@ -6,6 +6,7 @@ import albedo/harness/extensions/bedrock/extension as bedrock
 import albedo/harness/extensions/browser/extension as browser
 import albedo/harness/extensions/claude/extension as claude
 import albedo/harness/extensions/codex/extension as codex
+import albedo/harness/extensions/colab/extension as colab
 import albedo/harness/extensions/commands/extension as commands
 import albedo/harness/extensions/exa/extension as exa
 import albedo/harness/extensions/files/extension as files
@@ -81,6 +82,7 @@ fn installed() -> Config {
       notes.extension(),
       mcp.configured_extension(),
       remote.extension(),
+      colab.extension(),
       browser.extension(),
       view.extension(),
       proxy.extension(),
