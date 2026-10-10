@@ -6,6 +6,7 @@ Use temporary suites and the real runner processes, without starting a daemon.
 
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -15,6 +16,19 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class TestRunnerTests(unittest.TestCase):
+    def test_the_timed_modules_the_gleam_runner_runs_alone_still_exist(self):
+        # The runner skips a name it does not find, so a renamed module would
+        # quietly rejoin the parallel burst whose load its windows cannot take.
+        source = (ROOT / "test/albedo_test_runner.erl").read_text()
+        match = re.search(r"-define\(TIMED, \[(.*?)\]\)", source, re.S)
+        assert match, "the runner no longer names its timed modules"
+        names = re.findall(r"'([^']+)'", match.group(1))
+        self.assertTrue(names)
+        for name in names:
+            with self.subTest(name):
+                path = ROOT / "test" / (name.replace("@", "/") + ".gleam")
+                self.assertTrue(path.is_file(), f"{path} no longer exists")
+
     def test_python_runner_rejects_empty_files_and_preserves_failure_exit(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "example_test.py"
