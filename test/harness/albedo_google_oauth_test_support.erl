@@ -12,7 +12,7 @@ refresh(AccountsJson, {Status, Body}) ->
     {Url, Await} = serve(Status, Body),
     Path = albedo_credentials:creds_path(Home),
     {ok, #{<<"google-colab">> := [First | _]}} = albedo_credentials:accounts(Path),
-    Result = case albedo_google_oauth:ensure(?APP#{token_url => Url}, Path, First) of
+    Result = case albedo_google_oauth:ensure(maps:put(token_url, Url, ?APP), Path, First) of
         {ok, #{<<"access">> := Access}} -> {ok, Access};
         {error, invalid} -> {error, <<"invalid">>};
         {error, _} = Error -> Error
