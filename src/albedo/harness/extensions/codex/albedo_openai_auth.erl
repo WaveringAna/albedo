@@ -272,12 +272,10 @@ summary(Updated, Hit, Until, Lasting) ->
     Limited = [V || V <- Updated, Hit(V)],
     Next = [V || V <- albedo_accounts:order(?SCOPE, Updated, <<>>, fun identity/1),
                  not Hit(V), not albedo_accounts:limited(V, Now)],
-    {ok, iolist_to_binary(json:encode(#{
-        <<"account">> => describe(Limited),
-        <<"until">> => albedo_accounts:local_time(Until),
-        <<"next">> => describe(Next),
-        <<"lasting">> => Lasting
-    }))}.
+    Account = describe(Limited),
+    UntilText = albedo_accounts:local_time(Until),
+    NextText = describe(Next),
+    {ok, {limited, Account, UntilText, NextText, Lasting}}.
 
 describe([]) -> <<>>;
 describe([Credential | _]) ->

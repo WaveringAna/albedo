@@ -49,18 +49,6 @@ pub type Limited {
   Limited(account: String, until: String, next: String, lasting: Bool)
 }
 
-/// Parses a provider's limit JSON describing when an account resets and its sibling.
-pub fn decode_limited(encoded: String) -> Result(Limited, Nil) {
-  let decoder = {
-    use account <- decode.optional_field("account", "", decode.string)
-    use until <- decode.field("until", decode.string)
-    use next <- decode.field("next", decode.string)
-    use lasting <- decode.optional_field("lasting", True, decode.bool)
-    decode.success(Limited(account, until, next, lasting))
-  }
-  json.parse(encoded, decoder) |> result.replace_error(Nil)
-}
-
 /// Marks a successful limit decode against its lasting duration and sibling availability.
 pub fn mark_limit(result: Result(Limited, a)) -> Option(Marked) {
   result

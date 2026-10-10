@@ -160,11 +160,9 @@ limited(Home0, Profile0, Key, Body0) ->
     Now = erlang:system_time(millisecond),
     Next = [K || K <- pool(text(Home0), binary(Profile0)), id(K) =/= Id,
                  not albedo_accounts:limited(K, Now)],
-    {ok, iolist_to_binary(json:encode(#{
-        <<"until">> => albedo_accounts:local_time(Until),
-        <<"next">> => case Next of [#{<<"name">> := Name} | _] -> Name; [] -> <<>> end,
-        <<"lasting">> => Lasting
-    }))}.
+    UntilText = albedo_accounts:local_time(Until),
+    NextName = case Next of [#{<<"name">> := Name} | _] -> Name; [] -> <<>> end,
+    {ok, {limited, <<>>, UntilText, NextName, Lasting}}.
 
 pool(Home, Profile) ->
     {ProfileUrl, ProfileKey} = profile_settings(Home, Profile),

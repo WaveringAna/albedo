@@ -86,7 +86,6 @@ fn limited(
 ) -> Result(rotation.Limited, Nil) {
   native_limited(home, profile, client.api_key, body)
   |> result.replace_error(Nil)
-  |> result.try(rotation.decode_limited)
 }
 
 /// A 429 reaching here has already been tried on every sibling key with room.
@@ -148,4 +147,4 @@ fn native_limited(
   profile: String,
   api_key: String,
   body: String,
-) -> Result(String, String)
+) -> Result(rotation.Limited, String)

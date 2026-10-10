@@ -106,12 +106,10 @@ limited(Home, Access, Body) ->
                     Now = erlang:system_time(millisecond),
                     Next = [V || V <- albedo_accounts:order(?SCOPE, Values, <<>>, fun account_id/1),
                                  not Hit(V), not albedo_accounts:limited(V, Now)],
-                    {ok, iolist_to_binary(json:encode(#{
-                        <<"account">> => label([V || V <- Values, Hit(V)]),
-                        <<"until">> => albedo_accounts:local_time(Until),
-                        <<"next">> => label(Next),
-                        <<"lasting">> => Lasting
-                    }))};
+                    Account = label([V || V <- Values, Hit(V)]),
+                    UntilText = albedo_accounts:local_time(Until),
+                    NextText = label(Next),
+                    {ok, {limited, Account, UntilText, NextText, Lasting}};
                 Error -> Error
             end;
         error -> {error, <<"not_a_limit">>}

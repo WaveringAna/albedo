@@ -229,7 +229,6 @@ fn limited(
 ) -> Result(rotation.Limited, Nil) {
   native_limited(home, client.api_key, body)
   |> result.replace_error(Nil)
-  |> result.try(rotation.decode_limited)
 }
 
 /// Explains a Codex failure that changes which account should be used.
@@ -307,4 +306,4 @@ fn native_limited(
   home: String,
   access: String,
   body: String,
-) -> Result(String, String)
+) -> Result(rotation.Limited, String)

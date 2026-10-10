@@ -223,7 +223,6 @@ fn limited(
 ) -> Result(rotation.Limited, Nil) {
   native_limited(home, access.token, body)
   |> result.replace_error(Nil)
-  |> result.try(rotation.decode_limited)
 }
 
 pub fn explain(
@@ -317,4 +316,4 @@ fn native_limited(
   home: String,
   access: String,
   body: String,
-) -> Result(String, String)
+) -> Result(rotation.Limited, String)
