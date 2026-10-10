@@ -23,10 +23,13 @@ func (m *ChatModel) syncViewportHeight() {
 }
 
 func (m *ChatModel) rebuildSettledLines() {
-	// Re-rendering retained history must not move the reading position: it
-	// keeps its distance from the end of the settled rows, and trimming waits
-	// until it is placed.
-	fromEnd := m.settledOffset + len(m.settledLines) - m.scrollOffset
+	// Re-rendering retained history must not move the reading position. Keep
+	// the content row under the viewport rather than anchoring to the tail.
+	readingOffset := m.scrollOffset
+	var readingRow string
+	if readingOffset >= 0 && readingOffset < len(m.frameLines) {
+		readingRow = m.frameLines[readingOffset]
+	}
 	m.settledLines = nil
 	m.settledLinesBytes = 0
 	m.droppedSettledLines = 0
@@ -53,7 +56,18 @@ func (m *ChatModel) rebuildSettledLines() {
 	m.settled = kept
 	m.rebuilding = false
 	m.settledOffset = len(m.headerLines())
-	m.scrollOffset = max(0, m.settledOffset+len(m.settledLines)-fromEnd)
+	m.scrollOffset = readingOffset
+	if readingRow != "" {
+		rows := append(m.headerLines(), m.settledLines...)
+		if readingOffset >= len(rows) || rows[readingOffset] != readingRow {
+			for i, row := range rows {
+				if row == readingRow {
+					m.scrollOffset = i
+					break
+				}
+			}
+		}
+	}
 	m.trimSettledLines()
 }
 
@@ -480,9 +494,11 @@ func (m *ChatModel) showOlder(msg ChatOlderLoadedMsg) ChatModel {
 			older[i].facts = &facts
 		}
 	}
+	fromEnd := m.settledOffset + len(m.settledLines) - m.scrollOffset
 	m.History.Prepend(older)
 	m.olderBefore, m.olderMore = msg.Page.Before, msg.Page.More && msg.Page.Before > 0
 	m.rebuildSettledLines()
+	m.scrollOffset = max(0, m.settledOffset+len(m.settledLines)-fromEnd)
 	m.refreshViewportContent()
 	return *m
 }

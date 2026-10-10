@@ -181,6 +181,25 @@ func TestCompactTranscriptEntries(t *testing.T) {
 	}
 }
 
+// A unit test is required here because daemon E2E cannot drive a TUI scroll position while
+// a committed stream re-renders the transcript.
+func TestReadingPositionSurvivesCommittedAppend(t *testing.T) {
+	m := newTestChatModel(t, &daemon.Session{ID: "s"})
+	m.SetSize(80, 20)
+	for i := range 30 {
+		m.appendSettledEntry(HistoryEntry{ID: fmt.Sprintf("old-%d", i), Kind: EntryAssistant, Text: fmt.Sprintf("old row %d\n", i)})
+	}
+	m.Follow = false
+	m.scrollOffset = 8
+	m.refreshViewportContent()
+	want := m.Viewport.View()
+	m.appendSettledEntry(HistoryEntry{ID: "old-29", Kind: EntryAssistant, Text: "old row 29\nnew row\n"})
+	m.refreshViewportContent()
+	if got := m.Viewport.View(); got != want {
+		t.Fatalf("committed append moved reading position: offset=%d", m.scrollOffset)
+	}
+}
+
 func TestReadingPositionSurvivesOutputPastTheLineCap(t *testing.T) {
 	m := newTestChatModel(t, &daemon.Session{ID: "s"})
 	m.SetSize(80, 20)
