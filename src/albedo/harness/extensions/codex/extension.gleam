@@ -26,7 +26,7 @@ const client_id = "app_EMoamEEZ73f0CkXaXp7hrann"
 const scope =
   "openid profile email offline_access api.connectors.read api.connectors.invoke"
 
-type Access {
+pub type Access {
   Access(token: String, account_id: String)
 }
 
@@ -191,9 +191,7 @@ fn account(
   session: String,
   profile: String,
 ) -> Result(Access, String) {
-  use encoded <- result.try(native_access(home, session, profile))
-  json.parse(encoded, access_decoder())
-  |> result.replace_error("invalid Codex credential response")
+  native_access(home, session, profile)
 }
 
 /// The ChatGPT accounts in creds.json as a rotation pool. A usage limit is
@@ -285,12 +283,6 @@ fn limit_message(limit: rotation.Limited) -> String {
   )
 }
 
-fn access_decoder() -> decode.Decoder(Access) {
-  use token <- decode.field("access", decode.string)
-  use account_id <- decode.field("accountId", decode.string)
-  decode.success(Access(token, account_id))
-}
-
 @external(erlang, "albedo_openai_auth", "codex_exchange")
 fn native_exchange(
   code: String,
@@ -306,7 +298,7 @@ fn native_access(
   home: String,
   session: String,
   profile: String,
-) -> Result(String, String)
+) -> Result(Access, String)
 
 @external(erlang, "albedo_openai_auth", "codex_revoke")
 fn native_revoke(home: String, access: String) -> Result(String, String)

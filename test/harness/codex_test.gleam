@@ -3,18 +3,12 @@ import albedo/harness/extensions/codex/extension as codex
 import albedo/harness/rotation
 import albedo/openai_api
 import albedo/openai_api/types
-import gleam/dynamic/decode
 import gleam/erlang/process
 import gleam/int
-import gleam/json
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import gleeunit/should
-
-pub type Access {
-  Access(token: String, account_id: String)
-}
 
 const credentials =
   "{\"accounts\":{\"openai-codex\":[{\"type\":\"oauth\",\"access\":\"h.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjb3VudC0xIiwiY2hhdGdwdF9hY2NvdW50X3VzZXJfaWQiOiJzZWF0LTEifX0.s\",\"refresh\":\"refresh-1\",\"expires\":9999999999999,\"accountId\":\"account-1\",\"accountUserId\":\"seat-1\"},{\"type\":\"oauth\",\"access\":\"h.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjb3VudC0yIiwiY2hhdGdwdF9hY2NvdW50X3VzZXJfaWQiOiJzZWF0LTIifX0.s\",\"refresh\":\"refresh-2\",\"expires\":9999999999999,\"accountId\":\"account-2\",\"accountUserId\":\"seat-2\"}]}}"
@@ -251,31 +245,25 @@ pub fn selected_account_overrides_the_session_pin_test() -> Nil {
 }
 
 fn codex_client(home: String, session: String) -> #(String, types.Client) {
-  let assert Ok(encoded) = native_access(home, session)
-  let decoder = {
-    use token <- decode.field("access", decode.string)
-    use account <- decode.field("accountId", decode.string)
-    decode.success(#(token, account))
-  }
-  let assert Ok(#(token, account)) = json.parse(encoded, decoder)
+  let assert Ok(access) = native_access(home, session)
   #(
-    account,
-    openai_api.codex_client("http://127.0.0.1", token, account, session),
+    access.account_id,
+    openai_api.codex_client(
+      "http://127.0.0.1",
+      access.token,
+      access.account_id,
+      session,
+    ),
   )
 }
 
 fn access(home: String, session: String) -> String {
-  let assert Ok(encoded) = native_access(home, session)
-  let decoder = {
-    use account <- decode.field("accountId", decode.string)
-    decode.success(account)
-  }
-  let assert Ok(account) = json.parse(encoded, decoder)
-  account
+  let assert Ok(access) = native_access(home, session)
+  access.account_id
 }
 
 @external(erlang, "albedo_openai_auth", "codex_access")
-fn native_access(home: String, session: String) -> Result(String, String)
+fn native_access(home: String, session: String) -> Result(codex.Access, String)
 
 @external(erlang, "albedo_skills_test_support", "fixture")
 fn fixture() -> #(String, String, String)

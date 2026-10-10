@@ -151,7 +151,7 @@ email(Credential) ->
 encode_access(Credential) ->
     Access = maps:get(<<"access">>, Credential),
     AccountId = account_id(Credential),
-    {ok, iolist_to_binary(json:encode(#{<<"access">> => Access, <<"accountId">> => AccountId}))}.
+    {ok, {access, Access, AccountId}}.
 
 usable(Credential) when is_map(Credential) ->
     Access = maps:get(<<"access">>, Credential, undefined),
