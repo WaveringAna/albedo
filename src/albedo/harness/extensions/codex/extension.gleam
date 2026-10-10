@@ -12,7 +12,6 @@ import albedo/openai_api
 import albedo/openai_api/types
 import gleam/bool
 import gleam/dynamic.{type Dynamic}
-import gleam/dynamic/decode
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
