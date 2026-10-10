@@ -215,16 +215,19 @@ def staged_name(digest: str | None = None) -> str:
     return f"{STAGED_DIR}/{(digest or albedo_bundle.digest())[:16]}"
 
 
+def _shipped(info):
+    """Sources only: no bytecode, and no tool cache (.ruff_cache, .mypy_cache)."""
+    parts = info.name.split("/")
+    skipped = any(p == "__pycache__" or p.startswith(".") and p != "." for p in parts)
+    return None if skipped else info
+
+
 def archive() -> bytes:
     import tarfile  # staging a host is rare; not worth every kernel's boot
 
     data = io.BytesIO()
     with tarfile.open(fileobj=data, mode="w") as tar:
-        tar.add(
-            str(albedo_bundle.ROOT),
-            arcname=".",
-            filter=lambda info: None if "__pycache__" in info.name else info,
-        )
+        tar.add(str(albedo_bundle.ROOT), arcname=".", filter=_shipped)
     return data.getvalue()
 
 
