@@ -27,6 +27,7 @@ const (
 	AppStateWebhooksPage
 	AppStateAgents
 	AppStateFolderPicker
+	AppStateQuota
 )
 
 type pendingSessionIntents struct {
@@ -58,6 +59,7 @@ type AppModel struct {
 	ModelPicker      ModelPickerModel
 	FolderPicker     FolderPicker
 	Agents           AgentsViewModel
+	Quota            QuotaModel
 
 	Chat              ChatModel
 	SettingsGen       int
@@ -209,6 +211,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.Agents.SetSize(msg.Width, msg.Height)
 		m.FolderPicker.SetSize(msg.Width, msg.Height)
 		m.Login.SetSize(msg.Width, msg.Height)
+		m.Quota.SetSize(msg.Width, msg.Height)
 		return m, nil
 
 	case tea.ModeReportMsg:
@@ -330,7 +333,8 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case WebhooksPageDoneMsg, ExtensionPickerDoneMsg,
-		TreeCancelMsg, ContextDoneMsg, CapabilityPageDoneMsg, PageCancelMsg:
+		TreeCancelMsg, ContextDoneMsg, CapabilityPageDoneMsg, PageCancelMsg,
+		QuotaCancelMsg:
 		m.State = AppStateChat
 		return m, nil
 
@@ -345,6 +349,9 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case ChatOpenTreePickerMsg:
 		return m, m.openTreePicker()
+
+	case ChatOpenQuotaMsg:
+		return m, m.openQuota()
 
 	case TreeForkSuccessMsg:
 		if m.State != AppStateTreePicker || msg.Generation != m.TreePicker.Generation {
@@ -482,6 +489,8 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.FolderPicker, cmd = m.FolderPicker.Update(msg)
 	case AppStateLogin:
 		m.Login, cmd = m.Login.Update(msg)
+	case AppStateQuota:
+		m.Quota, cmd = m.Quota.Update(msg)
 	}
 
 	return m, cmd

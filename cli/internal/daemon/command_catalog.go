@@ -62,7 +62,7 @@ func sessionCommandValue(command protocol.HTTPCommand, commandID string) (Sessio
 	if !result.UserTurn {
 		result.Method = command.Operation.Method
 	}
-	page := command.Delivery == "read" && len(command.Arguments) == 0 && (strings.HasPrefix(command.Operation.PathTemplate, "/extensions/") || command.SlashName == "/ttl" || command.SlashName == "/quota" || command.SlashName == "/requests")
+	page := command.Delivery == "read" && len(command.Arguments) == 0 && (strings.HasPrefix(command.Operation.PathTemplate, "/extensions/") || command.SlashName == "/ttl" || command.SlashName == "/requests")
 	result.Page = &page
 	for _, field := range command.Arguments {
 		argument := CommandArgument{Name: field.Name, Description: field.Description, Required: field.Required, Type: field.Type, field: field}

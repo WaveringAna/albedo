@@ -389,6 +389,8 @@ func (m *AppModel) handleCommandInvocation(msg tea.Msg) (tea.Cmd, bool) {
 			return m.openExtensionPicker(), true
 		case "/tree":
 			return m.openTreePicker(), true
+		case "/quota":
+			return m.openQuota(), true
 		case "/cd":
 			if msg.Args == "" || m.ActiveSession == nil {
 				return m.openFolderPicker(nil), true

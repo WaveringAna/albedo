@@ -33,6 +33,8 @@ type ChatOpenExtensionPickerMsg struct{}
 
 type ChatOpenTreePickerMsg struct{}
 
+type ChatOpenQuotaMsg struct{}
+
 type ChatOpenContextInspectorMsg struct{}
 
 type ChatOpenPageMsg struct {

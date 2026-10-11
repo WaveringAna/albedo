@@ -76,6 +76,11 @@ func (m *AppModel) openTreePicker() tea.Cmd {
 	return m.openScreen(AppStateTreePicker, &m.TreePicker)
 }
 
+func (m *AppModel) openQuota() tea.Cmd {
+	m.Quota = NewQuotaModel(m.Conn)
+	return m.openScreen(AppStateQuota, &m.Quota)
+}
+
 func (m *AppModel) openContextInspector() tea.Cmd {
 	if m.ActiveSession == nil {
 		return nil

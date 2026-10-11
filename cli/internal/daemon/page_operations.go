@@ -31,7 +31,7 @@ func LoadPage(ctx context.Context, conn *Connection, session, command string) (*
 	if err != nil {
 		return nil, err
 	}
-	if command == "/ttl" || command == "/quota" || command == "/requests" {
+	if command == "/ttl" || command == "/requests" {
 		return loadPlatformInspector(ctx, conn, snapshot, command)
 	}
 	if command == "/links" {

@@ -15,7 +15,7 @@ every list screen is built from the same four parts. a new list screen composes 
 
 `pageStatus` (`page.go`) is the small state every screen embeds beside those: width and height, the load or save in flight, the last error and notice, and the generation that makes a stale reply harmless (`settle`). every command carries the generation it started under.
 
-on the shared look: `/model`, `/sessions`, `/folders`, `/extensions`, `/skills`, `/instructions`, `/mcp`, `/webhooks`, `/tree`, `/context`, `/login`, and the daemon-driven pages (`/work`, `/paperclips`, `/schedule`, `/links`, run jobs, web-search order).
+on the shared look: `/model`, `/sessions`, `/folders`, `/extensions`, `/skills`, `/instructions`, `/mcp`, `/webhooks`, `/tree`, `/quota`, `/context`, `/login`, and the daemon-driven pages (`/work`, `/paperclips`, `/schedule`, `/links`, run jobs, web-search order).
 
 not on it, on purpose: the chat (a transcript is not a list) and the agents canvas (a graph). the agents delete question still uses `confirm`.
 

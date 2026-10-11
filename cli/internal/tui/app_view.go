@@ -57,6 +57,8 @@ func (m *AppModel) content() string {
 		return m.FolderPicker.View()
 	case AppStateLogin:
 		return m.Login.View()
+	case AppStateQuota:
+		return m.Quota.View()
 	default:
 		return ""
 	}

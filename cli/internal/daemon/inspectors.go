@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
+	"time"
 
 	"albedo/cli/internal/daemon/protocol"
 )
@@ -18,6 +20,7 @@ type CachePolicyQuery struct {
 }
 type RequestRecordPage = protocol.RequestRecordPage
 type QuotaPage = protocol.QuotaPage
+type QuotaObservation = protocol.QuotaObservation
 
 func GetCachePolicy(ctx context.Context, conn *Connection, query CachePolicyQuery) (CachePolicyPage, error) {
 	params := protocol.ListModelsParams{View: new("cache-policy"), Limit: new(int64(min(200, max(1, query.Limit))))}
@@ -50,19 +53,68 @@ func GetRequestRecords(ctx context.Context, conn *Connection, session, next stri
 	}, Policy: readRecovery}, func(data []byte) error { return decodeRequired(data, &result) })
 	return result, err
 }
-func GetQuotaHistory(ctx context.Context, conn *Connection, next string, limit int) (QuotaPage, error) {
-	params := protocol.GetServerParams{Include: new("quota_history"), Limit: new(int64(min(200, max(1, limit))))}
-	if next != "" {
-		params.Next = &next
-	}
+
+// GetLatestQuota is the newest reading of every limit of every account.
+func GetLatestQuota(ctx context.Context, conn *Connection) ([]QuotaObservation, error) {
 	var result protocol.Server
-	err := executeRead(ctx, conn, operation{Name: "inspect quota history", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
-		return protocol.NewGetServerRequest(base, &params)
-	}, Policy: readRecovery}, func(data []byte) error { return decodeRequired(data, &result, "quota_history") })
-	if err == nil && result.QuotaHistory == nil {
-		err = fieldError("quota history")
+	err := executeRead(ctx, conn, operation{Name: "read latest quota", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
+		return protocol.NewGetServerRequest(base, nil)
+	}, Policy: readRecovery}, func(data []byte) error { return decodeRequired(data, &result) })
+	return result.Quota, err
+}
+
+// QuotaTrailQuery names one limit of one account, and optionally how far back to read.
+type QuotaTrailQuery struct {
+	Provider string
+	Account  string
+	Limit    string
+	Since    time.Time
+}
+
+// GetQuotaTrail is a limit's readings, oldest first. It reads at most five
+// pages of 200, newest first, so a limit with more than that since the bound
+// comes back without its oldest readings: a trail is for drawing, not for audit.
+func GetQuotaTrail(ctx context.Context, conn *Connection, q QuotaTrailQuery) ([]QuotaObservation, error) {
+	observations := []QuotaObservation{}
+	next := ""
+	seen := map[string]bool{}
+	for page := 0; page < 5; page++ {
+		params := protocol.GetServerParams{
+			Include:       new("quota_history"),
+			Limit:         new(int64(200)),
+			QuotaProvider: &q.Provider,
+			QuotaAccount:  &q.Account,
+			QuotaLimit:    &q.Limit,
+		}
+		if !q.Since.IsZero() {
+			formatted := q.Since.UTC().Format(time.RFC3339Nano)
+			params.QuotaSince = &formatted
+		}
+		if next != "" {
+			params.Next = &next
+		}
+		var result protocol.Server
+		err := executeRead(ctx, conn, operation{Name: "inspect quota trail", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
+			return protocol.NewGetServerRequest(base, &params)
+		}, Policy: readRecovery}, func(data []byte) error { return decodeRequired(data, &result, "quota_history") })
+		if err != nil {
+			return nil, err
+		}
+		if result.QuotaHistory == nil {
+			return nil, fieldError("quota history")
+		}
+		observations = append(observations, result.QuotaHistory.Items...)
+		next = value(result.QuotaHistory.Next)
+		if next == "" {
+			break
+		}
+		if seen[next] {
+			return nil, fieldError("quota trail page cursor")
+		}
+		seen[next] = true
 	}
-	return value(result.QuotaHistory), err
+	slices.Reverse(observations)
+	return observations, nil
 }
 
 // Platform inspectors are rendered locally from typed facts. Their domain APIs
@@ -105,19 +157,6 @@ func loadPlatformInspector(ctx context.Context, conn *Connection, snapshot Sessi
 			}
 			for _, entry := range page.Items {
 				appendRow(fmt.Sprint(entry.Sequence), entry.ProviderProfile+" · "+entry.Model, entry.Outcome, entry)
-			}
-			next = value(page.Next)
-		case "/quota":
-			page, err := GetQuotaHistory(ctx, conn, next, 200)
-			if err != nil {
-				return nil, err
-			}
-			for _, entry := range page.Items {
-				badge := entry.Status
-				if entry.UsedPercent != nil {
-					badge = fmt.Sprintf("%.1f%% used", *entry.UsedPercent)
-				}
-				appendRow(fmt.Sprint(entry.Sequence), entry.Provider+" · "+entry.Label, badge, entry)
 			}
 			next = value(page.Next)
 		default:
