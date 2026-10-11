@@ -98,6 +98,7 @@ READY = threading.Event()
 NAMESPACE: dict[str, object] = {"__name__": "__main__"}
 DEFINITIONS: collections.OrderedDict[str, str] = collections.OrderedDict()
 CLEANUP: list[albedo_api.Cleanup] = []
+STOP_HANDLERS: list[Callable[[str], Awaitable[dict[str, object] | None]]] = []
 HANDLES: list[type[object]] = [asyncio.Task]
 REPR = reprlib.Repr()
 REPR.maxstring = REPR.maxother = 4000
@@ -279,6 +280,8 @@ def deliver(message: albedo_api.Incoming) -> None:
         )
     elif message["type"] == "release":
         LIVE.pop(message["handle"], None)
+    elif message["type"] == "job_stop":
+        _ = LOOP.create_task(serve_job_stop(message["id"]))
     elif message["type"] == "snapshot" and (bool(CELL_TASKS) or not QUEUE.empty()):
         # A namespace mid-cell is no state to carry: the owner tries again later.
         send(state_reply(message, {"error": "a cell is still running"}))
@@ -1197,6 +1200,31 @@ async def serve_invoke(message: albedo_api.Invoke) -> None:
     send(reply)
 
 
+async def serve_job_stop(job_id: str) -> None:
+    """Stop a background job on behalf of the port owner."""
+    answer: dict[str, object] = {
+        "type": "job_stop",
+        "id": job_id,
+        "ok": False,
+        "error": "job not found",
+    }
+    for handler in reversed(STOP_HANDLERS):
+        try:
+            res = await handler(job_id)
+            if res is not None:
+                answer = {"type": "job_stop", "id": job_id, **res}
+                break
+        except Exception as error:
+            answer = {
+                "type": "job_stop",
+                "id": job_id,
+                "ok": False,
+                "error": str(error).lower() or "could not stop job",
+            }
+            break
+    send(answer)
+
+
 def deliver_trace(capture: Capture) -> None:
     payload = capture.trace.finish()
     send({"type": "trace", "id": capture.id, "trace": payload})
@@ -1569,6 +1597,7 @@ def main():
         modules=modules,
         watch_output=watch_output,
         attach_image=attach_image,
+        on_stop_job=STOP_HANDLERS.append,
     )
     NAMESPACE.update(cells=Cells(), output=Output(), show_image=show_image)
     try:

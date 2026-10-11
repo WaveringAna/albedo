@@ -101,6 +101,16 @@ def processes(*needles):
     ]
 
 
+def wait_for(predicate, timeout=15, message="condition not met"):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        result = predicate()
+        if result:
+            return result
+        time.sleep(0.1)
+    raise AssertionError(message)
+
+
 # exclusive: sets daemon PATH for loopback SSH and local Python wrappers
 @exclusive
 class RemoteKernelTests(unittest.TestCase):
@@ -750,6 +760,156 @@ print('live spill pages, disk failures, atomic saves, and pruning verified')
         self.assertNotIn(
             "sleep 8881", [job["command"] for job in kernel["running_jobs"]]
         )
+
+    def test_remote_background_jobs_can_be_stopped_through_run_api(self):
+        session = self.create(str(self.app.workspace))["id"]
+        started = self.cell(
+            session,
+            "import asyncio\n"
+            "rem = await remote.connect('fakehost')\n"
+            "fallback = await remote.connect('oldhost')\n"
+            "rem_job = rem.run('sleep', '8892')\n"
+            "fallback_job = fallback.run('sleep', '8893')\n"
+            "await asyncio.sleep(1)",
+        )
+        self.assertEqual(started["status"], "ok", started)
+
+        def cleanup():
+            try:
+                self.cell(
+                    session,
+                    "try:\n"
+                    "    await rem_job.stop()\n"
+                    "except Exception:\n"
+                    "    pass\n"
+                    "try:\n"
+                    "    await fallback_job.stop()\n"
+                    "except Exception:\n"
+                    "    pass\n"
+                    "try:\n"
+                    "    await rem.close()\n"
+                    "except Exception:\n"
+                    "    pass\n"
+                    "try:\n"
+                    "    await fallback.close()\n"
+                    "except Exception:\n"
+                    "    pass\n",
+                )
+            except Exception:
+                pass
+            for pid in processes("sleep 8892") + processes("sleep 8893"):
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except OSError:
+                    pass
+
+        self.addCleanup(cleanup)
+
+        kernel = json.load(self.app.api(f"/sessions/{session}?tail=0"))["kernel"]
+        self.assertEqual(kernel["live_job_count"], 2, kernel)
+        running = {job["command"]: job for job in kernel["running_jobs"]}
+        self.assertEqual(sorted(running), ["sleep 8892", "sleep 8893"], kernel)
+        rem_job_id = running["sleep 8892"]["id"]
+        fallback_job_id = running["sleep 8893"]["id"]
+        self.assertTrue(wait_for(lambda: processes("sleep 8892"), timeout=5))
+
+        with self.app.api(f"/extensions/run/sessions/{session}/jobs") as response:
+            page = json.load(response)["page"]
+        self.assertEqual(page["summary"], "2 background jobs running")
+        self.assertEqual(
+            sorted(row["text"] for row in page["rows"]), ["sleep 8892", "sleep 8893"]
+        )
+
+        # 3. Stopping an unknown job id still fails with 404
+        with self.assertRaises(urllib.error.HTTPError) as missing:
+            self.app.api(
+                f"/extensions/run/sessions/{session}/jobs/missing/stop",
+                method="POST",
+            )
+        self.assertEqual(missing.exception.code, 404)
+
+        # 1. Stop the kernel-mode remote job through the run service API
+        with self.app.api(
+            f"/extensions/run/sessions/{session}/jobs/{rem_job_id}/stop",
+            method="POST",
+        ) as response:
+            self.assertEqual(response.status, 200)
+            self.assertEqual(json.load(response), {"stopped": rem_job_id})
+
+        wait_for(
+            lambda: not processes("sleep 8892"),
+            timeout=15,
+            message="remote sleep 8892 process did not terminate after stop",
+        )
+
+        def rem_cleared_from_kernel():
+            with self.app.api(f"/sessions/{session}?tail=0") as resp:
+                k = json.load(resp)["kernel"]
+            ids = [job["id"] for job in k["running_jobs"]]
+            return rem_job_id not in ids and k["live_job_count"] == 1
+
+        wait_for(
+            rem_cleared_from_kernel,
+            timeout=15,
+            message="kernel observation did not drop stopped remote job",
+        )
+
+        def rem_cleared_from_page():
+            with self.app.api(f"/extensions/run/sessions/{session}/jobs") as resp:
+                p = json.load(resp)["page"]
+            ids = [row["id"] for row in p["rows"]]
+            return rem_job_id not in ids and p["summary"] == "1 background job running"
+
+        wait_for(
+            rem_cleared_from_page,
+            timeout=15,
+            message="jobs page did not drop stopped remote job",
+        )
+
+        # 2. Stop the degraded fallback job through the run service API
+        with self.app.api(
+            f"/extensions/run/sessions/{session}/jobs/{fallback_job_id}/stop",
+            method="POST",
+        ) as response:
+            self.assertEqual(response.status, 200)
+            self.assertEqual(json.load(response), {"stopped": fallback_job_id})
+
+        def fallback_cleared_from_kernel():
+            with self.app.api(f"/sessions/{session}?tail=0") as resp:
+                k = json.load(resp)["kernel"]
+            ids = [job["id"] for job in k["running_jobs"]]
+            return fallback_job_id not in ids and k["live_job_count"] == 0
+
+        wait_for(
+            fallback_cleared_from_kernel,
+            timeout=15,
+            message="kernel observation did not drop stopped fallback job",
+        )
+
+        def fallback_cleared_from_page():
+            with self.app.api(f"/extensions/run/sessions/{session}/jobs") as resp:
+                p = json.load(resp)["page"]
+            ids = [row["id"] for row in p["rows"]]
+            return fallback_job_id not in ids and p["rows"] == []
+
+        wait_for(
+            fallback_cleared_from_page,
+            timeout=15,
+            message="jobs page did not drop stopped fallback job",
+        )
+
+        output = self.cell(session, "fallback_job.tail()")
+        self.assertEqual(output["status"], "ok", output)
+        self.assertIn(
+            "the remote command may still be running",
+            output.get("value", "") + output.get("output", ""),
+        )
+
+        ended = self.cell(
+            session,
+            "await rem.close()\nawait fallback.close()\nawait asyncio.sleep(0.5)",
+        )
+        self.assertEqual(ended["status"], "ok", ended)
 
     def test_hosts_list_recent_and_configured_hosts_without_probing(self):
         self.create(f"fakehost:{self.project}")

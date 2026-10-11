@@ -15,6 +15,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "priv" / "python"))
 import albedo_link  # noqa: E402
@@ -165,6 +166,34 @@ class SocketLinkTest(unittest.TestCase):
         (done,) = self.frames(connection, 1)
         self.assertEqual(done["frame"], {"type": "done", "id": "c1"})
         self.assertEqual(self.link.idle_for(), 0)
+
+    def test_job_stop_frame_dispatch(self):
+        connection, _ = self.attach()
+        frame = {"type": "job_stop", "id": "job-42"}
+        albedo_link.write_frame(
+            connection.send,
+            albedo_link.encode({"seq": 1, "ack": 0, "frame": frame}),
+        )
+        self.assertEqual(albedo_link.read_frame(connection.recv), {"ack": 1})
+        self.assertEqual(self.received, [frame])
+
+    def test_cells_serve_job_stop_unknown_job_answers_not_found(self):
+        import albedo_cells as kernel
+
+        sent = []
+        with patch.object(kernel, "send", sent.append):
+            kernel.LOOP.run_until_complete(kernel.serve_job_stop("missing-job"))
+        self.assertEqual(
+            sent,
+            [
+                {
+                    "type": "job_stop",
+                    "id": "missing-job",
+                    "ok": False,
+                    "error": "job not found",
+                }
+            ],
+        )
 
 
 if __name__ == "__main__":

@@ -38,6 +38,7 @@
 -define(NO_FOLDER, 4).           %% a remote bridge's when the workspace is no folder
 -define(SSH_FAILED, 255).        %% ssh's own
 -define(REMOTE_HELPER_WAIT, 15000). %% a helper run over ssh
+-define(REMOTE_STOP_TIMEOUT, 15000). %% give up waiting for remote job stop confirmation
 -define(REATTACH_MAX_MS, 2000).
 -define(REATTACH_TRIES, 40).     %% consecutive failed attaches before giving up
 -define(REMOTE_REATTACH_MAX_MS, 30000).
@@ -58,7 +59,7 @@ start({boot, Owner, Python, Bridge, Cwd, Host, Modules, Link, RunDir, Kernel, To
               python => Python, bridge => Bridge, cwd => Cwd, remote => Remote,
               modules => Modules, run_dir => RunDir, kernel => Kernel, token => Token,
               grace => Grace, in => 0, acked => 0, kack => 0, out => OutSeq,
-              calls => #{}, bundle => none, kernel_bundle => none, retries => 0, flush => none, give_up => none, stale => none},
+              calls => #{}, stopping => #{}, bundle => none, kernel_bundle => none, retries => 0, flush => none, give_up => none, stale => none},
         Mode = case Fresh of true -> start; false -> attach end,
         case open_bridge(S, Mode) of
             {ok, S1} -> startup(S1, Mode, Parent, Ref, erlang:monotonic_time(millisecond) + ?STARTUP_TIMEOUT);
@@ -291,7 +292,7 @@ stop_job(Pid, Id) ->
     case call(Pid, {stop_job, Id}) of
         ok -> {ok, nil};
         {error, not_found} -> {error, <<"job not found">>};
-        {error, remote_job} -> {error, <<"job runs over ssh, so only the cell that started it can stop it">>};
+        {error, Reason} when is_binary(Reason) -> {error, Reason};
         {error, Reason} -> {error, detail(Reason)};
         _ -> {error, <<"could not stop job">>}
     end.
@@ -412,16 +413,30 @@ loop(S = #{port := Port, active := Active}) ->
                           job_summaries(Jobs, Remote), Unlisted}},
             loop(S);
         {call, From, Ref, {stop_job, Id}} ->
-            Reply = case maps:get(Id, maps:get(groups, S), none) of
+            Jobs = maps:get(groups, S),
+            case maps:get(Id, Jobs, none) of
                 none ->
-                    case [Job || Job = #{id := Listed} <- maps:get(external_jobs, S, []), Listed =:= Id] of
-                        [] -> {error, not_found};
-                        _ -> {error, remote_job}
+                    Remote = maps:get(external_jobs, S, []),
+                    case [Job || Job = #{id := Listed} <- Remote, Listed =:= Id] of
+                        [] ->
+                            From ! {Ref, {error, not_found}},
+                            loop(S);
+                        _ when Port =:= none ->
+                            From ! {Ref, {error, <<"kernel is unreachable">>}},
+                            loop(S);
+                        _ ->
+                            Timer = erlang:send_after(?REMOTE_STOP_TIMEOUT, self(), {stop_timeout, Id, Ref}),
+                            Caller = monitor(process, From),
+                            Stopping = maps:get(stopping, S, #{}),
+                            Waiters = maps:get(Id, Stopping, []),
+                            S1 = send(#{type => <<"job_stop">>, id => Id}, S),
+                            loop(S1#{stopping => Stopping#{Id => [{From, Ref, Timer, Caller} | Waiters]}})
                     end;
                 Group ->
-                    verdict(supervise(S, [target_spec(<<"job ", Id/binary>>, Group)], ?TERM_MS, ?KILL_MS))
-            end,
-            From ! {Ref, Reply}, loop(S);
+                    Reply = verdict(supervise(S, [target_spec(<<"job ", Id/binary>>, Group)], ?TERM_MS, ?KILL_MS)),
+                    From ! {Ref, Reply},
+                    loop(S)
+            end;
         {call, From, Ref, {rebind, Host}} when is_function(Host, 2) ->
             From ! {Ref, {ok, nil}}, loop(S#{host => Host});
         {call, From, Ref, events} ->
@@ -487,10 +502,35 @@ loop(S = #{port := Port, active := Active}) ->
         reattach when Port =:= none -> reattach(S);
         flush_ack -> loop(flush_ack(S));
         {host_reply, Id, Reply} -> loop(host_reply(Id, Reply, S));
+        {stop_timeout, Id, Ref} ->
+            Stopping = maps:get(stopping, S, #{}),
+            case maps:get(Id, Stopping, []) of
+                [] -> loop(S);
+                Waiters ->
+                    case lists:partition(fun({_, R, _, _}) -> R =:= Ref end, Waiters) of
+                        {[], _} -> loop(S);
+                        {[{From, Ref, _Timer, Caller}], Remaining} ->
+                            demonitor(Caller, [flush]),
+                            From ! {Ref, {error, <<"remote job stop was not confirmed after 15s">>}},
+                            NewStopping = case Remaining of
+                                [] -> maps:remove(Id, Stopping);
+                                _ -> Stopping#{Id => Remaining}
+                            end,
+                            loop(S#{stopping => NewStopping})
+                    end
+            end;
         {'DOWN', Caller, process, _, _} ->
-            case Active of
-                {_, _, _, Caller, _} -> loop(interrupt_active(S, <<"cancelled">>));
-                _ -> abandon(S)
+            case maps:get(owner, S, none) of
+                Caller -> abandon(S);
+                _ ->
+                    case Active of
+                        {_, _, _, Caller, _} -> loop(interrupt_active(S, <<"cancelled">>));
+                        _ ->
+                            case remove_stop_caller(Caller, S) of
+                                {found, S1} -> loop(S1);
+                                not_found -> abandon(S)
+                            end
+                    end
             end;
         _ -> loop(S)
     end.
@@ -636,6 +676,26 @@ handle_frame(#{<<"type">> := <<"done">>, <<"id">> := Id} = Done, S = #{host := H
         host_call(Host, <<"cells.finish">>, #{<<"id">> => Id, <<"outcome">> => Done})
     end),
     S;
+handle_frame(#{<<"type">> := <<"job_stop">>, <<"id">> := Id} = Message, S) ->
+    Stopping = maps:get(stopping, S, #{}),
+    case maps:take(Id, Stopping) of
+        error -> S;
+        {Waiters, Rest} ->
+            Reply = case maps:get(<<"ok">>, Message, false) of
+                true -> ok;
+                false ->
+                    case maps:get(<<"error">>, Message, <<"could not stop remote job">>) of
+                        Err when is_binary(Err) -> {error, Err};
+                        Err -> {error, detail(Err)}
+                    end
+            end,
+            lists:foreach(fun({From, Ref, Timer, Caller}) ->
+                erlang:cancel_timer(Timer),
+                demonitor(Caller, [flush]),
+                From ! {Ref, Reply}
+            end, Waiters),
+            S#{stopping => Rest}
+    end;
 handle_frame(#{<<"type">> := <<"call">>, <<"id">> := Id} = Message, S = #{host := Host, calls := Calls}) ->
     case maps:is_key(Id, Calls) orelse link_call(S, Id) of
         %% Already running here: its reply reaches the kernel through the outbox.
@@ -754,6 +814,27 @@ answer_detached(S = #{active := {From, Ref, Timer, Caller, _}}) ->
     From ! {Ref, {error, detached}},
     S#{active => none};
 answer_detached(S) -> S.
+
+remove_stop_caller(Caller, S) ->
+    Stopping = maps:get(stopping, S, #{}),
+    Found = maps:fold(fun(Id, Waiters, Acc) ->
+        case lists:partition(fun({_, _, _, C}) -> C =:= Caller end, Waiters) of
+            {[], _} -> Acc;
+            {Removed, Keep} -> [{Id, Removed, Keep} | Acc]
+        end
+    end, [], Stopping),
+    case Found of
+        [] -> not_found;
+        Matches ->
+            NewStopping = lists:foldl(fun({Id, Removed, Keep}, Acc) ->
+                lists:foreach(fun({_, _, Timer, _}) -> erlang:cancel_timer(Timer) end, Removed),
+                case Keep of
+                    [] -> maps:remove(Id, Acc);
+                    _ -> Acc#{Id => Keep}
+                end
+            end, Stopping, Matches),
+            {found, S#{stopping => NewStopping}}
+    end.
 
 %% The Gleam link: the durable outbox and host-call ledger. A storage failure
 %% is logged and never stops the kernel; the frame still goes out. Once the

@@ -22,6 +22,7 @@ from albedo_protocol import (
     Introspect as Introspect,
     Release as Release,
     State as State,
+    JobStop as JobStop,
     Incoming as Incoming,
     SavedCell as SavedCell,
 )
@@ -176,6 +177,11 @@ class PythonApi:
     # A host call that blocks until its answer, for synchronous APIs over
     # routes that answer at once. Absent when the host pre-dates it.
     host_now: Callable[[str, dict[str, object]], object] | None = None
+    # Registers one handler to stop a background job (e.g. remote or fallback).
+    # Handler returns {"ok": True} or {"ok": False, "error": "..."}, or None if not found.
+    on_stop_job: (
+        Callable[[Callable[[str], Awaitable[dict[str, object] | None]]], None] | None
+    ) = None
 
 
 class PythonPlugin(Protocol):

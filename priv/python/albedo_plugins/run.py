@@ -805,7 +805,17 @@ def setup(api: PythonApi) -> dict[str, object]:
         api.send,
     )
     host, watch_output, forget_output = api.host, api.watch_output, api.forget_output
+
+    async def stop_local_job(job_id: str) -> dict[str, object] | None:
+        job = jobs.get(job_id)
+        if job is None:
+            return None
+        await job.stop()
+        return {"ok": True}
+
     jobs, active, retained = {}, {}, OrderedDict()
     api.background_handle(Job)
     api.on_shutdown(close)
+    if api.on_stop_job is not None:
+        api.on_stop_job(stop_local_job)
     return {"run": run, "jobs": jobs}

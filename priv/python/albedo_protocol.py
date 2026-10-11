@@ -75,8 +75,23 @@ class State(TypedDict):
     path: str
 
 
+class JobStop(TypedDict):
+    """Stop a background job."""
+
+    type: Literal["job_stop"]
+    id: str
+
+
 Incoming = (
-    Execute | Reply | Interrupt | Shutdown | Invoke | Introspect | Release | State
+    Execute
+    | Reply
+    | Interrupt
+    | Shutdown
+    | Invoke
+    | Introspect
+    | Release
+    | State
+    | JobStop
 )
 
 
@@ -162,6 +177,13 @@ class RemoteCleanup(TypedDict):
     module: str
 
 
+class JobStopReply(TypedDict):
+    type: Literal["job_stop"]
+    id: str
+    ok: bool
+    error: NotRequired[str]
+
+
 RemoteMessage = (
     Ready
     | StartupError
@@ -171,6 +193,7 @@ RemoteMessage = (
     | Mirror
     | RemoteEvent
     | RemoteCleanup
+    | JobStopReply
 )
 
 
@@ -220,6 +243,7 @@ def parse_incoming(value: object) -> Incoming:
         "release",
         "snapshot",
         "restore",
+        "job_stop",
     }:
         raise ValueError(f"{kind}.type: unknown message type")
     if kind not in {"shutdown", "release"}:
@@ -330,6 +354,9 @@ def parse_remote(value: object) -> RemoteMessage:
         _mirror(message, kind)
     elif kind == "cleanup":
         _field(message, "module", str, kind)
+    elif kind == "job_stop":
+        _field(message, "ok", bool, kind)
+        _field(message, "error", str, kind, optional=True)
     elif kind not in {"job_start", "job", "trace", "done"}:
         raise ValueError(f"{kind}.type: unknown message type")
     return cast(RemoteMessage, message)

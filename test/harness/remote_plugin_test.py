@@ -154,6 +154,7 @@ class RemotePluginTest(unittest.IsolatedAsyncioTestCase):
             {"type": "call", "id": "x", "method": "work.list", "args": []},
             {"type": "trace", "id": []},
             {"type": "cleanup", "module": None},
+            {"type": "job_stop", "id": "x", "ok": 1},
         ]
         payloads = [json.dumps(frame).encode() for frame in frames] + [b"{bad json"]
         wires = [struct.pack(">I", len(data)) + data for data in payloads]
@@ -503,6 +504,42 @@ class RemotePluginTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("degraded to ssh command mode", str(raised.exception))
         tools = await rem.tools()
         self.assertIn("degraded", tools)
+
+    async def test_stop_remote_job_routes_to_connection_and_resolves(self):
+        rem = await self.connect()
+        self.addCleanup(rem.close)
+        job = rem.run(sys.executable, "-c", "import time; time.sleep(60)")
+        for _ in range(100):
+            if job.id in rem._live:
+                break
+            await asyncio.sleep(0.05)
+        self.assertIn(job.id, rem._live)
+        result = await remote.stop_remote_job(job.id)
+        self.assertEqual(result, {"ok": True})
+        for _ in range(100):
+            if job.id not in rem._live:
+                break
+            await asyncio.sleep(0.05)
+        self.assertNotIn(job.id, rem._live)
+
+    async def test_stop_remote_job_unknown_returns_none(self):
+        result = await remote.stop_remote_job("unknown-id")
+        self.assertIsNone(result)
+
+    async def test_stop_remote_job_fallback_job_stops_locally(self):
+        rem = await self.connect(modules=["definitely-not-a-module"])
+        self.addCleanup(rem.close)
+        job = rem.run(sys.executable, "-c", "import time; time.sleep(60)")
+        self.assertIn(job.id, remote._fallback_jobs)
+        self.assertIn(job.id, remote._fallback_live)
+        result = await remote.stop_remote_job(job.id)
+        self.assertEqual(result, {"ok": True})
+        self.assertIn(
+            "the remote command may still be running",
+            job.tail(),
+        )
+        self.assertNotIn(job.id, remote._fallback_jobs)
+        self.assertNotIn(job.id, remote._fallback_live)
 
 
 if __name__ == "__main__":

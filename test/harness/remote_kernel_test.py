@@ -140,6 +140,7 @@ class KernelInvokeTest(unittest.TestCase):
             {"type": "interrupt", "id": "x", "reason": "other"},
             {"type": "restore", "id": "x", "path": None},
             {"type": "release", "handle": []},
+            {"type": "job_stop", "id": []},
         ]
         payloads = [json.dumps(frame).encode() for frame in frames] + [b"{bad json"]
         wire_frames = [struct.pack(">I", len(data)) + data for data in payloads]
@@ -278,6 +279,34 @@ class KernelInvokeTest(unittest.TestCase):
         self.channel.send({"type": "release", "handle": handle})
         gone = self.channel.invoke("i2", target={"handle": handle}, name="poll")
         self.assertFalse(gone["ok"])
+
+    def test_job_stop_unknown_job_answers_not_found(self):
+        self.channel.send({"type": "job_stop", "id": "unknown-job"})
+        reply = self.channel.wait_for(lambda f: f["type"] == "job_stop")
+        self.assertEqual(
+            reply,
+            {
+                "type": "job_stop",
+                "id": "unknown-job",
+                "ok": False,
+                "error": "job not found",
+            },
+        )
+
+    def test_job_stop_running_job_stops_and_confirms(self):
+        self.channel.invoke(
+            "child", name="run", args=python("import time; time.sleep(60)")
+        )
+        started = self.channel.wait_for(lambda f: f["type"] == "job_start")
+        job_id = started["id"]
+        self.channel.send({"type": "job_stop", "id": job_id})
+        reply = self.channel.wait_for(lambda f: f["type"] == "job_stop")
+        self.assertEqual(reply, {"type": "job_stop", "id": job_id, "ok": True})
+        # The job also announces its exit
+        ended = self.channel.wait_for(
+            lambda f: f["type"] == "job" and f["id"] == job_id
+        )
+        self.assertTrue(ended["cleanup"]["gone"])
 
 
 if __name__ == "__main__":

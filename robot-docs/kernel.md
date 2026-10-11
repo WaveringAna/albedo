@@ -73,8 +73,14 @@ count then exceeds the list by the awaited ones it could not name.
 `kernel.awaited_jobs` is the one definition of which listed jobs will wake the
 session (not `service`); `awaits_jobs` (the cache warmer, resumed kernels) and
 the session's still-running summary both ask it, so an extension never reads
-`service` itself. Stopping a remote job through `/jobs` is refused: only
-the cell that started it can.
+`service` itself. Stopping a remote job through `/jobs` sends a `job_stop`
+frame down the bridge to the local kernel (`{"type": "job_stop", "id": "<job id>"}`);
+if the kernel is unreachable (`port := none`), stopping fails immediately
+without queueing. The local kernel forwards the stop to the remote kernel (or,
+for degraded fallback ssh jobs, stops the job by killing the local ssh client).
+The port owner waits up to 15 seconds for a confirmation frame (`{"type":
+"job_stop", "id": "<job id>", "ok": true|false}`); if unconfirmed after 15
+seconds, the stop fails.
 The TUI uses these observations for its idle-job status, animation, and
 sidebar, and calls a job background only once it has run three seconds
 (`jobGrace`), so work a cell starts and awaits never flashes through the
@@ -306,6 +312,15 @@ dedupe:
 - interrupt, reply, release are idempotent already. an interrupt for a cell
   still queued behind the loop is kept and cancels the cell as it starts;
   one for a cell the kernel no longer holds is dropped.
+- job_stop: the port owner asks the local kernel to stop a remote background job
+  with `{"type": "job_stop", "id": "<job id>"}`. The kernel answers with
+  `{"type": "job_stop", "id": "<job id>", "ok": true}` or `{"type": "job_stop",
+  "id": "<job id>", "ok": false, "error": "<lowercase why>"}` exactly once per
+  request. The port owner does not queue while the kernel is unreachable
+  (`port := none`), and gives up with an unconfirmed error after 15 s. The
+  request is delivered like any other frame, so one sent while the kernel was
+  briefly out of reach can still land after a reattach and end the job later:
+  "unconfirmed" means the outcome is unknown, not that the stop failed.
 - what the kernel resends after a restart: job wakes are host calls
   (`jobs.completed`), so the call ledger covers them; `job_start`, `job`,
   and `jobs` only update ownership and observations, which converge; a `done`
