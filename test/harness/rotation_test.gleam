@@ -22,6 +22,12 @@ import gleeunit/should
 const google_accounts =
   "{\"accounts\":{\"google-antigravity\":[{\"type\":\"oauth\",\"access\":\"a1\",\"refresh\":\"r1\",\"expires\":9999999999999,\"projectId\":\"p1\",\"email\":\"one@example.com\"},{\"type\":\"oauth\",\"access\":\"a2\",\"refresh\":\"r2\",\"expires\":9999999999999,\"projectId\":\"p2\",\"email\":\"two@example.com\"}]}}"
 
+const claude_quota =
+  "{\"error\":{\"code\":429,\"status\":\"RESOURCE_EXHAUSTED\",\"message\":\"You have exhausted your capacity on this model.\",\"details\":[{\"@type\":\"type.googleapis.com/google.rpc.ErrorInfo\",\"reason\":\"QUOTA_EXHAUSTED\",\"metadata\":{\"model\":\"claude-sonnet-5-5-high\",\"quotaResetDelay\":\"2h3m4.5s\"}},{\"@type\":\"type.googleapis.com/google.rpc.RetryInfo\",\"retryDelay\":\"7384.5s\"}]}}"
+
+const gemini_quota =
+  "{\"error\":{\"code\":429,\"status\":\"RESOURCE_EXHAUSTED\",\"message\":\"You have exhausted your capacity on this model.\",\"details\":[{\"@type\":\"type.googleapis.com/google.rpc.ErrorInfo\",\"reason\":\"QUOTA_EXHAUSTED\",\"metadata\":{\"model\":\"gemini-3.8-flash-medium\",\"quotaResetDelay\":\"2h3m4.5s\"}},{\"@type\":\"type.googleapis.com/google.rpc.RetryInfo\",\"retryDelay\":\"7384.5s\"}]}}"
+
 const quota =
   "{\"error\":{\"code\":429,\"status\":\"RESOURCE_EXHAUSTED\",\"message\":\"You have exhausted your capacity on this model.\",\"details\":[{\"@type\":\"type.googleapis.com/google.rpc.ErrorInfo\",\"reason\":\"QUOTA_EXHAUSTED\",\"metadata\":{\"quotaResetDelay\":\"2h3m4.5s\"}},{\"@type\":\"type.googleapis.com/google.rpc.RetryInfo\",\"retryDelay\":\"7384.5s\"}]}}"
 
@@ -116,6 +122,107 @@ pub fn antigravity_quota_moves_the_request_to_a_sibling_test() -> Nil {
 
 /// Claude behind Cloud Code Assist is held to Anthropic's 2000px rule, so an
 /// oversized image is fitted before the request rather than refused after it.
+pub fn antigravity_claude_quota_leaves_gemini_served_test() -> Nil {
+  let #(root, _, home) = fixture()
+  let _ = write(home, "creds.json", google_accounts)
+  let tried = process.new_subject()
+  let claude_pool =
+    antigravity.pool_for_model(
+      home,
+      "claude-session",
+      "claude-sonnet-4-6",
+      limited_stream(["a1"], claude_quota, tried, token),
+    )
+  let assert Ok(first) = claude_pool.current()
+  first.token |> should.equal("a1")
+
+  // Account a1 hits a Claude 429 and hops to sibling a2.
+  rotation.stream(
+    claude_pool,
+    first,
+    openai_api.request("claude-sonnet-4-6", [types.User("hi")]),
+    fn(_) { types.Continue },
+    rotation.Budget(8, 0, no_wait),
+    fn(_) { Nil },
+  )
+  |> should.equal(Error(types.HttpError(500, "sibling answered")))
+  let attempts = drain(tried, [])
+  attempts |> should.equal(["a1", "a2"])
+
+  // Claude requests now treat a1 as limited and stick to a2.
+  let assert Ok(claude_next) = claude_pool.current()
+  claude_next.token |> should.equal("a2")
+
+  // But Gemini requests on the same session/account are NOT walled: a1 still serves Gemini!
+  let gemini_pool =
+    antigravity.pool_for_model(home, "gemini-1", "gemini-3-flash", fn(_, _, _) {
+      Error(types.Timeout)
+    })
+  let assert Ok(gemini_served) = gemini_pool.current()
+  gemini_served.token |> should.equal("a1")
+
+  // /login shows a1 is limited specifically on Claude.
+  let assert [one, two] = oauth.accounts(home, antigravity.login(google()))
+  string.contains(one.detail, "limited on Claude until") |> should.be_true
+  string.contains(two.detail, "limited on Claude until") |> should.be_false
+
+  // When all accounts exhaust their Claude quota, explain names the Claude meter.
+  let both_tried = process.new_subject()
+  let both_claude_pool =
+    antigravity.pool_for_model(
+      home,
+      "both-claude-session",
+      "claude-sonnet-4-6",
+      limited_stream(["a1", "a2"], claude_quota, both_tried, token),
+    )
+  let assert Ok(c1) = both_claude_pool.current()
+  rotation.stream(
+    both_claude_pool,
+    c1,
+    openai_api.request("claude-sonnet-4-6", [types.User("hi")]),
+    fn(_) { types.Continue },
+    rotation.Budget(8, 0, fn(_) {
+      panic as "a spent quota lasts hours; it must not be waited on"
+    }),
+    fn(_) { Nil },
+  )
+  |> should.equal(Error(types.HttpError(429, claude_quota)))
+  let assert Ok(last) = both_claude_pool.current()
+  let assert Some(claude_msg) =
+    antigravity.explain(home, last, types.HttpError(429, claude_quota))
+  string.contains(claude_msg, "Antigravity Claude quota exhausted")
+  |> should.be_true
+  string.contains(claude_msg, "its claude meter") |> should.be_true
+  string.contains(
+    claude_msg,
+    "no other Google account has room on the Claude meter",
+  )
+  |> should.be_true
+
+  // Both a1 and a2 are now limited on Claude. When a2 also exhausts Gemini, and
+  // then a1 exhausts Gemini, no accounts have room on Gemini, and refusal message names
+  // the Gemini meter while mentioning sibling a2's Claude limit.
+  let assert Some(_) =
+    antigravity.explain(home, claude_next, types.HttpError(429, gemini_quota))
+  let assert Some(gemini_msg) =
+    antigravity.explain(home, first, types.HttpError(429, gemini_quota))
+  string.contains(
+    gemini_msg,
+    "Antigravity Gemini quota exhausted for one@example.com",
+  )
+  |> should.be_true
+  string.contains(gemini_msg, "its gemini meter") |> should.be_true
+  string.contains(
+    gemini_msg,
+    "no other Google account has room on the Gemini meter.",
+  )
+  |> should.be_true
+  string.contains(gemini_msg, "two@example.com is limited on Claude until")
+  |> should.be_true
+
+  cleanup(root)
+}
+
 pub fn antigravity_claude_declares_anthropic_image_limits_test() -> Nil {
   let #(root, _, home) = fixture()
   let _ = write(home, "creds.json", google_accounts)

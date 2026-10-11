@@ -144,7 +144,7 @@ pub fn encode_with(
       #("anthropic-beta", "interleaved-thinking-2025-05-14"),
       ..headers
     ]
-    catalog.Gemini -> headers
+    catalog.Gemini | catalog.GptOss -> headers
   }
   Ok(openai_api.Exchange(
     catalog.endpoint <> path,
@@ -444,7 +444,7 @@ fn trajectory(context: Context) -> String {
 fn labels(context: Context, input: List(Input)) -> Json {
   let claude = case catalog.family(context.model) {
     catalog.Claude -> "true"
-    catalog.Gemini -> "false"
+    catalog.Gemini | catalog.GptOss -> "false"
   }
   [
     #("last_step_index", json.string(int.to_string(step(input) - 1))),

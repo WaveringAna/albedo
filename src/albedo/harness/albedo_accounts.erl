@@ -1,24 +1,27 @@
 -module(albedo_accounts).
 %% Account pools shared by providers that hold several accounts or keys: the
 %% order a session tries them in, which one it sticks to, and the limits that
-%% push it onto a sibling. Accounts are maps; `selected` and `limitedUntil`
-%% are the only keys read here. Scope names the pool, e.g. <<"codex">>.
+%% push it onto a sibling. Accounts are maps; `selected`, `limitedUntil`, and
+%% `limitedMeters` are the only keys read here. Scope names the pool, e.g. <<"codex">>.
 
--export([order/4, remember/3, limited/2, mark/4, note/3, noted/2,
-         served/2, last_served/2, local_time/1]).
+-export([order/4, order/5, remember/3, limited/2, limited/3, mark/4, mark/5,
+         until_of/1, until_of/2, note/3, noted/2, served/2, last_served/2, local_time/1]).
 
 %% A user-selected account comes first, then the session's sticky or hashed
 %% choice. Accounts still inside a reported limit go last, soonest reset first:
 %% they are only worth trying when every sibling is limited too.
-order(_, [], _, _) -> [];
 order(Scope, Values, Session, Identity) ->
+    order(Scope, Values, Session, Identity, undefined).
+
+order(_, [], _, _, _) -> [];
+order(Scope, Values, Session, Identity, Meter) ->
     Now = erlang:system_time(millisecond),
     Sticky = case erlang:get({?MODULE, Scope, Session}) of
         Pinned when is_binary(Pinned), Pinned =/= <<>> -> {some, Pinned};
         _ -> none
     end,
     Entries = [begin
-        Until = until_of(Value),
+        Until = until_of(Value, Meter),
         Id = case Sticky of
             {some, _} when Until =< Now -> Identity(Value);
             _ -> <<>>
@@ -32,21 +35,56 @@ remember(Scope, Session, Id) ->
     erlang:put({?MODULE, Scope, Session}, Id),
     ok.
 
-limited(V, Now) -> until_of(V) > Now.
+limited(V, Now) -> limited(V, Now, undefined).
+limited(V, Now, Meter) -> until_of(V, Meter) > Now.
 
-until_of(#{<<"limitedUntil">> := Until}) when is_integer(Until) -> Until;
-until_of(_) -> 0.
+until_of(Value) -> until_of(Value, undefined).
+
+until_of(Value, undefined) ->
+    until_of_any(Value);
+until_of(Value, Meter) when is_binary(Meter) ->
+    case maps:find(<<"limitedMeters">>, Value) of
+        {ok, Meters} when is_map(Meters) ->
+            case maps:find(Meter, Meters) of
+                {ok, Until} when is_integer(Until) -> Until;
+                _ -> 0
+            end;
+        _ ->
+            until_of_legacy(Value)
+    end;
+until_of(Value, _) ->
+    until_of(Value, undefined).
+
+until_of_legacy(#{<<"limitedUntil">> := Until}) when is_integer(Until) -> Until;
+until_of_legacy(_) -> 0.
+
+until_of_any(Value) ->
+    Legacy = until_of_legacy(Value),
+    case maps:find(<<"limitedMeters">>, Value) of
+        {ok, Meters} when is_map(Meters) andalso map_size(Meters) > 0 ->
+            Vals = [U || U <- maps:values(Meters), is_integer(U)],
+            case Vals of
+                [] -> Legacy;
+                _ -> lists:max([Legacy | Vals])
+            end;
+        _ ->
+            Legacy
+    end.
 
 %% Records Until on the creds.json accounts under Key that Hit matches, and
 %% returns every account there, updated. A single stored object stays single.
 mark(Path, Key, Hit, Until) ->
+    mark(Path, Key, Hit, Until, undefined).
+
+mark(Path, Key, Hit, Until, Meter) ->
     albedo_settings_lock:with_lock(filename:dirname(Path), fun() ->
         case albedo_credentials:accounts(Path) of
             {ok, Data} ->
                 Stored = maps:get(Key, Data, []),
                 Values = case Stored of L when is_list(L) -> L; One -> [One] end,
+                Now = erlang:system_time(millisecond),
                 Updated = [case is_map(V) andalso Hit(V) of
-                               true -> V#{<<"limitedUntil">> => Until};
+                               true -> update_mark(V, Until, Meter, Now);
                                false -> V
                            end || V <- Values],
                 Kept = case Stored of L2 when is_list(L2) -> Updated; _ -> hd(Updated) end,
@@ -57,6 +95,13 @@ mark(Path, Key, Hit, Until) ->
             {error, _} -> {error, <<"stored credentials are unreadable">>}
         end
     end, fun() -> {error, <<"credential store is busy">>} end).
+
+update_mark(V, Until, undefined, _Now) ->
+    V#{<<"limitedUntil">> => Until};
+update_mark(V, Until, Meter, Now) when is_binary(Meter) ->
+    Meters = maps:get(<<"limitedMeters">>, V, #{}),
+    Live = maps:filter(fun(_, U) -> is_integer(U) andalso U > Now end, Meters),
+    V#{<<"limitedMeters">> => Live#{Meter => Until}}.
 
 %% Limits for accounts that do not live in creds.json's accounts, such as
 %% profile API keys or the environment. They last as long as the daemon, which

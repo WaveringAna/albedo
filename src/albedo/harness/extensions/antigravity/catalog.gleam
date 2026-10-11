@@ -19,6 +19,7 @@ pub const endpoint = "https://daily-cloudcode-pa.googleapis.com"
 pub type Family {
   Gemini
   Claude
+  GptOss
 }
 
 /// How a model is asked to think: token budgets per effort, or Google's
@@ -44,10 +45,42 @@ pub type Model {
 }
 
 pub fn family(model: Model) -> Family {
-  case string.starts_with(model.id, "claude-") {
+  family_of_id(model.id)
+}
+
+pub fn family_of_id(id: String) -> Family {
+  case string.starts_with(id, "claude-") {
     True -> Claude
-    False -> Gemini
+    False ->
+      case string.starts_with(id, "gpt-oss-") {
+        True -> GptOss
+        False -> Gemini
+      }
   }
+}
+
+pub fn meter_name(fam: Family) -> String {
+  case fam {
+    Gemini -> "gemini"
+    Claude -> "claude"
+    GptOss -> "gpt-oss"
+  }
+}
+
+pub fn family_title(fam: Family) -> String {
+  case fam {
+    Gemini -> "Gemini"
+    Claude -> "Claude"
+    GptOss -> "GPT-OSS"
+  }
+}
+
+pub fn meter(model: Model) -> String {
+  meter_name(family(model))
+}
+
+pub fn meter_of_id(id: String) -> String {
+  meter_name(family_of_id(id))
 }
 
 /// Claude and GPT-OSS routes correlate function calls and responses by id.

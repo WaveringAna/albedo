@@ -2,7 +2,8 @@
 %% Antigravity credentials and request identity.
 
 -include_lib("kernel/include/file.hrl").
--export([access/1, access/2, access/3, limited/3, encode/1, session_number/1, uuid/1,
+-export([access/1, access/2, access/3, access/4, limited/3, limited/4, limit/1, limit/2,
+         meter_of/1, meter_of/2, heal/3, encode/1, session_number/1, uuid/1,
          call_id/0, user_agent/1, discovered/1, refresh/1, reload/1, expire/2,
          exchange/4, discover/3, account/1, client_id/0, accounts/1]).
 
@@ -32,13 +33,23 @@ access(Home) -> access(Home, <<>>).
 %% with accounts inside a reported limit last.
 access(Home, Session0) -> access(Home, Session0, <<>>).
 
-access(Home, Session0, Profile) ->
+access(Home, Session0, Profile) -> access(Home, Session0, Profile, undefined).
+
+access(Home, Session0, Profile, Meter0) ->
     Session = unicode:characters_to_binary(Session0),
+    Meter = case Meter0 of
+        {some, M} when is_binary(M) -> M;
+        none -> undefined;
+        undefined -> undefined;
+        M when is_binary(M) -> M;
+        _ -> undefined
+    end,
     Path = albedo_credentials:creds_path(Home),
     case albedo_credentials:accounts(Path) of
         {ok, Data} ->
-            case albedo_credentials:bound_values(Home, Profile, credentials(Data)) of
-                {ok, Credentials} -> first_usable(albedo_accounts:order(?SCOPE, Credentials, Session, fun account_id/1), Path, Session);
+            Raw = credentials(Data),
+            case albedo_credentials:bound_values(Home, Profile, Raw) of
+                {ok, Credentials} -> first_usable(albedo_accounts:order(?SCOPE, Credentials, Session, fun account_id/1, Meter), Path, Session);
                 Error -> Error
             end;
         {error, _} -> {error, ?SIGNED_OUT}
@@ -96,22 +107,37 @@ field(Value, Key) ->
 %% it. Returns a JSON summary, or {error, not_a_limit} when the body is not a
 %% per-account limit: a model out of capacity for everyone moves nobody.
 limited(Home, Access, Body) ->
-    case limit(Body) of
-        {ok, Until, Lasting} ->
+    limited(Home, Access, Body, undefined).
+
+limited(Home, Access, Body, FallbackMeter0) ->
+    FallbackMeter = case FallbackMeter0 of
+        {some, FM} -> FM;
+        none -> undefined;
+        FM -> FM
+    end,
+    case limit(Body, FallbackMeter) of
+        {ok, {limit, Until, Lasting, OptMeter}} ->
+            Meter = case OptMeter of {some, M} -> M; none -> undefined; M when is_binary(M) -> M end,
             Path = albedo_credentials:creds_path(Home),
             Hit = fun(V) -> maps:get(<<"access">>, V, <<>>) =:= Access end,
-            case albedo_accounts:mark(Path, ?KEY, Hit, Until) of
+            case albedo_accounts:mark(Path, ?KEY, Hit, Until, Meter) of
                 {ok, Updated} ->
                     Values = credentials(#{?KEY => Updated}),
                     Now = erlang:system_time(millisecond),
-                    Next = [V || V <- albedo_accounts:order(?SCOPE, Values, <<>>, fun account_id/1),
-                                 not Hit(V), not albedo_accounts:limited(V, Now)],
+                    Next = [V || V <- albedo_accounts:order(?SCOPE, Values, <<>>, fun account_id/1, Meter),
+                                 not Hit(V), not albedo_accounts:limited(V, Now, Meter)],
                     Account = label([V || V <- Values, Hit(V)]),
                     UntilText = albedo_accounts:local_time(Until),
                     NextText = label(Next),
-                    {ok, {limited, Account, UntilText, NextText, Lasting}};
+                    MeterText = case Meter of undefined -> <<>>; Val -> Val end,
+                    SiblingStatus = case Next of
+                        [] -> sibling_status(Values, Hit, Now);
+                        _ -> <<>>
+                    end,
+                    {ok, {limited, Account, UntilText, NextText, Lasting, MeterText, SiblingStatus}};
                 Error -> Error
             end;
+        {error, _} -> {error, <<"not_a_limit">>};
         error -> {error, <<"not_a_limit">>}
     end.
 
@@ -119,9 +145,63 @@ label([#{<<"email">> := <<_, _/binary>> = Email} | _]) -> Email;
 label([_ | _]) -> <<"another Google account">>;
 label([]) -> <<>>.
 
+sibling_status(Values, Hit, Now) ->
+    Siblings = [V || V <- Values, not Hit(V)],
+    Notes = lists:filtermap(fun(V) -> sibling_note(V, Now) end, Siblings),
+    case Notes of
+        [] -> <<>>;
+        _ -> iolist_to_binary([<<" ">>, lists:join(<<" ">>, Notes)])
+    end.
+
+sibling_note(V, Now) ->
+    Label = account_id(V),
+    case maps:get(<<"limitedMeters">>, V, undefined) of
+        Meters when is_map(Meters), map_size(Meters) > 0 ->
+            Active = [{M, U} || {M, U} <- maps:to_list(Meters), is_integer(U), U > Now],
+            case Active of
+                [{Meter, Until} | _] ->
+                    {true, iolist_to_binary(io_lib:format("~s is limited on ~s until ~s.",
+                        [Label, meter_title(Meter), albedo_accounts:local_time(Until)]))};
+                [] -> false
+            end;
+        _ ->
+            case maps:get(<<"limitedUntil">>, V, 0) of
+                Until when is_integer(Until), Until > Now ->
+                    {true, iolist_to_binary(io_lib:format("~s is limited until ~s.",
+                        [Label, albedo_accounts:local_time(Until)]))};
+                _ -> false
+            end
+    end.
+
+meter_title(<<"gemini">>) -> <<"Gemini">>;
+meter_title(<<"claude">>) -> <<"Claude">>;
+meter_title(<<"gpt-oss">>) -> <<"GPT-OSS">>;
+meter_title(Other) when is_binary(Other) -> Other.
+
+meter_of(undefined) -> undefined;
+meter_of(<<>>) -> undefined;
+meter_of(<<"claude-", _/binary>>) -> <<"claude">>;
+meter_of(<<"gpt-oss-", _/binary>>) -> <<"gpt-oss">>;
+meter_of(<<"claude">>) -> <<"claude">>;
+meter_of(<<"gpt-oss">>) -> <<"gpt-oss">>;
+meter_of(<<"gemini">>) -> <<"gemini">>;
+meter_of(Text) when is_binary(Text) -> <<"gemini">>;
+meter_of(Text) when is_list(Text) -> meter_of(unicode:characters_to_binary(Text));
+meter_of(_) -> undefined.
+
+meter_of(Model, Fallback) ->
+    case meter_of(Model) of
+        undefined -> meter_of(Fallback);
+        Meter -> Meter
+    end.
+
 %% Google explains a 429 in google.rpc details: an ErrorInfo reason with an
 %% optional reset in its metadata, and a RetryInfo delay.
-limit(Body) ->
+limit(Body) -> limit(Body, undefined).
+
+limit(Body, {some, Fallback}) -> limit(Body, Fallback);
+limit(Body, none) -> limit(Body, undefined);
+limit(Body, Fallback) ->
     try json:decode(unicode:characters_to_binary(Body)) of
         #{<<"error">> := #{} = Error} ->
             Details = [D || D <- maps:get(<<"details">>, Error, []), is_map(D)],
@@ -138,16 +218,18 @@ limit(Body) ->
             Capacity = lists:member(<<"MODEL_CAPACITY_EXHAUSTED">>, Reasons),
             Exhausted = maps:get(<<"status">>, Error, <<>>) =:= <<"RESOURCE_EXHAUSTED">>
                         orelse maps:get(<<"code">>, Error, 0) =:= 429,
+            Meter = meter_of(maps:get(<<"model">>, Metadata, undefined), Fallback),
+            OptMeter = case Meter of undefined -> none; M -> {some, M} end,
             case {Capacity, Quota, Reset} of
-                {true, _, _} -> error;
-                {_, true, undefined} -> {ok, Now + ?DEFAULT_LIMIT_MS, true};
-                {_, true, In} -> {ok, Now + In, true};
-                {_, _, undefined} when Exhausted -> {ok, Now + ?RATE_LIMIT_MS, false};
-                {_, _, In} when Exhausted -> {ok, Now + In, In > ?BRIEF_MS};
-                _ -> error
+                {true, _, _} -> {error, nil};
+                {_, true, undefined} -> {ok, {limit, Now + ?DEFAULT_LIMIT_MS, true, OptMeter}};
+                {_, true, In} -> {ok, {limit, Now + In, true, OptMeter}};
+                {_, _, undefined} when Exhausted -> {ok, {limit, Now + ?RATE_LIMIT_MS, false, OptMeter}};
+                {_, _, In} when Exhausted -> {ok, {limit, Now + In, In > ?BRIEF_MS, OptMeter}};
+                _ -> {error, nil}
             end;
-        _ -> error
-    catch _:_ -> error
+        _ -> {error, nil}
+    catch _:_ -> {error, nil}
     end.
 
 first_reset(List) -> hd([In || In <- List, is_integer(In), In > 0] ++ [undefined]).
@@ -319,17 +401,73 @@ account(Credential) when is_map(Credential) ->
         _ -> <<"antigravity account">>
     end,
     Selected = maps:get(<<"selected">>, Credential, false) =:= true,
+    Now = erlang:system_time(millisecond),
     Detail = iolist_to_binary([
         <<"antigravity account">>,
-        case Selected of true -> <<" · selected"/utf8>>; false -> <<>> end,
-        case albedo_accounts:limited(Credential, erlang:system_time(millisecond)) of
-            true -> [<<" · limited until "/utf8>>,
-                     albedo_accounts:local_time(maps:get(<<"limitedUntil">>, Credential))];
-            false -> <<>>
-        end
+        case Selected of true -> [<<" · selected"/utf8>>]; false -> [] end,
+        account_limit_detail(Credential, Now)
     ]),
     {account, Id, Label, Detail, Selected};
 account(_) -> {account, <<>>, <<"invalid antigravity account">>, <<>>, false}.
+
+account_limit_detail(Credential, Now) ->
+    case maps:get(<<"limitedMeters">>, Credential, undefined) of
+        Meters when is_map(Meters), map_size(Meters) > 0 ->
+            Active = [{M, U} || {M, U} <- maps:to_list(Meters), is_integer(U), U > Now],
+            case Active of
+                [] -> [];
+                _ ->
+                    [begin
+                        [<<" · limited on "/utf8>>, meter_title(M), <<" until ">>, albedo_accounts:local_time(U)]
+                    end || {M, U} <- Active]
+            end;
+        _ ->
+            case maps:get(<<"limitedUntil">>, Credential, 0) of
+                Until when is_integer(Until), Until > Now ->
+                    [<<" · limited until "/utf8>>, albedo_accounts:local_time(Until)];
+                _ -> []
+            end
+    end.
+
+heal(Home, AccountId, LimitPairs) ->
+    Path = albedo_credentials:creds_path(Home),
+    albedo_settings_lock:with_lock(filename:dirname(Path), fun() ->
+        case albedo_credentials:accounts(Path) of
+            {ok, Data} ->
+                Stored = maps:get(?KEY, Data, []),
+                Values = case Stored of L when is_list(L) -> L; One -> [One] end,
+                Now = erlang:system_time(millisecond),
+                {Updated, Changed} = lists:mapfoldl(fun(V, Acc) ->
+                    case is_map(V) andalso (account_id(V) =:= AccountId orelse maps:get(<<"email">>, V, <<>>) =:= AccountId)
+                         andalso maps:is_key(<<"limitedUntil">>, V) of
+                        true ->
+                            Until = maps:get(<<"limitedUntil">>, V),
+                            CleanV = maps:remove(<<"limitedUntil">>, V),
+                            Matched = [Id || {Id, ResetsAt} <- LimitPairs, ResetsAt =:= Until],
+                            NewV = case Matched of
+                                [_ | _] ->
+                                    Meters = maps:get(<<"limitedMeters">>, CleanV, #{}),
+                                    Live = maps:filter(fun(_, U) -> is_integer(U) andalso U > Now end, Meters),
+                                    Added = lists:foldl(fun(MeterId, AccM) -> AccM#{MeterId => Until} end, Live, Matched),
+                                    CleanV#{<<"limitedMeters">> => Added};
+                                [] ->
+                                    CleanV
+                            end,
+                            {NewV, true};
+                        false ->
+                            {V, Acc}
+                    end
+                end, false, Values),
+                case Changed of
+                    true ->
+                        Kept = case Stored of L2 when is_list(L2) -> Updated; _ -> hd(Updated) end,
+                        albedo_credentials:put_accounts(Path, Data#{?KEY => Kept});
+                    false -> ok
+                end;
+            _ -> ok
+        end
+    end, fun() -> ok end),
+    nil.
 
 %% ---- request identity ---------------------------------------------------
 

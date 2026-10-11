@@ -375,9 +375,10 @@ fn start_due(state: State, now: Int) -> State {
     case account.next_due <= now, account.polling {
       True, None -> {
         let target = account.target
+        let home = state.home
         let pid =
           process.spawn_unlinked(fn() {
-            let #(failed, busy) = run(fetch, database, target)
+            let #(failed, busy) = run(fetch, database, target, home)
             process.send(self, Polled(key, failed, busy))
           })
         let _ = process.monitor(pid)
@@ -496,11 +497,21 @@ fn minimum(values: List(Int)) -> Option(Int) {
 /// One poll of one account, off the poller: whatever comes back is recorded
 /// exactly as it came, then the schedule hears whether it failed and whether
 /// the account is busy.
-fn run(fetch: Fetch, database: store.Store, target: Target) -> #(Bool, Bool) {
+fn run(
+  fetch: Fetch,
+  database: store.Store,
+  target: Target,
+  home: String,
+) -> #(Bool, Bool) {
   let now = clock.system_ms()
   case fetch(target.provider, target.credential, now) {
     Ok(report) -> {
       record(database, target, report.plan, report.limits, report.error, now)
+      case target.provider {
+        "google-antigravity" ->
+          heal_antigravity(home, target.label, report.limits)
+        _ -> Nil
+      }
       #(report.error != None, is_busy(report, now))
     }
     Error(message) -> {
@@ -509,6 +520,28 @@ fn run(fetch: Fetch, database: store.Store, target: Target) -> #(Bool, Bool) {
     }
   }
 }
+
+fn heal_antigravity(
+  home: String,
+  account: String,
+  limits: List(usage_feed.Limit),
+) -> Nil {
+  let pairs =
+    list.filter_map(limits, fn(limit) {
+      case limit.resets_at {
+        Some(resets_at) -> Ok(#(limit.id, resets_at))
+        None -> Error(Nil)
+      }
+    })
+  native_heal(home, account, pairs)
+}
+
+@external(erlang, "albedo_antigravity", "heal")
+fn native_heal(
+  home: String,
+  account: String,
+  pairs: List(#(String, Int)),
+) -> Nil
 
 fn is_busy(report: Report, now: Int) -> Bool {
   list.any(report.limits, fn(limit) {

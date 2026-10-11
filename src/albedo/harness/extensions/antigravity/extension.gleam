@@ -104,10 +104,12 @@ fn resolve(
     "Antigravity",
     types.ChatCompletions,
   )
+  let meter = catalog.meter_of_id(context.model)
   use access <- result.map(connect(
     context.home,
     context.session,
     context.profile,
+    Some(meter),
   ))
   upstream(
     context.home,
@@ -125,7 +127,7 @@ fn resolve(
 fn search(query: web_search.Query) -> Result(web_search.Answer, String) {
   let home = settings.home()
   // Signed out fails here, before listing models can reach the network.
-  use access <- result.try(connect(home, query.session, ""))
+  use access <- result.try(connect(home, query.session, "", Some("gemini")))
   use model <- result.try(case web_search.configured_model("antigravity") {
     Some(model) -> Ok(model)
     None ->
@@ -145,13 +147,25 @@ fn search(query: web_search.Query) -> Result(web_search.Answer, String) {
   )
 }
 
+pub type Limited {
+  Limited(
+    account: String,
+    until: String,
+    next: String,
+    lasting: Bool,
+    meter: String,
+    sibling_status: String,
+  )
+}
+
 /// The session's current account.
 fn connect(
   home: String,
   session: String,
   profile: String,
+  meter: Option(String),
 ) -> Result(Access, String) {
-  native_access(home, session, profile)
+  native_access(home, session, profile, meter)
 }
 
 /// Streams on `access`, and on sibling Google accounts when it hits a limit.
@@ -163,30 +177,37 @@ fn upstream(
   model: catalog.Model,
   user_agent: String,
 ) -> extension.Upstream {
+  let meter = catalog.meter(model)
   rotation.upstream(
     catalog.endpoint,
     types.ChatCompletions,
-    profile_pool(home, session, profile, fn(access, request, on_event) {
-      let resolved_model =
-        catalog.resolve_variant(home, model.id, request.options.effort)
-      let context =
-        wire.Context(
-          access.token,
-          access.project,
-          session,
-          resolved_model,
-          user_agent,
-        )
-      use exchange <- result.try(wire.encode(context, request))
-      openai_api.exchange(exchange, stream.reducer(resolved_model), on_event)
-    }),
+    profile_pool(
+      home,
+      session,
+      profile,
+      Some(meter),
+      fn(access, request, on_event) {
+        let resolved_model =
+          catalog.resolve_variant(home, model.id, request.options.effort)
+        let context =
+          wire.Context(
+            access.token,
+            access.project,
+            session,
+            resolved_model,
+            user_agent,
+          )
+        use exchange <- result.try(wire.encode(context, request))
+        openai_api.exchange(exchange, stream.reducer(resolved_model), on_event)
+      },
+    ),
     access,
-    fn(access, error) { explain(home, access, error) },
+    fn(access, error) { explain_fallback(home, access, error, Some(meter)) },
     // The Google account's email; blank credentials report no account.
     fn(access) { access.email },
     case catalog.family(model) {
       catalog.Claude -> types.anthropic_images
-      catalog.Gemini -> types.any_images
+      catalog.Gemini | catalog.GptOss -> types.any_images
     },
   )
 }
@@ -200,20 +221,41 @@ pub fn pool(
   stream: fn(Access, types.Request, fn(types.Event) -> types.Control) ->
     Result(types.Turn, types.Error),
 ) -> rotation.Pool(Access) {
-  profile_pool(home, session, "", stream)
+  profile_pool(home, session, "", None, stream)
+}
+
+pub fn pool_for_model(
+  home: String,
+  session: String,
+  model: String,
+  stream: fn(Access, types.Request, fn(types.Event) -> types.Control) ->
+    Result(types.Turn, types.Error),
+) -> rotation.Pool(Access) {
+  profile_pool(home, session, "", Some(catalog.meter_of_id(model)), stream)
 }
 
 fn profile_pool(
   home: String,
   session: String,
   profile: String,
+  meter: Option(String),
   stream: fn(Access, types.Request, fn(types.Event) -> types.Control) ->
     Result(types.Turn, types.Error),
 ) -> rotation.Pool(Access) {
   rotation.Pool(
-    current: fn() { connect(home, session, profile) },
+    current: fn() { connect(home, session, profile, meter) },
     mark: fn(access, body) {
-      limited(home, access, body) |> rotation.mark_limit
+      case limited(home, access, body, meter) {
+        Ok(limit) ->
+          Some(rotation.Marked(
+            case limit.lasting {
+              True -> rotation.Lasting
+              False -> rotation.Brief
+            },
+            room: limit.next != "",
+          ))
+        Error(_) -> None
+      }
     },
     same: fn(a, b) { a.token == b.token },
     stream: stream,
@@ -224,8 +266,9 @@ fn limited(
   home: String,
   access: Access,
   body: String,
-) -> Result(rotation.Limited, Nil) {
-  native_limited(home, access.token, body)
+  fallback_meter: Option(String),
+) -> Result(Limited, Nil) {
+  native_limited(home, access.token, body, fallback_meter)
   |> result.replace_error(Nil)
 }
 
@@ -233,6 +276,24 @@ pub fn explain(
   home: String,
   access: Access,
   error: types.Error,
+) -> Option(String) {
+  explain_fallback(home, access, error, None)
+}
+
+pub fn explain_for_model(
+  home: String,
+  access: Access,
+  error: types.Error,
+  model: String,
+) -> Option(String) {
+  explain_fallback(home, access, error, Some(catalog.meter_of_id(model)))
+}
+
+fn explain_fallback(
+  home: String,
+  access: Access,
+  error: types.Error,
+  fallback_meter: Option(String),
 ) -> Option(String) {
   let account = case access.email {
     "" -> "this Google account"
@@ -248,7 +309,7 @@ pub fn explain(
       )
     }
     types.HttpError(429, body) ->
-      case limited(home, access, body) {
+      case limited(home, access, body, fallback_meter) {
         Ok(limit) -> Some(limit_message(account, limit))
         Error(_) ->
           Some(
@@ -276,16 +337,46 @@ pub fn explain(
 
 /// By the time this explains a limit, the rotation has already tried every
 /// sibling with room.
-fn limit_message(account: String, limit: rotation.Limited) -> String {
+fn limit_message(account: String, limit: Limited) -> String {
   let kind = case limit.lasting {
     True -> "quota exhausted"
     False -> "rate limited"
   }
-  rotation.limit_message(
-    "Antigravity " <> kind <> " for " <> account <> " until " <> limit.until,
-    limit.next,
-    "no other Google account has room. Add one with /login or wait for the reset",
-  )
+  case limit.meter {
+    "" ->
+      rotation.limit_message(
+        "Antigravity " <> kind <> " for " <> account <> " until " <> limit.until,
+        limit.next,
+        "no other Google account has room. Add one with /login or wait for the reset",
+      )
+    meter -> {
+      let title = case meter {
+        "gemini" -> "Gemini"
+        "claude" -> "Claude"
+        "gpt-oss" -> "GPT-OSS"
+        _ -> meter
+      }
+      let head =
+        "Antigravity "
+        <> title
+        <> " "
+        <> kind
+        <> " for "
+        <> account
+        <> " until "
+        <> limit.until
+        <> " (its "
+        <> meter
+        <> " meter)"
+      let none_left =
+        "no other Google account has room on the "
+        <> title
+        <> " meter."
+        <> limit.sibling_status
+        <> " Add one with /login or wait for the reset"
+      rotation.limit_message(head, limit.next, none_left)
+    }
+  }
 }
 
 @external(erlang, "albedo_antigravity", "user_agent")
@@ -313,6 +404,7 @@ fn native_access(
   home: String,
   session: String,
   profile: String,
+  meter: Option(String),
 ) -> Result(Access, String)
 
 @external(erlang, "albedo_antigravity", "limited")
@@ -320,4 +412,5 @@ fn native_limited(
   home: String,
   access: String,
   body: String,
-) -> Result(rotation.Limited, String)
+  fallback_meter: Option(String),
+) -> Result(Limited, String)

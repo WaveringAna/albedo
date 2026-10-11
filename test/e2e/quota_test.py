@@ -66,6 +66,39 @@ def report_for(provider, credential):
                 "limits": [{"id": "weekly", "label": "Weekly usage",
                             "usedPercent": 5, "windowLabel": "7 days",
                             "status": "ok"}]}
+    if provider == "google-antigravity":
+        now_ms = int(time.time() * 1000)
+        return {
+            "limits": [
+                {
+                    "id": "gemini",
+                    "label": "Gemini",
+                    "usedPercent": 65,
+                    "windowLabel": "1 hour",
+                    "windowSeconds": 3600,
+                    "resetsAt": now_ms + 3600000,
+                    "status": "ok",
+                },
+                {
+                    "id": "claude",
+                    "label": "Claude",
+                    "usedPercent": 100,
+                    "windowLabel": "6 days",
+                    "windowSeconds": 518400,
+                    "resetsAt": 1799999999000,
+                    "status": "exceeded",
+                },
+                {
+                    "id": "gpt-oss",
+                    "label": "GPT-OSS",
+                    "usedPercent": 100,
+                    "windowLabel": "6 days",
+                    "windowSeconds": 518400,
+                    "resetsAt": 1799999999000,
+                    "status": "exceeded",
+                },
+            ]
+        }
     if provider == "deepseek":
         return {"error": "the fixture deepseek key has no quota"}
     return {"limits": [{"id": "primary", "label": "Primary", "usedPercent": 85,
@@ -131,7 +164,18 @@ class QuotaTests(unittest.TestCase):
                             "expires": int(time.time() * 1000) + 3600000,
                             "accountId": "recovering-account",
                         },
-                    ]
+                    ],
+                    "google-antigravity": [
+                        {
+                            "type": "oauth",
+                            "access": "fixture-antigravity-access",
+                            "refresh": "fixture-antigravity-refresh",
+                            "expires": int(time.time() * 1000) + 3600000,
+                            "projectId": "fixture-project",
+                            "email": "antigravity@example.com",
+                            "limitedUntil": 1799999999000,
+                        }
+                    ],
                 },
             )
 
@@ -217,7 +261,14 @@ class QuotaTests(unittest.TestCase):
     def test_readings_land_and_each_account_keeps_its_cadence(self):
         # Readings land for every account: the OAuth account from creds.json,
         # the hyper-charm profile, and the deepseek profile.
-        wanted = {("anthropic", "weekly"), ("hyper", "primary"), ("deepseek", "")}
+        wanted = {
+            ("anthropic", "weekly"),
+            ("hyper", "primary"),
+            ("deepseek", ""),
+            ("google-antigravity", "gemini"),
+            ("google-antigravity", "claude"),
+            ("google-antigravity", "gpt-oss"),
+        }
         reading = {}
         deadline = time.monotonic() + 40
         while time.monotonic() < deadline:
@@ -256,6 +307,48 @@ class QuotaTests(unittest.TestCase):
         self.assertLessEqual(len(deepseek["error"]["detail"]), 4096)
         self.assertIsNone(deepseek["used_percent"])
         self.assertIsNone(deepseek["plan"])
+
+        # Google Antigravity readings for all three model-family meters
+        gemini = reading[("google-antigravity", "gemini")]
+        self.assertEqual(gemini["account_id"], "antigravity@example.com")
+        self.assertEqual(gemini["used_percent"], 65.0)
+        self.assertEqual(gemini["window_label"], "1 hour")
+        self.assertEqual(gemini["window_seconds"], 3600)
+        self.assertEqual(gemini["status"], "ok")
+
+        claude = reading[("google-antigravity", "claude")]
+        self.assertEqual(claude["account_id"], "antigravity@example.com")
+        self.assertEqual(claude["used_percent"], 100.0)
+        self.assertEqual(claude["window_label"], "6 days")
+        self.assertEqual(claude["window_seconds"], 518400)
+        self.assertEqual(claude["status"], "exceeded")
+
+        gpt_oss = reading[("google-antigravity", "gpt-oss")]
+        self.assertEqual(gpt_oss["account_id"], "antigravity@example.com")
+        self.assertEqual(gpt_oss["used_percent"], 100.0)
+        self.assertEqual(gpt_oss["window_label"], "6 days")
+        self.assertEqual(gpt_oss["window_seconds"], 518400)
+        self.assertEqual(gpt_oss["status"], "exceeded")
+
+        # The poller heal re-keyed creds.json with legacy limitedUntil replaced by limitedMeters
+        def healed():
+            creds_path = self.app.home / "creds.json"
+            if not creds_path.exists():
+                return False
+            data = (
+                json.loads(creds_path.read_text())
+                .get("accounts", {})
+                .get("google-antigravity", [])
+            )
+            return bool(data and "limitedMeters" in data[0])
+
+        self.wait_for(healed, 15, "poller heal did not re-key creds.json")
+        creds = json.loads((self.app.home / "creds.json").read_text())["accounts"][
+            "google-antigravity"
+        ][0]
+        self.assertNotIn("limitedUntil", creds)
+        self.assertIn("limitedMeters", creds)
+        self.assertEqual(creds["limitedMeters"]["claude"], 1799999999000)
 
         # Enough polls of each account to read a cadence off the intervals.
         self.wait_for(

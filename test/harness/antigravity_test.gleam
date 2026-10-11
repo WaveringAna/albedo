@@ -11,7 +11,7 @@ import gleam/dynamic/decode
 import gleam/int
 import gleam/json
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/string
 import gleam/string_tree
 
@@ -528,4 +528,63 @@ pub fn stream_errors_surface_the_provider_message_test() -> Result(
   let reducer = stream.reducer(model(gemini))
   let assert Error(types.ProviderError("quota")) =
     reducer.feed("{\"error\":{\"code\":429,\"message\":\"quota\"}}")
+}
+
+pub type LimitResult {
+  LimitResult(until: Int, lasting: Bool, meter: Option(String))
+}
+
+@external(erlang, "albedo_antigravity", "limit")
+fn native_limit(body: String) -> Result(LimitResult, Nil)
+
+@external(erlang, "albedo_antigravity", "limit")
+fn native_limit_fallback(
+  body: String,
+  fallback: Option(String),
+) -> Result(LimitResult, Nil)
+
+pub fn limit_extracts_claude_meter_from_metadata_model_test() -> Nil {
+  let body =
+    "{\"error\":{\"code\":429,\"status\":\"RESOURCE_EXHAUSTED\",\"details\":[{\"@type\":\"type.googleapis.com/google.rpc.ErrorInfo\",\"reason\":\"QUOTA_EXHAUSTED\",\"metadata\":{\"model\":\"claude-sonnet-5-5-high\",\"quotaResetDelay\":\"60s\"}}]}}"
+  let assert Ok(result) = native_limit(body)
+  assert result.meter == Some("claude")
+  assert result.lasting == True
+}
+
+pub fn limit_extracts_gpt_oss_meter_from_metadata_model_test() -> Nil {
+  let body =
+    "{\"error\":{\"code\":429,\"status\":\"RESOURCE_EXHAUSTED\",\"details\":[{\"@type\":\"type.googleapis.com/google.rpc.ErrorInfo\",\"reason\":\"QUOTA_EXHAUSTED\",\"metadata\":{\"model\":\"gpt-oss-120b-medium\",\"quotaResetDelay\":\"60s\"}}]}}"
+  let assert Ok(result) = native_limit(body)
+  assert result.meter == Some("gpt-oss")
+  assert result.lasting == True
+}
+
+pub fn limit_extracts_gemini_meter_from_metadata_model_test() -> Nil {
+  let body =
+    "{\"error\":{\"code\":429,\"status\":\"RESOURCE_EXHAUSTED\",\"details\":[{\"@type\":\"type.googleapis.com/google.rpc.ErrorInfo\",\"reason\":\"QUOTA_EXHAUSTED\",\"metadata\":{\"model\":\"gemini-3.8-flash-medium\",\"quotaResetDelay\":\"60s\"}}]}}"
+  let assert Ok(result) = native_limit(body)
+  assert result.meter == Some("gemini")
+  assert result.lasting == True
+}
+
+pub fn limit_falls_back_to_request_family_when_metadata_model_missing_test() -> Nil {
+  let body =
+    "{\"error\":{\"code\":429,\"status\":\"RESOURCE_EXHAUSTED\",\"details\":[{\"@type\":\"type.googleapis.com/google.rpc.ErrorInfo\",\"reason\":\"QUOTA_EXHAUSTED\",\"metadata\":{\"quotaResetDelay\":\"60s\"}}]}}"
+  let assert Ok(claude_result) = native_limit_fallback(body, Some("claude"))
+  assert claude_result.meter == Some("claude")
+
+  let assert Ok(gemini_result) = native_limit_fallback(body, Some("gemini"))
+  assert gemini_result.meter == Some("gemini")
+
+  let assert Ok(gpt_result) = native_limit_fallback(body, Some("gpt-oss"))
+  assert gpt_result.meter == Some("gpt-oss")
+
+  let assert Ok(no_fallback) = native_limit(body)
+  assert no_fallback.meter == None
+}
+
+pub fn model_capacity_exhausted_marks_nobody_test() -> Nil {
+  let body =
+    "{\"error\":{\"code\":429,\"status\":\"RESOURCE_EXHAUSTED\",\"details\":[{\"@type\":\"type.googleapis.com/google.rpc.ErrorInfo\",\"reason\":\"MODEL_CAPACITY_EXHAUSTED\",\"metadata\":{\"model\":\"claude-sonnet-5-5-high\"}}]}}"
+  assert native_limit(body) == Error(Nil)
 }
