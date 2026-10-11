@@ -62,10 +62,19 @@ without starting a kernel. Unknown observations are null. The list contains up
 to 100 live jobs ordered by ID, with `id`, nullable `pid`, `command` (up to
 4096 scalars), and `started_at`: wall-clock milliseconds when the port owner
 recorded the job's group, zero when unknown (a restored link older than the
-field). The count can exceed the list by the remote jobs the kernel's remote
-connections report (`{"type": "jobs", "live": n, "awaited": m}`, `m` the ones
-not started as services): they own no group on this machine, so they are
-counted, not listed.
+field). Jobs the kernel's remote connections run (`remote.connect(...).run`)
+are listed beside the local ones, with no `pid` (they own no group on this
+machine) and the wall-clock time the connection first saw them. The remote
+plugin reports them as `{"type": "jobs", "live": n, "awaited": m, "items":
+[{id, command, service, started}]}`, `m` the ones not started as services; the
+port owner keeps the latest frame (and a reattach's hello carries it as
+`external_jobs`). A kernel from before `items` reports counts only, and the
+count then exceeds the list by the awaited ones it could not name.
+`kernel.awaited_jobs` is the one definition of which listed jobs will wake the
+session (not `service`); `awaits_jobs` (the cache warmer, resumed kernels) and
+the session's still-running summary both ask it, so an extension never reads
+`service` itself. Stopping a remote job through `/jobs` is refused: only
+the cell that started it can.
 The TUI uses these observations for its idle-job status, animation, and
 sidebar, and calls a job background only once it has run three seconds
 (`jobGrace`), so work a cell starts and awaits never flashes through the
@@ -255,7 +264,7 @@ the daemon writes `{"attach": {"kernel", "token", "ack", "grace"}}` first. the
 kernel checks the token (kept in the daemon's sqlite), bumps its epoch, cuts
 off any older connection (newest attach wins), and answers
 `{"hello": {protocol, bundle, epoch, ack, pid, pgid, leader, ready, jobs,
-external, dropped}}`, or `{"refused": reason}`. `protocol` (1) and the
+external, awaited_external, external_jobs, dropped}}`, or `{"refused": reason}`. `protocol` (1) and the
 hello reports the running `cells` count. `bundle` is
 `albedo_bundle.digest()`, the same content hash the remote plugin stages
 under; a hello whose bundle or protocol differs from the bridge's (or, for a

@@ -175,6 +175,7 @@ class JobBook:
         self.started: dict[str, dict[str, object]] = {}
         self.external = 0
         self.awaited_external = 0
+        self.external_jobs: list[object] = []
 
     def observe(self, frame: dict[str, object]) -> None:
         kind, id = frame.get("type"), frame.get("id")
@@ -189,8 +190,10 @@ class JobBook:
         elif kind == "jobs":
             live = count_of(frame.get("live"))
             awaited = count_of(frame.get("awaited", 0))
+            items = frame.get("items")
             if live is not None and awaited is not None:
                 self.external, self.awaited_external = live, awaited
+                self.external_jobs = items if isinstance(items, list) else []
 
     def live(self) -> int:
         return len(self.started) + self.external
@@ -335,6 +338,7 @@ class SocketLink:
                 "jobs": list(self.jobs.started.values()),
                 "external": self.jobs.external,
                 "awaited_external": self.jobs.awaited_external,
+                "external_jobs": self.jobs.external_jobs,
                 "dropped": self.outbox.dropped,
             }
             write_frame(connection.send, encode({"hello": hello}))

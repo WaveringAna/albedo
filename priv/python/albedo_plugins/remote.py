@@ -24,9 +24,10 @@ import json
 import os
 import shlex
 import struct
+import time
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
 
 from albedo_protocol import RemoteCall, RemoteMessage, parse_remote
 
@@ -53,21 +54,54 @@ capture_factory: Any
 send_frame: Any
 attach_image: Any
 session_modules: list[str] = []
-_fallback_live: set[str] = set()  # degraded-mode jobs still running over ssh
+
+
+class LiveJob(TypedDict):
+    """A job still running over ssh, as the supervisor lists it."""
+
+    id: str
+    command: str
+    service: bool  # nothing waits on its end
+    started: int  # wall-clock milliseconds
+
+
+MAX_LISTED_JOBS = 100  # as many rows as the supervisor lists for local jobs
+COMMAND_SCALARS = 4096  # a command's preview, as local jobs report it
+
+_fallback_live: dict[str, LiveJob] = {}  # degraded-mode jobs still running over ssh
+
+
+def _live_job(id: str, command: str, service: bool) -> LiveJob:
+    return {
+        "id": id,
+        "command": command[:COMMAND_SCALARS],
+        "service": service,
+        "started": time.time_ns() // 1_000_000,
+    }
 
 
 def _report_live() -> None:
-    """Tell the local supervisor how many remote jobs are still live, and how
-    many of them will wake the session: every one not started as a service.
+    """Tell the local supervisor which remote jobs are still live, so it lists
+    them beside its own and knows which will wake the session: every one not
+    started as a service.
 
     Releasing the kernel would kill every ssh client and with them the remote
     kernels, so the idle sweep keeps a kernel alive while remote work runs,
     and the cache warmer keeps an idle session warm while one it awaits does.
     """
     try:
-        live = len(_fallback_live) + sum(len(c._live) for c in connections)
-        awaited = len(_fallback_live) + sum(sum(c._live.values()) for c in connections)
-        send_frame({"type": "jobs", "live": live, "awaited": awaited})
+        live = [
+            *_fallback_live.values(),
+            *(job for c in connections for job in c._live.values()),
+        ]
+        send_frame(
+            {
+                "type": "jobs",
+                "live": len(live),
+                "awaited": sum(not job["service"] for job in live),
+                "items": live[:MAX_LISTED_JOBS],
+            }
+        )
     except Exception:
         pass  # no channel or shutdown; the supervisor keeps the last count
 
@@ -540,7 +574,7 @@ class RemoteConnection:
         self._refs: dict[str, RemoteRef] = {}
         self._mirrors: dict[str, dict[str, Any]] = {}
         self._handshake: asyncio.Future[dict[str, Any]] | None = None
-        self._live: dict[str, bool] = {}  # job id: whether it is awaited
+        self._live: dict[str, LiveJob] = {}
         self._stderr_tail = bytearray()
         self._reader: asyncio.Task[None] | None = None
         self._drain: asyncio.Task[None] | None = None
@@ -639,7 +673,11 @@ class RemoteConnection:
         elif frame["type"] == "mirror":
             self._mirrors[frame["handle"]] = dict(frame)
         elif frame["type"] == "job_start":
-            self._live[frame["id"]] = frame.get("service") is not True
+            self._live[frame["id"]] = _live_job(
+                frame["id"],
+                str(frame.get("command", "")),
+                frame.get("service") is True,
+            )
             _report_live()
         elif frame["type"] == "job":
             self._live.pop(frame["id"], None)
@@ -1125,7 +1163,7 @@ class FallbackJob(JobOutput):
         self._read = False
         self._announcer: asyncio.Task[None] | None = None
         self._connection = connection
-        _fallback_live.add(self.id)
+        _fallback_live[self.id] = _live_job(self.id, self.command, False)
         _report_live()
         # the remote login shell reads this line; everything in it is quoted
         steps = [
@@ -1179,7 +1217,7 @@ class FallbackJob(JobOutput):
             copying.cancel()
             self.capture.end_spill()
             self.duration = loop.time() - self.started
-            _fallback_live.discard(self.id)
+            _fallback_live.pop(self.id, None)
             _report_live()
             self._owe_unread()
         return self

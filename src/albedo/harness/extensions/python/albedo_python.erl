@@ -54,7 +54,7 @@ start({boot, Owner, Python, Bridge, Cwd, Host, Modules, Link, RunDir, Kernel, To
         %% this attach still has its groups ended.
         {Target, Groups} = owned(Owned),
         S = #{port => none, host => Host, link => Link, owner => Owner, active => none, events => [],
-              groups => Groups, external => 0, awaited_external => 0, cells => 0, target => Target,
+              groups => Groups, external => 0, awaited_external => 0, external_jobs => [], cells => 0, target => Target,
               python => Python, bridge => Bridge, cwd => Cwd, remote => Remote,
               modules => Modules, run_dir => RunDir, kernel => Kernel, token => Token,
               grace => Grace, in => 0, acked => 0, kack => 0, out => OutSeq,
@@ -291,6 +291,7 @@ stop_job(Pid, Id) ->
     case call(Pid, {stop_job, Id}) of
         ok -> {ok, nil};
         {error, not_found} -> {error, <<"job not found">>};
+        {error, remote_job} -> {error, <<"job runs over ssh, so only the cell that started it can stop it">>};
         {error, Reason} -> {error, detail(Reason)};
         _ -> {error, <<"could not stop job">>}
     end.
@@ -401,14 +402,22 @@ loop(S = #{port := Port, active := Active}) ->
             end,
             Stale = case maps:get(stale, S) of none -> none; Reason -> {some, Reason} end,
             Jobs = maps:get(groups, S),
+            Remote = maps:get(external_jobs, S, []),
             Count = maps:size(Jobs) + maps:get(external, S, 0),
             JobIds = lists:sublist(lists:sort(maps:keys(Jobs)), 200),
+            %% Awaited remote jobs the remote plugin counted but did not list
+            %% (a kernel from before it listed them, or past its listing cap).
+            Unlisted = max(0, maps:get(awaited_external, S, 0) - length([J || J = #{service := false} <- Remote])),
             From ! {Ref, {observation, maps:get(kernel, S), Build, Port =/= none, Stale, Count, JobIds,
-                          job_summaries(maps:get(groups, S)), maps:get(awaited_external, S, 0)}},
+                          job_summaries(Jobs, Remote), Unlisted}},
             loop(S);
         {call, From, Ref, {stop_job, Id}} ->
             Reply = case maps:get(Id, maps:get(groups, S), none) of
-                none -> {error, not_found};
+                none ->
+                    case [Job || Job = #{id := Listed} <- maps:get(external_jobs, S, []), Listed =:= Id] of
+                        [] -> {error, not_found};
+                        _ -> {error, remote_job}
+                    end;
                 Group ->
                     verdict(supervise(S, [target_spec(<<"job ", Id/binary>>, Group)], ?TERM_MS, ?KILL_MS))
             end,
@@ -591,7 +600,9 @@ hello(Hello, S0) ->
     %% A kernel from before awaited counts says none of its remote jobs wake it.
     Awaited = maps:get(<<"awaited_external">>, Hello, 0),
     case is_integer(External) andalso External >= 0 andalso is_integer(Awaited) andalso Awaited >= 0 of
-        true -> S1#{external => External, awaited_external => Awaited, cells => Cells};
+        true -> S1#{external => External, awaited_external => Awaited,
+                    external_jobs => remote_jobs(maps:get(<<"external_jobs">>, Hello, [])),
+                    cells => Cells};
         false -> S1#{cells => Cells}
     end.
 
@@ -651,7 +662,8 @@ handle_frame(#{<<"type">> := <<"cells">>, <<"live">> := Live}, S)
 handle_frame(#{<<"type">> := <<"jobs">>, <<"live">> := Live} = Message, S)
         when is_integer(Live), Live >= 0 ->
     case maps:get(<<"awaited">>, Message, 0) of
-        Awaited when is_integer(Awaited), Awaited >= 0 -> S#{external => Live, awaited_external => Awaited};
+        Awaited when is_integer(Awaited), Awaited >= 0 ->
+            S#{external => Live, awaited_external => Awaited, external_jobs => remote_jobs(maps:get(<<"items">>, Message, []))};
         _ -> S#{external => Live}
     end;
 handle_frame(#{<<"type">> := <<"trace">>} = Message, S) ->
@@ -1045,13 +1057,29 @@ clean_environment() ->
     end,
     [{Name, false} || Entry <- os:getenv(), Name <- [hd(string:split(Entry, "="))], IsBlocked(Name)].
 
-job_summaries(Jobs) ->
-    [{job, Id,
-      case maps:get(pid, Group, nil) of
-          P when is_integer(P), P > 0 -> {some, P};
-          _ -> none
-      end,
-      'albedo@text_scalars':take(maps:get(command, Group, <<>>), 4096),
-      maps:get(service, Group, false),
-      maps:get(started, Group, 0)}
-     || {Id, Group} <- lists:sublist(lists:sort(maps:to_list(Jobs)), 100)].
+%% Local job groups and the remote jobs the remote plugin lists, by id.
+job_summaries(Groups, Remote) ->
+    Local = [{Id, group_summary(Group)} || {Id, Group} <- maps:to_list(Groups)],
+    All = lists:sort(Local ++ [{Id, Job} || Job = #{id := Id} <- Remote]),
+    [{job, Id, maps:get(pid, Job, none), 'albedo@text_scalars':take(maps:get(command, Job, <<>>), 4096),
+      maps:get(service, Job, false), maps:get(started, Job, 0)}
+     || {Id, Job} <- lists:sublist(All, 100)].
+
+group_summary(Group) ->
+    Pid = case maps:get(pid, Group, nil) of
+        P when is_integer(P), P > 0 -> {some, P};
+        _ -> none
+    end,
+    Group#{pid => Pid}.
+
+%% The remote jobs a "jobs" frame or a hello lists. Each runs over ssh, so it
+%% owns no group on this machine and has no pid here.
+remote_jobs(Items) when is_list(Items) ->
+    [#{id => Id, pid => none, command => Command,
+       service => maps:get(<<"service">>, Item, false) =:= true,
+       started => remote_started(maps:get(<<"started">>, Item, 0))}
+     || Item = #{<<"id">> := Id, <<"command">> := Command} <- Items, is_binary(Id), is_binary(Command)];
+remote_jobs(_) -> [].
+
+remote_started(Started) when is_integer(Started), Started >= 0 -> Started;
+remote_started(_) -> 0.

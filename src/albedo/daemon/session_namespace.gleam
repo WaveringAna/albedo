@@ -283,8 +283,7 @@ fn still_running(
   let jobs =
     runtime.kernel_observation(kernel)
     |> result.map(fn(observed) {
-      observed.running_jobs
-      |> list.filter(fn(job) { !job.service })
+      python.awaited_jobs(observed)
       |> list.map(fn(job) { #(job.id, short(job.command)) })
     })
     |> result.unwrap([])

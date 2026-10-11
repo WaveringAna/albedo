@@ -82,6 +82,14 @@ class OutboxTest(unittest.TestCase):
         self.assertEqual(sorted(book.started), ["a"])
         self.assertEqual(book.live(), 3)
 
+    def test_job_book_keeps_the_remote_jobs_a_frame_lists(self):
+        book = albedo_link.JobBook()
+        item = {"id": "r", "command": "sleep 9", "service": False, "started": 1}
+        book.observe({"type": "jobs", "live": 1, "awaited": 1, "items": [item]})
+        self.assertEqual(book.external_jobs, [item])
+        book.observe({"type": "jobs", "live": 0, "awaited": 0})
+        self.assertEqual(book.external_jobs, [])
+
 
 class SocketLinkTest(unittest.TestCase):
     def setUp(self):

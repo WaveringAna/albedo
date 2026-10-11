@@ -720,6 +720,37 @@ print('live spill pages, disk failures, atomic saves, and pruning verified')
         local = self.python_log.read_text() if self.python_log.exists() else ""
         self.assertNotIn("albedo_signal.py", local)
 
+    def test_jobs_started_over_a_remote_connection_are_listed_like_local_ones(self):
+        session = self.create(str(self.app.workspace))["id"]
+        started = self.cell(
+            session,
+            "import asyncio\n"
+            "rem = await remote.connect('fakehost')\n"
+            "fallback = await remote.connect('oldhost')\n"
+            "rem.run('sleep', '8881')\n"
+            "fallback.run('sleep', '6')\n"
+            "await asyncio.sleep(1)",
+        )
+        self.assertEqual(started["status"], "ok", started)
+        kernel = json.load(self.app.api(f"/sessions/{session}?tail=0"))["kernel"]
+        self.assertEqual(kernel["live_job_count"], 2, kernel)
+        running = {job["command"]: job for job in kernel["running_jobs"]}
+        self.assertEqual(sorted(running), ["sleep 6", "sleep 8881"], kernel)
+        for job in running.values():
+            self.assertLess(abs(job["started_at"] - time.time() * 1000), 60_000)
+        with self.app.api(f"/extensions/run/sessions/{session}/jobs") as response:
+            page = json.load(response)["page"]
+        self.assertEqual(page["summary"], "2 background jobs running")
+        self.assertEqual(
+            sorted(row["text"] for row in page["rows"]), ["sleep 6", "sleep 8881"]
+        )
+        ended = self.cell(session, "await rem.close()\nawait asyncio.sleep(1)")
+        self.assertEqual(ended["status"], "ok", ended)
+        kernel = json.load(self.app.api(f"/sessions/{session}?tail=0"))["kernel"]
+        self.assertNotIn(
+            "sleep 8881", [job["command"] for job in kernel["running_jobs"]]
+        )
+
     def test_hosts_list_recent_and_configured_hosts_without_probing(self):
         self.create(f"fakehost:{self.project}")
         with self.app.api("/hosts") as response:

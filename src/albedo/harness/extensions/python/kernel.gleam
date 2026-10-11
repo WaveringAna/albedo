@@ -29,8 +29,8 @@ pub type Observation {
     live_job_count: Int,
     job_ids: List(String),
     running_jobs: List(Job),
-    /// Remote jobs not started as services, which the remote plugin counts
-    /// but cannot list here: they own no group on this machine.
+    /// Awaited remote jobs the remote plugin counted but did not list, which
+    /// leaves them out of `running_jobs`.
     awaited_remote_jobs: Int,
   )
 }
@@ -38,11 +38,16 @@ pub type Observation {
 @external(erlang, "albedo_python", "observation")
 pub fn observation(kernel: Kernel) -> Result(Observation, Nil)
 
-/// Whether the kernel runs a job that will wake its session: a local one or
-/// a remote one, either not started as a service.
+/// The jobs that will wake their session: every listed one not started as a
+/// service, local or remote. Callers ask this instead of reading `service`
+/// themselves.
+pub fn awaited_jobs(observed: Observation) -> List(Job) {
+  list.filter(observed.running_jobs, fn(job) { !job.service })
+}
+
+/// Whether the kernel runs a job that will wake its session.
 pub fn awaits_jobs(observed: Observation) -> Bool {
-  observed.awaited_remote_jobs > 0
-  || list.any(observed.running_jobs, fn(job) { !job.service })
+  observed.awaited_remote_jobs > 0 || awaited_jobs(observed) != []
 }
 
 pub type Error {
