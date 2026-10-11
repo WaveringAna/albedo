@@ -93,6 +93,30 @@ paths:
           enum: [quota_history]
       - $ref: '#/components/parameters/Limit'
       - $ref: '#/components/parameters/Next'
+      - name: quota_provider
+        in: query
+        required: false
+        description: Exact provider ID to filter quota history. Requires include=quota_history, quota_account, and quota_limit.
+        schema:
+          type: string
+      - name: quota_account
+        in: query
+        required: false
+        description: Exact account label to filter quota history. Requires include=quota_history, quota_provider, and quota_limit.
+        schema:
+          type: string
+      - name: quota_limit
+        in: query
+        required: false
+        description: Exact limit ID to filter quota history. Requires include=quota_history, quota_provider, and quota_account.
+        schema:
+          type: string
+      - name: quota_since
+        in: query
+        required: false
+        description: Filter quota history to observations at or after this RFC 3339 UTC timestamp. Requires include=quota_history and the limit filter trio.
+        schema:
+          $ref: '#/components/schemas/Timestamp'
   /server/shutdown:
     post:
       operationId: shutdownServer

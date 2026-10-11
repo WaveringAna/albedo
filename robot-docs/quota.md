@@ -31,18 +31,14 @@ The feed itself is `albedo/harness/usage_feed`: a stateless `usage advance -` ro
 
 ## reading them back
 
-`GET /quota` serves the latest reading per account and limit, read-only:
+Quota readings are served by `GET /server`:
 
-```json
-{ "readings": [ { "id": 41, "account": "charm-hyper", "provider": "hyper",
-                  "plan": null, "limitId": "primary", "label": "Primary",
-                  "usedPercent": 85.0, "windowLabel": "1 hour", "windowSeconds": 3600,
-                  "resetsAt": 1760000000000, "scope": null, "status": "ok",
-                  "error": null, "observedAt": 1759999400000,
-                  "source": "poll" } ] }
-```
-
-`GET /quota?history=<id>` pages the raw samples newest-first by row id (`history=0` starts at the newest, `limit` caps the page at 200), answering `{ "items", "nextCursor", "hasMore" }` like the other paged routes. The route queries the store directly and writes nothing.
+- The base response carries `quota`, a list of the latest reading per account and limit, capped at 200 observations, read-only.
+- A poll that failed with no limits is filed under the empty limit id, where only another such failure ever replaces it. `quota` drops one once a later reading of any real limit of the same account and provider exists, because the account is answering again; an account that only ever fails keeps its failure. (Without this a one-off error stayed "the latest reading" for days beside healthy limits.)
+- Adding `include=quota_history` pages raw stored samples newest-first under `quota_history` with `items` and opaque continuation cursor `next`. Keyset pagination uses row ID with `limit` capped at 200 (default 50).
+- History can optionally be filtered to a single limit trail using query parameters `quota_provider`, `quota_account`, and `quota_limit`. All three must be supplied together.
+- A filtered trail query can optionally supply `quota_since` as an RFC 3339 UTC timestamp to constrain history to observations at or after that time (`observed_at >= since`). `quota_since` is only valid together with the three filter parameters above.
+- Pagination continuations (`next`) are cryptographically bound to the query parameters; a cursor minted for one set of filters cannot be used with another.
 
 ## hermetic tests
 
@@ -53,3 +49,12 @@ Each cadence is asserted as the interval between one account's consecutive readi
 ## source references
 
 `albedo/daemon/quota.gleam` owns the poller, the table, and the read path. The poller takes its fetch function as a parameter, so tests can drive it against a fake. The per-provider account listing lives with each provider's credentials: `albedo_claude_auth:accounts/1`, `albedo_openai_auth:accounts/1`, and `albedo_antigravity:accounts/1`. `albedo/daemon/registry.gleam` initializes the table in `prepare_storage`. `albedo/daemon/server.gleam` starts the poller under the daemon supervisor and exposes its route.
+
+## the `/quota` screen
+
+The terminal client's `/quota` (`cli/internal/tui/quota.go`, `quota_view.go`) shows the latest reading of each limit, grouped by provider and account, with a bar, the percent and a reset countdown; the pane beside it shows the highlighted limit's trail. It reads `quota` once, and `include=quota_history` with the four filters for the limit under the cursor, as that limit is first highlighted (`GetLatestQuota`, `GetQuotaTrail`).
+
+- A trail is read back as far as the limit's window, at least a day and at most a week, from at most five pages of 200 rows. A busy limit polls every two minutes, so a week of it can overflow that cap: the pane then labels the trail with the span it really has (`quotaTrailFrom`), not the span it asked for. The oldest readings are the ones dropped.
+- A reading is stale when it is older than 30 minutes or past its own reset; its bar goes faint and the countdown becomes `seen 3h`. A trail stops where polling stopped.
+- `ctrl+r` reloads the readings and forgets every trail, so the highlighted limit asks again.
+- `/ttl` and `/requests` are still the generic inspector pages; `/quota` no longer is.

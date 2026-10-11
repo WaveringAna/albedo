@@ -306,7 +306,9 @@ contract versions. Builds cannot substitute for protocol compatibility.
 observation includes durable sequence, provider and account labels, limit ID,
 plan, observed percentage, window, reset time, scope, status, source, and safe
 failure details. Unknown percentage is null. `include=quota_history` adds the
-same records newest first, paged by `limit` and `next`.
+same records newest first, paged by `limit` and `next`. History may be filtered
+to one limit with `quota_provider`, `quota_account`, and `quota_limit` (required
+together), and optionally bounded with `quota_since` (RFC 3339 UTC).
 Notices have `id`, `kind`, and `message`; dismissal is a shared UI setting and does not consume a read.
 
 `POST /server/shutdown` accepts `instance_id` and `timeout_ms`, default 5,000

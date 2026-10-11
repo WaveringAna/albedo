@@ -728,7 +728,15 @@ fn protocol_server(
 ) -> response.Response(mist.ResponseData) {
   let outcome = {
     use parameters <- result.try(
-      http_api.json_parameters(req, ["include", "limit", "next"]),
+      http_api.json_parameters(req, [
+        "include",
+        "limit",
+        "next",
+        "quota_provider",
+        "quota_account",
+        "quota_limit",
+        "quota_since",
+      ]),
     )
     use _ <- result.try(case list.key_find(parameters, "include") {
       Error(_) if parameters == [] -> Ok(Nil)
@@ -861,8 +869,34 @@ fn protocol_server(
           "",
           0,
         ))
+        use filter <- result.try(
+          case
+            list.key_find(parameters, "quota_provider"),
+            list.key_find(parameters, "quota_account"),
+            list.key_find(parameters, "quota_limit"),
+            list.key_find(parameters, "quota_since")
+          {
+            Ok(provider), Ok(account), Ok(limit_id), Ok(since_str) ->
+              case quota.parse_rfc3339(since_str) {
+                Ok(since_ms) ->
+                  Ok(quota.Trail(provider, account, limit_id, Some(since_ms)))
+                Error(_) -> Error(http_api.invalid("invalid quota_since"))
+              }
+            Ok(provider), Ok(account), Ok(limit_id), Error(_) ->
+              Ok(quota.Trail(provider, account, limit_id, None))
+            Error(_), Error(_), Error(_), Error(_) -> Ok(quota.Everything)
+            Error(_), Error(_), Error(_), Ok(_) ->
+              Error(http_api.invalid(
+                "quota_since requires quota_provider, quota_account, and quota_limit",
+              ))
+            _, _, _, _ ->
+              Error(http_api.invalid(
+                "quota_provider, quota_account, and quota_limit must all be provided together",
+              ))
+          },
+        )
         use samples <- result.try(
-          quota.history(runtime.ledger(host), before, limit + 1)
+          quota.history(runtime.ledger(host), filter, before, limit + 1)
           |> result.map_error(http_api.failure),
         )
         let shown = list.take(samples, limit)

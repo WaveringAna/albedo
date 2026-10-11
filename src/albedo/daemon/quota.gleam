@@ -14,6 +14,8 @@
 //// derives what it needs from these rows.
 
 import albedo/clock
+import albedo/harness/protect
+import gleam/erlang/atom
 
 import albedo/daemon/configuration
 import albedo/daemon/store
@@ -711,41 +713,139 @@ fn sample_decoder() -> decode.Decoder(Sample) {
   ))
 }
 
-/// The latest reading per account and limit, read-only.
+/// The latest reading per account and limit, read-only. A report that failed
+/// with no limits is filed under the empty limit id, where nothing but another
+/// such failure ever replaces it, so one is dropped once a later reading of any
+/// real limit of the same account shows the account is answering again.
 pub fn latest(database: store.Store) -> Result(List(Sample), String) {
   store.read(database, "SELECT " <> sample_columns <> " FROM quota_sample s
      WHERE s.id = (SELECT MAX(t.id) FROM quota_sample t
                    WHERE t.account = s.account AND t.provider = s.provider
                      AND t.limit_id = s.limit_id)
+       AND NOT (s.limit_id = '' AND EXISTS (SELECT 1 FROM quota_sample r
+                   WHERE r.account = s.account AND r.provider = s.provider
+                     AND r.limit_id <> '' AND r.id > s.id))
      ORDER BY s.account, s.provider, s.limit_id", [], sample_decoder())
+}
+
+pub type Filter {
+  Everything
+  Trail(provider: String, account: String, limit: String, since: Option(Int))
+}
+
+@external(erlang, "calendar", "rfc3339_to_system_time")
+fn erlang_rfc3339_to_system_time(
+  stamp: String,
+  options: List(#(atom.Atom, atom.Atom)),
+) -> Int
+
+pub fn parse_rfc3339(stamp: String) -> Result(Int, Nil) {
+  let opts = [#(atom.create("unit"), atom.create("millisecond"))]
+  case protect.attempt(fn() { erlang_rfc3339_to_system_time(stamp, opts) }) {
+    Ok(ms) -> Ok(ms)
+    Error(_) -> Error(Nil)
+  }
 }
 
 /// Readings newest-first with id keyset paging: `before` 0 starts at the
 /// newest, any other value continues after that row id.
 pub fn history(
   database: store.Store,
+  filter: Filter,
   before: Int,
   limit: Int,
 ) -> Result(List(Sample), String) {
-  case before <= 0 {
-    True ->
-      store.read(
-        database,
-        "SELECT "
-          <> sample_columns
-          <> " FROM quota_sample ORDER BY id DESC LIMIT ?",
-        [sqlight.int(limit)],
-        sample_decoder(),
-      )
-    False ->
-      store.read(
-        database,
-        "SELECT "
-          <> sample_columns
-          <> " FROM quota_sample WHERE id < ? ORDER BY id DESC LIMIT ?",
-        [sqlight.int(before), sqlight.int(limit)],
-        sample_decoder(),
-      )
+  case filter {
+    Everything ->
+      case before <= 0 {
+        True ->
+          store.read(
+            database,
+            "SELECT "
+              <> sample_columns
+              <> " FROM quota_sample ORDER BY id DESC LIMIT ?",
+            [sqlight.int(limit)],
+            sample_decoder(),
+          )
+        False ->
+          store.read(
+            database,
+            "SELECT "
+              <> sample_columns
+              <> " FROM quota_sample WHERE id < ? ORDER BY id DESC LIMIT ?",
+            [sqlight.int(before), sqlight.int(limit)],
+            sample_decoder(),
+          )
+      }
+    Trail(provider, account, limit_id, since) ->
+      case since {
+        None ->
+          case before <= 0 {
+            True ->
+              store.read(
+                database,
+                "SELECT "
+                  <> sample_columns
+                  <> " FROM quota_sample WHERE account = ? AND provider = ? AND limit_id = ? ORDER BY id DESC LIMIT ?",
+                [
+                  sqlight.text(account),
+                  sqlight.text(provider),
+                  sqlight.text(limit_id),
+                  sqlight.int(limit),
+                ],
+                sample_decoder(),
+              )
+            False ->
+              store.read(
+                database,
+                "SELECT "
+                  <> sample_columns
+                  <> " FROM quota_sample WHERE account = ? AND provider = ? AND limit_id = ? AND id < ? ORDER BY id DESC LIMIT ?",
+                [
+                  sqlight.text(account),
+                  sqlight.text(provider),
+                  sqlight.text(limit_id),
+                  sqlight.int(before),
+                  sqlight.int(limit),
+                ],
+                sample_decoder(),
+              )
+          }
+        Some(since_ms) ->
+          case before <= 0 {
+            True ->
+              store.read(
+                database,
+                "SELECT "
+                  <> sample_columns
+                  <> " FROM quota_sample WHERE account = ? AND provider = ? AND limit_id = ? AND observed_at >= ? ORDER BY id DESC LIMIT ?",
+                [
+                  sqlight.text(account),
+                  sqlight.text(provider),
+                  sqlight.text(limit_id),
+                  sqlight.int(since_ms),
+                  sqlight.int(limit),
+                ],
+                sample_decoder(),
+              )
+            False ->
+              store.read(
+                database,
+                "SELECT "
+                  <> sample_columns
+                  <> " FROM quota_sample WHERE account = ? AND provider = ? AND limit_id = ? AND observed_at >= ? AND id < ? ORDER BY id DESC LIMIT ?",
+                [
+                  sqlight.text(account),
+                  sqlight.text(provider),
+                  sqlight.text(limit_id),
+                  sqlight.int(since_ms),
+                  sqlight.int(before),
+                  sqlight.int(limit),
+                ],
+                sample_decoder(),
+              )
+          }
+      }
   }
 }
 

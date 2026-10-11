@@ -3286,6 +3286,18 @@ type GetServerParams struct {
 	Include *string `form:"include,omitempty" json:"include,omitempty"`
 	Limit   *Limit  `form:"limit,omitempty" json:"limit,omitempty"`
 	Next    *Next   `form:"next,omitempty" json:"next,omitempty"`
+
+	// QuotaProvider Exact provider ID to filter quota history. Requires include=quota_history, quota_account, and quota_limit.
+	QuotaProvider *string `form:"quota_provider,omitempty" json:"quota_provider,omitempty"`
+
+	// QuotaAccount Exact account label to filter quota history. Requires include=quota_history, quota_provider, and quota_limit.
+	QuotaAccount *string `form:"quota_account,omitempty" json:"quota_account,omitempty"`
+
+	// QuotaLimit Exact limit ID to filter quota history. Requires include=quota_history, quota_provider, and quota_account.
+	QuotaLimit *string `form:"quota_limit,omitempty" json:"quota_limit,omitempty"`
+
+	// QuotaSince Filter quota history to observations at or after this RFC 3339 UTC timestamp. Requires include=quota_history and the limit filter trio.
+	QuotaSince *Timestamp `form:"quota_since,omitempty" json:"quota_since,omitempty"`
 }
 
 // ListSessionsParams defines parameters for ListSessions.
@@ -8648,6 +8660,54 @@ func NewGetServerRequest(server string, params *GetServerParams) (*http.Request,
 		if params.Next != nil {
 
 			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "next", *params.Next, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if params.QuotaProvider != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "quota_provider", *params.QuotaProvider, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if params.QuotaAccount != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "quota_account", *params.QuotaAccount, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if params.QuotaLimit != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "quota_limit", *params.QuotaLimit, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if params.QuotaSince != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "quota_since", *params.QuotaSince, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: "date-time"}); err != nil {
 				return nil, err
 			} else {
 				for _, qp := range strings.Split(queryFrag, "&") {

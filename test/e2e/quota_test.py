@@ -21,6 +21,7 @@ import stat
 import tempfile
 import time
 import unittest
+import urllib.error
 
 from harness import Albedo, Provider, exclusive, text
 
@@ -49,8 +50,17 @@ FAKE_USAGE = """#!/usr/bin/env python3
 import json, os, sys, time, traceback
 
 ERRORS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fake-error.txt")
+RECOVERED = os.path.join(os.path.dirname(os.path.abspath(__file__)), "recovered")
 
-def report_for(provider):
+def report_for(provider, credential):
+    if provider == "anthropic" and credential.get("accountId") == "recovering-account":
+        # Fails its first poll, then answers for good. A failure with no limits
+        # is filed under the empty limit id, which a later success never reuses.
+        if not os.path.exists(RECOVERED):
+            open(RECOVERED, "w").close()
+            return {"error": "the fixture key failed once"}
+        return {"limits": [{"id": "weekly", "label": "Weekly usage", "usedPercent": 7,
+                            "windowLabel": "7 days", "status": "ok"}]}
     if provider == "anthropic":
         return {"planType": "pro",
                 "limits": [{"id": "weekly", "label": "Weekly usage",
@@ -65,8 +75,8 @@ def report_for(provider):
 
 try:
     line = sys.stdin.readline()
-    provider = json.loads(line)["provider"]
-    print(json.dumps({"report": report_for(provider)}))
+    envelope = json.loads(line)
+    print(json.dumps({"report": report_for(envelope["provider"], envelope.get("credential", {}))}))
 except Exception:
     # A bad envelope lands here too: record it and answer an error report, so
     # the failure shows up as a reading rather than as an exit-1 crash.
@@ -113,7 +123,14 @@ class QuotaTests(unittest.TestCase):
                             "refresh": "fixture-anthropic-refresh",
                             "expires": int(time.time() * 1000) + 3600000,
                             "accountId": "fixture-account",
-                        }
+                        },
+                        {
+                            "type": "oauth",
+                            "access": "fixture-recovering-access",
+                            "refresh": "fixture-recovering-refresh",
+                            "expires": int(time.time() * 1000) + 3600000,
+                            "accountId": "recovering-account",
+                        },
                     ]
                 },
             )
@@ -341,3 +358,150 @@ class QuotaTests(unittest.TestCase):
             ),
             "quota continuation reached newer rows",
         )
+
+        # An account that failed once and then answered has an old failure filed
+        # under the empty limit id. The latest readings drop it once a later
+        # reading of a real limit shows the account answering; deepseek, which
+        # never answers, keeps its failure.
+        self.wait_for(
+            lambda: any(
+                r["account_id"] != "fixture-account"
+                and r["provider"] == "anthropic"
+                and r["limit_id"] == "weekly"
+                for r in self.readings()
+            ),
+            40,
+            "the recovering account never answered",
+        )
+        recovered = [
+            r
+            for r in self.readings()
+            if r["provider"] == "anthropic" and r["account_id"] != "fixture-account"
+        ]
+        self.assertEqual(
+            [r["limit_id"] for r in recovered],
+            ["weekly"],
+            f"a failure the account recovered from is still its latest reading: {recovered}",
+        )
+        failures = [
+            (r["provider"], r["limit_id"]) for r in self.readings() if r["error"]
+        ]
+        self.assertIn(("deepseek", ""), failures)
+        self.assertTrue(
+            any(
+                row["limit_id"] == "" and row["error"]
+                for row in self.samples()
+                if row["provider"] == "anthropic"
+                and row["account_id"] != "fixture-account"
+            ),
+            "the recovering account never recorded the failure this checks is dropped",
+        )
+
+        # Filtered history returns only that limit's rows newest-first.
+        hyper_filter = (
+            "quota_provider=hyper&quota_account=charm-hyper&quota_limit=primary"
+        )
+        with self.app.api(
+            f"/server?include=quota_history&limit=200&{hyper_filter}"
+        ) as response:
+            hyper_history = json.load(response)["quota_history"]["items"]
+        self.assertGreaterEqual(len(hyper_history), 5)
+        self.assertTrue(
+            all(
+                s["provider"] == "hyper"
+                and s["account_id"] == "charm-hyper"
+                and s["limit_id"] == "primary"
+                for s in hyper_history
+            ),
+            "filtered history returned observations from other limits",
+        )
+        hyper_ids = [s["sequence"] for s in hyper_history]
+        self.assertTrue(
+            all(later < earlier for earlier, later in zip(hyper_ids, hyper_ids[1:])),
+            f"filtered history is not newest first: {hyper_ids}",
+        )
+
+        # quota_since in the future returns zero rows and next null.
+        future_since = "2099-01-01T00:00:00Z"
+        with self.app.api(
+            f"/server?include=quota_history&limit=200&{hyper_filter}&quota_since={future_since}"
+        ) as response:
+            future_page = json.load(response)["quota_history"]
+        self.assertEqual(future_page["items"], [])
+        self.assertIsNone(future_page["next"])
+
+        # since between two readings drops the older.
+        cutoff = hyper_history[1]["observed_at"]
+        with self.app.api(
+            f"/server?include=quota_history&limit=200&{hyper_filter}&quota_since={cutoff}"
+        ) as response:
+            bounded_items = json.load(response)["quota_history"]["items"]
+        self.assertTrue(
+            all(
+                milliseconds(s["observed_at"]) >= milliseconds(cutoff)
+                for s in bounded_items
+            ),
+            "quota_since kept observations older than cutoff",
+        )
+        bounded_ids = [s["sequence"] for s in bounded_items]
+        self.assertIn(hyper_history[0]["sequence"], bounded_ids)
+        self.assertIn(hyper_history[1]["sequence"], bounded_ids)
+        self.assertNotIn(hyper_history[-1]["sequence"], bounded_ids)
+
+        # Paging a filtered history with limit=1 follows next across all of that
+        # limit's rows with strictly decreasing sequence.
+        paged_seqs = []
+        next_cursor = None
+        while True:
+            cursor_param = f"&next={next_cursor}" if next_cursor else ""
+            with self.app.api(
+                f"/server?include=quota_history&limit=1&{hyper_filter}{cursor_param}"
+            ) as response:
+                page_data = json.load(response)["quota_history"]
+            self.assertEqual(len(page_data["items"]), 1)
+            paged_seqs.append(page_data["items"][0]["sequence"])
+            next_cursor = page_data["next"]
+            if not next_cursor:
+                break
+        self.assertEqual(paged_seqs, hyper_ids)
+        self.assertTrue(
+            all(later < earlier for earlier, later in zip(paged_seqs, paged_seqs[1:])),
+            "paged filtered sequence is not strictly decreasing",
+        )
+
+        # A cursor from one filter replayed on another is rejected 400.
+        with self.app.api(
+            f"/server?include=quota_history&limit=1&{hyper_filter}"
+        ) as response:
+            token = json.load(response)["quota_history"]["next"]
+        self.assertIsNotNone(token)
+        anthropic_filter = (
+            "quota_provider=anthropic&quota_account=fixture-account&quota_limit=weekly"
+        )
+        with self.assertRaises(urllib.error.HTTPError) as cm:
+            self.app.api(
+                f"/server?include=quota_history&limit=1&{anthropic_filter}&next={token}"
+            )
+        self.assertEqual(cm.exception.code, 400)
+
+        # Partial filter (only quota_account) is 400.
+        with self.assertRaises(urllib.error.HTTPError) as cm:
+            self.app.api("/server?include=quota_history&quota_account=charm-hyper")
+        self.assertEqual(cm.exception.code, 400)
+
+        # quota_since without the trio is 400.
+        with self.assertRaises(urllib.error.HTTPError) as cm:
+            self.app.api(f"/server?include=quota_history&quota_since={future_since}")
+        self.assertEqual(cm.exception.code, 400)
+
+        # Bad since is 400.
+        with self.assertRaises(urllib.error.HTTPError) as cm:
+            self.app.api(
+                f"/server?include=quota_history&{hyper_filter}&quota_since=not-a-timestamp"
+            )
+        self.assertEqual(cm.exception.code, 400)
+
+        # Filter parameters require include=quota_history.
+        with self.assertRaises(urllib.error.HTTPError) as cm:
+            self.app.api(f"/server?{hyper_filter}")
+        self.assertEqual(cm.exception.code, 400)
