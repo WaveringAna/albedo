@@ -17,6 +17,8 @@ func (m *AppModel) handleChatLifecycle(msg tea.Msg) (tea.Cmd, bool) {
 		sid, forward = sm.SessionID, true
 	case ChatEditorFinishedMsg:
 		sid, forward = sm.SessionID, true
+	case FileOpenResultMsg:
+		sid, forward = sm.SessionID, true
 	case ChatClearCopyStatusMsg:
 		sid, forward = sm.SessionID, true
 	case ChatStatusPollMsg:

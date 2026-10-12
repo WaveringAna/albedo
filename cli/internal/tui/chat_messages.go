@@ -17,6 +17,13 @@ type ChatEditorFinishedMsg struct {
 	Edited     bool
 }
 
+// FileOpenResultMsg is sent after attempting to open a file in an external editor.
+type FileOpenResultMsg struct {
+	SessionID string
+	Target    FileTarget
+	Err       error
+}
+
 // ChatOlderLoadedMsg carries a page of history from before what is shown.
 type ChatOlderLoadedMsg struct {
 	Err        error

@@ -506,6 +506,16 @@ func (r *fakeRoute) serveChat(w http.ResponseWriter, req *http.Request) {
 			flusher.Flush()
 		}
 	}
+	if code, ok := strings.CutPrefix(text, pythonCallMark); ok {
+		args, _ := json.Marshal(map[string]string{"code": code})
+		emit(map[string]any{"tool_calls": []any{map[string]any{
+			"index": 0, "id": "fixture-call", "type": "function",
+			"function": map[string]any{"name": "python", "arguments": string(args)},
+		}}}, "")
+		emit(map[string]any{}, "tool_calls")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+		return
+	}
 	for _, chunk := range chunks(text, 20) {
 		emit(map[string]any{"content": chunk}, "")
 	}
@@ -633,6 +643,24 @@ func echoReply(request map[string]any) string {
 		return "echo: " + prompt
 	}
 	return "fixture reply"
+}
+
+// pythonCallMark starts a scripted reply that is a python tool call; see
+// pythonCall.
+const pythonCallMark = "\x00python:"
+
+// pythonCall scripts a reply that calls the python tool with code instead of
+// answering in text.
+func pythonCall(code string) string { return pythonCallMark + code }
+
+// toolAnswered reports whether request carries a tool result, so a scripted
+// reply can answer once its call has run.
+func toolAnswered(request map[string]any) bool {
+	messages, _ := request["messages"].([]any)
+	return slices.ContainsFunc(messages, func(raw any) bool {
+		message, _ := raw.(map[string]any)
+		return message["role"] == "tool"
+	})
 }
 
 // lastUserText finds the prompt the daemon forwarded.

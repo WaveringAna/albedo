@@ -7,8 +7,13 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"regexp"
+	"slices"
+	"strconv"
 	"strings"
 
+	"albedo/cli/internal/daemon"
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 )
@@ -101,4 +106,195 @@ func (p editorProcess) runAndRestore() (commandErr, restoreErr error) {
 		restoreErr = fmt.Errorf("could not restore terminal output after the editor: %w", err)
 	}
 	return commandErr, restoreErr
+}
+
+// FileTarget is a file location clicked in the transcript.
+type FileTarget struct {
+	Path      string
+	Line, Col int
+}
+
+var (
+	// pathToken is a run of text that quotes, brackets, and spaces end.
+	pathToken = regexp.MustCompile("[^\\s\"'`()\\[\\]{}<>]+")
+	// position is a trailing :line[:col] or #Lline.
+	position   = regexp.MustCompile(`(?::(\d+)(?::(\d+))?|#L(\d+))$`)
+	diffGutter = regexp.MustCompile(`^\s*(\d+) [+\- ] `)
+)
+
+// openFileAt opens the file named at transcript position (row, col).
+func (m *ChatModel) openFileAt(row, col int) tea.Cmd {
+	if row < 0 || row >= len(m.frameLines) {
+		return nil
+	}
+	target, ok := fileTargetAt(ansi.Strip(m.frameLines[row]), col, m.Workspace)
+	if !ok {
+		target, ok = m.diffTargetAt(row)
+	}
+	if !ok {
+		return nil
+	}
+	return m.openFileCmd(target)
+}
+
+// diffTargetAt names the line of a diff row: the path is the first row above
+// it that is neither a numbered row nor a hunk header.
+func (m *ChatModel) diffTargetAt(row int) (FileTarget, bool) {
+	gutter := diffGutter.FindStringSubmatch(rowBody(m.frameLines[row]))
+	if gutter == nil {
+		return FileTarget{}, false
+	}
+	for prev := row - 1; prev >= 0; prev-- {
+		above := rowBody(m.frameLines[prev])
+		if diffGutter.MatchString(above) || strings.Contains(above, "@@") {
+			continue
+		}
+		target, ok := fileTargetAt(above, 0, m.Workspace)
+		target.Line, _ = strconv.Atoi(gutter[1])
+		target.Col = 0
+		return target, ok
+	}
+	return FileTarget{}, false
+}
+
+// rowBody is a transcript row's plain text after its rail.
+func rowBody(row string) string {
+	plain := ansi.Strip(row)
+	return ansi.Cut(plain, railWidth, ansi.StringWidth(plain))
+}
+
+// fileTargetAt is the existing file named by the token under column col of
+// plain, else the only existing file plain names.
+func fileTargetAt(plain string, col int, workspace string) (FileTarget, bool) {
+	at := len(ansi.Truncate(plain, col, ""))
+	var found []FileTarget
+	for _, span := range pathToken.FindAllStringIndex(plain, -1) {
+		target, ok := parseTarget(plain[span[0]:span[1]], workspace)
+		if !ok {
+			continue
+		}
+		if span[0] <= at && at <= span[1] {
+			return target, true
+		}
+		found = append(found, target)
+	}
+	if len(found) == 1 {
+		return found[0], true
+	}
+	return FileTarget{}, false
+}
+
+// parseTarget reads a token such as path=a/x.go:12:3 or file://x.go#L4,
+// keeping it only when it names a file that exists.
+func parseTarget(token, workspace string) (FileTarget, bool) {
+	token = strings.TrimRight(token, ".,;:")
+	if strings.Contains(token, "://") && !strings.HasPrefix(token, "file://") {
+		return FileTarget{}, false
+	}
+	token = strings.TrimPrefix(token, "file://")
+	if _, after, ok := strings.Cut(token, "="); ok {
+		token = after
+	}
+	var target FileTarget
+	if loc := position.FindStringSubmatchIndex(token); loc != nil {
+		groups := position.FindStringSubmatch(token)
+		target.Line, _ = strconv.Atoi(groups[1] + groups[3])
+		target.Col, _ = strconv.Atoi(groups[2])
+		token = token[:loc[0]]
+	}
+	if token == "" {
+		return FileTarget{}, false
+	}
+	home, _ := os.UserHomeDir()
+	_, root := daemon.SplitLocation(workspace)
+	paths := []string{token}
+	// a diff's a/ and b/ prefixes
+	if rest, ok := strings.CutPrefix(token, "a/"); ok {
+		paths = append(paths, rest)
+	} else if rest, ok := strings.CutPrefix(token, "b/"); ok {
+		paths = append(paths, rest)
+	}
+	for _, p := range paths {
+		p = expandHome(p, home)
+		if !filepath.IsAbs(p) {
+			p = filepath.Join(cmp.Or(root, "."), p)
+		}
+		if info, err := os.Stat(p); err == nil && info.Mode().IsRegular() {
+			target.Path, _ = filepath.Abs(p)
+			return target, true
+		}
+	}
+	return FileTarget{}, false
+}
+
+func (m ChatModel) openFileCmd(target FileTarget) tea.Cmd {
+	bin, args, terminal := detectEditor(target)
+	sessionID := m.SessionID
+	if terminal {
+		process := editorProcess{exec.Command(bin, args...), m.graphemes}
+		return tea.Exec(process, func(err error) tea.Msg {
+			return FileOpenResultMsg{SessionID: sessionID, Target: target, Err: err}
+		})
+	}
+	return func() tea.Msg {
+		cmd := exec.Command(bin, args...)
+		err := cmd.Start()
+		if err == nil {
+			go cmd.Wait()
+		}
+		return FileOpenResultMsg{SessionID: sessionID, Target: target, Err: err}
+	}
+}
+
+// guiEditors open a file in a window of their own and return at once; how
+// each takes a line is in editorArgs.
+var guiEditors = []string{"code", "cursor", "windsurf", "codium", "zed", "subl"}
+
+// detectEditor picks the IDE whose terminal albedo runs in, else $EDITOR,
+// and says whether the editor needs this terminal.
+func detectEditor(target FileTarget) (bin string, args []string, terminal bool) {
+	if ide := terminalIDE(); ide != "" {
+		if path, err := exec.LookPath(ide); err == nil {
+			return path, editorArgs(ide, target), false
+		}
+	}
+	fields := strings.Fields(cmp.Or(os.Getenv("EDITOR"), os.Getenv("VISUAL"), "nano"))
+	base := filepath.Base(fields[0])
+	return fields[0], append(fields[1:], editorArgs(base, target)...), !slices.Contains(guiEditors, base)
+}
+
+// terminalIDE names the CLI of the editor whose integrated terminal this is.
+func terminalIDE() string {
+	env := os.Getenv
+	switch {
+	case env("TERM_PROGRAM") == "zed" || env("ZED_TERM") != "":
+		return "zed"
+	case env("TERM_PROGRAM") != "vscode" && env("VSCODE_PID") == "":
+		return ""
+	case env("CURSOR_TRACE_ID") != "" || env("CURSOR_VERSION") != "":
+		return "cursor"
+	case env("WINDSURF_VERSION") != "":
+		return "windsurf"
+	}
+	return "code"
+}
+
+func editorArgs(editor string, t FileTarget) []string {
+	at := t.Path
+	if t.Line > 0 {
+		at += ":" + strconv.Itoa(t.Line)
+		if t.Col > 0 {
+			at += ":" + strconv.Itoa(t.Col)
+		}
+	}
+	switch {
+	case t.Line == 0:
+		return []string{t.Path}
+	case editor == "code" || editor == "cursor" || editor == "windsurf" || editor == "codium":
+		return []string{"-g", at}
+	case editor == "zed" || editor == "subl" || editor == "hx":
+		return []string{at}
+	}
+	// vi, nano, emacs, and most others
+	return []string{"+" + strconv.Itoa(t.Line), t.Path}
 }

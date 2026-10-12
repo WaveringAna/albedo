@@ -4,6 +4,7 @@ import (
 	"albedo/cli/internal/daemon"
 	"context"
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -191,6 +192,7 @@ type ChatModel struct {
 
 	scrollLimit int
 	dragDir     int
+	dragCtrl    bool
 	dragGen     int
 	// olderBefore is the first transcript row carried by the reset or last older page.
 	olderBefore int64
@@ -441,6 +443,12 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 			return m, nil
 		}
 		return m, m.cacheFadeCmd()
+
+	case FileOpenResultMsg:
+		if msg.SessionID == m.SessionID && msg.Err != nil {
+			m.AddError(fmt.Sprintf("could not open %s: %v", filepath.Base(msg.Target.Path), msg.Err))
+		}
+		return m, nil
 
 	case ChatClearCopyStatusMsg:
 		if msg.SessionID == m.SessionID && msg.Generation == m.Generation && msg.Revision == m.copyStatusRevision {

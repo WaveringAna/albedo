@@ -176,7 +176,14 @@ func (m *ChatModel) handleInput(msg tea.Msg) (tea.Cmd, bool) {
 			}
 			m.dragHead = point()
 			sel := Selection{Anchor: *m.dragAnchor, Head: m.dragHead, Gutter: railWidth}
-			m.dragAnchor, m.dragDir = nil, 0
+			isCtrl := m.dragCtrl || mouse.Mod.Contains(tea.ModCtrl) || mouse.Mod.Contains(tea.ModSuper)
+			m.dragAnchor, m.dragDir, m.dragCtrl = nil, 0, false
+			if isCtrl {
+				if cmd := m.openFileAt(sel.Head.Row, sel.Head.Col); cmd != nil {
+					return cmd, true
+				}
+				return nil, true
+			}
 			if sel.IsEmpty() {
 				cmd := m.actAt(sel.Head.Row)
 				return cmd, true
@@ -196,6 +203,7 @@ func (m *ChatModel) handleInput(msg tea.Msg) (tea.Cmd, bool) {
 				pt := point()
 				m.dragAnchor = &pt
 				m.dragHead = pt
+				m.dragCtrl = mouse.Mod.Contains(tea.ModCtrl) || mouse.Mod.Contains(tea.ModSuper)
 			}
 		case tea.MouseWheelMsg:
 			switch msg.Button {

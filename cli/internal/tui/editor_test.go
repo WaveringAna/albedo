@@ -1,5 +1,7 @@
-// Editor failures must not lose saved edits or leave prompt files behind.
-// The daemon E2E driver does not execute the local editor process.
+// Editor failures must not lose saved edits or leave prompt files behind,
+// and a clicked row must name the right file and line in every way a path is
+// written. The daemon E2E driver does not run the prompt editor, and E2E
+// clicks one row of each kind rather than every spelling of a path.
 package tui
 
 import (
@@ -7,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -100,5 +103,43 @@ func TestEditorCompletionPreservesTextAndReportsRestorationFailure(t *testing.T)
 				t.Fatalf("text=%q, error notice=%v", model.TextArea.Value(), model.Notices.HasError())
 			}
 		})
+	}
+}
+
+func TestFileTargetAtReadsEverySpellingOfAPath(t *testing.T) {
+	ws := t.TempDir()
+	for _, name := range []string{"main.go", "sub/util.go"} {
+		path := filepath.Join(ws, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	main, util := filepath.Join(ws, "main.go"), filepath.Join(ws, "sub", "util.go")
+	for _, c := range []struct {
+		line string
+		col  int
+		want FileTarget // zero when nothing opens
+	}{
+		{"error at main.go:42:15: failed", 12, FileTarget{main, 42, 15}},
+		{"main.go:42:", 0, FileTarget{main, 42, 0}},
+		{`files.read(path="sub/util.go")`, 20, FileTarget{util, 0, 0}},
+		{"see `sub/util.go#L10`.", 8, FileTarget{util, 10, 0}},
+		{"+++ b/sub/util.go", 8, FileTarget{util, 0, 0}},
+		{"file://" + main + ":3", 10, FileTarget{main, 3, 0}},
+		{"compare main.go with sub/util.go", 10, FileTarget{main, 0, 0}},
+		{"compare main.go with sub/util.go", 25, FileTarget{util, 0, 0}},
+		{"compare main.go with sub/util.go", 0, FileTarget{}},
+		{"I updated sub/util.go here", 0, FileTarget{util, 0, 0}},
+		{"wide 漢字 main.go", 10, FileTarget{main, 0, 0}},
+		{"see https://example.com/main.go", 10, FileTarget{}},
+		{"missing.go and plain words", 2, FileTarget{}},
+	} {
+		got, _ := fileTargetAt(c.line, c.col, ws)
+		if got != c.want {
+			t.Errorf("%q at %d: got %+v, want %+v", c.line, c.col, got, c.want)
+		}
 	}
 }

@@ -80,6 +80,8 @@ cover every state a person would want to look at: the list, a filter typed, no m
 
 transcript rows carry private `albedo:` APC marks for copy, wrap joining and click targets. they stay in the chat's internal rows, but `AppModel.View` removes them from the final content before Bubble Tea sees it. ultraviolet preserves APC payloads; terminal.app prints unknown ones, which corrupts the layout. remove only our private marks, not styling, hyperlinks or graphics sequences. the real-daemon TUI driver's view assertion checks the raw content before `ansi.Strip` can hide a leak.
 
+ctrl- or cmd-click on a transcript row opens the file it names (`editor.go`, `openFileAt`); a plain click keeps its row action. the token under the click wins, else the row's only existing file; a numbered diff row opens its file at that line, read after the rail (`rowBody`). only regular files that exist under the workspace (or absolute) open. inside zed's or a vs code family terminal (`TERM_PROGRAM`, `VSCODE_PID`, `ZED_TERM`) the file opens through that editor's cli in the background; otherwise through `$EDITOR`, run on the terminal with `tea.Exec` unless it is a gui editor. `cli/test/e2e/tui_open_file_test.go` clicks real rendered rows.
+
 ## tests
 
 unit tests here catch what the daemon e2e cannot drive: key routing, stale replies, in-flight save rendering, footer fitting. the screen-level scenarios in `cli/test/e2e` drive the real daemon through the same keys. when a screen changes keys, update both and the gallery state that shows the footer.
