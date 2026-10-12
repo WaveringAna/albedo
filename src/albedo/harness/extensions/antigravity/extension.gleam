@@ -280,15 +280,6 @@ pub fn explain(
   explain_fallback(home, access, error, None)
 }
 
-pub fn explain_for_model(
-  home: String,
-  access: Access,
-  error: types.Error,
-  model: String,
-) -> Option(String) {
-  explain_fallback(home, access, error, Some(catalog.meter_of_id(model)))
-}
-
 fn explain_fallback(
   home: String,
   access: Access,

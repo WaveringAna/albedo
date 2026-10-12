@@ -1,7 +1,7 @@
 -module(albedo_claude_files).
 %% Anthropic Files API upload cache in <home>/claude-files.json.
 %% Failures and provider rejections fall back to inline base64.
--export([ensure/5, file_source/3, reject/3, upload/4, delete/3]).
+-export([ensure/5, file_source/3, reject/3, upload/4]).
 
 -define(VERSION, <<"2023-06-01">>).
 -define(BETA, <<"files-api-2025-04-14">>).
@@ -165,14 +165,6 @@ upload(Endpoint, Auth, Mime, Bytes) ->
                                                    [Status, Detail]))};
         _ -> {error, <<"Anthropic file upload failed">>}
     end.
-
-delete(Endpoint, Auth, Id) ->
-    Url = <<(unicode:characters_to_binary(Endpoint))/binary, "/v1/files/", Id/binary>>,
-    Headers = [header(Auth),
-               {"anthropic-version", binary_to_list(?VERSION)},
-               {"anthropic-beta", binary_to_list(?BETA)}],
-    _ = albedo_http:request(delete, Url, Headers, none, ?TIMEOUT_MS, 10000),
-    nil.
 
 header({Name, Value}) ->
     {unicode:characters_to_list(Name), unicode:characters_to_list(Value)}.

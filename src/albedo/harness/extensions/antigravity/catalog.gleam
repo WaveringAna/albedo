@@ -67,14 +67,6 @@ pub fn meter_name(fam: Family) -> String {
   }
 }
 
-pub fn family_title(fam: Family) -> String {
-  case fam {
-    Gemini -> "Gemini"
-    Claude -> "Claude"
-    GptOss -> "GPT-OSS"
-  }
-}
-
 pub fn meter(model: Model) -> String {
   meter_name(family(model))
 }

@@ -5,7 +5,7 @@
 %% `limitedMeters` are the only keys read here. Scope names the pool, e.g. <<"codex">>.
 
 -export([order/4, order/5, remember/3, limited/2, limited/3, mark/4, mark/5,
-         until_of/1, until_of/2, note/3, noted/2, served/2, last_served/2, local_time/1]).
+         until_of/2, note/3, noted/2, served/2, last_served/2, local_time/1]).
 
 %% A user-selected account comes first, then the session's sticky or hashed
 %% choice. Accounts still inside a reported limit go last, soonest reset first:
@@ -37,8 +37,6 @@ remember(Scope, Session, Id) ->
 
 limited(V, Now) -> limited(V, Now, undefined).
 limited(V, Now, Meter) -> until_of(V, Meter) > Now.
-
-until_of(Value) -> until_of(Value, undefined).
 
 until_of(Value, undefined) ->
     until_of_any(Value);
