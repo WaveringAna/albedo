@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"encoding/json"
-	"slices"
 	"strings"
 
 	"albedo/cli/internal/daemon/protocol"
@@ -18,7 +17,7 @@ type SessionCommand struct {
 	Page                                               *bool
 	Name, Description, Method, ID, Delivery, CommandID string
 	Arguments                                          []CommandArgument
-	ModelCallable, UserTurn                            bool
+	UserTurn                                           bool
 	Operation                                          protocol.ActionOperation
 }
 
@@ -48,7 +47,7 @@ func sessionCommandValue(command protocol.HTTPCommand, commandID string) (Sessio
 	if command.ID == "" || !strings.HasPrefix(command.SlashName, "/") || command.Arguments == nil {
 		return SessionCommand{}, fieldError("command")
 	}
-	result := SessionCommand{ID: command.ID, Name: command.SlashName, Description: command.Description, Delivery: command.Delivery, ModelCallable: slices.Contains(command.CallerPermissions, "model"), Operation: command.Operation}
+	result := SessionCommand{ID: command.ID, Name: command.SlashName, Description: command.Description, Delivery: command.Delivery, Operation: command.Operation}
 	if command.Delivery == "input" {
 		if commandID == "" {
 			return SessionCommand{}, fieldError("command ID")

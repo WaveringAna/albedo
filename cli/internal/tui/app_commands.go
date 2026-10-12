@@ -178,7 +178,7 @@ func (m *AppModel) changeModelCmd(model, provider, effort string, raiseCap *bool
 			}
 			provider, model = resolved, selected
 		}
-		selection, err := daemon.ChangeModel(context.Background(), conn, sessionID, daemon.ModelChangeRequest{Model: model, Provider: provider, Effort: effort, CurrentProvider: currentProvider, ETag: etag, DefaultETag: providersETag, MakeDefault: true})
+		selection, err := daemon.ChangeModel(context.Background(), conn, sessionID, daemon.ModelChangeRequest{Model: model, Provider: provider, Effort: effort, ETag: etag, DefaultETag: providersETag, MakeDefault: true})
 		if selection.Model == "" {
 			return modelChangedMsg{Err: err, SessionID: sessionID, Gen: gen}
 		}

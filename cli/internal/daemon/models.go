@@ -24,8 +24,8 @@ type EffortResult struct {
 type ModelSelection struct{ Provider, Model, Protocol, Effort, ETag, DefaultETag, ModelsETag string }
 type ModelSelectionRequest struct{ Model, Provider, Effort, ETag string }
 type ModelChangeRequest struct {
-	Model, Provider, Effort, CurrentProvider, ETag, DefaultETag string
-	MakeDefault                                                 bool
+	Model, Provider, Effort, ETag, DefaultETag string
+	MakeDefault                                bool
 }
 type ModelContextCapRequest struct {
 	CapKey, ETag string

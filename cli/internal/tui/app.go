@@ -61,12 +61,11 @@ type AppModel struct {
 	Agents           AgentsViewModel
 	Quota            QuotaModel
 
-	Chat              ChatModel
-	SettingsGen       int
-	State             AppState
-	Width             int
-	Height            int
-	ExtensionRevision int
+	Chat        ChatModel
+	SettingsGen int
+	State       AppState
+	Width       int
+	Height      int
 
 	// SessionGen invalidates earlier session-list and session-creation replies.
 	SessionGen int
@@ -339,7 +338,6 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case ExtensionPickerChangedMsg:
-		m.ExtensionRevision++
 		m.CatalogGen++
 		return m, m.loadCommandCatalogCmd(m.CatalogGen)
 
