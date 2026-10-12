@@ -559,8 +559,8 @@ def _drop_definition(name: str) -> None:
 
 def _definition_changes(
     source: str, tree: ast.Module
-) -> list[tuple[set[str], str | None, bool]]:
-    changes: list[tuple[set[str], str | None, bool]] = []
+) -> list[tuple[ast.stmt, set[str], str | None, bool]]:
+    changes: list[tuple[ast.stmt, set[str], str | None, bool]] = []
     for statement in tree.body:
         names: set[str] = set()
         definition = isinstance(
@@ -590,6 +590,7 @@ def _definition_changes(
         if names:
             changes.append(
                 (
+                    statement,
                     names,
                     ast.get_source_segment(source, statement) if definition else None,
                     isinstance(statement, ast.Import),
@@ -601,9 +602,7 @@ def _definition_changes(
 def capture_definitions(
     source: str, tree: ast.Module, upto_line: int | None = None
 ) -> None:
-    for statement, (names, segment, is_import) in zip(
-        tree.body, _definition_changes(source, tree)
-    ):
+    for statement, names, segment, is_import in _definition_changes(source, tree):
         if (
             upto_line is not None
             and (statement.end_lineno or statement.lineno) >= upto_line

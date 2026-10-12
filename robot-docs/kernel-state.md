@@ -6,6 +6,8 @@ The Python kernel snapshots the session namespace into the session-owned state f
 
 After a successful cell, the kernel records source for direct, top-level imports, functions, async functions, and classes. Decorators are included. Definitions nested inside `if`, `try`, `with`, or other compound statements are not captured. A later top-level assignment, delete, loop target, or with target removes a recorded name, so rebinding a function name to a value is not resurrected on restore. The latest definition wins.
 
+After a failed cell, the kernel records only definitions from statements that completed before the failing statement. Statements that bind no names still count when locating that failure. Definitions after the failure are never replayed.
+
 On restore, pickled values load first, then definitions run in recorded order. Successfully restored definitions are registered again and saved on the next release. Definition source is authoritative when a name has both forms. A failing definition is reported and does not prevent later definitions. Definition replay has the same trust as pickle loading: it executes in the daemon home for this session.
 
 ## caps and reply contract
@@ -30,5 +32,5 @@ Never deleted: the state of a session that holds a live kernel or is running a t
 A state file that belongs to no session the store knows about is an orphan, and is deleted once it is more than a day old by modification time. Startup removes old orphans before sessions open.
 
 
-`priv/python/albedo_state.py` owns serialization and definition capture.
-`priv/python/albedo_cells.py` owns the live namespace and release/restore lifecycle.
+`priv/python/albedo_state.py` owns serialization.
+`priv/python/albedo_cells.py` owns definition capture, the live namespace, and the release/restore lifecycle.

@@ -25,11 +25,16 @@ DEFINE = (
     "def rebound():\n    return 1\n"
     "if answer:\n    rebound = 5\n" + BIG_DEFINITION + "blob = bytes(9 * 1024 * 1024)\n"
 )
-FAIL = "def survivor():\n    return 'alive'\nraise RuntimeError('boom')"
+FAIL = (
+    "def survivor():\n    return 'alive'\n"
+    "pass\n"
+    "raise RuntimeError('boom')\n"
+    "def never_ran():\n    return 'unreachable'\n"
+)
 RECALL = (
     "print('RESULT', helper(21), Box(3).v, json.dumps([1]), answer, rebound,\n"
     "      survivor(), os.path.basename('a/b'), xml.dom.__name__,\n"
-    "      'big' in globals(), 'blob' in globals())"
+    "      'big' in globals(), 'blob' in globals(), 'never_ran' in globals())"
 )
 LEGACY = "print('LEGACY', legacy)"
 
@@ -90,7 +95,7 @@ class KernelStateTests(unittest.TestCase):
         self.saved_after(session, saved)
         self.turn(session, "recall")
         output = self.outputs()
-        self.assertIn("RESULT 42 3 [1] 7 5 alive b xml.dom False False", output)
+        self.assertIn("RESULT 42 3 [1] 7 5 alive b xml.dom False False False", output)
         notice = latest_user(self.provider.requests[-2]["request"])
         self.assertIn("re-run from source", notice)
         self.assertIn("helper", notice)
