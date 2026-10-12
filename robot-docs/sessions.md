@@ -4,6 +4,13 @@ Session creation and user turn admission use durable [operation receipts](operat
 An accepted submission survives a daemon restart while it waits for transcript
 consumption. A retry with the same operation ID returns the original admission.
 
+The CLI app package owns session ID resolution. Full lowercase UUIDv7 IDs
+address roots and children directly. Shortened IDs match only root sessions,
+with an exact match taking precedence over prefixes. A missing full ID returns
+the same no-match error as a missing prefix; resume never creates a replacement.
+Opening reads the root list and settings once, then captures the selected session
+once and adds a child to its initial list if needed.
+
 opening a session attaches the cli to its event stream and independently
 reads `GET /sessions/{session_id}?tail=0`. replayed history does not establish the
 session's live phase; status and live events do.

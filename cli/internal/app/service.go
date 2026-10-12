@@ -58,13 +58,13 @@ func (s *Service) PrepareOpen(ctx context.Context, options OpenOptions) (Prepare
 		return PreparedOpen{}, err
 	}
 
-	var selected *daemon.Session
+	selectedID := ""
 	if id != "" {
-		session, matchErr := matchSession(sessions, id)
+		resolved, matchErr := resolveSessionID(id, sessions)
 		if matchErr != nil {
 			return PreparedOpen{}, matchErr
 		}
-		selected = &session
+		selectedID = resolved
 	}
 
 	settings, err := daemon.GetSettings(ctx, conn)
@@ -78,10 +78,10 @@ func (s *Service) PrepareOpen(ctx context.Context, options OpenOptions) (Prepare
 	}
 
 	var initial *daemon.Session
-	if selected != nil {
-		captured, err := daemon.GetSession(ctx, conn, selected.ID)
+	if selectedID != "" {
+		captured, err := daemon.GetSession(ctx, conn, selectedID)
 		if err != nil {
-			return PreparedOpen{}, err
+			return PreparedOpen{}, sessionLookupError(id, err)
 		}
 		initial = &captured
 	} else if configured && (fresh || len(sessions) == 0) {
@@ -114,13 +114,15 @@ func (s *Service) Sessions(ctx context.Context) ([]daemon.Session, error) {
 	return slices.DeleteFunc(sessions, func(session daemon.Session) bool { return session.Archived }), nil
 }
 
-// matchSession finds the session whose ID is id or, failing that, the only one
-// that starts with it, since `albedo sessions` prints shortened IDs.
-func matchSession(sessions []daemon.Session, id string) (daemon.Session, error) {
+// resolveSessionID addresses full IDs directly and expands prefixes against roots.
+func resolveSessionID(id string, sessions []daemon.Session) (string, error) {
+	if fullSessionID.MatchString(id) {
+		return id, nil
+	}
 	selectedIndex, matchCount := -1, 0
 	for i := range sessions {
 		if sessions[i].ID == id {
-			return sessions[i], nil
+			return sessions[i].ID, nil
 		}
 		if strings.HasPrefix(sessions[i].ID, id) {
 			selectedIndex = i
@@ -129,32 +131,47 @@ func matchSession(sessions []daemon.Session, id string) (daemon.Session, error) 
 	}
 	switch matchCount {
 	case 0:
-		return daemon.Session{}, fmt.Errorf("no session matches %q; run albedo sessions to see the available sessions", id)
+		return "", noSessionMatch(id)
 	case 1:
-		return sessions[selectedIndex], nil
+		return sessions[selectedIndex].ID, nil
 	default:
-		return daemon.Session{}, fmt.Errorf("more than one session ID starts with %q; use a longer ID or run albedo sessions to find it", id)
+		return "", fmt.Errorf("more than one session ID starts with %q; use a longer ID or run albedo sessions to find it", id)
 	}
 }
 
 // The UUIDv7 shape in the daemon's operation validator and OpenAPI schema.
 var fullSessionID = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
 
-// resolveSession reads full IDs directly and expands prefixes against root sessions.
-func resolveSession(ctx context.Context, conn *daemon.Connection, id string) (string, error) {
-	if fullSessionID.MatchString(id) {
-		configuration, err := daemon.GetSessionConfiguration(ctx, conn, id)
-		if problem, ok := errors.AsType[*daemon.APIError](err); ok && problem.StatusCode == http.StatusNotFound {
-			return "", fmt.Errorf("no session matches %q; run albedo sessions to see the available sessions", id)
-		}
-		return configuration.Value.ID, err
+func noSessionMatch(id string) error {
+	return fmt.Errorf("no session matches %q; run albedo sessions to see the available sessions", id)
+}
+
+func sessionLookupError(id string, err error) error {
+	if problem, ok := errors.AsType[*daemon.APIError](err); ok && problem.StatusCode == http.StatusNotFound && fullSessionID.MatchString(id) {
+		return noSessionMatch(id)
 	}
-	sessions, err := daemon.ListSessions(ctx, conn)
+	return err
+}
+
+// resolveSession validates full IDs directly and lists roots only for prefixes.
+func resolveSession(ctx context.Context, conn *daemon.Connection, id string) (string, error) {
+	var sessions []daemon.Session
+	if !fullSessionID.MatchString(id) {
+		var err error
+		sessions, err = daemon.ListSessions(ctx, conn)
+		if err != nil {
+			return "", err
+		}
+	}
+	resolved, err := resolveSessionID(id, sessions)
 	if err != nil {
 		return "", err
 	}
-	session, err := matchSession(sessions, id)
-	return session.ID, err
+	if fullSessionID.MatchString(id) {
+		configuration, err := daemon.GetSessionConfiguration(ctx, conn, resolved)
+		return configuration.Value.ID, sessionLookupError(id, err)
+	}
+	return resolved, nil
 }
 
 func (s *Service) Send(ctx context.Context, id, prompt string) (daemon.SendResult, error) {

@@ -283,7 +283,7 @@ func TestCLISessionDeletionRequiresConfirmation(t *testing.T) {
 }
 
 // Full IDs address children even though the default session listing contains roots.
-func TestCLIReadAndSendReachAChildByItsFullID(t *testing.T) {
+func TestCLICommandsReachAChildByItsFullID(t *testing.T) {
 	profile := providerRoute(t, echoReply)
 	t.Parallel()
 	parent := newSession(t, t.TempDir())
@@ -296,6 +296,12 @@ func TestCLIReadAndSendReachAChildByItsFullID(t *testing.T) {
 	waitIdle(t, child.ID, profile, 1)
 	if slices.ContainsFunc(daemonSessions(t), func(session daemon.Session) bool { return session.ID == child.ID }) {
 		t.Fatal("child unexpectedly appears in the root listing")
+	}
+	var resumed struct {
+		Session string `json:"session"`
+	}
+	if err := json.Unmarshal([]byte(cli(t, "resume", child.ID)), &resumed); err != nil || resumed.Session != child.ID {
+		t.Fatalf("albedo resume child by full ID: session=%q err=%v", resumed.Session, err)
 	}
 	cli(t, "send", child.ID, "child second turn")
 	waitIdle(t, child.ID, profile, 2)
