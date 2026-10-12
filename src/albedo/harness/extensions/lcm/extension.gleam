@@ -7,7 +7,6 @@ import albedo/daemon/transcript
 import albedo/harness/compaction
 import albedo/harness/extension as harness_extension
 import albedo/harness/extensions/lcm/graph
-import albedo/harness/extensions/rolling/extension as rolling
 import albedo/harness/settings
 import albedo/openai_api/types
 import gleam/dynamic/decode
@@ -115,7 +114,7 @@ fn decoder() -> decode.Decoder(Config) {
 }
 
 fn validate(config: Config) -> Result(Config, String) {
-  rolling.validate_window(
+  compaction.validate_window(
     "lcm",
     config.context_window_tokens,
     config.trigger_percent,
@@ -133,7 +132,7 @@ fn project(
 ) -> Result(compaction.View, String) {
   use Saved(frontier:, stats:, ..) <- result.try(saved(context))
   let window =
-    rolling.effective_window(config.context_window_tokens, context, history)
+    compaction.effective_window(config.context_window_tokens, context, history)
   let current =
     projection(frontier, history, stats, tail_budget(config, window), 1)
   let estimated = context.pinned_tokens + compaction.estimate_inputs(current)
@@ -186,7 +185,7 @@ fn compact(
 ) -> Result(Bool, String) {
   use Saved(snapshot, covered, frontier, stats) <- result.try(saved(context))
   let window =
-    rolling.effective_window(config.context_window_tokens, context, history)
+    compaction.effective_window(config.context_window_tokens, context, history)
   use compaction.Capacity(tokens: capacity, ..) <- result.try(option.to_result(
     window,
     "no configured or catalogued context window to compact against",
@@ -375,7 +374,7 @@ fn summarize_leaves(
   eligible: List(transcript.SourcedEntry),
   summary_limit: Int,
 ) -> Result(List(graph.Leaf), String) {
-  let chunks = rolling.chunk_units(source_units(eligible), leaf_budget)
+  let chunks = compaction.chunk_units(source_units(eligible), leaf_budget)
   use chunk <- list.try_map(chunks)
   case chunk {
     [] -> Error("cannot summarize an empty source chunk")

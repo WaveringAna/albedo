@@ -176,7 +176,9 @@ fn project(
       due,
     )
   }
-  case effective_window(config.context_window_tokens, context, history) {
+  case
+    compaction.effective_window(config.context_window_tokens, context, history)
+  {
     None ->
       // Without a window there is no threshold to compare, but a saved
       // projection is still the user's standing instruction: honor it.
@@ -228,7 +230,7 @@ fn compact(
   use compaction.Prior(folds, rest) <- result.try(context.prior(history))
   let history = list.append(folds, rest)
   use compaction.Capacity(capacity, _) <- result.try(option.to_result(
-    effective_window(config.context_window_tokens, context, history),
+    compaction.effective_window(config.context_window_tokens, context, history),
     "no configured or catalogued context window to compact against",
   ))
   use _ <- result.try(compaction.fits_pinned(context, capacity))
@@ -261,7 +263,7 @@ fn compact(
     summarize,
     model,
     previous_summary,
-    chunk_units(
+    compaction.chunk_units(
       list.map(newly_evicted, fn(item) {
         #([item], compaction.estimate_input(item))
       }),
@@ -285,53 +287,8 @@ fn compact(
   Ok(True)
 }
 
-/// The config shape the compaction strategies share: an optional positive
-/// window and tail/trigger percentages ordered inside (0, 100), reported
-/// under the strategy's own name.
-pub fn validate_window(
-  name: String,
-  context_window_tokens: Option(Int),
-  trigger_percent: Int,
-  tail_percent: Int,
-) -> Result(Nil, String) {
-  case context_window_tokens {
-    Some(capacity) if capacity <= 0 ->
-      Error(name <> " contextWindowTokens must be positive")
-    _ ->
-      compaction.require(
-        trigger_percent > 0
-          && trigger_percent < 100
-          && tail_percent > 0
-          && tail_percent < trigger_percent,
-        name
-          <> " percentages must satisfy 0 < tailPercent < triggerPercent < 100",
-      )
-  }
-}
-
-/// The window a strategy compacts against. Configuration overrides a
-/// catalog; neither one is guessed from the model id. A forced compaction
-/// without either still compacts, against an estimate of the request.
-pub fn effective_window(
-  context_window_tokens: Option(Int),
-  context: compaction.Context,
-  history: List(types.Input),
-) -> Option(compaction.Capacity) {
-  case context_window_tokens, context.capacity, context.force {
-    Some(tokens), _, _ ->
-      Some(compaction.Capacity(tokens, "configured contextWindowTokens"))
-    None, Some(capacity), _ -> Some(capacity)
-    None, None, True ->
-      Some(compaction.Capacity(
-        context.pinned_tokens + compaction.estimate_inputs(history),
-        "estimated for manual compaction",
-      ))
-    None, None, False -> None
-  }
-}
-
 fn validate_config(config: Config) -> Result(Config, String) {
-  validate_window(
+  compaction.validate_window(
     "rolling",
     config.context_window_tokens,
     config.trigger_percent,
@@ -407,41 +364,6 @@ fn summarize_chunks(
     }),
   )
   option.to_result(summary, empty_summary)
-}
-
-/// Groups `units`, each with its items and estimated token cost, into chunks
-/// that each stay under `budget`: the unit shape both a summarizer's chunked
-/// requests and an LCM leaf's source rows share.
-pub fn chunk_units(units: List(#(List(a), Int)), budget: Int) -> List(List(a)) {
-  chunk_runs(units, budget, [], 0, [])
-}
-
-fn chunk_runs(
-  units: List(#(List(a), Int)),
-  budget: Int,
-  current: List(a),
-  tokens: Int,
-  complete: List(List(a)),
-) -> List(List(a)) {
-  case units {
-    [] ->
-      case current {
-        [] -> list.reverse(complete)
-        _ -> list.reverse([current, ..complete])
-      }
-    [unit, ..rest] ->
-      case current != [] && tokens + unit.1 > budget {
-        True -> chunk_runs(rest, budget, unit.0, unit.1, [current, ..complete])
-        False ->
-          chunk_runs(
-            rest,
-            budget,
-            list.append(current, unit.0),
-            tokens + unit.1,
-            complete,
-          )
-      }
-  }
 }
 
 fn projection(resumed: Option(Resumed), history: List(types.Input)) -> View {

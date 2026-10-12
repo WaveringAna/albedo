@@ -99,6 +99,86 @@ pub fn require(condition: Bool, message: String) -> Result(Nil, String) {
   }
 }
 
+/// The config shape the compaction strategies share: an optional positive
+/// window and tail/trigger percentages ordered inside (0, 100), reported
+/// under the strategy's own name.
+pub fn validate_window(
+  name: String,
+  context_window_tokens: Option(Int),
+  trigger_percent: Int,
+  tail_percent: Int,
+) -> Result(Nil, String) {
+  case context_window_tokens {
+    Some(capacity) if capacity <= 0 ->
+      Error(name <> " contextWindowTokens must be positive")
+    _ ->
+      require(
+        trigger_percent > 0
+          && trigger_percent < 100
+          && tail_percent > 0
+          && tail_percent < trigger_percent,
+        name
+          <> " percentages must satisfy 0 < tailPercent < triggerPercent < 100",
+      )
+  }
+}
+
+/// The window a strategy compacts against. Configuration overrides a
+/// catalog; neither one is guessed from the model id. A forced compaction
+/// without either still compacts, against an estimate of the request.
+pub fn effective_window(
+  context_window_tokens: Option(Int),
+  context: Context,
+  history: List(types.Input),
+) -> Option(Capacity) {
+  case context_window_tokens, context.capacity, context.force {
+    Some(tokens), _, _ ->
+      Some(Capacity(tokens, "configured contextWindowTokens"))
+    None, Some(capacity), _ -> Some(capacity)
+    None, None, True ->
+      Some(Capacity(
+        context.pinned_tokens + estimate_inputs(history),
+        "estimated for manual compaction",
+      ))
+    None, None, False -> None
+  }
+}
+
+/// Groups `units`, each with its items and estimated token cost, into chunks
+/// under `budget`, keeping an oversized unit whole. Summarizer requests and
+/// LCM leaf source rows share this unit shape.
+pub fn chunk_units(units: List(#(List(a), Int)), budget: Int) -> List(List(a)) {
+  chunk_runs(units, budget, [], 0, [])
+}
+
+fn chunk_runs(
+  units: List(#(List(a), Int)),
+  budget: Int,
+  current: List(a),
+  tokens: Int,
+  complete: List(List(a)),
+) -> List(List(a)) {
+  case units {
+    [] ->
+      case current {
+        [] -> list.reverse(complete)
+        _ -> list.reverse([current, ..complete])
+      }
+    [unit, ..rest] ->
+      case current != [] && tokens + unit.1 > budget {
+        True -> chunk_runs(rest, budget, unit.0, unit.1, [current, ..complete])
+        False ->
+          chunk_runs(
+            rest,
+            budget,
+            list.append(current, unit.0),
+            tokens + unit.1,
+            complete,
+          )
+      }
+  }
+}
+
 /// The pinned system prompt, extension context, and tool schemas leave room
 /// in `capacity` for any history at all.
 pub fn fits_pinned(context: Context, capacity: Int) -> Result(Nil, String) {

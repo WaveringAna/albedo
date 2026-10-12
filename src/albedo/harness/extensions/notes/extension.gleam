@@ -8,7 +8,6 @@ import albedo/daemon/note
 import albedo/daemon/store
 import albedo/harness/compaction
 import albedo/harness/extension
-import albedo/harness/extensions/rolling/extension as rolling
 import albedo/harness/settings
 import albedo/openai_api/types
 import gleam/dynamic/decode
@@ -181,7 +180,7 @@ fn write_notes(
     None -> unknown_window_tokens
   }
   let chunks =
-    rolling.chunk_units(
+    compaction.chunk_units(
       list.map(fresh, fn(item) { #([item], compaction.estimate_input(item)) }),
       int.max(1000, window / 2),
     )
