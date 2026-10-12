@@ -3,6 +3,7 @@
 
 import albedo/daemon/store
 import albedo/daemon/usage
+import albedo/text_scalars
 import gleam/dynamic/decode
 import gleam/json
 import gleam/list
@@ -14,8 +15,9 @@ import sqlight
 @external(erlang, "albedo_operations", "fingerprint")
 pub fn fingerprint(encoded: String) -> String
 
-@external(erlang, "albedo_operations", "scalar_prefix")
-pub fn scalar_prefix(text: String, limit: Int) -> String
+pub fn scalar_prefix(text: String, limit: Int) -> String {
+  text_scalars.take(text, limit)
+}
 
 /// Canonical message descriptor shared by direct inputs and child creation.
 pub fn message_intent(

@@ -18,6 +18,8 @@ graphemes. Use these helpers for bounded previews and names, including from
 Erlang through `'albedo@text_scalars':take(Text, Limit)`. The kernel job summary
 retains at most 4096 scalars; truncating it must not allocate a list for the
 entire command.
+HTTP response previews and operation validation also use `text_scalars.take`;
+their scalar-prefix adapters do not maintain a separate native implementation.
 
 ## shared values
 

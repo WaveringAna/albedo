@@ -375,16 +375,11 @@ pub fn quota(sample: quota.Sample) -> json.Json {
 }
 
 fn preview(text: String, count: Int) -> json.Json {
+  let prefix = http_api.scalar_prefix(text, 256)
   json.object([
-    #("text", json.string(http_api.scalar_prefix(text, 256))),
+    #("text", json.string(prefix)),
     #("transcript_count", json.int(count)),
-    #(
-      "truncated",
-      json.bool(
-        string.byte_size(http_api.scalar_prefix(text, 256))
-        < string.byte_size(text),
-      ),
-    ),
+    #("truncated", json.bool(string.byte_size(prefix) < string.byte_size(text))),
   ])
 }
 

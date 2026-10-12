@@ -1,6 +1,6 @@
 -module(albedo_http_api).
 -export([accepts_zstd/1, zstd_compress/1, zstd_stream/0, zstd_flush/2, zstd_end/1, zstd_decompress/2,
-         stream_socket/1, scalar_prefix/2, content_slice/3, page_token/3, page_state/3, parse/1, accept/2, encode/1, timestamp/1, etag/1, instance_id/0, read_chunked/2]).
+         stream_socket/1, content_slice/3, page_token/3, page_state/3, parse/1, accept/2, encode/1, timestamp/1, etag/1, instance_id/0, read_chunked/2]).
 
 parse(Bytes) ->
     try
@@ -242,5 +242,3 @@ media_quality(Media, Ranges) ->
         || {Range, Quality} <- Ranges, Range =:= Media orelse Range =:= Wildcard orelse Range =:= <<"*/*">>],
     case Matches of [] -> 0; _ -> {Specificity, _} = lists:max(Matches),
         lists:max([Quality || {S, Quality} <- Matches, S =:= Specificity]) end.
-
-scalar_prefix(Text, Limit) -> albedo_operations:scalar_prefix(Text, Limit).

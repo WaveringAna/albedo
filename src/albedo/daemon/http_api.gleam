@@ -5,6 +5,7 @@ import albedo/daemon/operations
 import albedo/daemon/session/creation
 import albedo/harness/location
 import albedo/harness/ssh
+import albedo/text_scalars
 import gleam/bit_array
 import gleam/bytes_tree
 import gleam/dict
@@ -736,8 +737,9 @@ pub fn input_intent(input: Input) -> json.Json {
   }
 }
 
-@external(erlang, "albedo_operations", "scalar_prefix")
-pub fn scalar_prefix(text: String, limit: Int) -> String
+pub fn scalar_prefix(text: String, limit: Int) -> String {
+  text_scalars.take(text, limit)
+}
 
 pub fn failure(code: String) -> Failure {
   case code {

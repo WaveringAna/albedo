@@ -187,7 +187,10 @@ class ContextTest(unittest.TestCase):
             self.assertLessEqual(len(part["text"].encode()), 32000)
             parts.append(part["text"])
         self.assertGreater(len(parts), 1)
-        self.assertIn(message, "".join(parts))
+        history_text = "".join(parts)
+        self.assertIn(message, history_text)
+        self.assertEqual(history["preview"]["text"], history_text[:256])
+        self.assertTrue(history["preview"]["truncated"])
 
     def test_usage_absence_model_selection_and_unknown_catalog_model(self):
         self.turn("without provider usage")
