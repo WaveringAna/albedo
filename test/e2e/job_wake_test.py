@@ -6,22 +6,20 @@ import time
 import unittest
 import urllib.error
 
-from harness import Albedo, Provider, Reply, exclusive, python, release_fifo, text
+from harness import (
+    Albedo,
+    Provider,
+    Reply,
+    exclusive,
+    latest_user,
+    python,
+    release_fifo,
+    text,
+)
 
 # A daemon under this limit sweeps every half second, so the detached job
 # below outlives several sweeps.
 IDLE_SECONDS = 2
-
-
-def user_text(request):
-    return next(
-        (
-            item.get("content", "")
-            for item in reversed(request["messages"])
-            if item.get("role") == "user"
-        ),
-        "",
-    )
 
 
 def wait_for(predicate, timeout=40):
@@ -42,7 +40,7 @@ class JobWakeCase(unittest.TestCase):
 
         def script(request):
             last = request["messages"][-1]
-            user = user_text(request)
+            user = latest_user(request)
             if last.get("role") == "user" and "start a slow job" in user:
                 seconds = IDLE_SECONDS * 2.5 if "detached" in user else 1.2
                 program = (
@@ -75,7 +73,7 @@ class JobWakeCase(unittest.TestCase):
         self.addCleanup(self.app.__exit__, None, None, None)
 
     def users(self):
-        return [user_text(record["request"]) for record in self.provider.requests]
+        return [latest_user(record["request"]) for record in self.provider.requests]
 
 
 class JobWakeTests(JobWakeCase):

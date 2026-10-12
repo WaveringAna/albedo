@@ -17,31 +17,20 @@ import time
 import unittest
 
 import harness
-from harness import Provider, exclusive, python, text
-from kernel_upgrade_test import MARKER, editable_daemon
-
-
-def user_text(request):
-    return next(
-        (
-            item.get("content", "")
-            for item in reversed(request["input"])
-            if item.get("role") == "user"
-        ),
-        "",
-    )
+from harness import Provider, exclusive, latest_user, python, text
+from kernel_support import MARKER, ModelCells, editable_daemon
 
 
 # exclusive: boots an editable python bundle and restarts the daemon
 @exclusive
-class SwapWakeTests(unittest.TestCase):
+class SwapWakeTests(ModelCells, unittest.TestCase):
     bundle: Path
 
     def setUp(self):
         self.cells = []
 
         def script(request):
-            user = user_text(request)
+            user = latest_user(request)
             if "background python cells finished" in user:
                 return text("wake seen")
             if user.endswith("hold"):
@@ -61,26 +50,6 @@ class SwapWakeTests(unittest.TestCase):
         self.app.__enter__()
         self.addCleanup(self.app.__exit__, None, None, None)
         self.session = self.app.session()
-
-    def cell(self, code):
-        """Run one cell through a model turn; its result and the turn's prompt."""
-        self.cells.append(code)
-        self.app.prompt(self.session, "run it").close()
-        self.app.idle(self.session)
-        results = [
-            json.loads(part["value"])
-            for entry in self.app.history(self.session)["items"]
-            if entry["kind"] == "tool_result" and entry["tool"]["name"] == "python"
-            for part in entry["content"]
-            if part["kind"] == "json" and part["field"] == "result"
-        ]
-        request = next(
-            r["request"]
-            for r in reversed(self.provider.requests)
-            if any(i.get("role") == "user" for i in r["request"]["input"])
-        )
-        prompt = [i["content"] for i in request["input"] if i.get("role") == "user"][-1]
-        return results[-1], prompt
 
     def kernel(self):
         with self.app.api(f"/sessions/{self.session}?tail=0") as response:
@@ -114,8 +83,8 @@ class SwapWakeTests(unittest.TestCase):
         deadline = time.monotonic() + 40
         while time.monotonic() < deadline:
             for record in reversed(self.provider.requests):
-                if "background python cells finished" in user_text(record["request"]):
-                    return user_text(record["request"])
+                if "background python cells finished" in latest_user(record["request"]):
+                    return latest_user(record["request"])
             time.sleep(0.1)
         self.fail("the cell completion wake never reached the model")
 

@@ -5,7 +5,7 @@ import re
 import time
 import unittest
 
-from harness import Albedo, Provider, python, text
+from harness import Albedo, Provider, latest_user, python, text
 
 LEAD = """models = await agents.models()
 assert 'beta/fixture-beta' in models, models
@@ -83,17 +83,6 @@ except AgentsError as error:
 """
 
 
-def user_text(request):
-    return next(
-        (
-            item.get("content", "")
-            for item in reversed(request["messages"])
-            if item.get("role") == "user"
-        ),
-        "",
-    )
-
-
 def wait_for(predicate):
     deadline = time.monotonic() + 60
     while time.monotonic() < deadline:
@@ -108,7 +97,7 @@ class AgentsPythonTests(unittest.TestCase):
     def test_python_spawn_identity_refusals_and_explicit_answer(self):
         def script(request):
             last = request["messages"][-1]
-            user = user_text(request)
+            user = latest_user(request)
             peek = re.search(r"peek ([0-9a-f]+)", user)
             if last.get("role") == "user" and peek:
                 return python(PEEK.format(kid=peek.group(1)))
@@ -142,7 +131,7 @@ class AgentsPythonTests(unittest.TestCase):
                         last = messages[-1]
                         records.append(
                             {
-                                "user": user_text(item["request"]),
+                                "user": latest_user(item["request"]),
                                 "context": " ".join(
                                     str(m.get("content", "")) for m in messages
                                 ),

@@ -125,17 +125,6 @@ def error(status: int, body: str = "fixture error") -> Reply:
     return Reply("error", body, status=status)
 
 
-def _content_text(item):
-    content = item.get("content", "")
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        return " ".join(
-            part.get("text", "") for part in content if isinstance(part, dict)
-        )
-    return ""
-
-
 # Guards the provider registry and the shared provider server.
 _config_lock = threading.RLock()
 
@@ -658,9 +647,16 @@ os.execv(sys.argv[3], sys.argv[3:])"""
 
 
 def latest_user(request):
-    return [item["content"] for item in request["input"] if item.get("role") == "user"][
-        -1
-    ]
+    """Return the last user's raw content from either provider protocol."""
+    messages = request.get("messages", request.get("input", []))
+    return next(
+        (
+            item.get("content", "")
+            for item in reversed(messages)
+            if item.get("role") == "user"
+        ),
+        "",
+    )
 
 
 def wait_until(condition, seconds, message):

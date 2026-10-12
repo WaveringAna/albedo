@@ -12,6 +12,7 @@ from harness import (
     Albedo,
     Provider,
     exclusive,
+    latest_user,
     operation_id,
     python,
     release_fifo,
@@ -24,22 +25,11 @@ ROOTS = 4 if HEAVY else 2
 CHILDREN = 12 if HEAVY else 4
 
 
-def user_text(request):
-    return next(
-        (
-            item.get("content", "")
-            for item in reversed(request["messages"])
-            if item.get("role") == "user"
-        ),
-        "",
-    )
-
-
 class AgentsSwarmTests(unittest.TestCase):
     def test_children_boot_without_blocking_actors_or_losing_answers(self):
         def script(request):
             last = request["messages"][-1]
-            if last.get("role") == "user" and 'kind="task"' in user_text(request):
+            if last.get("role") == "user" and 'kind="task"' in latest_user(request):
                 return python("print('cell ran')")
             return text("done")
 
@@ -113,13 +103,13 @@ class AgentsSwarmTests(unittest.TestCase):
         def script(request):
             if request["messages"][-1].get("role") != "user":
                 return text("done")
-            if user_text(request) == "spawn held child":
+            if latest_user(request) == "spawn held child":
                 return python(
                     "models = await agents.models()\n"
                     "child = await agents.self.spawn('held task', name='held', model=models[0])\n"
                     "print(child.id)"
                 )
-            if user_text(request) == "close held child":
+            if latest_user(request) == "close held child":
                 return python(
                     "await child.close()\nprint((await mail.submit(child, 'late task')).status)"
                 )
@@ -196,7 +186,7 @@ class AgentsSwarmTests(unittest.TestCase):
                 )
             self.assertFalse(
                 any(
-                    "held task" in user_text(record["request"])
+                    "held task" in latest_user(record["request"])
                     for record in provider.requests
                 )
             )
@@ -205,7 +195,7 @@ class AgentsSwarmTests(unittest.TestCase):
             app.idle(child)
             self.assertTrue(
                 any(
-                    user_text(record["request"]) == "manual visit"
+                    latest_user(record["request"]) == "manual visit"
                     for record in provider.requests
                 )
             )
@@ -228,7 +218,7 @@ class AgentsSwarmTests(unittest.TestCase):
             app.idle(sibling)
             self.assertTrue(
                 any(
-                    "normal task" in user_text(record["request"])
+                    "normal task" in latest_user(record["request"])
                     for record in provider.requests
                 )
             )

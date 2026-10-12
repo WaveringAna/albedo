@@ -5,18 +5,7 @@ import json
 import os
 import unittest
 
-from harness import Albedo, Provider, exclusive, python, text
-
-
-def user_text(request):
-    return next(
-        (
-            item.get("content", "")
-            for item in reversed(request["messages"])
-            if item.get("role") == "user"
-        ),
-        "",
-    )
+from harness import Albedo, Provider, exclusive, latest_user, python, text
 
 
 LINES = 3000  # ~200 KiB, past the 64 KiB preview and the ascii shortcut
@@ -43,7 +32,7 @@ class CellLimitsTests(unittest.TestCase):
             if last.get("role") == "tool":
                 self.results.append(json.loads(last["content"]))
                 return text("noted")
-            user = user_text(request)
+            user = latest_user(request)
             if "large spill" in user:
                 return python("print('p' * 2097152 + 'the end', end='')")
             if "page spill" in user:

@@ -4,18 +4,7 @@ import json
 import time
 import unittest
 
-from harness import Albedo, Provider, Reply, exclusive, python, text
-
-
-def user_text(request):
-    return next(
-        (
-            item.get("content", "")
-            for item in reversed(request["messages"])
-            if item.get("role") == "user"
-        ),
-        "",
-    )
+from harness import Albedo, Provider, Reply, exclusive, latest_user, python, text
 
 
 def wait_for(predicate, timeout=40):
@@ -38,7 +27,7 @@ class CellBackgroundTests(unittest.TestCase):
 
         def script(request):
             last = request["messages"][-1]
-            user = user_text(request)
+            user = latest_user(request)
             if last.get("role") == "tool":
                 result = json.loads(last["content"])
                 self.results.append(result)
@@ -96,7 +85,7 @@ class CellBackgroundTests(unittest.TestCase):
         return [
             record
             for record in self.provider.requests
-            if "background python cells finished" in user_text(record["request"])
+            if "background python cells finished" in latest_user(record["request"])
         ]
 
     def start(self):
@@ -136,7 +125,7 @@ class CellBackgroundTests(unittest.TestCase):
         # the transcript names the code, the model's notice the cell id
         self.assertTrue(shown.endswith("import asyncio"), shown)
         self.assertNotIn("<system-note>", shown)
-        self.assertIn(self.cell_id, user_text(self.wakes()[0]["request"]))
+        self.assertIn(self.cell_id, latest_user(self.wakes()[0]["request"]))
         self.prompt(session, "inspect cell")
         self.assertIn("'status': 'ok'", self.results[-1]["output"])
         self.assertIn("after detach", self.results[-1]["output"])
@@ -158,7 +147,7 @@ class CellBackgroundTests(unittest.TestCase):
         session = self.start()
         wait_for(lambda: self.wakes())
         self.app.idle(session)
-        self.assertIn("status=interrupted", user_text(self.wakes()[0]["request"]))
+        self.assertIn("status=interrupted", latest_user(self.wakes()[0]["request"]))
         self.prompt(session, "inspect cell")
         self.assertIn("'status': 'interrupted'", self.results[-1]["output"])
 
@@ -170,7 +159,7 @@ class CellBackgroundTests(unittest.TestCase):
         wait_for(lambda: self.wakes())
         self.app.idle(session)
         self.assertEqual(len(self.wakes()), 1)
-        self.assertIn("status=ok", user_text(self.wakes()[0]["request"]))
+        self.assertIn("status=ok", latest_user(self.wakes()[0]["request"]))
 
     def test_cancelled_background_cell_does_not_wake(self):
         session = self.start()
@@ -188,4 +177,4 @@ class CellBackgroundTests(unittest.TestCase):
         wait_for(lambda: self.wakes())
         self.app.idle(session)
         self.assertEqual(len(self.wakes()), 1)
-        self.assertIn("status=interrupted", user_text(self.wakes()[0]["request"]))
+        self.assertIn("status=interrupted", latest_user(self.wakes()[0]["request"]))

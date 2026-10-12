@@ -12,51 +12,17 @@ its snapshot fails, and its process group ends either way.
 import json
 import os
 from pathlib import Path
-import shutil
 import sqlite3
-import tempfile
 import time
 import unittest
 
 import harness
 from harness import alive
 from harness import Albedo, Provider, exclusive, python, text
-
-MARKER = '\nMARKER = "new bundle"\n'
-
-
-def editable_daemon(root):
-    """A copy of the test daemon whose python bundle is ours to edit: every
-    package links back to the snapshot except albedo's priv/python."""
-    assert harness._executable is not None, "the runner snapshots the daemon first"
-    source = Path(harness._executable).parent
-    out = Path(tempfile.mkdtemp(prefix="daemon-", dir=root))
-    for package in source.iterdir():
-        if package.is_dir() and package.name != "albedo":
-            (out / package.name).symlink_to(package)
-    albedo = out / "albedo"
-    (albedo / "priv").mkdir(parents=True)
-    (albedo / "ebin").symlink_to(source / "albedo" / "ebin")
-    priv = (source / "albedo" / "priv").resolve()
-    for entry in priv.iterdir():
-        if entry.name == "python":
-            shutil.copytree(
-                entry,
-                albedo / "priv" / "python",
-                ignore=shutil.ignore_patterns("__pycache__"),
-            )
-        else:
-            (albedo / "priv" / entry.name).symlink_to(entry)
-    launcher = out / "albedo-daemon"
-    launcher.write_text(
-        "#!/bin/sh\n"
-        f"exec erl -pa {out}/*/ebin -eval 'albedo@@main:run(albedo)' -noshell -extra\n"
-    )
-    launcher.chmod(0o755)
-    return launcher, albedo / "priv" / "python"
+from kernel_support import MARKER, ModelCells, editable_daemon
 
 
-class Swaps(unittest.TestCase):
+class Swaps(ModelCells, unittest.TestCase):
     """Cells through model turns against one session, on a daemon that may run
     an editable copy of the python bundle."""
 
@@ -82,26 +48,6 @@ class Swaps(unittest.TestCase):
         self.app.__enter__()
         self.addCleanup(self.app.__exit__, None, None, None)
         self.session = self.app.session()
-
-    def cell(self, code):
-        """Run one cell through a model turn; its result and the turn's prompt."""
-        self.cells.append(code)
-        self.app.prompt(self.session, "run it").close()
-        self.app.idle(self.session)
-        results = [
-            json.loads(part["value"])
-            for entry in self.app.history(self.session)["items"]
-            if entry["kind"] == "tool_result" and entry["tool"]["name"] == "python"
-            for part in entry["content"]
-            if part["kind"] == "json" and part["field"] == "result"
-        ]
-        request = next(
-            r["request"]
-            for r in reversed(self.provider.requests)
-            if any(i.get("role") == "user" for i in r["request"]["input"])
-        )
-        prompt = [i["content"] for i in request["input"] if i.get("role") == "user"][-1]
-        return results[-1], prompt
 
     def kernel(self):
         with self.app.api(f"/sessions/{self.session}?tail=0") as response:

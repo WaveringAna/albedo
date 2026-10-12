@@ -13,19 +13,8 @@ import urllib.request
 import urllib.parse
 from pathlib import Path
 
-from harness import Albedo, Provider, exclusive, operation_id, python, text
+from harness import Albedo, Provider, exclusive, latest_user, operation_id, python, text
 from stream_support import StreamProbe
-
-
-def user_message(request):
-    return next(
-        (
-            item.get("content", "")
-            for item in reversed(request["messages"])
-            if item.get("role") == "user"
-        ),
-        "",
-    )
 
 
 def wait_for(predicate, timeout=40):
@@ -41,7 +30,7 @@ def wait_for(predicate, timeout=40):
 class AgentsTests(unittest.TestCase):
     def setUp(self):
         def answer(request):
-            user = user_message(request)
+            user = latest_user(request)
             line = user.splitlines()[-2 if "</mail>" in user else -1]
             return text("answered: " + line)
 
@@ -162,7 +151,7 @@ class AgentsTests(unittest.TestCase):
         def dispatch(request):
             if (
                 request["messages"][-1].get("role") == "user"
-                and user_message(request) == marker
+                and latest_user(request) == marker
             ):
                 return python(
                     "import json\n"
@@ -326,7 +315,7 @@ class AgentsTests(unittest.TestCase):
         def progress(request):
             if (
                 request["messages"][-1].get("role") == "user"
-                and user_message(request) == marker
+                and latest_user(request) == marker
             ):
                 return python('await agents.progress("tracing delivery")')
             return answer(request)
@@ -539,7 +528,7 @@ class AgentsTests(unittest.TestCase):
         answer = self.provider.script
 
         def held(request):
-            if "hold subtree deletion" in user_message(request):
+            if "hold subtree deletion" in latest_user(request):
                 entered.set()
                 release.wait(30)
                 return python(
@@ -703,7 +692,7 @@ class AgentsTests(unittest.TestCase):
         answer = self.provider.script
 
         def held(request):
-            user = user_message(request)
+            user = latest_user(request)
             if "hold this turn" in user or "probe moved child" in user:
                 if request["messages"][-1].get("role") == "tool":
                     return text("workspace probe finished")
@@ -788,7 +777,7 @@ class AgentsTests(unittest.TestCase):
         answer = self.provider.script
 
         def held(request):
-            user = user_message(request)
+            user = latest_user(request)
             if "deferred workspace hold" in user:
                 entered.set()
                 release.wait(30)
@@ -841,7 +830,7 @@ class AgentsTests(unittest.TestCase):
         answer = self.provider.script
 
         def held(request):
-            user = user_message(request)
+            user = latest_user(request)
             for name, gate in entered.items():
                 if f"hold {name}" in user:
                     gate.set()
