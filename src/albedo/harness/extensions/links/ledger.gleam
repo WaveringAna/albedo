@@ -1,5 +1,5 @@
 //// Membership captures and conditional commits share the daemon's durable owner.
-//// Triggers also observe membership writes made by the native model interface.
+//// Revision triggers track the groups changed by these guarded mutations.
 
 import albedo/daemon/http_api as api
 import albedo/daemon/store

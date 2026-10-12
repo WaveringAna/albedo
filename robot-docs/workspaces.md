@@ -65,9 +65,12 @@ location, and never looks for a remote path on its own disk:
 ## linked workspaces
 
 a workspace can be linked with others that hold the same project, such as one
-repository checked out here and on chernobog (`src/albedo/harness/links.gleam`,
-the `links` extension). links are peers: every member keeps writing its own
-memory and work items, and reads cover the whole group.
+repository checked out here and on chernobog. links are peers: every member
+keeps writing its own memory and work items, and reads cover the whole group.
+
+`harness/links` owns the shared schema and group readers. The links extension's
+`ledger` owns revision tracking and guarded membership mutations. Its `service`
+checks requests and notifies affected sessions after a commit.
 
 - storage: `workspace_links(workspace, grp)` in the daemon's sqlite. linking
   two workspaces merges their groups; unlinking one takes only that row out,
