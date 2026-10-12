@@ -10,7 +10,7 @@
 
 -export([read/1, read_json/1, read_json/2, write/2, write/3,
          creds_path/1, accounts/1, put_accounts/2, provider_keys/1,
-         mcp/1, patch_mcp_settings/3, config/1,
+         mcp/1, config/1,
          migrate/2, migrated/0,
          values/2, bound_values/3, oauth/2, put_values/3, expire_access/3, stale/2, fresh/2]).
 
@@ -41,34 +41,6 @@ mcp(Home) ->
         {error, enoent} -> {ok, #{}};
         Error -> Error
     end.
-
-%% Settings transactions capture and restore the affected entry themselves.
-patch_mcp_settings(Home, Name, Patch) ->
-    update_section(Home, <<"mcp">>, fun(Servers) ->
-        with_secret(Servers, Name, patched(maps:get(Name, Servers, #{}), Patch))
-    end).
-
-with_secret(Servers, Name, Secret) when map_size(Secret) =:= 0 -> maps:remove(Name, Servers);
-with_secret(Servers, Name, Secret) -> Servers#{Name => Secret}.
-
-patched(Secret, Patch) ->
-    lists:foldl(fun({Field, Change}, Acc) ->
-        case {Change, maps:get(Field, Acc, #{})} of
-            {Gone, _} when Gone =:= null; Gone =:= <<>> -> maps:remove(Field, Acc);
-            {Value, _} when Field =:= <<"bearerToken">>, is_binary(Value) -> Acc#{Field => Value};
-            {Changes, Current} when is_map(Changes), is_map(Current) ->
-                Next = maps:fold(fun(Key, null, M) -> maps:remove(Key, M);
-                                    (Key, Value, M) when is_binary(Value) -> M#{Key => Value};
-                                    (_, _, M) -> M
-                                 end, Current, Changes),
-                case map_size(Next) of
-                    0 -> maps:remove(Field, Acc);
-                    _ -> Acc#{Field => Next}
-                end;
-            _ -> Acc
-        end
-    end, Secret, [{F, maps:get(F, Patch)} || F <- [<<"bearerToken">>, <<"headers">>, <<"env">>],
-                                            maps:is_key(F, Patch)]).
 
 %% config.json with each profile's saved apiKey filled in. A key still written
 %% in config.json is a hand edit newer than the saved one, so it wins until the
@@ -119,21 +91,6 @@ put_section(Path, Name, Section) ->
         {ok, Found} -> write(Path, Found#{Name => Section});
         {error, _} -> {error, invalid}
     end.
-
-update_section(Home, Name, Change) ->
-    Path = creds_path(Home),
-    albedo_settings_lock:with_lock(filename:dirname(Path), fun() ->
-        Written = case section(Path, Name) of
-            {ok, Section} -> put_section(Path, Name, Change(Section));
-            {error, enoent} -> put_section(Path, Name, Change(#{}));
-            {error, _} -> {error, invalid}
-        end,
-        case Written of
-            ok -> {ok, nil};
-            {error, invalid} -> {error, <<"creds.json is unreadable; repair it first">>};
-            {error, _} -> {error, <<"could not write creds.json">>}
-        end
-    end, fun() -> {error, <<"credential store is busy">>} end).
 
 %% Moves every secret still kept elsewhere into creds.json: auth.json's
 %% accounts, mcp-credentials.json's servers, and each config.json profile's
