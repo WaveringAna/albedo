@@ -1,5 +1,6 @@
 //// Validate editable session changes without preparing or reloading a kernel.
 
+import albedo/daemon/bus
 import albedo/daemon/configuration
 import albedo/daemon/conversation
 import albedo/daemon/session_configuration as config
@@ -16,17 +17,29 @@ import gleam/dict
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
+import gleam/string
+
+pub type Request {
+  Conditional(expected: config.Version, patch: config.Patch)
+  SelectModel(
+    model: String,
+    provider: option.Option(String),
+    effort: option.Option(String),
+    remember: Bool,
+  )
+  SelectEffort(level: String)
+}
 
 pub fn change(
   state: session_state.State(message),
-  expected: config.Version,
-  patch: config.Patch,
+  request: Request,
 ) -> #(session_state.State(message), Result(config.Configuration, String)) {
   let ledger = runtime.ledger(state.host)
   let prepared = {
     use current <- result.try(
       store.query(ledger, config.read_in(_, state.info.id)),
     )
+    use #(expected, patch) <- result.try(request_patch(state, current, request))
     use _ <- result.try(
       case
         current.revision == expected.revision
@@ -55,18 +68,25 @@ pub fn change(
         False -> Ok(Nil)
       },
     )
-    use #(state, observed_provider, candidate) <- result.try(
-      case model_changed {
-        False -> Ok(#(state, None, candidate))
-        True ->
-          validate_model(state, candidate, patch.effort == None)
-          |> result.map(fn(value) { #(value.0, Some(value.1), value.2) })
-      },
-    )
+    let validate = case request {
+      Conditional(..) -> model_changed
+      SelectModel(..) | SelectEffort(..) -> True
+    }
+    use #(state, observed_provider, candidate) <- result.try(case validate {
+      False -> Ok(#(state, None, candidate))
+      True ->
+        validate_model(state, candidate, patch.effort == None, request)
+        |> result.map(fn(value) { #(value.0, Some(value.1), value.2) })
+    })
     let protocol = case observed_provider {
       Some(provider) -> provider.protocol
       None -> state.info.protocol
     }
+    let model_changed =
+      candidate.provider_profile != current.provider_profile
+      || candidate.model != current.model
+      || candidate.effort != current.effort
+      || protocol != state.info.protocol
     use saved <- result.try(
       with_settings_lock(
         state.home,
@@ -74,17 +94,26 @@ pub fn change(
           use _ <- result.try(case observed_provider {
             None -> Ok(Nil)
             Some(observed) -> {
-              use current <- result.try(configuration.named(
+              use current_provider <- result.try(configuration.named(
                 state.home,
                 observed.name,
               ))
-              case current == observed {
+              case current_provider == observed {
                 True -> Ok(Nil)
                 False -> Error("settings_changed")
               }
             }
           })
           use choices <- result.try(resolve_choices(state, candidate, patch))
+          use _ <- result.try(case request {
+            SelectModel(_, _, _, True) ->
+              configuration.select_default(
+                state.home,
+                candidate.provider_profile,
+                candidate.model,
+              )
+            _ -> Ok(Nil)
+          })
           store.query(ledger, config.commit_in(
             _,
             config.Edit(expected, candidate, protocol, choices),
@@ -106,7 +135,7 @@ pub fn change(
           ))
         False -> state.history
       }
-      #(
+      let state =
         session_state.State(
           ..state,
           info: conversation.Info(
@@ -122,9 +151,76 @@ pub fn change(
             True -> session_state.unprepared()
             False -> state.context
           },
-        ),
-        Ok(saved),
+        )
+      let base = "/sessions/" <> state.info.id
+      bus.invalidate(["/sessions", base], [state.info.id], False)
+      let state = state |> session_state.invalidate("session", base)
+      let state = case model_changed {
+        True -> state |> session_state.invalidate("context", base <> "/context")
+        False -> state
+      }
+      #(state, Ok(saved))
+    }
+  }
+}
+
+fn request_patch(
+  state: session_state.State(message),
+  current: config.Configuration,
+  request: Request,
+) -> Result(#(config.Version, config.Patch), String) {
+  let empty =
+    config.Patch(
+      name: None,
+      provider_profile: None,
+      model: None,
+      effort: None,
+      pinned: None,
+      archived: None,
+      selection: config.SelectionPatch(None, None, None, None),
+      catalog_revision: None,
+    )
+  let expected = config.Version(current.revision, current.family.revision)
+  let busy = turn.running(state.activity) != None || state.booting != None
+  case request {
+    Conditional(expected, patch) -> Ok(#(expected, patch))
+    SelectModel(model, provider, effort, _) -> {
+      use _ <- result.try(
+        case
+          busy
+          || string.trim(model) == ""
+          || string.byte_size(model) > 512
+          || string.contains(model, "\r")
+          || string.contains(model, "\n")
+        {
+          True -> Error("model must be nonempty and session idle")
+          False -> Ok(Nil)
+        },
       )
+      Ok(#(
+        expected,
+        config.Patch(
+          ..empty,
+          model: Some(model),
+          provider_profile: provider,
+          effort: option.map(effort, fn(level) {
+            Some(string.trim(string.lowercase(level)))
+          }),
+        ),
+      ))
+    }
+    SelectEffort(level) -> {
+      use _ <- result.try(case busy {
+        True -> Error("switching effort requires an idle session")
+        False -> Ok(Nil)
+      })
+      Ok(#(
+        expected,
+        config.Patch(
+          ..empty,
+          effort: Some(Some(string.trim(string.lowercase(level)))),
+        ),
+      ))
     }
   }
 }
@@ -189,6 +285,7 @@ fn validate_model(
   state: session_state.State(message),
   candidate: config.Configuration,
   inherit_effort: Bool,
+  request: Request,
 ) -> Result(
   #(session_state.State(message), configuration.Provider, config.Configuration),
   String,
@@ -197,18 +294,20 @@ fn validate_model(
     state.home,
     candidate.provider_profile,
   ))
+  let efforts =
+    session_provider.model_efforts(
+      state.host,
+      state.home,
+      candidate.provider_profile,
+      candidate.model,
+    )
   let candidate = case inherit_effort {
     False -> candidate
     True ->
       config.Configuration(
         ..candidate,
         effort: session_provider.resolve_effort(
-          session_provider.model_efforts(
-            state.host,
-            state.home,
-            candidate.provider_profile,
-            candidate.model,
-          ),
+          efforts,
           candidate.effort,
           provider.effort,
         ),
@@ -217,27 +316,40 @@ fn validate_model(
   use _ <- result.try(case candidate.effort {
     None -> Ok(Nil)
     Some(level) ->
-      case
-        list.contains(
-          session_provider.model_efforts(
-            state.host,
-            state.home,
-            candidate.provider_profile,
-            candidate.model,
-          ),
-          level,
-        )
-      {
+      case list.contains(efforts, level) {
         True -> Ok(Nil)
-        False -> Error("unsupported reasoning effort")
+        False ->
+          Error(case request {
+            Conditional(..) -> "unsupported reasoning effort"
+            _ ->
+              case efforts {
+                [] ->
+                  "model "
+                  <> candidate.model
+                  <> " does not support reasoning effort"
+                _ ->
+                  "unsupported reasoning effort: "
+                  <> level
+                  <> "; available: "
+                  <> string.join(efforts, ", ")
+              }
+          })
       }
   })
   use state <- result.try(session_history.ensure_history(state))
-  use _ <- result.try(session_history.projected_for(
-    state.history,
-    provider.name,
-    provider.protocol,
-  ))
+  use _ <- result.try(
+    session_history.projected_for(
+      state.history,
+      provider.name,
+      provider.protocol,
+    )
+    |> result.map_error(fn(error) {
+      case request {
+        SelectModel(..) -> "cannot switch provider: " <> error
+        _ -> error
+      }
+    }),
+  )
   Ok(#(state, provider, candidate))
 }
 

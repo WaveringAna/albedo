@@ -51,7 +51,8 @@ argument parsing is shared: leading arguments take one whitespace token each, th
 
 ## v1 commands
 
-- `/model [model] [provider] [effort]` — show the selection (any caller) or switch it (user only, idle session; a model call is always mid-turn, so switching is refused and the model is told to ask the user). A given effort must be one the new model supports; without one, the current effort carries over when the new model supports it.
+- `/model [model] [provider] [effort]` — show the selection (any caller) or switch it (user only, idle session with no kernel boot in progress; a model call is always mid-turn, so switching is refused and the model is told to ask the user). A given effort must be one the new model supports; without one, the current effort carries over when supported, then the profile default, then the model default. The registered state operation uses `session_configure`, the same validation and persistence owner as HTTP edits. A successful selection also saves the provider and model as new-session defaults.
+- `/effort [level]` reads or changes reasoning effort through the same owner. Mutations require an idle session with no kernel boot in progress and invalidate prepared context. They leave new-session defaults unchanged.
 - `/context [section] [page]` — the prepared model request: a summary, or one bounded section page.
 - `/raise-cap [on|off] [model]` — raise a model's context window to the provider's maximum, or restore its default (user only). Without a state it toggles; without a model it uses the session's. The choice is saved per model in `raisedCaps` and applies to every session on that model from its next request. See [raised caps](models.md#raised-caps).
 

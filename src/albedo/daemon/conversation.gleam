@@ -2525,53 +2525,6 @@ fn unpack_list(
   read: fn(String) -> Result(String, Nil),
 ) -> Result(List(types.Input), Nil)
 
-pub fn set_effort(
-  store: store.Store,
-  id: String,
-  effort: Option(String),
-) -> Result(Nil, String) {
-  store.write(
-    store,
-    "UPDATE sessions SET effort=?,config_revision=config_revision+1 WHERE id=?",
-    [
-      sqlight.nullable(sqlight.text, effort),
-      sqlight.text(id),
-    ],
-  )
-}
-
-pub fn set_configuration(
-  store: store.Store,
-  id: String,
-  provider: String,
-  model: String,
-  selected_protocol: types.Protocol,
-  effort: Option(String),
-) -> Result(Nil, String) {
-  store.query(store, fn(db) {
-    store.transaction(db, fn() {
-      use _ <- result.try(
-        store.run(
-          db,
-          "UPDATE transcript SET provider=(SELECT provider FROM sessions WHERE id=?) WHERE session=? AND provider IS NULL",
-          [sqlight.text(id), sqlight.text(id)],
-        ),
-      )
-      store.run(
-        db,
-        "UPDATE sessions SET provider=?,model=?,protocol=?,effort=?,config_revision=config_revision+1 WHERE id=?",
-        [
-          sqlight.text(provider),
-          sqlight.text(model),
-          sqlight.text(protocol(selected_protocol)),
-          sqlight.nullable(sqlight.text, effort),
-          sqlight.text(id),
-        ],
-      )
-    })
-  })
-}
-
 /// Fork-owned observations survive deletion of the original runtime journal.
 pub fn traces_in(
   db: sqlight.Connection,

@@ -1069,23 +1069,14 @@ fn handle(
     ReadSummary(reply) -> answer(state, reply, summary_state(state))
     ReadAwaited(reply) -> answer(state, reply, awaited(state))
     ChangeConfiguration(expected, patch, reply) -> {
-      let #(state, changed) = session_configure.change(state, expected, patch)
+      let #(state, changed) =
+        session_configure.change(
+          state,
+          session_configure.Conditional(expected, patch),
+        )
       case changed {
         Error(error) -> answer(state, reply, Error(error))
-        Ok(_) -> {
-          let state =
-            session_state.invalidate(
-              state,
-              "session",
-              "/sessions/" <> state.info.id,
-            )
-          bus.invalidate(
-            ["/sessions", "/sessions/" <> state.info.id],
-            [state.info.id],
-            False,
-          )
-          answer(state, reply, capture_state(state))
-        }
+        Ok(_) -> answer(state, reply, capture_state(state))
       }
     }
     Resume ->
@@ -1288,12 +1279,9 @@ fn handle(
     }
     ChangeModel(model, provider_name, effort, remember, reply) -> {
       let #(state, outcome) =
-        session_provider.select(
+        session_configure.change(
           stirred(state),
-          model,
-          provider_name,
-          effort,
-          remember,
+          session_configure.SelectModel(model, provider_name, effort, remember),
         )
       answer(
         state,
@@ -1306,8 +1294,24 @@ fn handle(
     UpgradeCompletion(outcome, reply) -> upgraded_kernel(state, outcome, reply)
     ReadEffort(reply) ->
       answer(state, reply, session_provider.read_effort(state))
-    ChangeEffort(level, reply) ->
-      transition(reply, session_provider.change_effort(stirred(state), level))
+    ChangeEffort(level, reply) -> {
+      let #(state, changed) =
+        session_configure.change(
+          stirred(state),
+          session_configure.SelectEffort(level),
+        )
+      answer(
+        state,
+        reply,
+        result.map(changed, fn(saved) {
+          let assert Some(effort) = saved.effort
+          json.object([
+            #("effort", json.string(effort)),
+            #("message", json.string("reasoning effort set to " <> effort)),
+          ])
+        }),
+      )
+    }
 
     ReloadData(reply) ->
       transition(
