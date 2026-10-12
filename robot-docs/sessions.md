@@ -21,6 +21,18 @@ phase is display metadata, not a failed connection. before live status is
 known, enter preserves the draft; superseded status replies cannot unblock
 it. starting a new turn does not require `/compact` to change the old phase.
 
+## Running observations
+
+`daemon/albedo_bus.erl` owns the ephemeral running cache. Only active turns
+retain a `{SessionId, OwnerPid}` record. An idle publication removes the
+calling actor's exact record, and both registry owner-death handling and the
+progress owner monitor remove the stopped actor's record. Delayed cleanup
+cannot remove a replacement actor's active mark. Missing records and dead
+owners read as idle, so the registry can check activity without calling a busy
+session. The table lasts for the daemon lifetime; it retains no idle or deleted
+session IDs after owner cleanup. Changes to this cache require a fresh daemon
+lifetime rather than hot-loading code.
+
 ## Stream failures and recovery
 
 Internal checkpoint and provider-started signals are suppressed before stream

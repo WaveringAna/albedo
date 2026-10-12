@@ -294,8 +294,8 @@ fn serve(state: State, message: Message) -> actor.Next(State, a) {
       case entry {
         Error(_) -> actor.continue(state)
         Ok(#(previous, _)) -> {
-          // It cannot announce that it stopped; say so for it.
-          bus.running(previous.id, False)
+          // It cannot announce that it stopped; remove its own mark.
+          bus.forget_running(previous.id, pid)
           case conversation.get(runtime.ledger(state.host), previous.id) {
             Ok(info) -> actor.continue(holding(state, info.id, #(info, None)))
             Error("session not found") ->

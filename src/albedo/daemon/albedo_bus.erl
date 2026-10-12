@@ -2,7 +2,7 @@
 %% mailboxes carry only a coalesced wake, never event payloads.
 -module(albedo_bus).
 -export([subscribe_filtered/3, set_filter/2, drain/1, rearm/2, publish/1, publish_activity/2, publish_mail/3, has_subscribers/0,
-         mark_running/2, running/1, forget/1, register_progress/3, progress/2]).
+         mark_running/2, running/1, forget/2, register_progress/3, progress/2]).
 
 -define(TABLE, albedo_bus).
 -define(QUEUES, albedo_bus_queues).
@@ -178,16 +178,22 @@ rearm(Ref, WakeConsumed) ->
 
 %% Whether each session is running a turn, as its actor last announced. The
 %% registry reads this instead of asking a session, which may be busy.
-mark_running(Session, Running) ->
-    albedo_registry:register(albedo_running, Session, Running).
+mark_running(Session, true) ->
+    albedo_registry:register(albedo_running, Session, self());
+mark_running(Session, false) ->
+    forget(Session, self()).
 
 running(Session) ->
     case albedo_registry:lookup(albedo_running, Session) of
-        {ok, true} -> true;
+        {ok, Owner} -> erlang:is_process_alive(Owner);
         _ -> false
     end.
 
-forget(Session) -> albedo_registry:forget(albedo_running, Session).
+%% Delayed cleanup from a former owner must preserve its replacement.
+forget(Session, Owner) ->
+    try ets:delete_object(albedo_running, {Session, Owner})
+    catch error:badarg -> ok end,
+    nil.
 
 %% Model progress is published by the same session owner as all other live
 %% observations; a bus publisher cannot capture another actor's status/tail.
@@ -196,10 +202,9 @@ register_progress(Session, Owner, Publish) ->
     spawn(fun() ->
         Monitor = erlang:monitor(process, Owner),
         receive {'DOWN', Monitor, process, Owner, _} ->
-            case albedo_registry:lookup(albedo_session_progress, Session) of
-                {ok, {Owner, _}} -> albedo_registry:forget(albedo_session_progress, Session);
-                _ -> ok
-            end
+            forget(Session, Owner),
+            try ets:delete_object(albedo_session_progress, {Session, {Owner, Publish}})
+            catch error:badarg -> ok end
         end
     end),
     nil.

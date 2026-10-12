@@ -55,6 +55,10 @@ pub fn running(session: String, running: Bool) -> Nil {
 @external(erlang, "albedo_bus", "mark_running")
 fn mark_running(session: String, running: Bool) -> Nil
 
+/// Remove a stopped actor's mark without clearing a replacement actor's turn.
+@external(erlang, "albedo_bus", "forget")
+pub fn forget_running(session: String, owner: process.Pid) -> Nil
+
 @external(erlang, "albedo_bus", "running")
 pub fn is_running(session: String) -> Bool
 
