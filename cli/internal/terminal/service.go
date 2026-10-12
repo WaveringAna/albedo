@@ -47,7 +47,7 @@ func (t *Service) announceMigration(ctx context.Context, conn *daemon.Connection
 		if slices.Contains(dismissed, notice.ID) {
 			continue
 		}
-		if _, err := fmt.Fprintln(t.Out, notice.Message); err != nil {
+		if _, err = fmt.Fprintln(t.Out, notice.Message); err != nil {
 			return daemon.Settings{}, err
 		}
 		dismissed = append(dismissed, notice.ID)
@@ -56,14 +56,14 @@ func (t *Service) announceMigration(ctx context.Context, conn *daemon.Connection
 	if !shown {
 		return settings, nil
 	}
-	if _, err := fmt.Fprint(t.Out, "Press Enter to continue. "); err != nil {
+	if _, err = fmt.Fprint(t.Out, "Press Enter to continue. "); err != nil {
 		return daemon.Settings{}, err
 	}
 	_, err = bufio.NewReader(t.In).ReadString('\n')
 	if err != nil && !errors.Is(err, io.EOF) {
 		return daemon.Settings{}, err
 	}
-	if err := daemon.DismissServerNotices(ctx, conn, settings.UI.ETag, dismissed); err != nil {
+	if err = daemon.DismissServerNotices(ctx, conn, settings.UI.ETag, dismissed); err != nil {
 		return daemon.Settings{}, err
 	}
 	// Acknowledgement changes the UI validator; seed the TUI from that result.
@@ -81,29 +81,9 @@ func Confirmed(answer string) bool {
 }
 
 func (t *Service) Open(ctx context.Context, prepared app.PreparedOpen) error {
-	settings, err := t.announceMigration(ctx, prepared.Connection, prepared.Settings)
-	if err != nil {
-		return err
-	}
-	if err := tui.DetectInk(); err != nil {
-		return err
-	}
-	leanHeap()
-	appModel := tui.NewAppModel(prepared.Connection, tui.Bootstrap{Sessions: prepared.Sessions, Settings: settings}, prepared.Selected, prepared.Workspace, prepared.LoginRequired, t.OpenBrowser)
-	p := tea.NewProgram(appModel, tea.WithInput(t.In), tea.WithOutput(t.Out))
-	stopCancellation := context.AfterFunc(ctx, func() { p.Send(tea.Quit()) })
-	defer stopCancellation()
-	final, err := p.Run()
-	closed, ok := final.(*tui.AppModel)
-	if !ok {
-		closed = appModel
-	}
-	if cleanup := closed.Close(); cleanup != nil {
-		cleanup()
-	}
-	if ctx.Err() != nil {
-		return ctx.Err()
-	}
+	final, err := t.runApp(ctx, prepared, func(settings daemon.Settings) *tui.AppModel {
+		return tui.NewAppModel(prepared.Connection, tui.Bootstrap{Sessions: prepared.Sessions, Settings: settings}, prepared.Selected, prepared.Workspace, prepared.LoginRequired, t.OpenBrowser)
+	})
 	if err != nil {
 		return err
 	}
@@ -114,15 +94,22 @@ func (t *Service) Open(ctx context.Context, prepared app.PreparedOpen) error {
 }
 
 func (t *Service) Login(ctx context.Context, prepared app.PreparedOpen, workspace, name string) error {
+	_, err := t.runApp(ctx, prepared, func(settings daemon.Settings) *tui.AppModel {
+		return tui.NewLoginAppModel(prepared.Connection, tui.Bootstrap{Settings: settings}, workspace, name, t.OpenBrowser)
+	})
+	return err
+}
+
+func (t *Service) runApp(ctx context.Context, prepared app.PreparedOpen, build func(daemon.Settings) *tui.AppModel) (tea.Model, error) {
 	settings, err := t.announceMigration(ctx, prepared.Connection, prepared.Settings)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if err := tui.DetectInk(); err != nil {
-		return err
+	if err = tui.DetectInk(); err != nil {
+		return nil, err
 	}
 	leanHeap()
-	model := tui.NewLoginAppModel(prepared.Connection, tui.Bootstrap{Settings: settings}, workspace, name, t.OpenBrowser)
+	model := build(settings)
 	program := tea.NewProgram(model, tea.WithInput(t.In), tea.WithOutput(t.Out))
 	stopCancellation := context.AfterFunc(ctx, func() { program.Send(tea.Quit()) })
 	defer stopCancellation()
@@ -135,10 +122,11 @@ func (t *Service) Login(ctx context.Context, prepared app.PreparedOpen, workspac
 		cleanup()
 	}
 	if ctx.Err() != nil {
-		return ctx.Err()
+		return final, ctx.Err()
 	}
-	return err
+	return final, err
 }
+
 func (t *Service) ConfirmCleanup(sessions bool) (bool, error) {
 	if !t.Capable {
 		return false, errors.New("no files have been removed; run cleanup in a terminal to confirm, or add --yes to approve the changes shown above")
