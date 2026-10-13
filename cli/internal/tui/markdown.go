@@ -91,6 +91,7 @@ func markdownStyle() ansi.StyleConfig {
 	style.Emph = ansi.StylePrimitive{Italic: &bold}
 	style.Code = ansi.StyleBlock{StylePrimitive: ansi.StylePrimitive{Color: accent(transcriptInk.inlineCode, "2")}}
 	style.LinkText = ansi.StylePrimitive{Color: accent(transcriptInk.link, "4")}
+	style.List.LevelIndent = 0
 	style.Table.Margin = &zero
 	style.BlockQuote.IndentToken = new(quoteBar())
 	style.CodeBlock.Margin = &zero
