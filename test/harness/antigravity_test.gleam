@@ -347,11 +347,14 @@ pub fn stream_reduces_thoughts_text_and_calls_test() -> Nil {
   let assert Ok(turn) = outcome
   let assert [
     types.Started("r1"),
+    types.Served(None, Some("t")),
     types.ThinkingDelta("weigh"),
     types.ThinkingDelta("ing"),
     types.TextDelta(0, 0, "looking"),
     types.ArgumentsDelta(0, "bash", arguments),
+    types.Metered(metered, None),
   ] = events
+  assert Some(metered) == turn.usage
   assert arguments == "{\"command\":\"ls\"}"
   assert turn.finish == types.ToolCalls
   // Output folds the 2 thought tokens in; reasoning carries the thought count.
@@ -371,6 +374,31 @@ pub fn stream_reduces_thoughts_text_and_calls_test() -> Nil {
     == Ok("weighing")
 }
 
+/// Usage arrives on intermediate chunks; the request ledger keeps the last
+/// one a failed call metered, so each change is reported as it comes.
+pub fn a_stream_reports_usage_before_it_fails_test() -> Nil {
+  let reducer = stream.reducer(model(gemini))
+  let assert Ok(#(reducer, events, None)) =
+    reducer.feed(chunk(
+      "{\"responseId\":\"r1\",\"modelVersion\":\"gemini-3.1-pro\",\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"a\"}]}}],\"usageMetadata\":{\"promptTokenCount\":100,\"candidatesTokenCount\":1,\"cachedContentTokenCount\":90,\"totalTokenCount\":140}}",
+    ))
+  let assert [
+    types.Started("r1"),
+    types.Served(Some("gemini-3.1-pro"), Some("t")),
+    types.TextDelta(0, 0, "a"),
+    types.Metered(usage, Some(140)),
+  ] = events
+  assert usage == types.Usage(100, 1, Some(90), None, None, None, Some(0))
+  // The same usage again is not news; the model is named once.
+  let assert Ok(#(reducer, [types.TextDelta(0, 0, "b")], None)) =
+    reducer.feed(chunk(
+      "{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"b\"}]}}],\"usageMetadata\":{\"promptTokenCount\":100,\"candidatesTokenCount\":1,\"cachedContentTokenCount\":90,\"totalTokenCount\":140}}",
+    ))
+  let assert Error(types.ProviderError("overloaded")) =
+    reducer.feed("{\"error\":{\"message\":\"overloaded\"}}")
+  Nil
+}
+
 pub fn stream_maps_multiple_calls_to_their_emitted_output_indices_test() -> Nil {
   let payload =
     chunk(
@@ -380,7 +408,12 @@ pub fn stream_maps_multiple_calls_to_their_emitted_output_indices_test() -> Nil 
   let assert Ok(turn) = outcome
   let assert [first, second] = turn.tool_calls
   assert turn.call_indices == [#(first.id, 0), #(second.id, 1)]
-  assert events
+  assert list.filter(events, fn(event) {
+      case event {
+        types.ArgumentsDelta(..) -> True
+        _ -> False
+      }
+    })
     == [
       types.ArgumentsDelta(0, "bash", "{\"command\":\"ls\"}"),
       types.ArgumentsDelta(1, "bash", "{\"command\":\"pwd\"}"),

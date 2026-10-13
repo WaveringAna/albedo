@@ -1661,6 +1661,7 @@ type ProviderRequestRecord struct {
 	CompletionTokens   TokenObservation `json:"completion_tokens"`
 	EndedAt            *Timestamp       `json:"ended_at" nullable:"true"`
 	Failure            *SafeReason      `json:"failure" nullable:"true"`
+	FirstByteMs        *Counter         `json:"first_byte_ms" nullable:"true"`
 	HeadHash           string           `json:"head_hash"`
 	HTTPStatus         *int64           `json:"http_status" nullable:"true"`
 	InputChain         *string          `json:"input_chain" nullable:"true"`
@@ -1669,6 +1670,7 @@ type ProviderRequestRecord struct {
 
 	// Model Opaque identity. Never infer a resource type or route from its contents.
 	Model          ID               `json:"model"`
+	ModelVersion   *string          `json:"model_version" nullable:"true"`
 	Outcome        string           `json:"outcome"`
 	ProjectionHash *string          `json:"projection_hash" nullable:"true"`
 	PromptTokens   TokenObservation `json:"prompt_tokens"`
@@ -1680,6 +1682,7 @@ type ProviderRequestRecord struct {
 	ProviderProfile    ID               `json:"provider_profile"`
 	ReasoningTokens    TokenObservation `json:"reasoning_tokens"`
 	ReplacedInputCount *Counter         `json:"replaced_input_count" nullable:"true"`
+	ResponseID         *string          `json:"response_id" nullable:"true"`
 	RunID              *ID              `json:"run_id" nullable:"true"`
 	Sequence           Counter          `json:"sequence"`
 
@@ -1692,7 +1695,9 @@ type ProviderRequestRecord struct {
 		OutputBytes   Counter  `json:"output_bytes"`
 		ThinkingBytes Counter  `json:"thinking_bytes"`
 	} `json:"stream" nullable:"true"`
-	TranscriptPositions []Counter `json:"transcript_positions"`
+	TotalTokens         TokenObservation `json:"total_tokens"`
+	TraceID             *string          `json:"trace_id" nullable:"true"`
+	TranscriptPositions []Counter        `json:"transcript_positions"`
 }
 
 // ProviderSettings defines model for ProviderSettings.

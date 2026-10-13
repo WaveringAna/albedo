@@ -33,6 +33,7 @@ import albedo/openai_api/types.{
   type Request, type Turn, ChatCompletions, Continue, Responses, Stop,
 }
 import gleam/bit_array
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -101,6 +102,7 @@ pub fn stream(
       headers(client, request.model),
       body,
       client.timeout_ms,
+      None,
       client.max_event_bytes,
       // ChatGPT's Codex endpoint currently streams valid SSE with a generic
       // content type. Its framing, not that header, is authoritative.
@@ -138,15 +140,29 @@ pub fn headers(client: Client, model: String) -> List(#(String, String)) {
 
 /// One streaming POST whose SSE payloads a reducer turns into events and a
 /// turn. A provider with its own wire format drives this directly.
+///
+/// `timeout_ms` bounds connecting and each wait for transport data. With
+/// `first_event_timeout_ms`, the response headers and its first event share
+/// that budget instead, counted from when the request went out, and
+/// `timeout_ms` bounds the waits after it: a model that thinks silently
+/// before it streams anything gets its own allowance, while a dead
+/// connection still fails on the shorter one.
 pub type Exchange {
   Exchange(
     url: String,
     headers: List(#(String, String)),
     body: StringTree,
     timeout_ms: Int,
+    first_event_timeout_ms: Option(Int),
     max_event_bytes: Int,
     require_event_stream: Bool,
   )
+}
+
+/// The budgets one exchange waits under; `first_event` is the deadline its
+/// headers and first event must meet, and the budget that deadline came from.
+type Wait {
+  Wait(idle_ms: Int, first_event: Option(#(Int, Int)))
 }
 
 pub fn exchange(
@@ -154,7 +170,15 @@ pub fn exchange(
   reducer: reducer.Reducer,
   on_event: fn(Event) -> Control,
 ) -> Result(Turn, Error) {
+  let exchange = capped(exchange, transport.budget_cap())
   let sent = clock.monotonic_ms()
+  let wait =
+    Wait(
+      exchange.timeout_ms,
+      option.map(exchange.first_event_timeout_ms, fn(budget) {
+        #(sent + budget, budget)
+      }),
+    )
   use connection <- result.try(
     transport.open(
       exchange.url,
@@ -162,28 +186,53 @@ pub fn exchange(
       exchange.body,
       exchange.timeout_ms,
     )
-    |> result.map_error(transport_error),
+    |> result.map_error(transport_error(
+      _,
+      types.Connecting,
+      exchange.timeout_ms,
+    )),
   )
   use <- transport.with_connection(connection)
-  use first <- result.try(receive(connection))
+  use first <- result.try(receive(connection, wait, types.AwaitingHeaders))
   case first {
-    transport.Headers(status, headers, final) if status >= 200 && status < 300 -> {
-      case event_stream(headers) || !exchange.require_event_stream, final {
-        False, _ -> http_error(connection, status, final, [], 0)
-        True, True -> Error(types.UnexpectedEnd)
-        True, False ->
-          pump(
-            connection,
-            sse.new(exchange.max_event_bytes),
-            reducer,
-            Thinking(0, sent, None),
-            on_event,
-          )
+    transport.Headers(status, headers, final) -> {
+      use _ <- result.try(notify([types.Responded(status)], on_event))
+      case status >= 200 && status < 300 {
+        False -> http_error(connection, wait, status, final, [], 0)
+        True ->
+          case event_stream(headers) || !exchange.require_event_stream, final {
+            False, _ -> http_error(connection, wait, status, final, [], 0)
+            True, True -> Error(types.UnexpectedEnd)
+            True, False ->
+              pump(
+                connection,
+                wait,
+                types.AwaitingFirstEvent,
+                sse.new(exchange.max_event_bytes),
+                reducer,
+                Thinking(0, sent, None),
+                on_event,
+              )
+          }
       }
     }
-    transport.Headers(status, _, final) ->
-      http_error(connection, status, final, [], 0)
     _ -> Error(types.InvalidEvent("HTTP data arrived before headers"))
+  }
+}
+
+/// `exchange` with every budget held to `cap` ms, when `cap` is positive.
+fn capped(exchange: Exchange, cap: Int) -> Exchange {
+  case cap > 0 {
+    False -> exchange
+    True ->
+      Exchange(
+        ..exchange,
+        timeout_ms: int.min(exchange.timeout_ms, cap),
+        first_event_timeout_ms: option.map(
+          exchange.first_event_timeout_ms,
+          int.min(_, cap),
+        ),
+      )
   }
 }
 
@@ -243,18 +292,24 @@ fn event_stream(headers: List(#(String, String))) -> Bool {
 
 fn pump(
   connection: transport.Connection,
+  wait: Wait,
+  phase: types.TimeoutPhase,
   parser: sse.Parser,
   state: reducer.Reducer,
   thinking: Thinking,
   on_event: fn(Event) -> Control,
 ) -> Result(Turn, Error) {
-  use message <- result.try(receive(connection))
+  use message <- result.try(receive(connection, wait, phase))
   case message {
     transport.Data(bytes, final) -> {
       let now = clock.monotonic_ms()
       use #(parser, events) <- result.try(
         sse.feed(parser, bytes) |> result.map_error(sse_error),
       )
+      let phase = case events {
+        [] -> phase
+        _ -> types.Streaming
+      }
       use #(state, thinking, turn) <- result.try(deliver(
         state,
         thinking,
@@ -281,7 +336,8 @@ fn pump(
           }
           |> result.map(timed(_, thinking, now))
         }
-        None, False -> pump(connection, parser, state, thinking, on_event)
+        None, False ->
+          pump(connection, wait, phase, parser, state, thinking, on_event)
       }
     }
     _ -> Error(types.InvalidEvent("unexpected HTTP headers inside stream"))
@@ -356,17 +412,32 @@ fn elapsed(thinking: Thinking, now: Int) -> Int {
   }
 }
 
+/// The next message, within what is left of the first-event deadline while
+/// one runs, else within the idle budget.
 fn receive(
   connection: transport.Connection,
+  wait: Wait,
+  phase: types.TimeoutPhase,
 ) -> Result(transport.Message, Error) {
-  transport.receive(connection) |> result.map_error(transport_error)
+  let #(budget, waited) = case wait.first_event, phase {
+    Some(#(deadline, total)), types.AwaitingHeaders
+    | Some(#(deadline, total)), types.AwaitingFirstEvent
+    -> #(int.max(1, deadline - clock.monotonic_ms()), total)
+    _, _ -> #(wait.idle_ms, wait.idle_ms)
+  }
+  transport.receive_within(connection, budget)
+  |> result.map_error(transport_error(_, phase, waited))
 }
 
-fn transport_error(error: transport.Error) -> Error {
+fn transport_error(
+  error: transport.Error,
+  phase: types.TimeoutPhase,
+  waited_ms: Int,
+) -> Error {
   case error {
     transport.InvalidUrl -> types.InvalidRequest("invalid HTTP endpoint")
     transport.TransportError(message) -> types.ConnectionError(message)
-    transport.TimedOut -> types.Timeout
+    transport.TimedOut -> types.Timeout(phase, waited_ms)
   }
 }
 
@@ -380,6 +451,7 @@ fn sse_error(error: sse.Error) -> Error {
 
 fn http_error(
   connection: transport.Connection,
+  wait: Wait,
   status: Int,
   final: Bool,
   chunks: List(BitArray),
@@ -396,7 +468,11 @@ fn http_error(
       Error(types.HttpError(status, body))
     }
     False -> {
-      use message <- result.try(receive(connection))
+      use message <- result.try(receive(
+        connection,
+        wait,
+        types.AwaitingFirstEvent,
+      ))
       case message {
         transport.Data(bytes, final) -> {
           let remaining = 65_536 - size
@@ -406,6 +482,7 @@ fn http_error(
           }
           http_error(
             connection,
+            wait,
             status,
             final,
             [bytes, ..chunks],

@@ -88,7 +88,11 @@ pub fn stream_event(
       ))
     types.ThinkingDelta(value) ->
       Some(Thinking(run_id, message_id <> ":thinking", value, None))
-    types.ArgumentsDelta(_, _, _) | types.Started(_) -> None
+    types.ArgumentsDelta(_, _, _)
+    | types.Started(_)
+    | types.Responded(_)
+    | types.Metered(..)
+    | types.Served(..) -> None
   }
 }
 

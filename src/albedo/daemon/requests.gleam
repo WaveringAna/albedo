@@ -59,6 +59,15 @@ pub fn outcome(result: Result(a, types.Error)) -> Outcome {
     Ok(_) -> Completed
     Error(types.HttpError(status, body)) -> Failed(Some(status), bounded(body))
     Error(types.ProviderError(message)) -> Failed(None, bounded(message))
+    Error(types.Timeout(phase, waited_ms)) ->
+      Failed(
+        None,
+        "Timeout "
+          <> types.phase_name(phase)
+          <> " after "
+          <> int.to_string(waited_ms)
+          <> " ms",
+      )
     Error(error) -> Failed(None, string.inspect(error))
   }
 }
@@ -273,6 +282,8 @@ pub type Call {
     input_chain: String,
     /// What the attempt streamed before it ended.
     streamed: stream_trace.Streamed,
+    /// What the response reported about itself before it ended.
+    reported: stream_trace.Reported,
   )
 }
 
@@ -293,7 +304,7 @@ pub fn record(database: store.Store, call: Call) -> Result(Int, String) {
 
 // `seq` starts null and is attached after the call's transcript row commits.
 const insert =
-  "INSERT INTO provider_requests(session,seq,kind,profile,provider,account,model,started_ms,finished_ms,outcome,status,error,input_tokens,cached_input_tokens,cache_creation_tokens,cache_write_5m_tokens,cache_write_1h_tokens,output_tokens,reasoning_tokens,head_hash,inputs,replaced,projection_hash,strategy,cache_marks,run_id,input_chain,first_event_ms,streamed_events,streamed_thinking_bytes,streamed_output_bytes) VALUES(?,NULL,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+  "INSERT INTO provider_requests(session,seq,kind,profile,provider,account,model,started_ms,finished_ms,outcome,status,error,input_tokens,cached_input_tokens,cache_creation_tokens,cache_write_5m_tokens,cache_write_1h_tokens,output_tokens,reasoning_tokens,head_hash,inputs,replaced,projection_hash,strategy,cache_marks,run_id,input_chain,first_event_ms,streamed_events,streamed_thinking_bytes,streamed_output_bytes,first_byte_ms,total_tokens,response_id,model_version,trace_id) VALUES(?,NULL,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
 
 fn values(call: Call) -> List(sqlight.Value) {
   let Call(
@@ -312,6 +323,7 @@ fn values(call: Call) -> List(sqlight.Value) {
     run_id,
     input_chain,
     streamed,
+    reported,
   ) = call
   let Prefix(head_hash, inputs, replaced, projection_hash, strategy) = prefix
   let #(status, error) = case outcome {
@@ -374,6 +386,11 @@ fn values(call: Call) -> List(sqlight.Value) {
     sqlight.int(streamed.events),
     sqlight.int(streamed.thinking_bytes),
     sqlight.int(streamed.output_bytes),
+    sqlight.nullable(sqlight.int, reported.first_byte_ms),
+    sqlight.nullable(sqlight.int, reported.total_tokens),
+    sqlight.nullable(sqlight.text, reported.response_id),
+    sqlight.nullable(sqlight.text, reported.model_version),
+    sqlight.nullable(sqlight.text, reported.trace_id),
   ]
 }
 
@@ -425,6 +442,15 @@ pub type Row {
     input_chain: Option(String),
     /// None for a row written before streams were traced.
     streamed: Option(stream_trace.Streamed),
+    /// Delay to the response headers; None when none came, or for a row
+    /// written before it was recorded.
+    first_byte_ms: Option(Int),
+    /// The provider's own total, when it reports one: on Gemini routes it
+    /// also counts thinking the thought count leaves out.
+    total_tokens: Option(Int),
+    response_id: Option(String),
+    model_version: Option(String),
+    trace_id: Option(String),
   )
 }
 
@@ -544,7 +570,7 @@ pub fn head_tokens(
 
 // Named, in decoder order, so a column added later cannot shift a read.
 const columns =
-  "id,session,seq,kind,profile,provider,account,model,started_ms,finished_ms,outcome,status,error,input_tokens,cached_input_tokens,cache_creation_tokens,cache_write_5m_tokens,cache_write_1h_tokens,output_tokens,reasoning_tokens,head_hash,inputs,replaced,projection_hash,strategy,cache_marks,run_id,input_chain,first_event_ms,streamed_events,streamed_thinking_bytes,streamed_output_bytes"
+  "id,session,seq,kind,profile,provider,account,model,started_ms,finished_ms,outcome,status,error,input_tokens,cached_input_tokens,cache_creation_tokens,cache_write_5m_tokens,cache_write_1h_tokens,output_tokens,reasoning_tokens,head_hash,inputs,replaced,projection_hash,strategy,cache_marks,run_id,input_chain,first_event_ms,streamed_events,streamed_thinking_bytes,streamed_output_bytes,first_byte_ms,total_tokens,response_id,model_version,trace_id"
 
 fn row_decoder() -> decode.Decoder(Row) {
   use id <- decode.field(0, decode.int)
@@ -579,6 +605,11 @@ fn row_decoder() -> decode.Decoder(Row) {
   use events <- decode.field(29, decode.optional(decode.int))
   use thinking_bytes <- decode.field(30, decode.optional(decode.int))
   use output_bytes <- decode.field(31, decode.optional(decode.int))
+  use first_byte_ms <- decode.field(32, decode.optional(decode.int))
+  use total_tokens <- decode.field(33, decode.optional(decode.int))
+  use response_id <- decode.field(34, decode.optional(decode.string))
+  use model_version <- decode.field(35, decode.optional(decode.string))
+  use trace_id <- decode.field(36, decode.optional(decode.string))
   let streamed =
     option.map(events, fn(events) {
       stream_trace.Streamed(
@@ -618,6 +649,11 @@ fn row_decoder() -> decode.Decoder(Row) {
     run_id,
     input_chain,
     streamed,
+    first_byte_ms,
+    total_tokens,
+    response_id,
+    model_version,
+    trace_id,
   ))
 }
 

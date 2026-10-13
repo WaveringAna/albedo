@@ -10,8 +10,9 @@
 %% last receive read and can tell a reusable connection from a broken one.
 %% The socket closes when its owner exits.
 
--export([open/4, receive_message/1, close/1, with_connection/2, materialize/1]).
--export([unframe/2, setopts/3, close_socket/2]).
+-export([open/4, receive_message/1, receive_message/2, close/1, with_connection/2,
+         materialize/1]).
+-export([unframe/2, setopts/3, close_socket/2, budget_cap/0]).
 
 %% Bounds on what a response may make the client buffer before its body: the
 %% head, a chunk-size line, and the trailers.
@@ -39,6 +40,13 @@ open(URL, Headers, Body, Timeout)
     end;
 open(_, _, _, _) ->
     {error, invalid_url}.
+
+%% The ms ALBEDO_PROVIDER_TIMEOUT_MS holds every provider budget to, or 0.
+budget_cap() ->
+    case string:to_integer(os:getenv("ALBEDO_PROVIDER_TIMEOUT_MS", "")) of
+        {Cap, []} when Cap > 0 -> Cap;
+        _ -> 0
+    end.
 
 %% A pooled connection first. One the server closed while it sat idle fails
 %% its send or closes before answering; either way the request goes out again
@@ -258,6 +266,24 @@ fold([{image, Size, Read} | Rest], Hasher, Out) ->
 fold([{attest, _, _} = Segment | Rest], Hasher, Out) ->
     Value = marker_value(Segment, Rest, Hasher),
     fold(Rest, done, [Value | Out]).
+
+%% The next response headers or body chunk, waiting at most Timeout ms for
+%% each read instead of the budget the connection was opened with.
+receive_message({albedo_http, Owner, Ref} = Connection, Timeout)
+        when Owner =:= self(), is_integer(Timeout), Timeout > 0 ->
+    case get({?MODULE, Ref}) of
+        undefined -> receive_message(Connection);
+        #{timeout := Opened} = State ->
+            put({?MODULE, Ref}, State#{timeout := Timeout}),
+            Result = receive_message(Connection),
+            case get({?MODULE, Ref}) of
+                undefined -> ok;
+                After -> put({?MODULE, Ref}, After#{timeout := Opened})
+            end,
+            Result
+    end;
+receive_message(Connection, _) ->
+    receive_message(Connection).
 
 %% The next response headers or body chunk.
 receive_message({albedo_http, Owner, Ref}) when Owner =:= self() ->

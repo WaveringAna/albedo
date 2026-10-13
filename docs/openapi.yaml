@@ -7462,6 +7462,27 @@ components:
             required: [first_event_ms, events, thinking_bytes, output_bytes]
             additionalProperties: false
           - type: 'null'
+        first_byte_ms:
+          anyOf:
+          - $ref: '#/components/schemas/Counter'
+          - type: 'null'
+        total_tokens:
+          $ref: '#/components/schemas/TokenObservation'
+        response_id:
+          anyOf:
+          - type: string
+            maxLength: 1024
+          - type: 'null'
+        model_version:
+          anyOf:
+          - type: string
+            maxLength: 1024
+          - type: 'null'
+        trace_id:
+          anyOf:
+          - type: string
+            maxLength: 1024
+          - type: 'null'
         transcript_positions:
           type: array
           items:
@@ -7471,7 +7492,7 @@ components:
         cached_tokens, failure, transcript_positions, kind, provider_profile, account_id, outcome,
         http_status, cache_creation_tokens, cache_write_5m_tokens, cache_write_1h_tokens, reasoning_tokens,
         head_hash, input_count, replaced_input_count, projection_hash, strategy, cache_marks, input_chain,
-        stream]
+        stream, first_byte_ms, total_tokens, response_id, model_version, trace_id]
       additionalProperties: false
     RequestRecordPage:
       type: object

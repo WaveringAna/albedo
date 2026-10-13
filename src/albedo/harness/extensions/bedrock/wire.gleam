@@ -111,6 +111,7 @@ pub fn encode(
     ]),
     body_tree,
     120_000,
+    None,
     8 * 1024 * 1024,
     True,
   ))

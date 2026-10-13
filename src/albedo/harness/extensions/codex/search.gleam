@@ -37,6 +37,7 @@ pub fn run(
       // A search can go quiet for a while between its last result and the
       // first words of the answer.
       timeout_ms: 120_000,
+      first_event_timeout_ms: None,
       max_event_bytes: client.max_event_bytes,
       require_event_stream: False,
     )

@@ -338,6 +338,11 @@ pub fn request(row: requests.Row) -> json.Json {
     ),
     #("input_chain", json.nullable(row.input_chain, json.string)),
     #("stream", json.nullable(row.streamed, streamed)),
+    #("first_byte_ms", json.nullable(row.first_byte_ms, json.int)),
+    #("total_tokens", token_observation(row.total_tokens)),
+    #("response_id", json.nullable(row.response_id, json.string)),
+    #("model_version", json.nullable(row.model_version, json.string)),
+    #("trace_id", json.nullable(row.trace_id, json.string)),
   ])
 }
 

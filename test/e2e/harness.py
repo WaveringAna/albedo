@@ -91,7 +91,9 @@ class Reply:
         default_factory=lambda: {"input_tokens": 10, "output_tokens": 20}
     )
     delay: float = 0
+    # hang sends the response headers and then nothing; silent sends nothing.
     hang: bool = False
+    silent: bool = False
     tool_name: str = "python"
     tool_arguments: dict | None = None
     events: Iterable[dict] | None = None
@@ -209,6 +211,9 @@ class Provider:
         reply = owner.script(request)
         if isinstance(reply, (list, tuple)):
             reply = reply[min(index, len(reply) - 1)]
+        if reply.silent:
+            time.sleep(60)
+            return
         if reply.kind == "error":
             payload = json.dumps({"error": {"message": reply.value}}).encode()
             self.send_response(reply.status)

@@ -426,6 +426,16 @@ pub type Event {
   /// A fragment of a call's arguments; name is the tool it calls, or empty
   /// until the provider has said.
   ArgumentsDelta(output_index: Int, name: String, text: String)
+  /// The response's headers arrived with this status: the provider accepted
+  /// the request, and a 2xx one is generating it.
+  Responded(status: Int)
+  /// What the provider has metered for the response so far, as its latest
+  /// chunk reported it. Gemini routes report usage on intermediate chunks,
+  /// so a call that fails midway still says what it cost.
+  Metered(usage: Usage, total_tokens: Option(Int))
+  /// Which model build served the response, and the provider's trace id for
+  /// it, when the provider names them.
+  Served(model_version: Option(String), trace_id: Option(String))
 }
 
 /// The first response id starts the turn; one that changes mid-stream is a
@@ -448,11 +458,40 @@ pub type Control {
   Stop
 }
 
+/// How far a request had come when its budget ran out. From
+/// `AwaitingFirstEvent` on, the provider had accepted the request and was
+/// generating it, billing for the work as it went.
+pub type TimeoutPhase {
+  Connecting
+  AwaitingHeaders
+  AwaitingFirstEvent
+  Streaming
+}
+
+/// Whether the provider had accepted the request when it timed out.
+pub fn accepted(phase: TimeoutPhase) -> Bool {
+  case phase {
+    Connecting | AwaitingHeaders -> False
+    AwaitingFirstEvent | Streaming -> True
+  }
+}
+
+/// The phase as request rows and messages spell it.
+pub fn phase_name(phase: TimeoutPhase) -> String {
+  case phase {
+    Connecting -> "connecting"
+    AwaitingHeaders -> "awaiting headers"
+    AwaitingFirstEvent -> "awaiting the first event"
+    Streaming -> "streaming"
+  }
+}
+
 pub type Error {
   InvalidRequest(String)
   HttpError(status: Int, body: String)
   ConnectionError(String)
-  Timeout
+  /// No byte came for `waited_ms` while the request was in `phase`.
+  Timeout(phase: TimeoutPhase, waited_ms: Int)
   Cancelled
   InvalidEvent(String)
   EventTooLarge

@@ -684,7 +684,11 @@ pub fn delta(reply: Reply, event: types.Event) -> Option(Json) {
       Some(chunk(reply, [#("content", json.string(text))], None))
     types.ThinkingDelta(text) ->
       Some(chunk(reply, [#("reasoning_content", json.string(text))], None))
-    types.ArgumentsDelta(..) | types.Started(_) -> None
+    types.ArgumentsDelta(..)
+    | types.Started(_)
+    | types.Responded(_)
+    | types.Metered(..)
+    | types.Served(..) -> None
   }
 }
 

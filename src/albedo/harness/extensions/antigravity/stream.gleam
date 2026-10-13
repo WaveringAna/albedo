@@ -30,6 +30,8 @@ type State {
     blocks: List(Block),
     usage: Option(types.Usage),
     finish: Option(String),
+    /// Whether the response's model version and trace id were reported.
+    served: Bool,
   )
 }
 
@@ -40,6 +42,11 @@ type Chunk {
     finish: Option(String),
     usage: Option(types.Usage),
     blocked: Option(String),
+    /// `usageMetadata.totalTokenCount`, which also counts thinking that
+    /// `thoughtsTokenCount` can leave out.
+    total_tokens: Option(Int),
+    model_version: Option(String),
+    trace_id: Option(String),
   )
 }
 
@@ -53,7 +60,7 @@ type Part {
 }
 
 pub fn reducer(model: Model) -> reducer.Reducer {
-  reducer.wrap(State(model, None, [], None, None), step, finish)
+  reducer.wrap(State(model, None, [], None, None, False), step, finish)
 }
 
 fn step(
@@ -116,6 +123,18 @@ fn apply(
           let #(blocks, new) = add(acc.0, part)
           #(blocks, list.append(acc.1, new))
         })
+      let metered = case chunk.usage {
+        Some(usage) if chunk.usage != state.usage -> [
+          types.Metered(usage, chunk.total_tokens),
+        ]
+        _ -> []
+      }
+      let #(served, identified) = case state.served, chunk {
+        False, Chunk(model_version: Some(_), ..)
+        | False, Chunk(trace_id: Some(_), ..)
+        -> #(True, [types.Served(chunk.model_version, chunk.trace_id)])
+        served, _ -> #(served, [])
+      }
       Ok(#(
         State(
           ..state,
@@ -123,8 +142,9 @@ fn apply(
           blocks: blocks,
           usage: option.or(chunk.usage, state.usage),
           finish: option.or(chunk.finish, state.finish),
+          served: served,
         ),
-        list.append(started, events),
+        list.flatten([started, identified, events, metered]),
       ))
     }
   }
@@ -329,30 +349,40 @@ fn flatten(fragments: List(String)) -> String {
 /// field readers. Error(Nil) for anything else, which the decoders then read.
 fn text_chunk(value: Dynamic) -> Result(Chunk, Nil) {
   use <- fields.require(fields.absent(value, "error"))
+  use trace_id <- result.try(fields.optional_string(value, "traceId"))
   use response <- result.try(fields.present_object(value, "response"))
   case response {
-    None -> Ok(Chunk(None, [], None, None, None))
-    Some(response) -> text_response(response)
+    None -> Ok(Chunk(None, [], None, None, None, None, None, trace_id))
+    Some(response) -> text_response(response, trace_id)
   }
 }
 
-fn text_response(response: Dynamic) -> Result(Chunk, Nil) {
+fn text_response(
+  response: Dynamic,
+  trace_id: Option(String),
+) -> Result(Chunk, Nil) {
   use <- fields.require(fields.absent(response, "promptFeedback"))
   use response_id <- result.try(fields.optional_string(response, "responseId"))
+  use model_version <- result.try(fields.optional_string(
+    response,
+    "modelVersion",
+  ))
   use candidates <- result.try(fields.list_or_empty(response, "candidates"))
   use #(parts, finish) <- result.try(case candidates {
     [] -> Ok(#([], None))
     [candidate] -> text_candidate(candidate)
     _ -> Error(Nil)
   })
-  use usage <- result.map(case fields.missing(response, "usageMetadata") {
-    True -> Ok(None)
-    False ->
-      fields.object(response, "usageMetadata")
-      |> result.try(read_usage)
-      |> result.map(Some)
-  })
-  Chunk(response_id, parts, finish, usage, None)
+  use #(usage, total) <- result.map(
+    case fields.missing(response, "usageMetadata") {
+      True -> Ok(#(None, None))
+      False ->
+        fields.object(response, "usageMetadata")
+        |> result.try(read_usage)
+        |> result.map(fn(read) { #(Some(read.0), read.1) })
+    },
+  )
+  Chunk(response_id, parts, finish, usage, None, total, model_version, trace_id)
 }
 
 fn text_candidate(
@@ -377,12 +407,13 @@ fn text_part(part: Dynamic) -> Result(Part, Nil) {
   Part(text, thought, non_empty(signature), None)
 }
 
-fn read_usage(usage: Dynamic) -> Result(types.Usage, Nil) {
+fn read_usage(usage: Dynamic) -> Result(#(types.Usage, Option(Int)), Nil) {
   use input <- result.try(fields.int_or(usage, "promptTokenCount", 0))
   use output <- result.try(fields.int_or(usage, "candidatesTokenCount", 0))
   use thoughts <- result.try(fields.int_or(usage, "thoughtsTokenCount", 0))
-  use cached <- result.map(fields.optional_int(usage, "cachedContentTokenCount"))
-  to_usage(input, output, thoughts, cached)
+  use cached <- result.try(fields.optional_int(usage, "cachedContentTokenCount"))
+  use total <- result.map(fields.optional_int(usage, "totalTokenCount"))
+  #(to_usage(input, output, thoughts, cached), total)
 }
 
 fn non_empty(signature: Option(String)) -> Option(String) {
@@ -449,7 +480,12 @@ fn chunk_decoder() -> decode.Decoder(Chunk) {
       None,
       decode.optional(decode.int),
     )
-    decode.success(to_usage(input, output, thoughts, cached))
+    use total <- decode.optional_field(
+      "totalTokenCount",
+      None,
+      decode.optional(decode.int),
+    )
+    decode.success(#(to_usage(input, output, thoughts, cached), total))
   }
   let response = {
     use response_id <- decode.optional_field(
@@ -467,6 +503,11 @@ fn chunk_decoder() -> decode.Decoder(Chunk) {
       None,
       decode.optional(usage),
     )
+    use model_version <- decode.optional_field(
+      "modelVersion",
+      None,
+      decode.optional(decode.string),
+    )
     use blocked <- decode.optional_field(
       "promptFeedback",
       None,
@@ -481,14 +522,28 @@ fn chunk_decoder() -> decode.Decoder(Chunk) {
       [first, ..] -> first
       [] -> #([], None)
     }
-    decode.success(Chunk(response_id, parts, finish, usage, blocked))
+    decode.success(Chunk(
+      response_id,
+      parts,
+      finish,
+      option.map(usage, fn(usage) { usage.0 }),
+      blocked,
+      option.then(usage, fn(usage) { usage.1 }),
+      model_version,
+      None,
+    ))
   }
-  decode.optional_field(
-    "response",
-    Chunk(None, [], None, None, None),
-    response,
-    decode.success,
+  use trace_id <- decode.optional_field(
+    "traceId",
+    None,
+    decode.optional(decode.string),
   )
+  use chunk <- decode.optional_field(
+    "response",
+    Chunk(None, [], None, None, None, None, None, None),
+    response,
+  )
+  decode.success(Chunk(..chunk, trace_id: trace_id))
 }
 
 /// Output keeps folding thoughts in; the thought count is also reported as

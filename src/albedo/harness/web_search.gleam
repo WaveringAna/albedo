@@ -83,7 +83,7 @@ pub fn failure(error: types.Error) -> String {
     | types.InvalidEvent(message)
     | types.ProviderError(message)
     | types.Unsupported(message) -> message
-    types.Timeout -> "timed out"
+    types.Timeout(phase, _) -> "timed out " <> types.phase_name(phase)
     types.Cancelled -> "cancelled"
     types.EventTooLarge -> "a streamed event was too large"
     types.UnexpectedEnd -> "the stream ended before the answer did"

@@ -108,6 +108,7 @@ pub fn the_ledger_measures_a_head_across_sessions_test() -> Nil {
           session <> "-run",
           "",
           stream_trace.Streamed(None, 0, 0, 0),
+          stream_trace.unreported,
         ),
       )
     Nil

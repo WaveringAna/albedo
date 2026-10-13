@@ -77,7 +77,9 @@ pub fn antigravity_sessions_spread_and_stick_test() -> Nil {
   let #(root, _, home) = fixture()
   let _ = write(home, "creds.json", google_accounts)
   let pool = fn(session) {
-    antigravity.pool(home, session, fn(_, _, _) { Error(types.Timeout) })
+    antigravity.pool(home, session, fn(_, _, _) {
+      Error(types.Timeout(types.Connecting, 1))
+    })
   }
   let assert Ok(first) = { pool("session-1") }.current()
   let assert Ok(again) = { pool("session-1") }.current()
@@ -201,7 +203,7 @@ pub fn antigravity_claude_quota_leaves_gemini_served_test() -> Nil {
   // But Gemini requests on the same session/account are NOT walled: a1 still serves Gemini!
   let gemini_pool =
     antigravity.pool_for_model(home, "gemini-1", "gemini-3-flash", fn(_, _, _) {
-      Error(types.Timeout)
+      Error(types.Timeout(types.Connecting, 1))
     })
   let assert Ok(gemini_served) = gemini_pool.current()
   gemini_served.token |> should.equal("a1")

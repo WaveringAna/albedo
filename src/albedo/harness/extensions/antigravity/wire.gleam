@@ -150,8 +150,12 @@ pub fn encode_with(
     catalog.endpoint <> path,
     headers,
     json.to_string_tree(envelope),
-    // Budgeted thinking can go quiet between chunks for longer than a minute.
-    timeout_ms: 120_000,
+    // Gemini streams no thought parts for some models (argon), so a long
+    // think is a silent socket: before the first event and between chunks
+    // alike. Five minutes each, as oh-my-pi allows Cloud Code Assist; argon
+    // has been seen to think silently past two.
+    timeout_ms: 300_000,
+    first_event_timeout_ms: Some(300_000),
     max_event_bytes: 8 * 1024 * 1024,
     require_event_stream: True,
   ))

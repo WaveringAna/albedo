@@ -46,6 +46,11 @@ pub fn apply(db: sqlight.Connection) -> Result(Nil, String) {
       #("streamed_events", "INTEGER"),
       #("streamed_thinking_bytes", "INTEGER"),
       #("streamed_output_bytes", "INTEGER"),
+      #("first_byte_ms", "INTEGER"),
+      #("total_tokens", "INTEGER"),
+      #("response_id", "TEXT"),
+      #("model_version", "TEXT"),
+      #("trace_id", "TEXT"),
     ]),
   )
   store.add_columns(db, "transcript", [

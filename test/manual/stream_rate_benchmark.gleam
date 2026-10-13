@@ -186,6 +186,7 @@ fn exchange(url: String) -> openai.Exchange {
     [#("content-type", "application/json")],
     string_tree.from_string("{}"),
     60_000,
+    None,
     8 * 1024 * 1024,
     require_event_stream: True,
   )

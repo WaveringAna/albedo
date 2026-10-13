@@ -115,6 +115,7 @@ pub fn encode(
     ],
     json.to_string_tree(json.object(fields)),
     120_000,
+    None,
     8 * 1024 * 1024,
     True,
   ))

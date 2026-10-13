@@ -27,6 +27,19 @@ pub fn open(
 @external(erlang, "albedo_openai_transport", "receive_message")
 pub fn receive(connection: Connection) -> Result(Message, Error)
 
+/// `receive`, waiting at most `timeout_ms` for each read instead of the
+/// budget the connection was opened with.
+@external(erlang, "albedo_openai_transport", "receive_message")
+pub fn receive_within(
+  connection: Connection,
+  timeout_ms: Int,
+) -> Result(Message, Error)
+
+/// The ms every provider budget is held to, from ALBEDO_PROVIDER_TIMEOUT_MS,
+/// or 0 when it is unset: tests reach a timeout in seconds with it.
+@external(erlang, "albedo_openai_transport", "budget_cap")
+pub fn budget_cap() -> Int
+
 /// Close the connection, or keep it for the next request to the same host
 /// when its whole response was read, and discard its pending messages.
 @external(erlang, "albedo_openai_transport", "close")

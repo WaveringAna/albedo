@@ -216,12 +216,23 @@ respond(Socket, slow_end, Owner) ->
         ok -> next_request(Socket, slow_end, Owner);
         {error, closed} -> Owner ! {fixture_closed, self()}
     end;
+respond(Socket, keepalive_comments, Owner) ->
+    ok = send(Socket, <<"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n"
+        "transfer-encoding: chunked\r\n\r\n">>),
+    ping(Socket, Owner);
 respond(Socket, close_delimited, Owner) ->
     ok = send(Socket, [
         <<"HTTP/1.0 200 OK\r\n">>,
         <<"content-type: application/octet-stream\r\n\r\n">>
     ]),
     wait_for_close(Socket, Owner).
+
+%% SSE comments every 50 ms, which carry no event, until the client hangs up.
+ping(Socket, Owner) ->
+    case send(Socket, <<"8\r\n: ping\n\n\r\n">>) of
+        ok -> receive after 50 -> ping(Socket, Owner) end;
+        {error, _} -> Owner ! {fixture_closed, self()}
+    end.
 
 next_request(Socket, Mode, Owner) ->
     case read_request(Socket, <<>>) of

@@ -175,7 +175,7 @@ pub fn run(
       },
       state.progress_reset,
     )
-    |> result.map_error(describe(state.upstream, _)),
+    |> result.map_error(describe(state.upstream, state.model, _)),
   )
   let cache = fading(state, sent)
   // The successful attempt's span, as its request row records it. A clock
@@ -325,7 +325,7 @@ pub fn background(
     fn(_attempt) { Nil },
   )
   |> result.map(fn(attempt) { attempt.1.usage })
-  |> result.map_error(describe(state.upstream, _))
+  |> result.map_error(describe(state.upstream, request.model, _))
 }
 
 /// Start a tool only after its running projection is acknowledged. Remove
@@ -510,9 +510,11 @@ fn call(
           }
         })
       let finished = requests.now()
+      let reported = stream_trace.reported(trace)
+      // A failed call costs what its stream last metered.
       let usage = case outcome {
         Ok(turn) -> turn.usage
-        Error(_) -> None
+        Error(_) -> reported.usage
       }
       let marks = state.upstream.cache_marks(request)
       // The account label is read after the attempt: rotation records which
@@ -538,6 +540,7 @@ fn call(
             state.run_id,
             input_chain,
             stream_trace.streamed(trace),
+            reported,
           ),
         )
       let row = case row {
@@ -582,6 +585,7 @@ fn call(
     state.run_id,
     reset_progress,
     1,
+    0,
   )
 }
 
@@ -646,6 +650,11 @@ fn request_prefix(
 /// handoff or a host whose ephemeral ports sit in TIME_WAIT.
 const attempts = 8
 
+/// Retries for a call that timed out after the provider accepted it. The
+/// provider was generating, and billing, the whole time, and the identical
+/// request most likely thinks just as long again, so it gets one more go.
+const accepted_timeout_retries = 1
+
 /// Reissue transient transport and gateway failures. A failed attempt has no committed output
 /// or tool effects; discard its live previews before forwarding the next attempt.
 fn retry_stream(
@@ -654,17 +663,30 @@ fn retry_stream(
   run_id: String,
   reset_progress: fn(Int) -> Nil,
   attempt: Int,
+  accepted_timeouts: Int,
 ) -> Result(a, types.Error) {
   case run(attempt) {
-    Error(error) ->
-      case attempt < attempts && retryable(error) {
+    Error(error) -> {
+      let accepted = accepted_timeout(error)
+      let accepted_timeouts = case accepted {
+        True -> accepted_timeouts + 1
+        False -> accepted_timeouts
+      }
+      case
+        attempt < attempts
+        && retryable(error)
+        && accepted_timeouts <= accepted_timeout_retries
+      {
         False -> Error(error)
         True ->
           case
             publish(view.Retry(
               run_id,
               attempt + 1,
-              "transient provider request failure",
+              case accepted {
+                True -> "provider went silent after accepting the request"
+                False -> "transient provider request failure"
+              },
               int.bitwise_shift_left(250, attempt - 1),
             ))
           {
@@ -672,11 +694,26 @@ fn retry_stream(
             True -> {
               reset_progress(attempt)
               process.sleep(int.bitwise_shift_left(250, attempt - 1))
-              retry_stream(run, publish, run_id, reset_progress, attempt + 1)
+              retry_stream(
+                run,
+                publish,
+                run_id,
+                reset_progress,
+                attempt + 1,
+                accepted_timeouts,
+              )
             }
           }
       }
+    }
     outcome -> outcome
+  }
+}
+
+fn accepted_timeout(error: types.Error) -> Bool {
+  case error {
+    types.Timeout(phase, _) -> types.accepted(phase)
+    _ -> False
   }
 }
 
@@ -811,13 +848,49 @@ pub fn rebuild(
   #(request, request_prefix(request, original, prepared.observation))
 }
 
-fn describe(upstream: extension.Upstream, error: types.Error) -> String {
-  upstream.explain(error) |> option.lazy_unwrap(fn() { string.inspect(error) })
+fn describe(
+  upstream: extension.Upstream,
+  model: String,
+  error: types.Error,
+) -> String {
+  case error {
+    types.Timeout(phase, waited_ms) -> timeout_message(model, phase, waited_ms)
+    _ ->
+      upstream.explain(error)
+      |> option.lazy_unwrap(fn() { string.inspect(error) })
+  }
+}
+
+/// A call that timed out on every attempt it was allowed.
+fn timeout_message(
+  model: String,
+  phase: types.TimeoutPhase,
+  waited_ms: Int,
+) -> String {
+  let seconds = int.to_string(waited_ms / 1000) <> " s"
+  case phase {
+    types.AwaitingFirstEvent ->
+      model
+      <> " produced no output for "
+      <> seconds
+      <> " after the provider accepted the request; it may be thinking past the timeout. Try a lower effort, or retry"
+    types.Streaming ->
+      model
+      <> " stopped streaming for "
+      <> seconds
+      <> "; try a lower effort, or retry"
+    types.Connecting | types.AwaitingHeaders ->
+      "the provider request timed out "
+      <> types.phase_name(phase)
+      <> " ("
+      <> seconds
+      <> ") on every attempt"
+  }
 }
 
 fn retryable(error: types.Error) -> Bool {
   case error {
-    types.ConnectionError(_) | types.Timeout | types.UnexpectedEnd -> True
+    types.ConnectionError(_) | types.Timeout(..) | types.UnexpectedEnd -> True
     types.HttpError(status, _) ->
       list.contains([502, 503, 504, 520, 521, 522, 523, 524, 529], status)
     types.ProviderError("Overloaded") -> True
@@ -871,7 +944,8 @@ fn summarize(
       fn(_) { Nil },
     )
     |> result.map_error(fn(error) {
-      "summarizer provider request failed: " <> describe(state.upstream, error)
+      "summarizer provider request failed: "
+      <> describe(state.upstream, model, error)
     }),
   )
   let text =

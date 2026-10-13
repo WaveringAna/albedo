@@ -3,9 +3,13 @@
 //// certificate verification require native transport probes beyond daemon
 //// output.
 
+import albedo/openai_api
+import albedo/openai_api/stream as reducer
 import albedo/openai_api/transport
+import albedo/openai_api/types
 import gleam/bit_array
 import gleam/list
+import gleam/option.{Some}
 import gleam/string
 import gleam/string_tree
 import gleeunit/should
@@ -21,6 +25,7 @@ type Mode {
   KeepAlive
   DropSecond
   SlowEnd
+  KeepaliveComments
 }
 
 @external(erlang, "albedo_openai_transport_test_server", "start")
@@ -123,6 +128,27 @@ pub fn https_verifies_the_server_certificate_test() -> Nil {
   stop(trusted)
   first |> should.equal(Ok(<<"hello world, all">>))
   second |> should.equal(Ok(<<"hello world, all">>))
+}
+
+/// Keepalive comments carry no event, so they hold off the idle budget but
+/// not the first-event deadline.
+pub fn the_first_event_deadline_outlasts_keepalives_test() -> Nil {
+  let fixture = start(KeepaliveComments)
+  openai_api.exchange(
+    openai_api.Exchange(
+      url(fixture),
+      [],
+      string_tree.new(),
+      timeout_ms: 2000,
+      first_event_timeout_ms: Some(300),
+      max_event_bytes: 65_536,
+      require_event_stream: True,
+    ),
+    reducer.reducer(types.Responses),
+    fn(_) { types.Continue },
+  )
+  |> should.equal(Error(types.Timeout(types.AwaitingFirstEvent, 300)))
+  stop(fixture)
 }
 
 /// One request read to its end and closed.
