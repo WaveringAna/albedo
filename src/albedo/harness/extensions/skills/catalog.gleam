@@ -194,7 +194,8 @@ pub fn context(catalog: Catalog) -> String {
       }
       <> "\n  </diagnostics>"
   }
-  "<available_skills>\n"
+  "The following skills provide specialized instructions and domain conventions for specific tasks. When a task or user request matches a skill's description, read and follow its instructions using `await skills.read(name)` or invoke it via `await commands.<method>()` before implementing.\n\n"
+  <> "<available_skills>\n"
   <> skill_xml
   <> diagnostic_xml
   <> "\n</available_skills>\n"
