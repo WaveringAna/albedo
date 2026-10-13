@@ -5,7 +5,7 @@
 -export([access/1, access/2, access/3, access/4, limited/3, limited/4, limit/1, limit/2,
          meter_of/1, meter_of/2, heal/3, encode/1, session_number/1, uuid/1,
          call_id/0, user_agent/1, discovered/1, refresh/1, reload/1, expire/2,
-         exchange/4, discover/3, account/1, client_id/0, accounts/1]).
+         exchange/4, discover/3, account/1, client_id/0, accounts/1, offered/1]).
 
 -define(KEY, <<"google-antigravity">>).
 -define(CLIENT_ID, <<"MTA3MTAwNjA2MDU5MS10bWhzc2luMmgyMWxjcmUyMzV2dG9sb2poNGc0MDNlcC5hcHBzLmdvb2dsZXVzZXJjb250ZW50LmNvbQ==">>).
@@ -590,11 +590,12 @@ recommended(_) -> [].
 user_agent_for(Version) ->
     <<"antigravity/hub/", Version/binary, " (aidev_client; os_type=darwin; arch=arm64; cl=963137146)">>.
 
-%% Chat models only: internal, autocomplete (tab_*), and unnamed tier aliases
+%% Chat models only: internal, disabled, autocomplete (tab_*), and unnamed tier aliases
 %% are not agent models.
 offered({Id, #{<<"displayName">> := <<_, _/binary>> = Name, <<"maxTokens">> := Context} = Model})
   when is_integer(Context) ->
     case maps:get(<<"isInternal">>, Model, false) =:= true orelse
+         maps:get(<<"disabled">>, Model, false) =:= true orelse
          lists:member(Id, [<<"chat_20706">>, <<"chat_23310">>]) of
         true -> false;
         false ->

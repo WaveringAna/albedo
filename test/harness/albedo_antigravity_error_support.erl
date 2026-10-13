@@ -1,6 +1,16 @@
 %% One raw Cloud Code Assist error through the production discovery HTTP path.
 -module(albedo_antigravity_error_support).
--export([discover/1]).
+-export([discover/1, is_offered/2]).
+
+is_offered(Id, ModelJson) ->
+    case json:decode(ModelJson) of
+        Map when is_map(Map) ->
+            case albedo_antigravity:offered({Id, Map}) of
+                {true, _} -> true;
+                false -> false
+            end;
+        _ -> false
+    end.
 
 discover(Body) ->
     {ok, Listen} = gen_tcp:listen(0, [binary, {active, false}, {packet, http_bin},

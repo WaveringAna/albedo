@@ -262,23 +262,26 @@ fn hint(id: String) -> Model {
 
 fn infer_thinking(id: String) -> Thinking {
   let id = string.lowercase(id)
-  let gemini_3 =
-    string.starts_with(id, "gemini-3-") || string.starts_with(id, "gemini-3.")
-  case gemini_3 {
-    False -> default_budget
-    True ->
+  let gemini_levels =
+    string.starts_with(id, "gemini-3-pro")
+    || string.starts_with(id, "gemini-3.6-flash")
+    || string.starts_with(id, "gemini-3.7-flash")
+    || id == "gemini-3.1-flash-lite"
+    || string.starts_with(id, "gemini-4-")
+    || string.starts_with(id, "gemini-4.")
+  case gemini_levels {
+    True -> Level
+    False ->
       case
-        string.starts_with(id, "gemini-3-pro")
-        || string.starts_with(id, "gemini-3.6-flash")
-        || string.starts_with(id, "gemini-3.7-flash")
-        || id == "gemini-3.1-flash-lite"
+        string.starts_with(id, "gemini-3-")
+        || string.starts_with(id, "gemini-3.")
       {
-        True -> Level
-        False ->
+        True ->
           case string.contains(id, "flash") {
             True -> flash_budget
             False -> pro_budget
           }
+        False -> default_budget
       }
   }
 }

@@ -588,3 +588,15 @@ pub fn model_capacity_exhausted_marks_nobody_test() -> Nil {
     "{\"error\":{\"code\":429,\"status\":\"RESOURCE_EXHAUSTED\",\"details\":[{\"@type\":\"type.googleapis.com/google.rpc.ErrorInfo\",\"reason\":\"MODEL_CAPACITY_EXHAUSTED\",\"metadata\":{\"model\":\"claude-sonnet-5-5-high\"}}]}}"
   assert native_limit(body) == Error(Nil)
 }
+
+@external(erlang, "albedo_antigravity_error_support", "is_offered")
+fn is_offered(id: String, model_json: String) -> Bool
+
+pub fn disabled_models_are_not_offered_test() -> Nil {
+  let active =
+    "{\"displayName\":\"Gemini 3.8 Flash (High)\",\"maxTokens\":1048576,\"maxOutputTokens\":65536,\"supportsImages\":true}"
+  let disabled =
+    "{\"displayName\":\"Gemini 4 Argon (Medium)\",\"maxTokens\":1048576,\"maxOutputTokens\":65536,\"supportsImages\":true,\"disabled\":true}"
+  assert is_offered("gemini-3.8-flash-high", active) == True
+  assert is_offered("gemini-4-argon-medium", disabled) == False
+}
