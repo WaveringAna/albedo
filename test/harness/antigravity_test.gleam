@@ -459,6 +459,93 @@ pub fn same_model_replay_keeps_signed_parts_test() -> Nil {
     == ["bash"]
 }
 
+/// An effort switch must not re-encode history: every earlier turn would
+/// turn into an uncached prefill. Signatures replay across effort tiers of one
+/// model, and only a request the provider refused for them goes portably.
+pub fn another_effort_tiers_output_replays_its_signed_parts_test() -> Nil {
+  let #(outcome, _) = reduce(gemini, signed_turn_payloads())
+  let assert Ok(turn) = outcome
+  let assert [item] = turn.output
+  let assert [call] = turn.tool_calls
+  let request =
+    openai_api.request("gemini-3.1-pro-high", [
+      types.User("hi"),
+      types.Replay(item),
+      types.ToolOutput(call.id, "", []),
+    ])
+  let signatures = fn(replay) {
+    let assert Ok(openai_api.Exchange(body: raw, ..)) =
+      wire.encode_with(context("gemini-3.1-pro-high"), request, [], replay)
+    let assert Ok(value) =
+      json.parse(string_tree.to_string(raw), decode.dynamic)
+    let assert [_, model, _] =
+      at(value, ["request", "contents"], decode.list(decode.dynamic))
+    at(
+      model,
+      ["parts"],
+      decode.list(decode.optional_field(
+        "thoughtSignature",
+        "",
+        decode.string,
+        decode.success,
+      )),
+    )
+  }
+  assert signatures(wire.AcrossEfforts) == ["c2ln", "", "Y2FsbA=="]
+  assert signatures(wire.ExactVariant)
+    == ["", "skip_thought_signature_validator"]
+  assert wire.crosses_efforts(context("gemini-3.1-pro-high"), request)
+  assert !wire.crosses_efforts(context(gemini), request)
+  assert !wire.crosses_efforts(context("gemini-3.1-flash-high"), request)
+}
+
+/// Without a requested effort the wire model is the catalog's default tier,
+/// and its thinking setting must be that tier's, not always the highest.
+pub fn the_thinking_setting_follows_the_variant_without_an_effort_test() -> Nil {
+  let budget = fn(id) {
+    at(
+      body(id, openai_api.request(id, [types.User("hi")])),
+      ["request", "generationConfig", "thinkingConfig", "thinkingBudget"],
+      decode.int,
+    )
+  }
+  assert budget(gemini) == 1001
+  assert budget("gemini-3.1-pro-high") == 10_001
+}
+
+/// Gemini signs what follows its thoughts, never the summaries, so an
+/// unsigned summary is kept as reasoning text but not replayed.
+pub fn unsigned_gemini_thoughts_are_not_replayed_test() -> Nil {
+  let #(outcome, _) =
+    reduce(gemini, [
+      chunk(
+        "{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"musing\",\"thought\":true},{\"functionCall\":{\"name\":\"bash\",\"args\":{}},\"thoughtSignature\":\"Y2FsbA==\"}]},\"finishReason\":\"STOP\"}]}",
+      ),
+    ])
+  let assert Ok(turn) = outcome
+  let assert [item] = turn.output
+  let assert [call] = turn.tool_calls
+  assert types.inspect_item(
+      item,
+      decode.at(["reasoning_content"], decode.string),
+    )
+    == Ok("musing")
+  let request =
+    openai_api.request(gemini, [
+      types.User("hi"),
+      types.Replay(item),
+      types.ToolOutput(call.id, "", []),
+    ])
+  let assert [_, model, _] =
+    at(
+      body(gemini, request),
+      ["request", "contents"],
+      decode.list(decode.dynamic),
+    )
+  let assert [function] = at(model, ["parts"], decode.list(decode.dynamic))
+  assert at(function, ["thoughtSignature"], decode.string) == "Y2FsbA=="
+}
+
 pub fn another_models_output_replays_portably_test() -> Nil {
   let #(outcome, _) = reduce(gemini, signed_turn_payloads())
   let assert Ok(turn) = outcome

@@ -322,6 +322,11 @@ fn part(block: Block, model: Model) -> Result(Json, Nil) {
   case block, catalog.family(model) {
     // Claude routes reject replayed thinking without its signature.
     Thought(_, None), catalog.Claude -> Error(Nil)
+    // Gemini signs the calls and text after its thoughts, never the thought
+    // summaries themselves, so those only cost input on every later request.
+    // gemini-cli drops them from history too. The summary still shows: it
+    // is kept as the reply's reasoning text, apart from these parts.
+    Thought(_, None), catalog.Gemini -> Error(Nil)
     Thought(text, signature), _ ->
       Ok(signed(
         [#("thought", json.bool(True)), #("text", json.string(flatten(text)))],

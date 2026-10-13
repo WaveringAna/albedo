@@ -198,8 +198,33 @@ fn upstream(
             resolved_model,
             user_agent,
           )
-        use exchange <- result.try(wire.encode(context, request))
-        openai_api.exchange(exchange, stream.reducer(resolved_model), on_event)
+        let send = fn(replay) {
+          use exchange <- result.try(wire.encode_with(
+            context,
+            request,
+            [],
+            replay,
+          ))
+          openai_api.exchange(
+            exchange,
+            stream.reducer(resolved_model),
+            on_event,
+          )
+        }
+        // Earlier turns of another effort tier replay their signatures to
+        // keep the cached prefix. Should Google ever refuse those, the
+        // request goes once more with them sent portably.
+        case send(wire.AcrossEfforts) {
+          Error(types.HttpError(400, body)) as refused ->
+            case
+              wire.signature_refusal(body)
+              && wire.crosses_efforts(context, request)
+            {
+              True -> send(wire.ExactVariant)
+              False -> refused
+            }
+          outcome -> outcome
+        }
       },
     ),
     access,

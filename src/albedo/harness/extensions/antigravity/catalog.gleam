@@ -163,6 +163,17 @@ fn split_id(id: String) -> #(String, Option(String)) {
   }
 }
 
+/// The model a variant id is an effort tier of: `gemini-4-argon-medium` and
+/// `gemini-4-argon-high` are both `gemini-4-argon`.
+pub fn base_id(id: String) -> String {
+  split_id(id).0
+}
+
+/// The effort tier a variant id names, if it names one.
+pub fn variant_effort(model: Model) -> Option(String) {
+  split_id(model.id).1
+}
+
 fn effort_rank(effort: String) -> Int {
   case effort {
     "extra-low" | "minimal" -> 0

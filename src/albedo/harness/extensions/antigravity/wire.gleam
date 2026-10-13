@@ -19,6 +19,7 @@ import gleam/json.{type Json}
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/string
 
 const path = "/v1internal:streamGenerateContent?alt=sse"
 
@@ -47,11 +48,43 @@ type History {
   History(contents: List(Content), calls: Dict(String, String))
 }
 
+/// Which earlier turns replay their exact parts (thoughts, signatures),
+/// rather than only their text and calls.
+pub type Replay {
+  /// Turns of any effort tier of this model: an effort switch keeps the
+  /// history byte for byte, so the cached prefix survives it.
+  AcrossEfforts
+  /// Only turns of this exact variant, for a request whose cross-tier
+  /// signatures the provider refused.
+  ExactVariant
+}
+
 pub fn encode(
   context: Context,
   request: Request,
 ) -> Result(openai_api.Exchange, Error) {
-  encode_with(context, request, [])
+  encode_with(context, request, [], AcrossEfforts)
+}
+
+/// Whether `request` replays exact parts from another effort tier of the
+/// context's model, which `ExactVariant` would send portably instead.
+pub fn crosses_efforts(context: Context, request: Request) -> Bool {
+  list.any(request.input, fn(input) {
+    case input {
+      Replay(item) ->
+        case types.inspect_item(item, message_decoder()) {
+          Ok(Message(parts: Some(#(from, _)), ..)) ->
+            from != context.model.id && replayable(from, context.model)
+          _ -> False
+        }
+      _ -> False
+    }
+  })
+}
+
+/// Whether a 400 body is Gemini refusing a thought signature.
+pub fn signature_refusal(body: String) -> Bool {
+  string.contains(string.lowercase(body), "signature")
 }
 
 /// `encode`, with `hosted` tools, such as Google Search grounding, after the
@@ -60,11 +93,12 @@ pub fn encode_with(
   context: Context,
   request: Request,
   hosted: List(Json),
+  replay: Replay,
 ) -> Result(openai_api.Exchange, Error) {
   let model = context.model
   use history <- result.try(
     list.try_fold(request.input, History([], dict.new()), fn(h, i) {
-      add(h, i, model)
+      add(h, i, model, replay)
     }),
   )
   let history = case request.tools, forced(model, request.options.tool_choice) {
@@ -161,7 +195,12 @@ pub fn encode_with(
   ))
 }
 
-fn add(history: History, input: Input, model: Model) -> Result(History, Error) {
+fn add(
+  history: History,
+  input: Input,
+  model: Model,
+  replay: Replay,
+) -> Result(History, Error) {
   case input {
     User(text) -> Ok(push(history, "user", [text_part(text)]))
     UserImage(text, images) -> {
@@ -223,13 +262,24 @@ fn add(history: History, input: Input, model: Model) -> Result(History, Error) {
         list.fold(message.calls, history.calls, fn(calls, call) {
           dict.insert(calls, call.id, call.name)
         })
-      let parts = case message.parts {
-        Some(#(from, parts)) if from == model.id -> list.map(parts, encode_value)
-        _ -> portable_parts(message, model)
+      let exact = case message.parts, replay {
+        Some(#(from, _)), ExactVariant -> from == model.id
+        Some(#(from, _)), AcrossEfforts -> replayable(from, model)
+        None, _ -> False
+      }
+      let parts = case message.parts, exact {
+        Some(#(_, parts)), True -> list.map(parts, encode_value)
+        _, _ -> portable_parts(message, model)
       }
       Ok(push(History(..history, calls: calls), "model", parts))
     }
   }
+}
+
+/// Output from `from` replays exactly to `model` when both are effort tiers
+/// of one model. oh-my-pi keys replay on the collapsed id the same way.
+fn replayable(from: String, model: Model) -> Bool {
+  from == model.id || catalog.base_id(from) == catalog.base_id(model.id)
 }
 
 type Message {
@@ -328,11 +378,16 @@ fn generation(
   options: types.Options,
 ) -> Json {
   let limit = model.max_output_tokens
-  let effort = option.unwrap(options.effort, "high")
+  // Without a requested effort the variant resolved to its default tier, so
+  // the thinking setting follows the tier its id names.
+  let effort =
+    options.effort
+    |> option.lazy_or(fn() { catalog.variant_effort(model) })
+    |> option.unwrap("high")
   let #(output, thinking) = case model.thinking {
     catalog.Budget(low, medium, high) -> {
       let budget = case effort {
-        "minimal" | "low" -> low
+        "minimal" | "extra-low" | "low" -> low
         "medium" -> medium
         _ -> high
       }
@@ -351,7 +406,7 @@ fn generation(
       #(
         "thinkingLevel",
         json.string(case effort {
-          "minimal" | "low" -> "LOW"
+          "minimal" | "extra-low" | "low" -> "LOW"
           "medium" -> "MEDIUM"
           _ -> "HIGH"
         }),

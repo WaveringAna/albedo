@@ -38,7 +38,7 @@ pub fn run(
     )
   let tool = json.object([#("googleSearch", json.object([]))])
   use exchange <- result.try(
-    wire.encode_with(context, request, [tool])
+    wire.encode_with(context, request, [tool], wire.AcrossEfforts)
     |> result.map_error(web_search.failure),
   )
   use heard <- result.try(
