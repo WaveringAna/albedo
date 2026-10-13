@@ -142,6 +142,38 @@
       "checked": "2026-09-28"
     },
     {
+      "id": "antigravity-flash",
+      "match": {
+        "extension": "antigravity",
+        "model": "*flash*"
+      },
+      "policy": "evict",
+      "survival": {
+        "typical": 170,
+        "max": 300
+      },
+      "evidence": "measured",
+      "source": "provider_requests: 17k gemini-3.8-flash calls over 8k tokens, hit rate by gap since the previous call",
+      "note": "Cloud Code Assist flash: 94% hit under 2 min, 56% at 2.5-3 min, 20% at 4-5 min, none past 5 min. No explicit cache, so only survival is known.",
+      "checked": "2026-10-14"
+    },
+    {
+      "id": "antigravity-argon",
+      "match": {
+        "extension": "antigravity",
+        "model": "*argon*"
+      },
+      "policy": "evict",
+      "survival": {
+        "typical": 450,
+        "max": 600
+      },
+      "evidence": "measured",
+      "source": "provider_requests: 319 gemini-4-argon calls over 8k tokens, hit rate by gap since the previous call",
+      "note": "Cloud Code Assist argon: hit at a 390s gap, miss at 569s; under 30s it hits 100% (296 of 296) apart from one unexplained miss at 400k. Few samples between 30s and 10 min, so typical is a midpoint, not a fit.",
+      "checked": "2026-10-14"
+    },
+    {
       "id": "antigravity",
       "match": {
         "extension": "antigravity"
@@ -149,12 +181,12 @@
       "policy": "unknown",
       "survival": {
         "typical": 240,
-        "max": 86400
+        "max": 600
       },
       "evidence": "unknown",
       "source": "https://ai.google.dev/gemini-api/docs/caching",
-      "note": "Cloud Code Assist: no docs. Assumed to behave like Gemini implicit caching until measured.",
-      "checked": "2026-09-28"
+      "note": "Cloud Code Assist: no docs. Models other than flash and argon are unmeasured; nothing measured on the others survived past ten minutes.",
+      "checked": "2026-10-14"
     },
     {
       "id": "deepseek",
