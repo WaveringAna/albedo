@@ -264,8 +264,8 @@ func fenceAfter(open, line string) string {
 	if len(line)-len(trimmed) > 3 || trimmed == "" {
 		return open
 	}
-	if closer := displayMathLeftOpen(trimmed); open == "" && closer != "" {
-		return closer
+	if d, _, closed, ok := openDisplayMath([]byte(trimmed)); open == "" && ok && !closed {
+		return d.close
 	}
 	if trimmed[0] != '`' && trimmed[0] != '~' {
 		return open

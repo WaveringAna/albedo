@@ -4,7 +4,7 @@
 package tui
 
 import (
-	"strings"
+	"regexp"
 	"testing"
 
 	"github.com/charmbracelet/x/ansi"
@@ -39,14 +39,10 @@ func TestScanInlineMath(t *testing.T) {
 
 func TestDisplayMathHangsInsideListItems(t *testing.T) {
 	rendered := ansi.Strip(RenderMarkdownAnsi("- item\n\n  $$\\frac{a}{b}$$\n- next", 40))
-	var rows []string
-	for row := range strings.SplitSeq(rendered, "\n") {
-		if row = strings.TrimRight(row, " "); row != "" {
-			rows = append(rows, row)
-		}
-	}
-	want := []string{"• item", "   a", "  ───", "   b", "• next"}
-	if strings.Join(rows, "\n") != strings.Join(want, "\n") {
-		t.Errorf("rendered\n%s\nwant\n%s", strings.Join(rows, "\n"), strings.Join(want, "\n"))
+	want := "• item\n\n   a\n  ───\n   b\n• next"
+	if got := trailingSpace.ReplaceAllString(rendered, ""); got != want {
+		t.Errorf("rendered\n%s\nwant\n%s", got, want)
 	}
 }
+
+var trailingSpace = regexp.MustCompile(`(?m) +$`)

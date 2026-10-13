@@ -36,9 +36,9 @@ func (n *inlineMath) Dump(source []byte, level int) { ast.DumpHelper(n, source, 
 // streaming may not have sent it yet.
 type displayMath struct {
 	ast.BaseBlock
-	open, close string
-	tex         []byte
-	closed      bool
+	delimiter
+	tex    []byte
+	closed bool
 }
 
 func (n *displayMath) Kind() ast.NodeKind            { return kindDisplayMath }
@@ -112,60 +112,62 @@ func (e displayMathElement) Render(w io.Writer, ctx ansi.RenderContext) error {
 	return (&ansi.BaseElement{Token: laid, Style: ansi.StylePrimitive{Color: e.color}, Verbatim: true}).Render(w, ctx)
 }
 
-// mathCloser is the delimiter that closes math opened at the start of line,
-// and the opener's length.
-func mathCloser(line []byte) (string, int) {
-	switch {
-	case bytes.HasPrefix(line, []byte("$$")):
-		return "$$", 2
-	case bytes.HasPrefix(line, []byte(`\[`)):
-		return `\]`, 2
-	case bytes.HasPrefix(line, []byte(`\(`)):
-		return `\)`, 2
-	case bytes.HasPrefix(line, []byte("$")):
-		return "$", 1
-	}
-	return "", 0
+// delimiter is one way to write math. Only display delimiters may open a
+// block of their own.
+type delimiter struct {
+	open, close string
+	display     bool
 }
 
-// displayMathLeftOpen is the closer of display math that line opens and
-// does not close, or "".
-func displayMathLeftOpen(line string) string {
-	closer, width := mathCloser([]byte(line))
-	if (closer != "$$" && closer != `\]`) || strings.Contains(line[width:], closer) {
-		return ""
+// delimiters are tried in order, so $$ is found before $.
+var delimiters = []delimiter{
+	{open: "$$", close: "$$", display: true},
+	{open: `\[`, close: `\]`, display: true},
+	{open: `\(`, close: `\)`},
+	{open: "$", close: "$"},
+}
+
+// delimiterAt is the delimiter that opens math at the start of line.
+func delimiterAt(line []byte) (delimiter, bool) {
+	for _, d := range delimiters {
+		if bytes.HasPrefix(line, []byte(d.open)) {
+			return d, true
+		}
 	}
-	return closer
+	return delimiter{}, false
+}
+
+// openDisplayMath reads a line that opens display math: its delimiter, the
+// tex after the opener, and whether the line closes it too, in which case
+// nothing may follow the closer.
+func openDisplayMath(line []byte) (d delimiter, tex []byte, closed, ok bool) {
+	d, ok = delimiterAt(line)
+	if !ok || !d.display {
+		return d, nil, false, false
+	}
+	tex, after, closed := bytes.Cut(line[len(d.open):], []byte(d.close))
+	if closed && !util.IsBlank(after) {
+		return d, nil, false, false
+	}
+	return d, tex, closed, true
 }
 
 type displayMathParser struct{}
 
 func (displayMathParser) Trigger() []byte { return []byte{'$', '\\'} }
 
-// Open starts display math on a line that begins with $$ or \[ and, if it
-// closes on the same line, has nothing after the closer.
 func (displayMathParser) Open(_ ast.Node, reader text.Reader, pc parser.Context) (ast.Node, parser.State) {
 	line, _ := reader.PeekLine()
 	pos := pc.BlockOffset()
 	if pos < 0 {
 		return nil, parser.NoChildren
 	}
-	closer, width := mathCloser(line[pos:])
-	if closer != "$$" && closer != `\]` {
+	d, tex, closed, ok := openDisplayMath(line[pos:])
+	if !ok {
 		return nil, parser.NoChildren
 	}
-	node := &displayMath{open: string(line[pos : pos+width]), close: closer}
-	rest := line[pos+width:]
-	if end := bytes.Index(rest, []byte(closer)); end >= 0 {
-		if !util.IsBlank(rest[end+len(closer):]) {
-			return nil, parser.NoChildren
-		}
-		node.tex, node.closed = append(node.tex, rest[:end]...), true
-	} else {
-		node.tex = append(node.tex, rest...)
-	}
 	reader.AdvanceToEOL()
-	return node, parser.NoChildren
+	return &displayMath{delimiter: d, tex: bytes.Clone(tex), closed: closed}, parser.NoChildren
 }
 
 func (displayMathParser) Continue(node ast.Node, reader text.Reader, _ parser.Context) parser.State {
@@ -174,13 +176,12 @@ func (displayMathParser) Continue(node ast.Node, reader text.Reader, _ parser.Co
 		return parser.Close
 	}
 	line, _ := reader.PeekLine()
-	if end := bytes.Index(line, []byte(n.close)); end >= 0 {
-		n.tex, n.closed = append(n.tex, line[:end]...), true
-		reader.AdvanceToEOL()
+	tex, _, closed := bytes.Cut(line, []byte(n.close))
+	n.tex, n.closed = append(n.tex, tex...), closed
+	reader.AdvanceToEOL()
+	if closed {
 		return parser.Close
 	}
-	n.tex = append(n.tex, line...)
-	reader.AdvanceToEOL()
 	return parser.Continue | parser.NoChildren
 }
 
@@ -208,30 +209,29 @@ func (inlineMathParser) Parse(_ ast.Node, block text.Reader, _ parser.Context) a
 // non-space that follows no word character, and closes after a non-space
 // before anything but a word character.
 func scanInlineMath(line []byte, before rune) (string, int) {
-	closer, width := mathCloser(line)
-	if closer == "" {
+	d, ok := delimiterAt(line)
+	lone := d.open == "$"
+	if !ok || lone && (wordRune(before) || len(line) < 2 || util.IsSpace(line[1])) {
 		return "", 0
 	}
-	if closer == "$" && (wordRune(before) || len(line) < 2 || unicode.IsSpace(rune(line[1]))) {
-		return "", 0
-	}
-	for i := width; i < len(line) && line[i] != '\n'; i++ {
-		if !bytes.HasPrefix(line[i:], []byte(closer)) {
-			if closer == "$" && line[i] == '\\' {
-				i++
-			}
+	body, _, _ := bytes.Cut(line, []byte{'\n'})
+	for i := len(d.open); i < len(body); i++ {
+		if d.close[0] == '$' && body[i] == '\\' {
+			i++ // an escaped character never closes
 			continue
 		}
-		end := i + len(closer)
-		after, _ := utf8.DecodeRune(line[end:])
-		if closer == "$" && (unicode.IsSpace(rune(line[i-1])) || wordRune(after)) {
+		if !bytes.HasPrefix(body[i:], []byte(d.close)) {
 			continue
 		}
-		tex := strings.TrimSpace(string(line[width:i]))
-		if tex == "" {
+		end := i + len(d.close)
+		if after, _ := utf8.DecodeRune(body[end:]); lone && (util.IsSpace(body[i-1]) || wordRune(after)) {
+			continue
+		}
+		tex := bytes.TrimSpace(body[len(d.open):i])
+		if len(tex) == 0 {
 			return "", 0
 		}
-		return tex, end
+		return string(tex), end
 	}
 	return "", 0
 }

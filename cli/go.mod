@@ -52,4 +52,4 @@ require (
 
 replace github.com/charmbracelet/ultraviolet => tangled.org/okami.mom/ultraviolet v0.0.0-20261007174847-7bfbaab9c98a
 
-replace charm.land/glamour/v2 => tangled.org/okami.mom/glamour.git/v2 v2.0.0-20261013011147-0150c4063954
+replace charm.land/glamour/v2 => tangled.org/okami.mom/glamour.git/v2 v2.0.0-20261013013552-052c391d9e1d

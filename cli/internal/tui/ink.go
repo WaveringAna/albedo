@@ -239,26 +239,26 @@ func mixInk(c termColors) (ink, bool) {
 // brand's violet, strong text in the yellow pulled toward red, inline code
 // green, links blue and math cyan.
 func markdownAccents(out *ink, palette map[int]rgb, bg rgb) {
-	accent := func(c rgb, target float64) string { return legible(c, bg, target).hex() }
+	onBg := func(c rgb, target float64) string { return legible(c, bg, target).hex() }
 	red, hasRed := palette[ansiRed]
 	if yellow, ok := palette[ansiYellow]; ok {
 		if hasRed {
 			yellow = yellow.mix(red, 0.35)
 		}
-		out.strong = accent(yellow, headingLc)
+		out.strong = onBg(yellow, headingLc)
 	}
 	blue, hasBlue := palette[ansiBlue]
 	if magenta, ok := palette[ansiMagenta]; ok && hasBlue {
-		out.heading = accent(blue.mix(magenta, 0.5), headingLc)
+		out.heading = onBg(blue.mix(magenta, 0.5), headingLc)
 	}
 	if hasBlue {
-		out.link = accent(blue, codeLc)
+		out.link = onBg(blue, codeLc)
 	}
 	if green, ok := palette[ansiGreen]; ok {
-		out.inlineCode = accent(green, codeLc)
+		out.inlineCode = onBg(green, codeLc)
 	}
 	if cyan, ok := palette[ansiCyan]; ok {
-		out.math = accent(cyan, codeLc)
+		out.math = onBg(cyan, codeLc)
 	}
 }
 
