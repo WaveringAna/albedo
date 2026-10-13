@@ -33,6 +33,9 @@ type ink struct {
 	brandFrom, brandTo string
 	// bg is the terminal's background, which language colors adapt to.
 	bg string
+	// heading, strong, inlineCode, link and math color markdown's marks,
+	// each a palette hue made legible on bg.
+	heading, strong, inlineCode, link, math string
 }
 
 // APCA contrast targets (Lc) for each step: about 60 suits content text,
@@ -54,6 +57,9 @@ const (
 	secondaryLc = 45
 	decorLc     = 22
 	busyLc      = 30
+	// headings and strong text stand out from prose; inline code, links
+	// and math step down to code's contrast
+	headingLc = 75
 )
 
 type rgb struct{ r, g, b float64 }
@@ -175,12 +181,13 @@ type termColors struct {
 const (
 	ansiRed     = 1
 	ansiGreen   = 2
+	ansiYellow  = 3
 	ansiBlue    = 4
 	ansiMagenta = 5
 	ansiCyan    = 6
 )
 
-var queriedPalette = []int{ansiRed, ansiGreen, ansiBlue, ansiMagenta, ansiCyan}
+var queriedPalette = []int{ansiRed, ansiGreen, ansiYellow, ansiBlue, ansiMagenta, ansiCyan}
 
 // minTrustLc is the least contrast a reported text color may have with the
 // reported background. Below it the reply describes something other than
@@ -224,7 +231,35 @@ func mixInk(c termColors) (ink, bool) {
 	if hasCyan && hasBlue && hasMagenta {
 		out.brandFrom, out.brandTo = cyan.hex(), blue.mix(magenta, 0.5).hex()
 	}
+	markdownAccents(&out, c.palette, bg)
 	return out, true
+}
+
+// markdownAccents colors markdown from the palette: headings in the
+// brand's violet, strong text in the yellow pulled toward red, inline code
+// green, links blue and math cyan.
+func markdownAccents(out *ink, palette map[int]rgb, bg rgb) {
+	accent := func(c rgb, target float64) string { return legible(c, bg, target).hex() }
+	red, hasRed := palette[ansiRed]
+	if yellow, ok := palette[ansiYellow]; ok {
+		if hasRed {
+			yellow = yellow.mix(red, 0.35)
+		}
+		out.strong = accent(yellow, headingLc)
+	}
+	blue, hasBlue := palette[ansiBlue]
+	if magenta, ok := palette[ansiMagenta]; ok && hasBlue {
+		out.heading = accent(blue.mix(magenta, 0.5), headingLc)
+	}
+	if hasBlue {
+		out.link = accent(blue, codeLc)
+	}
+	if green, ok := palette[ansiGreen]; ok {
+		out.inlineCode = accent(green, codeLc)
+	}
+	if cyan, ok := palette[ansiCyan]; ok {
+		out.math = accent(cyan, codeLc)
+	}
 }
 
 var oscColor = regexp.MustCompile(`\x1b\](10|11|4;(\d+));rgb:([0-9a-fA-F]{1,4})/([0-9a-fA-F]{1,4})/([0-9a-fA-F]{1,4})`)

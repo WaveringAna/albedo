@@ -89,6 +89,24 @@ para
 ---
 
 tail`,
+	`the roots are
+
+$$
+x = \frac{-b \pm \sqrt{b^2 - 4ac}}{2a}
+
+\text{for } a \neq 0
+$$
+and inline $e^{i\pi} + 1 = 0$, but $5 and $HOME/$USER stay text.
+
+- a sum \(\sum_{i=1}^{n} i\) in a list
+
+  \[
+  \sum_{i=1}^{n} i = \frac{n(n+1)}{2}
+  \]
+
+> **bold $\alpha$** in a quote
+
+done`,
 }
 
 // Block by block, every prefix renders exactly as the whole prefix does, and

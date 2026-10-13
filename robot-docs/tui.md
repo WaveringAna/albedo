@@ -76,6 +76,14 @@ each screen calls `registerShots("<screen>", states...)` from its `shot_<screen>
 
 cover every state a person would want to look at: the list, a filter typed, no match, each confirm, loading, empty, load failed, a notice, a form open. look at the sheets after a layout change; text dumps hid a patchwork selection and a collapsed footer that the pictures showed at once.
 
+## markdown
+
+replies render through glamour, from our fork `tangled.org/okami.mom/glamour` (`replace` in `cli/go.mod`; v2.0.1 plus hooks). `glamour.WithExtensions` adds goldmark parsers and `glamour.WithElement(kind, fn)` renders a node kind, new or built in; `ansi.RenderContext.Width()` is the room left inside the current block. upstream glamour has neither, and prints a warning to stdout for a node kind it does not know, which corrupts the screen.
+
+to add a construct, write its goldmark parser and node, then its element, in one file beside `markdown.go`, and pass both in `markdownRenderer`. `math.go` is the example: `$…$` and `\(…\)` inline, `$$…$$` and `\[…\]` on their own lines as display math, laid out in unicode by `termtex`. a lone `$` opens only before a non-space and after no word character, and closes only before no word character, so `$5` and `$HOME/$USER` stay text. display math that has not closed yet, or that termtex cannot read, shows as its source. `fenceAfter` treats open display math like a code fence, so streaming never splits it into blocks. use `ansi.BaseElement{Verbatim: true}` for laid-out text; without it glamour removes markdown escapes from the token.
+
+markdown's colors are ink accents (`markdownAccents` in `ink.go`), palette hues made legible on the background: headings violet, strong text yellow toward red, inline code green, links blue, math cyan. headings and strong text sit at a higher contrast than the others. without reported colors each falls back to its palette slot.
+
 ## terminal output
 
 transcript rows carry private `albedo:` APC marks for copy, wrap joining and click targets. they stay in the chat's internal rows, but `AppModel.View` removes them from the final content before Bubble Tea sees it. ultraviolet preserves APC payloads; terminal.app prints unknown ones, which corrupts the layout. remove only our private marks, not styling, hyperlinks or graphics sequences. the real-daemon TUI driver's view assertion checks the raw content before `ansi.Strip` can hide a leak.

@@ -165,7 +165,7 @@
     src = clientSource;
     modRoot = "cli";
     subPackages = ["cmd/albedo"];
-    vendorHash = "sha256-anejjYuFbxXkUn5L/jdNQXkR8oTBfv/9zjxCEZ/Qs9U=";
+    vendorHash = "sha256-O3t1orYEjxNFX7JQXVYsocslyw1bp4LhrSfgCC06HYU=";
     nativeBuildInputs = [python311 makeWrapper];
     ALBEDO_NO_BROWSER = "1";
     ALBEDO_TEST_DAEMON = "${server}/bin/albedo-daemon";

@@ -72,6 +72,10 @@ func codeTheme(colors ink) string {
 	return name
 }
 
+// accent is a markdown accent color, or the palette slot when the terminal
+// did not report its colors.
+func accent(hex, slot string) *string { return new(cmp.Or(hex, slot)) }
+
 func markdownStyle() ansi.StyleConfig {
 	style := styles.NoTTYStyleConfig
 	zero, bold := uint(0), true
@@ -81,9 +85,12 @@ func markdownStyle() ansi.StyleConfig {
 	for _, heading := range []*ansi.StyleBlock{&style.H1, &style.H2, &style.H3, &style.H4, &style.H5, &style.H6} {
 		heading.Prefix = ""
 		heading.Bold = &bold
+		heading.Color = accent(transcriptInk.heading, "5")
 	}
-	style.Strong = ansi.StylePrimitive{Bold: &bold}
+	style.Strong = ansi.StylePrimitive{Bold: &bold, Color: accent(transcriptInk.strong, "3")}
 	style.Emph = ansi.StylePrimitive{Italic: &bold}
+	style.Code = ansi.StyleBlock{StylePrimitive: ansi.StylePrimitive{Color: accent(transcriptInk.inlineCode, "2")}}
+	style.LinkText = ansi.StylePrimitive{Color: accent(transcriptInk.link, "4")}
 	style.Table.Margin = &zero
 	style.BlockQuote.IndentToken = new(quoteBar())
 	style.CodeBlock.Margin = &zero
@@ -177,6 +184,7 @@ func markdownRenderer(width int) (*glamour.TermRenderer, error) {
 	}
 	renderer, err := glamour.NewTermRenderer(
 		glamour.WithStyles(markdownStyle()), glamour.WithWordWrap(width), glamour.WithPreservedNewLines(),
+		mathOptions(accent(transcriptInk.math, "6")),
 	)
 	if err != nil {
 		return nil, err
@@ -242,10 +250,23 @@ func opensBlock(line string) bool {
 	return line != "" && strings.IndexByte(" \t-*+>|", line[0]) < 0 && !orderedItem.MatchString(line)
 }
 
-// fenceAfter is the code fence open after line, given the one open before.
+// fenceAfter is the code fence or display math open after line, given the
+// one open before. Display math is kept by its closer, $$ or \].
 func fenceAfter(open, line string) string {
+	if open == "$$" || open == `\]` {
+		if strings.Contains(line, open) {
+			return ""
+		}
+		return open
+	}
 	trimmed := strings.TrimLeft(line, " ")
-	if len(line)-len(trimmed) > 3 || trimmed == "" || (trimmed[0] != '`' && trimmed[0] != '~') {
+	if len(line)-len(trimmed) > 3 || trimmed == "" {
+		return open
+	}
+	if closer := displayMathLeftOpen(trimmed); open == "" && closer != "" {
+		return closer
+	}
+	if trimmed[0] != '`' && trimmed[0] != '~' {
 		return open
 	}
 	run := trimmed[:len(trimmed)-len(strings.TrimLeft(trimmed, trimmed[:1]))]
