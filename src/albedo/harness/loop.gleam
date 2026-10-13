@@ -6,6 +6,7 @@ import albedo/daemon/image_fit
 import albedo/daemon/message_content
 import albedo/daemon/requests
 import albedo/daemon/store
+import albedo/daemon/stream_trace
 import albedo/daemon/tool_progress
 import albedo/daemon/tool_results
 import albedo/daemon/transcript
@@ -486,6 +487,12 @@ fn call(
   progress_event: fn(Int, types.Event) -> types.Control,
   reset_progress: fn(Int) -> Nil,
 ) -> Result(#(Option(Int), types.Turn, extension.SentCall, Int), types.Error) {
+  let input_chain =
+    requests.input_chain(
+      option.unwrap(request.instructions, ""),
+      request.tools,
+      request.input,
+    )
   retry_stream(
     fn(attempt) {
       use _ <- result.try(case publish(view.ProviderStarted) {
@@ -493,8 +500,10 @@ fn call(
         False -> Error(types.Cancelled)
       })
       let started = requests.now()
+      let trace = stream_trace.new(started)
       let outcome =
         state.upstream.stream(request, fn(event) {
+          stream_trace.observe(trace, event, requests.now())
           case on_event(event) {
             types.Continue -> progress_event(attempt, event)
             types.Stop -> types.Stop
@@ -527,6 +536,8 @@ fn call(
             prefix,
             marks,
             state.run_id,
+            input_chain,
+            stream_trace.streamed(trace),
           ),
         )
       let row = case row {

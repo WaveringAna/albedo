@@ -4,6 +4,7 @@
 // speaks no Claude protocol that could report the TTL-split writes.
 import albedo/daemon/conversation
 import albedo/daemon/requests
+import albedo/daemon/stream_trace
 import albedo/harness/cache_fade.{Fade, Step}
 import albedo/harness/cache_ttl
 import albedo/harness/runtime
@@ -105,6 +106,8 @@ pub fn the_ledger_measures_a_head_across_sessions_test() -> Nil {
           requests.Prefix(head, 1, Some(0), None, None),
           marks,
           session <> "-run",
+          "",
+          stream_trace.Streamed(None, 0, 0, 0),
         ),
       )
     Nil

@@ -1663,6 +1663,7 @@ type ProviderRequestRecord struct {
 	Failure            *SafeReason      `json:"failure" nullable:"true"`
 	HeadHash           string           `json:"head_hash"`
 	HTTPStatus         *int64           `json:"http_status" nullable:"true"`
+	InputChain         *string          `json:"input_chain" nullable:"true"`
 	InputCount         Counter          `json:"input_count"`
 	Kind               string           `json:"kind"`
 
@@ -1683,8 +1684,14 @@ type ProviderRequestRecord struct {
 	Sequence           Counter          `json:"sequence"`
 
 	// StartedAt UTC RFC 3339.
-	StartedAt           Timestamp `json:"started_at"`
-	Strategy            *string   `json:"strategy" nullable:"true"`
+	StartedAt Timestamp `json:"started_at"`
+	Strategy  *string   `json:"strategy" nullable:"true"`
+	Stream    *struct {
+		Events        Counter  `json:"events"`
+		FirstEventMs  *Counter `json:"first_event_ms" nullable:"true"`
+		OutputBytes   Counter  `json:"output_bytes"`
+		ThinkingBytes Counter  `json:"thinking_bytes"`
+	} `json:"stream" nullable:"true"`
 	TranscriptPositions []Counter `json:"transcript_positions"`
 }
 

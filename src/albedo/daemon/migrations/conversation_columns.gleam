@@ -41,6 +41,11 @@ pub fn apply(db: sqlight.Connection) -> Result(Nil, String) {
   use _ <- result.try(
     store.add_columns(db, "provider_requests", [
       #("run_id", "TEXT"),
+      #("input_chain", "TEXT"),
+      #("first_event_ms", "INTEGER"),
+      #("streamed_events", "INTEGER"),
+      #("streamed_thinking_bytes", "INTEGER"),
+      #("streamed_output_bytes", "INTEGER"),
     ]),
   )
   store.add_columns(db, "transcript", [

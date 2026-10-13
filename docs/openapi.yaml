@@ -7440,6 +7440,28 @@ components:
                 $ref: '#/components/schemas/Counter'
             required: [through, index, ttl_seconds]
             additionalProperties: false
+        input_chain:
+          anyOf:
+          - type: string
+            maxLength: 65536
+          - type: 'null'
+        stream:
+          anyOf:
+          - type: object
+            properties:
+              first_event_ms:
+                anyOf:
+                - $ref: '#/components/schemas/Counter'
+                - type: 'null'
+              events:
+                $ref: '#/components/schemas/Counter'
+              thinking_bytes:
+                $ref: '#/components/schemas/Counter'
+              output_bytes:
+                $ref: '#/components/schemas/Counter'
+            required: [first_event_ms, events, thinking_bytes, output_bytes]
+            additionalProperties: false
+          - type: 'null'
         transcript_positions:
           type: array
           items:
@@ -7448,7 +7470,8 @@ components:
       required: [sequence, provider, model, run_id, started_at, ended_at, prompt_tokens, completion_tokens,
         cached_tokens, failure, transcript_positions, kind, provider_profile, account_id, outcome,
         http_status, cache_creation_tokens, cache_write_5m_tokens, cache_write_1h_tokens, reasoning_tokens,
-        head_hash, input_count, replaced_input_count, projection_hash, strategy, cache_marks]
+        head_hash, input_count, replaced_input_count, projection_hash, strategy, cache_marks, input_chain,
+        stream]
       additionalProperties: false
     RequestRecordPage:
       type: object

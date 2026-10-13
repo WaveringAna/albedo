@@ -13,11 +13,13 @@
 import albedo/clock
 
 import albedo/daemon/store
+import albedo/daemon/stream_trace
 import albedo/harness/compaction
 import albedo/openai_api/types
 import gleam/bit_array
 import gleam/crypto
 import gleam/dynamic/decode
+import gleam/int
 import gleam/json.{type Json}
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -163,6 +165,53 @@ fn inputs_hash(inputs: List(types.Input)) -> String {
   |> hash
 }
 
+/// A cumulative hash over the whole request, kept at a few positions so two
+/// rows can be compared without a stored body: head, then each input folded
+/// in order. The row keeps the running hash after every `chain_stride`th
+/// input and after each of the last `chain_tail`, as `position:hash` pairs,
+/// shortened to 12 hex digits. A request that extends an earlier one agrees
+/// with it at every position they share, so the first position where two
+/// rows disagree bounds where their prefixes drifted, and an append-only
+/// request equals its predecessor's last position at the same position.
+pub fn input_chain(
+  instructions: String,
+  tools: List(types.Tool),
+  inputs: List(types.Input),
+) -> String {
+  let total = list.length(inputs)
+  let start = bit_array.from_string(head_hash(instructions, tools))
+  let #(_, marks) =
+    list.index_fold(inputs, #(start, []), fn(state, input, index) {
+      let #(running, marks) = state
+      let running =
+        bit_array.append(running, bit_array.from_string(input_identity(input)))
+        |> crypto.hash(crypto.Sha256, _)
+      let position = index + 1
+      case position % chain_stride == 0 || position > total - chain_tail {
+        True -> #(running, [#(position, running), ..marks])
+        False -> #(running, marks)
+      }
+    })
+  marks
+  |> list.reverse
+  |> list.map(fn(mark) {
+    let #(position, running) = mark
+    int.to_string(position) <> ":" <> short_hex(running)
+  })
+  |> string.join(",")
+}
+
+const chain_stride = 16
+
+const chain_tail = 4
+
+fn short_hex(digest: BitArray) -> String {
+  digest
+  |> bit_array.base16_encode
+  |> string.lowercase
+  |> string.slice(0, 12)
+}
+
 fn input_identity(input: types.Input) -> String {
   case input {
     types.User(text) -> "user\n" <> text
@@ -220,6 +269,10 @@ pub type Call {
     /// Where the request asked the provider to cache, and for how long.
     cache_marks: List(types.CacheMark),
     run_id: String,
+    /// The request's `input_chain`.
+    input_chain: String,
+    /// What the attempt streamed before it ended.
+    streamed: stream_trace.Streamed,
   )
 }
 
@@ -240,7 +293,7 @@ pub fn record(database: store.Store, call: Call) -> Result(Int, String) {
 
 // `seq` starts null and is attached after the call's transcript row commits.
 const insert =
-  "INSERT INTO provider_requests(session,seq,kind,profile,provider,account,model,started_ms,finished_ms,outcome,status,error,input_tokens,cached_input_tokens,cache_creation_tokens,cache_write_5m_tokens,cache_write_1h_tokens,output_tokens,reasoning_tokens,head_hash,inputs,replaced,projection_hash,strategy,cache_marks,run_id) VALUES(?,NULL,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+  "INSERT INTO provider_requests(session,seq,kind,profile,provider,account,model,started_ms,finished_ms,outcome,status,error,input_tokens,cached_input_tokens,cache_creation_tokens,cache_write_5m_tokens,cache_write_1h_tokens,output_tokens,reasoning_tokens,head_hash,inputs,replaced,projection_hash,strategy,cache_marks,run_id,input_chain,first_event_ms,streamed_events,streamed_thinking_bytes,streamed_output_bytes) VALUES(?,NULL,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
 
 fn values(call: Call) -> List(sqlight.Value) {
   let Call(
@@ -257,6 +310,8 @@ fn values(call: Call) -> List(sqlight.Value) {
     prefix,
     cache_marks,
     run_id,
+    input_chain,
+    streamed,
   ) = call
   let Prefix(head_hash, inputs, replaced, projection_hash, strategy) = prefix
   let #(status, error) = case outcome {
@@ -314,6 +369,11 @@ fn values(call: Call) -> List(sqlight.Value) {
     sqlight.nullable(sqlight.text, strategy),
     sqlight.text(json.array(cache_marks, cache_mark_json) |> json.to_string),
     sqlight.text(run_id),
+    sqlight.text(input_chain),
+    sqlight.nullable(sqlight.int, streamed.first_event_ms),
+    sqlight.int(streamed.events),
+    sqlight.int(streamed.thinking_bytes),
+    sqlight.int(streamed.output_bytes),
   ]
 }
 
@@ -361,6 +421,10 @@ pub type Row {
     strategy: Option(String),
     cache_marks: List(types.CacheMark),
     run_id: Option(String),
+    /// None for a row written before the chain was recorded.
+    input_chain: Option(String),
+    /// None for a row written before streams were traced.
+    streamed: Option(stream_trace.Streamed),
   )
 }
 
@@ -480,7 +544,7 @@ pub fn head_tokens(
 
 // Named, in decoder order, so a column added later cannot shift a read.
 const columns =
-  "id,session,seq,kind,profile,provider,account,model,started_ms,finished_ms,outcome,status,error,input_tokens,cached_input_tokens,cache_creation_tokens,cache_write_5m_tokens,cache_write_1h_tokens,output_tokens,reasoning_tokens,head_hash,inputs,replaced,projection_hash,strategy,cache_marks,run_id"
+  "id,session,seq,kind,profile,provider,account,model,started_ms,finished_ms,outcome,status,error,input_tokens,cached_input_tokens,cache_creation_tokens,cache_write_5m_tokens,cache_write_1h_tokens,output_tokens,reasoning_tokens,head_hash,inputs,replaced,projection_hash,strategy,cache_marks,run_id,input_chain,first_event_ms,streamed_events,streamed_thinking_bytes,streamed_output_bytes"
 
 fn row_decoder() -> decode.Decoder(Row) {
   use id <- decode.field(0, decode.int)
@@ -510,6 +574,20 @@ fn row_decoder() -> decode.Decoder(Row) {
   use strategy <- decode.field(24, decode.optional(decode.string))
   use cache_marks <- decode.field(25, decode.then(decode.string, marks_decoder))
   use run_id <- decode.field(26, decode.optional(decode.string))
+  use input_chain <- decode.field(27, decode.optional(decode.string))
+  use first_event_ms <- decode.field(28, decode.optional(decode.int))
+  use events <- decode.field(29, decode.optional(decode.int))
+  use thinking_bytes <- decode.field(30, decode.optional(decode.int))
+  use output_bytes <- decode.field(31, decode.optional(decode.int))
+  let streamed =
+    option.map(events, fn(events) {
+      stream_trace.Streamed(
+        first_event_ms,
+        events,
+        option.unwrap(thinking_bytes, 0),
+        option.unwrap(output_bytes, 0),
+      )
+    })
   decode.success(Row(
     id,
     session,
@@ -538,6 +616,8 @@ fn row_decoder() -> decode.Decoder(Row) {
     strategy,
     cache_marks,
     run_id,
+    input_chain,
+    streamed,
   ))
 }
 

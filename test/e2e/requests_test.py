@@ -171,6 +171,38 @@ class ProviderRequestsTest(unittest.TestCase):
                     self.assertEqual(row["replaced_input_count"], 0)
                     self.assertIsNone(row["projection_hash"])
 
+                # The input chain ends at the request's last input, and a
+                # request that continues an earlier one repeats its hash at the
+                # earlier request's last position: the tool turn's follow-up
+                # carries the tool call and its output after the same history.
+                chains = [
+                    dict(mark.split(":") for mark in row["input_chain"].split(","))
+                    for row in rows
+                ]
+                for row, chain in zip(rows, chains):
+                    self.assertIn(str(row["input_count"]), chain)
+                tool_turn, follow_up = rows[1], rows[2]
+                self.assertEqual(
+                    chains[2][str(tool_turn["input_count"])],
+                    chains[1][str(tool_turn["input_count"])],
+                )
+                self.assertEqual(follow_up["input_count"], tool_turn["input_count"] + 2)
+
+                # A call's stream is counted as it arrives; a refused call
+                # streamed nothing.
+                for row in rows[:4] + [rows[7]]:
+                    self.assertGreater(row["stream"]["events"], 0)
+                    self.assertIsNotNone(row["stream"]["first_event_ms"])
+                self.assertEqual(
+                    rows[4]["stream"],
+                    {
+                        "first_event_ms": None,
+                        "events": 0,
+                        "thinking_bytes": 0,
+                        "output_bytes": 0,
+                    },
+                )
+
                 # A 429 is a quota reading, with no usage and no transcript row.
                 limited = rows[4]
                 self.assertEqual(limited["outcome"], "failed")
