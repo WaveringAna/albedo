@@ -138,7 +138,7 @@ pub fn run(
   let current_instructions = request_instructions(state)
   let request = request(state, current_instructions, history)
   state.record_context(request, prepared.observation, prepared.compacted)
-  use #(row, turn, sent, attempt) <- result.try(
+  let answer = fn(request: types.Request, original: List(types.Input)) {
     call(
       call_context(state),
       requests.Turn,
@@ -175,8 +175,26 @@ pub fn run(
       },
       state.progress_reset,
     )
-    |> result.map_error(describe(state.upstream, state.model, _)),
-  )
+    |> result.map_error(describe(state.upstream, state.model, _))
+  }
+  use answered <- result.try(answer(request, original))
+  // A turn that ends with neither a reply nor a call left the user nothing.
+  // Sending the same request again buys another full reasoning pass that
+  // likely ends the same way, so the one retry says what went wrong.
+  use #(row, turn, sent, attempt) <- result.try(case speechless(answered.1) {
+    False -> Ok(answered)
+    True -> {
+      let nudge = types.User(speechless_nudge)
+      case state.publish(view.Retry(state.run_id, 2, speechless_retry, 0)) {
+        False -> Error("cancelled")
+        True ->
+          answer(
+            types.Request(..request, input: list.append(request.input, [nudge])),
+            list.append(original, [nudge]),
+          )
+      }
+    }
+  })
   let cache = fading(state, sent)
   // The successful attempt's span, as its request row records it. A clock
   // that steps back reads as zero.
@@ -199,9 +217,12 @@ pub fn run(
   ))
   attach(state, row, seq)
   use _ <- result.try(state.record_usage(completed_usage))
+  let speechless_turn = speechless(turn)
   case turn.tool_calls {
     [] ->
       case turn.finish {
+        types.Complete if speechless_turn ->
+          Error(speechless_message(state.model))
         types.Complete -> {
           use steering <- result.try(state.drain_steering())
           case steering {
@@ -228,6 +249,31 @@ pub fn run(
       run(state, id, unshift(inputs, [replay, results, steering]), step + 1)
     }
   }
+}
+
+/// What the model is told when its turn ended with only reasoning, or
+/// nothing at all: gemini-cli nudges the same way.
+const speechless_nudge =
+  "[albedo: your previous response ended with no reply and no tool call, so the user saw nothing. Give your answer now, or call a tool.]"
+
+const speechless_retry = "model ended its turn without a reply"
+
+fn speechless_message(model: String) -> String {
+  model
+  <> " ended its turn without a reply or a tool call, even when asked again; send a message to continue"
+}
+
+/// Whether a completed turn said nothing the user can read and called no
+/// tool: Gemini routes sometimes stop after thinking alone.
+fn speechless(turn: types.Turn) -> Bool {
+  turn.tool_calls == []
+  && turn.finish == types.Complete
+  && list.all(turn.output, fn(item) {
+    case message_content.visible_assistant_text(types.Replay(item)) {
+      Some(text) -> string.trim(text) == ""
+      None -> True
+    }
+  })
 }
 
 /// `inputs`, newest first, with the images the provider would refuse swapped
