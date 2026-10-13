@@ -116,6 +116,18 @@ pub fn children(ledger: store.Store, parent: Int) -> Result(List(Int), String) {
   )
 }
 
+pub fn child_nodes(
+  ledger: store.Store,
+  parent: Int,
+) -> Result(List(Node), String) {
+  store.read(
+    ledger,
+    "SELECT n.id,n.depth,n.first_seq,n.last_seq,n.summary FROM lcm_compaction_node n JOIN lcm_compaction_edge e ON e.child=n.id WHERE e.parent=? ORDER BY e.position",
+    [sqlight.int(parent)],
+    node_decoder(),
+  )
+}
+
 /// Copy only summary nodes whose complete source span survives a transcript
 /// fork. The fork transaction owns this connection, so either transcript and
 /// remapped graph both commit or neither does. A node crossing the checkpoint
@@ -275,9 +287,9 @@ pub fn save_parent(
   session: String,
   children: List(Node),
   summary: String,
-) -> Result(Nil, String) {
+) -> Result(Int, String) {
   case children, list.last(children) {
-    [first, _, ..], Ok(last) ->
+    [first, ..], Ok(last) ->
       store.query(ledger, fn(db) {
         store.transaction(db, fn() {
           let depth =
@@ -293,23 +305,69 @@ pub fn save_parent(
             last.last_seq,
             summary,
           ))
-          children
-          |> list.index_map(fn(child, position) { #(child.id, position) })
-          |> list.try_each(fn(item) {
-            store.run(
-              db,
-              "INSERT INTO lcm_compaction_edge(child,parent,position) VALUES(?,?,?)",
-              [
-                sqlight.int(item.0),
-                sqlight.int(parent),
-                sqlight.int(item.1),
-              ],
-            )
-          })
+          use _ <- result.try(
+            children
+            |> list.index_map(fn(child, position) { #(child.id, position) })
+            |> list.try_each(fn(item) {
+              store.run(
+                db,
+                "INSERT INTO lcm_compaction_edge(child,parent,position) VALUES(?,?,?)",
+                [
+                  sqlight.int(item.0),
+                  sqlight.int(parent),
+                  sqlight.int(item.1),
+                ],
+              )
+            }),
+          )
+          Ok(parent)
         })
       })
-    _, _ -> Error("LCM needs at least two nodes to condense")
+    _, _ -> Error("LCM needs at least one node to condense")
   }
+}
+
+/// Identifies a run of frontier nodes eligible for consolidation.
+/// Same-depth contiguous runs are preferred; mixed-depth runs are allowed
+/// only when requested for pressure repair.
+pub fn find_mergeable_batch(
+  frontier: List(Node),
+  batch_size: Int,
+  require_overflow: Bool,
+  mixed_depth: Bool,
+) -> Option(List(Node)) {
+  let required = case require_overflow {
+    True -> batch_size + 1
+    False -> batch_size
+  }
+  case mixed_depth {
+    True ->
+      case list.length(frontier) >= required {
+        True -> Some(frontier)
+        False -> None
+      }
+    False -> {
+      let runs = same_depth_runs(frontier)
+      list.find(runs, fn(run) { list.length(run) >= required })
+      |> option.from_result
+    }
+  }
+}
+
+fn same_depth_runs(nodes: List(Node)) -> List(List(Node)) {
+  list.fold(nodes, [], fn(acc: List(List(Node)), node: Node) {
+    case acc {
+      [] -> [[node]]
+      [[], ..older] -> [[node], ..older]
+      [[first, ..rest], ..older] ->
+        case first.depth == node.depth {
+          True -> [[node, first, ..rest], ..older]
+          False -> [[node], [first, ..rest], ..older]
+        }
+    }
+  })
+  |> list.reverse
+  |> list.map(list.reverse)
 }
 
 fn node_decoder() -> decode.Decoder(Node) {

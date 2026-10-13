@@ -232,12 +232,25 @@ fn describe(
 ) -> Result(String, String) {
   use node <- result.try(required_node(ledger, session, id))
   use children <- result.try(graph.children(ledger, node.id))
+  use child_nodes <- result.try(graph.child_nodes(ledger, node.id))
   json.object([
     #("id", json.int(node.id)),
     #("depth", json.int(node.depth)),
     #("first_seq", json.int(node.first_seq)),
     #("last_seq", json.int(node.last_seq)),
     #("children", json.array(children, json.int)),
+    #(
+      "child_segments",
+      json.array(child_nodes, fn(child) {
+        json.object([
+          #("id", json.int(child.id)),
+          #("depth", json.int(child.depth)),
+          #("first_seq", json.int(child.first_seq)),
+          #("last_seq", json.int(child.last_seq)),
+          #("summary", json.string(child.summary)),
+        ])
+      }),
+    ),
     #("summary", json.string(node.summary)),
   ])
   |> json.to_string

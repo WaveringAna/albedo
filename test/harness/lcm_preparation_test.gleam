@@ -22,7 +22,7 @@ fn count_decodes(owner: process.Pid, run: fn() -> a) -> #(a, Int)
 pub fn below_trigger_and_stored_prior_do_not_decode_archived_payloads_test() -> Nil {
   let installed = [
     memory.extension(),
-    lcm.configured_extension(lcm.Config(Some(2000), 90, 1)),
+    lcm.configured_extension(lcm.Config(Some(2000), 90, 1, 4)),
   ]
   let assert Ok(host) =
     runtime.start_with_config(

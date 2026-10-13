@@ -33,7 +33,7 @@ pub fn lcm_projection_writes_nothing_test() -> Nil {
   projections_write_nothing(
     [
       memory.extension(),
-      lcm.configured_extension(lcm.Config(Some(100_000), 90, 25)),
+      lcm.configured_extension(lcm.Config(Some(100_000), 90, 25, 4)),
     ],
     ["lcm-memory", "lcm"],
   )
