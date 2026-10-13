@@ -155,6 +155,7 @@ pub type Limited {
     lasting: Bool,
     meter: String,
     sibling_status: String,
+    soon: Bool,
   )
 }
 
@@ -338,7 +339,12 @@ fn limit_message(account: String, limit: Limited) -> String {
       rotation.limit_message(
         "Antigravity " <> kind <> " for " <> account <> " until " <> limit.until,
         limit.next,
-        "no other Google account has room. Add one with /login or wait for the reset",
+        case limit.soon {
+          True ->
+            "no other Google account has room. Wait for the reset, or add an account with /login"
+          False ->
+            "no other Google account has room. Add one with /login or wait for the reset"
+        },
       )
     meter -> {
       let title = case meter {
@@ -364,7 +370,10 @@ fn limit_message(account: String, limit: Limited) -> String {
         <> title
         <> " meter."
         <> limit.sibling_status
-        <> " Add one with /login or wait for the reset"
+        <> case limit.soon {
+          True -> " Wait for the reset, or add an account with /login"
+          False -> " Add one with /login or wait for the reset"
+        }
       rotation.limit_message(head, limit.next, none_left)
     }
   }

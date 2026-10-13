@@ -28,6 +28,9 @@ const claude_quota =
 const gemini_quota =
   "{\"error\":{\"code\":429,\"status\":\"RESOURCE_EXHAUSTED\",\"message\":\"You have exhausted your capacity on this model.\",\"details\":[{\"@type\":\"type.googleapis.com/google.rpc.ErrorInfo\",\"reason\":\"QUOTA_EXHAUSTED\",\"metadata\":{\"model\":\"gemini-3.8-flash-medium\",\"quotaResetDelay\":\"2h3m4.5s\"}},{\"@type\":\"type.googleapis.com/google.rpc.RetryInfo\",\"retryDelay\":\"7384.5s\"}]}}"
 
+const week_quota =
+  "{\"error\":{\"code\":429,\"status\":\"RESOURCE_EXHAUSTED\",\"message\":\"Individual quota reached.\",\"details\":[{\"@type\":\"type.googleapis.com/google.rpc.ErrorInfo\",\"reason\":\"QUOTA_EXHAUSTED\",\"metadata\":{\"quotaResetDelay\":\"142h\"}}]}}"
+
 const quota =
   "{\"error\":{\"code\":429,\"status\":\"RESOURCE_EXHAUSTED\",\"message\":\"You have exhausted your capacity on this model.\",\"details\":[{\"@type\":\"type.googleapis.com/google.rpc.ErrorInfo\",\"reason\":\"QUOTA_EXHAUSTED\",\"metadata\":{\"quotaResetDelay\":\"2h3m4.5s\"}},{\"@type\":\"type.googleapis.com/google.rpc.RetryInfo\",\"retryDelay\":\"7384.5s\"}]}}"
 
@@ -117,6 +120,48 @@ pub fn antigravity_quota_moves_the_request_to_a_sibling_test() -> Nil {
     antigravity.explain(home, last, types.HttpError(429, quota))
   string.contains(message, "quota exhausted") |> should.be_true
   string.contains(message, "no other Google account") |> should.be_true
+  cleanup(root)
+}
+
+/// A reset that is hours away is named by how long it takes and leads with
+/// waiting; one that is days away still points at adding an account first.
+pub fn antigravity_limit_text_says_how_long_a_near_reset_takes_test() -> Nil {
+  let #(root, _, home) = fixture()
+  let _ = write(home, "creds.json", google_accounts)
+  let explain_after = fn(session, body) {
+    let tried = process.new_subject()
+    let pool =
+      antigravity.pool(
+        home,
+        session,
+        limited_stream(["a1", "a2"], body, tried, token),
+      )
+    let assert Ok(first) = pool.current()
+    let _ =
+      rotation.stream(
+        pool,
+        first,
+        request(),
+        fn(_) { types.Continue },
+        rotation.Budget(8, 0, no_wait),
+        fn(_) { Nil },
+      )
+    let assert Ok(last) = pool.current()
+    let assert Some(message) =
+      antigravity.explain(home, last, types.HttpError(429, body))
+    message
+  }
+
+  let soon = explain_after("soon-session", quota)
+  string.contains(soon, "(in 2h") |> should.be_true
+  string.contains(soon, "Wait for the reset, or add an account with /login")
+  |> should.be_true
+  string.contains(soon, "Add one with /login") |> should.be_false
+
+  let far = explain_after("far-session", week_quota)
+  string.contains(far, "(in ") |> should.be_false
+  string.contains(far, "Add one with /login or wait for the reset")
+  |> should.be_true
   cleanup(root)
 }
 

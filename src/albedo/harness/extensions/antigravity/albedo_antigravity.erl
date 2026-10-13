@@ -23,6 +23,8 @@
 -define(RATE_LIMIT_MS, 30000).
 %% Limits longer than this are not worth waiting on.
 -define(BRIEF_MS, 300000).
+%% A reset within this is named by how long it takes, and waiting beats adding an account.
+-define(SOON_MS, 10800000).
 -define(SIGNED_OUT, <<"Antigravity is not authenticated; run /login and add a Google account">>).
 
 %% ---- credentials --------------------------------------------------------
@@ -127,19 +129,29 @@ limited(Home, Access, Body, FallbackMeter0) ->
                     Next = [V || V <- albedo_accounts:order(?SCOPE, Values, <<>>, fun account_id/1, Meter),
                                  not Hit(V), not albedo_accounts:limited(V, Now, Meter)],
                     Account = label([V || V <- Values, Hit(V)]),
-                    UntilText = albedo_accounts:local_time(Until),
+                    UntilText = until_text(Until, Now),
                     NextText = label(Next),
                     MeterText = case Meter of undefined -> <<>>; Val -> Val end,
                     SiblingStatus = case Next of
                         [] -> sibling_status(Values, Hit, Now);
                         _ -> <<>>
                     end,
-                    {ok, {limited, Account, UntilText, NextText, Lasting, MeterText, SiblingStatus}};
+                    {ok, {limited, Account, UntilText, NextText, Lasting, MeterText, SiblingStatus,
+                          Until - Now =< ?SOON_MS}};
                 Error -> Error
             end;
         {error, _} -> {error, <<"not_a_limit">>};
         error -> {error, <<"not_a_limit">>}
     end.
+
+%% A reset this close is worth waiting for, so say how long it is.
+until_text(Until, Now) when Until - Now =< ?SOON_MS ->
+    Minutes = max(1, (Until - Now + 59999) div 60000),
+    iolist_to_binary([albedo_accounts:local_time(Until), <<" (in ">>, duration_text(Minutes), <<")">>]);
+until_text(Until, _Now) -> albedo_accounts:local_time(Until).
+
+duration_text(Minutes) when Minutes < 60 -> [integer_to_binary(Minutes), <<"m">>];
+duration_text(Minutes) -> [integer_to_binary(Minutes div 60), <<"h">>, integer_to_binary(Minutes rem 60), <<"m">>].
 
 label([#{<<"email">> := <<_, _/binary>> = Email} | _]) -> Email;
 label([_ | _]) -> <<"another Google account">>;
