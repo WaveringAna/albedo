@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 )
@@ -197,7 +198,7 @@ func (r TranscriptRenderer) renderDiffPath(diff, path string, width int) string 
 	gutter := func(style lipgloss.Style, n int, sign string) string {
 		return keepBackground(style.Render(fmt.Sprintf("%4d %s ", n, sign)))
 	}
-	row(" ", clean(path), panel, false)
+	row(" ", clean(r.named(path)), panel, false)
 	for line := range strings.SplitSeq(diff, "\n") {
 		if line == "" || strings.HasPrefix(line, "--- ") || strings.HasPrefix(line, "+++ ") {
 			continue
@@ -325,6 +326,9 @@ func (r TranscriptRenderer) namer() namer {
 	home, _ := os.UserHomeDir()
 	var roots []string
 	if workspace := expandHome(r.Workspace, home); workspace != "/" && workspace != "." {
+		if real := realPath(workspace); real != workspace {
+			roots = append(roots, real+"/", "")
+		}
 		roots = append(roots, workspace+"/", "")
 	}
 	if home != "" {
@@ -356,6 +360,24 @@ func (n namer) all(targets []string) []string {
 // named is target as a person reads it; see namer.
 func (r TranscriptRenderer) named(target string) string {
 	return r.namer().name(prepareTarget(target))
+}
+
+// realPaths caches realPath: a few workspaces, named on every row drawn.
+var realPaths sync.Map
+
+// realPath is path with its symlinks resolved, or path when it cannot be.
+// The daemon names files by their real path, so on macOS a workspace under
+// /var or /tmp reaches the transcript as /private/var or /private/tmp.
+func realPath(path string) string {
+	if real, ok := realPaths.Load(path); ok {
+		return real.(string)
+	}
+	real, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		real = path
+	}
+	realPaths.Store(path, real)
+	return real
 }
 
 func expandHome(path, home string) string {
