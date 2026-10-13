@@ -10,7 +10,9 @@ import gleam/option.{type Option, None, Some}
 /// as a real completion so clients can clear measurements from an older turn.
 /// `cache` says how its cached count fades once the session goes quiet.
 /// `elapsed_ms` is the span of the call that produced the record, None when no
-/// call did; a re-emitted record keeps its call's span.
+/// call did; a re-emitted record keeps its call's span. `cache_miss` is how many
+/// tokens the call read uncached that the previous call had left cached, when
+/// that is more than a miss the provider's own rounding explains.
 pub type Metadata {
   Metadata(
     model: String,
@@ -18,6 +20,7 @@ pub type Metadata {
     tokens: Option(Tokens),
     cache: Option(cache_fade.Fade),
     elapsed_ms: Option(Int),
+    cache_miss: Option(Int),
   )
 }
 
@@ -39,6 +42,7 @@ pub fn from_completion(
   recorded_at: Int,
   cache: Option(cache_fade.Fade),
   elapsed_ms: Option(Int),
+  cache_miss: Option(Int),
 ) -> Metadata {
   let tokens = case provider_usage {
     Some(types.Usage(
@@ -61,7 +65,7 @@ pub fn from_completion(
       ))
     None -> None
   }
-  Metadata(model, recorded_at, tokens, cache, elapsed_ms)
+  Metadata(model, recorded_at, tokens, cache, elapsed_ms, cache_miss)
 }
 
 /// Output tokens per second over the call's span, or None when the call has no

@@ -50,6 +50,9 @@ type HistoryEntry struct {
 	// TokensPerSecond is the output rate of a turn's latest timed call; 0 when
 	// none was timed.
 	TokensPerSecond float64
+	// CacheMissTokens is what the turn's calls read uncached that the call
+	// before each had left cached, summed; 0 when none lost enough to mention.
+	CacheMissTokens int
 	// Seq is the newest transcript row this entry came from; 0 until a
 	// `committed` event says which rows cover it.
 	Seq int64

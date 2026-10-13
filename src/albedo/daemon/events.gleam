@@ -485,6 +485,13 @@ pub fn usage(metadata: Option(usage.Metadata)) -> json.Json {
       "tokens_per_second",
       json.nullable(option.then(metadata, usage.tokens_per_second), json.float),
     ),
+    #(
+      "cache_miss_tokens",
+      json.nullable(
+        option.then(metadata, fn(value) { value.cache_miss }),
+        json.int,
+      ),
+    ),
     #("context_window_tokens", json.null()),
     #("cache_ttl_seconds", json.null()),
     #("cache_fade", case option.then(metadata, fn(value) { value.cache }) {

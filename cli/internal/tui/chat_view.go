@@ -31,6 +31,18 @@ func formatRate(tokensPerSecond float64) string {
 	return fmt.Sprintf("%.1f tok/s", tokensPerSecond)
 }
 
+// formatCount is a token count in whole thousands: "34k", "1.2m".
+func formatCount(val int) string {
+	switch {
+	case val >= 999_500:
+		return fmt.Sprintf("%.1fm", float64(val)/1_000_000.0)
+	case val >= 1_000:
+		return fmt.Sprintf("%dk", (val+500)/1_000)
+	default:
+		return strconv.Itoa(val)
+	}
+}
+
 func formatTokens(val int) string {
 	switch {
 	case val >= 1_000_000:

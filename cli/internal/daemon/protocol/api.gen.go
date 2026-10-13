@@ -2849,6 +2849,7 @@ type Usage struct {
 		At           Timestamp `json:"at"`
 		CachedTokens *Counter  `json:"cached_tokens" nullable:"true"`
 	} `json:"cache_fade"`
+	CacheMissTokens     *Counter   `json:"cache_miss_tokens,omitempty" nullable:"true"`
 	CacheTTLSeconds     *Counter   `json:"cache_ttl_seconds" nullable:"true"`
 	CacheWriteTokens    *Counter   `json:"cache_write_tokens" nullable:"true"`
 	CachedPromptTokens  *Counter   `json:"cached_prompt_tokens" nullable:"true"`

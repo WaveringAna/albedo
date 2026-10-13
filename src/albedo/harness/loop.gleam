@@ -196,6 +196,16 @@ pub fn run(
     }
   })
   let cache = fading(state, sent)
+  let cache_miss = case row {
+    Some(id) ->
+      requests.cache_miss(
+        runtime.ledger(state.host),
+        state.session,
+        id,
+        option.then(cache, cache_fade.whole_for_ms),
+      )
+    None -> None
+  }
   // The successful attempt's span, as its request row records it. A clock
   // that steps back reads as zero.
   let completed_usage =
@@ -205,6 +215,7 @@ pub fn run(
       usage.now(),
       cache,
       Some(int.max(0, sent.finished_ms - sent.started_ms)),
+      cache_miss,
     )
   let replay = list.map(turn.output, types.Replay)
   use #(_timestamp, seq) <- result.try(state.commit(

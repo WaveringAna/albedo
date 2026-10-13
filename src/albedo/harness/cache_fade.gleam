@@ -46,6 +46,15 @@ pub fn fade(
   }
 }
 
+/// How long after its anchor the call's cache is still whole: until the first
+/// step, where a provider may start letting it go.
+pub fn whole_for_ms(fade: Fade) -> Option(Int) {
+  case fade.steps {
+    [first, ..] -> Some(first.after_ms)
+    [] -> None
+  }
+}
+
 /// The same fading from a later send that repeated the call, such as a
 /// warming ping: the provider's clock starts over from it.
 pub fn reanchor(fade: Fade, started_ms: Int, finished_ms: Int) -> Fade {

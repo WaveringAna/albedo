@@ -6265,6 +6265,10 @@ components:
           anyOf:
           - $ref: '#/components/schemas/Counter'
           - type: 'null'
+        cache_miss_tokens:
+          anyOf:
+          - $ref: '#/components/schemas/Counter'
+          - type: 'null'
         cache_fade:
           type: array
           items:

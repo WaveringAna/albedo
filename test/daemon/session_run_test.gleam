@@ -131,6 +131,7 @@ pub fn a_dead_owner_ends_the_turn_instead_of_the_worker_test() -> Nil {
     None,
     None,
     None,
+    None,
   ))
   |> should.equal(Error("usage unconfirmed: the session stopped"))
   session_run.drain_fn(dies(), "run", messages(), waiting: 20)()

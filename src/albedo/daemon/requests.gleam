@@ -568,6 +568,78 @@ pub fn head_tokens(
   |> option.from_result
 }
 
+// TODO: a per-model floor from each cache's block size. Argon rounds what it
+// caches down by about 2k tokens, flash by up to about 6k, and Claude's reads
+// are exact, so one floor has to clear the coarsest of them.
+/// The smallest loss worth telling anyone about.
+const miss_floor = 8192
+
+/// A loss also has to be a twentieth of the prompt, so a big context rounding
+/// a little off is not one.
+const miss_share = 20
+
+/// How many tokens the call at `row_id` read uncached that the call before it
+/// left cached, when nothing explains it: the same head and projection, a
+/// longer history, and a gap shorter than `whole_for_ms`, how long the
+/// provider's cache is expected to keep. `None` when it read what it should.
+pub fn cache_miss(
+  database: store.Store,
+  session: String,
+  row_id: Int,
+  whole_for_ms: Option(Int),
+) -> Option(Int) {
+  store.query(database, fn(db) {
+    store.rows(
+      db,
+      "SELECT "
+        <> columns
+        <> " FROM provider_requests WHERE session=? AND id<=? AND outcome='ok' AND kind IN ('turn','background') ORDER BY id DESC LIMIT 2",
+      [sqlight.text(session), sqlight.int(row_id)],
+      row_decoder(),
+    )
+  })
+  |> result.unwrap([])
+  |> fn(rows) {
+    case rows, whole_for_ms {
+      [current, previous], Some(whole) if current.id == row_id ->
+        miss_between(previous, current, whole)
+      _, _ -> None
+    }
+  }
+}
+
+/// `cache_miss` for two calls already read.
+pub fn miss_between(
+  previous: Row,
+  current: Row,
+  whole_for_ms: Int,
+) -> Option(Int) {
+  let same_prefix =
+    previous.model == current.model
+    && previous.head_hash == current.head_hash
+    && previous.replaced == current.replaced
+    && previous.projection_hash == current.projection_hash
+    && current.inputs > previous.inputs
+  let warm = current.started_ms - previous.finished_ms < whole_for_ms
+  case same_prefix && warm, previous.cached_input_tokens, current.input_tokens {
+    True, Some(read), Some(input) if read > 0 -> {
+      // What the previous call left cached: all it wrote under its marks,
+      // or, from a provider that caches on its own, its whole prompt.
+      let left = case previous.cache_creation_tokens, previous.input_tokens {
+        Some(written), _ if written > 0 -> read + written
+        _, Some(prompt) -> prompt
+        _, None -> read
+      }
+      let lost = left - option.unwrap(current.cached_input_tokens, 0)
+      case lost >= miss_floor && lost * miss_share > input {
+        True -> Some(lost)
+        False -> None
+      }
+    }
+    _, _, _ -> None
+  }
+}
+
 // Named, in decoder order, so a column added later cannot shift a read.
 const columns =
   "id,session,seq,kind,profile,provider,account,model,started_ms,finished_ms,outcome,status,error,input_tokens,cached_input_tokens,cache_creation_tokens,cache_write_5m_tokens,cache_write_1h_tokens,output_tokens,reasoning_tokens,head_hash,inputs,replaced,projection_hash,strategy,cache_marks,run_id,input_chain,first_event_ms,streamed_events,streamed_thinking_bytes,streamed_output_bytes,first_byte_ms,total_tokens,response_id,model_version,trace_id"

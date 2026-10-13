@@ -172,6 +172,26 @@ func TestTurnRateIsItsLatestTimedCall(t *testing.T) {
 	}
 }
 
+// A turn's cache miss is what its calls lost, summed: a call's usage record
+// that arrives again counts once, and a call that lost nothing adds nothing.
+func TestTurnCacheMissSumsItsCallsOnce(t *testing.T) {
+	call := func(recordedAt int64, miss *int) *daemon.Usage {
+		return &daemon.Usage{RecordedAt: &recordedAt, CacheMissTokens: miss}
+	}
+	lost := func(tokens int) *int { return &tokens }
+	state := newTranscriptState()
+	state.apply(daemon.StreamEvent{Type: daemon.EventUser, Source: "chat", Text: "hi"}, "agent")
+	state.apply(daemon.StreamEvent{Type: daemon.EventText, Text: "answer"}, "agent")
+	state.apply(daemon.StreamEvent{Type: daemon.EventUsage, Usage: call(1, lost(30_000))}, "agent")
+	state.apply(daemon.StreamEvent{Type: daemon.EventUsage, Usage: call(1, lost(30_000))}, "agent")
+	state.apply(daemon.StreamEvent{Type: daemon.EventUsage, Usage: call(2, nil)}, "agent")
+	state.apply(daemon.StreamEvent{Type: daemon.EventUsage, Usage: call(3, lost(12_000))}, "agent")
+	entries := state.apply(daemon.StreamEvent{Type: daemon.EventTurnCompleted}, "agent")
+	if len(entries) != 1 || entries[0].CacheMissTokens != 42_000 {
+		t.Fatalf("turn ended with entries %+v, want a signoff with 42000 tokens missed", entries)
+	}
+}
+
 func TestANoteTheAgentNeverAnsweredHasNoSignoff(t *testing.T) {
 	// /link and /work queue a note; it commits right before your next message.
 	entries := replayTranscript([]daemon.StreamEvent{

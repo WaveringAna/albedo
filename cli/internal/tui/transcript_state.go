@@ -307,6 +307,9 @@ type openTurn struct {
 	// tokensPerSecond is the rate of the latest call that reported its timing.
 	// A usage record can arrive again, so it replaces the rate, never adds to it.
 	tokensPerSecond float64
+	// cacheMisses is what each call of the turn lost from its cache, by the
+	// call's record time, so a usage record that arrives again counts once.
+	cacheMisses map[int64]int
 }
 
 func newOpenTurn(ts int64) *openTurn {
@@ -322,11 +325,28 @@ func (t *openTurn) touch(ts *int64) {
 	}
 }
 
-// measure takes the rate of a usage record that carries one.
+// measure takes the rate and the cache miss of a usage record that carries them.
 func (t *openTurn) measure(usage *daemon.Usage) {
-	if usage != nil && usage.TokensPerSecond != nil && *usage.TokensPerSecond > 0 {
+	if usage == nil {
+		return
+	}
+	if usage.TokensPerSecond != nil && *usage.TokensPerSecond > 0 {
 		t.tokensPerSecond = *usage.TokensPerSecond
 	}
+	if usage.CacheMissTokens != nil && *usage.CacheMissTokens > 0 && usage.RecordedAt != nil {
+		if t.cacheMisses == nil {
+			t.cacheMisses = map[int64]int{}
+		}
+		t.cacheMisses[*usage.RecordedAt] = *usage.CacheMissTokens
+	}
+}
+
+func (t *openTurn) cacheMissTokens() int {
+	total := 0
+	for _, tokens := range t.cacheMisses {
+		total += tokens
+	}
+	return total
 }
 
 // An idle status racing the first event must not sign a turn off early.
@@ -358,7 +378,7 @@ func (t *transcriptState) closeTurn(stopped bool) []HistoryEntry {
 	return []HistoryEntry{{
 		Kind: EntryTurnEnd, Mood: outcome(turn.failed, stopped, elapsed),
 		ElapsedMs: elapsed, Tools: turn.tools, Timestamp: end,
-		TokensPerSecond: turn.tokensPerSecond,
+		TokensPerSecond: turn.tokensPerSecond, CacheMissTokens: turn.cacheMissTokens(),
 	}}
 }
 

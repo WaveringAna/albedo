@@ -23,6 +23,19 @@ Providers report these differently and each adapter fills what it can: Anthropic
 
 The session's usage for a turn's call reports the span of the attempt that succeeded as `elapsed_ms`, and its output tokens over that span as `tokens_per_second`. A re-emitted usage keeps its call's span; a compaction estimate made no call, so it has none.
 
+## Cache misses
+
+A turn's usage carries `cache_miss_tokens` when its call read much less from cache than the call before it left cached and nothing explains it. The CLI adds the turn's total to its signoff line (`34k miss`). It is read off two ledger rows (`requests.cache_miss` in `daemon/requests.gleam`, called from `harness/loop.gleam` once the call's row exists):
+
+- the previous call is the latest completed `turn` or `background` row of the session; what it left cached is its cache reads plus what it wrote under its marks, or its whole prompt for a provider that reports no writes;
+- the call lost that much minus what it read, and it counts when the loss is at least 8192 tokens and over a twentieth of its prompt. the floor clears the rounding providers do: argon caches in blocks of about 2k, flash loses up to about 6k to rounding at any size, Claude's reads are exact;
+- it stays quiet when an explanation exists: another model, head (instructions or tools) or projection (a compaction rewrote the history), a history no longer than before (a rewind), a gap since the previous call at least as long as the cache's first fade step (`cache_fade.whole_for_ms`, so the footer countdown already said so), or a previous call that read nothing from cache;
+- a clean miss (prefix unchanged, inside the cache's lifetime) is what reaches the chat; `inputChain` on both rows says whether our own prefix drifted.
+
+The loss is saved with the session's latest usage and, like the rest of it, sent again when a client attaches. A turn's signoff sums its calls' losses once each, keyed by the usage's `observed_at`.
+
+TODO (in code): a per-model floor from each cache's block size.
+
 ## Prefix identity
 
 What makes cache analysis possible without storing requests. Each row records:

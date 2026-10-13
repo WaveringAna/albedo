@@ -128,6 +128,9 @@ type Usage struct {
 	TotalTokens        *int     `json:"totalTokens,omitempty"`
 	ElapsedMs          *float64 `json:"elapsedMs,omitempty"`
 	TokensPerSecond    *float64 `json:"tokensPerSecond,omitempty"`
+	// CacheMissTokens is how much of the previous call's cache this call read
+	// uncached, when that was more than the provider's rounding explains.
+	CacheMissTokens *int `json:"cacheMissTokens,omitempty"`
 	// CacheFade is how CachedPromptTokens fades once the session goes quiet,
 	// in time order.
 	CacheFade []CacheStep `json:"cacheFade,omitempty"`
@@ -225,7 +228,7 @@ func progressValue(wire protocol.ToolProgress) *ToolProgress {
 	return progress
 }
 func usageValue(wire protocol.Usage) *Usage {
-	usage := &Usage{Model: value(wire.Model), PromptTokens: intPointer(wire.PromptTokens), CachedPromptTokens: intPointer(wire.CachedPromptTokens), CacheWriteTokens: intPointer(wire.CacheWriteTokens), CompletionTokens: intPointer(wire.CompletionTokens), TotalTokens: intPointer(wire.TotalTokens), ElapsedMs: wire.ElapsedMs, TokensPerSecond: wire.TokensPerSecond}
+	usage := &Usage{Model: value(wire.Model), PromptTokens: intPointer(wire.PromptTokens), CachedPromptTokens: intPointer(wire.CachedPromptTokens), CacheWriteTokens: intPointer(wire.CacheWriteTokens), CompletionTokens: intPointer(wire.CompletionTokens), TotalTokens: intPointer(wire.TotalTokens), ElapsedMs: wire.ElapsedMs, TokensPerSecond: wire.TokensPerSecond, CacheMissTokens: intPointer(wire.CacheMissTokens)}
 	if wire.ObservedAt != nil {
 		usage.RecordedAt = timestampMilliseconds(*wire.ObservedAt)
 	}

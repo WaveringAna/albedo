@@ -21,6 +21,7 @@ pub fn apply(db: sqlight.Connection) -> Result(Nil, String) {
       #("usage_cache_write_1h_tokens", "INTEGER"),
       #("usage_reasoning_tokens", "INTEGER"),
       #("usage_cache", "TEXT"),
+      #("usage_cache_miss_tokens", "INTEGER"),
       #("effort", "TEXT"),
       #("pinned_instructions", "TEXT"),
       #("pinned_context", "BLOB"),

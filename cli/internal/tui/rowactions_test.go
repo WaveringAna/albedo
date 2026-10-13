@@ -99,6 +99,19 @@ func TestSignoffShowsItsRateBeforeTheCopyMark(t *testing.T) {
 	}
 }
 
+// A turn that lost cache says so after its rate, in whole thousands.
+func TestSignoffNamesTheTokensItLostFromCache(t *testing.T) {
+	m := newTestChatModel(t, &daemon.Session{ID: "s"})
+	m.SetSize(80, 40)
+	m.appendSettledEntry(HistoryEntry{Kind: EntryAssistant, Text: "done", Timestamp: 1})
+	m.appendSettledEntry(HistoryEntry{Kind: EntryTurnEnd, Mood: moodDone, ElapsedMs: 115_000, Tools: 4, TokensPerSecond: 88.4, CacheMissTokens: 33_804, Timestamp: 2})
+	m.refreshViewportContent()
+	row := ansi.Strip(m.frameLines[rowWith(t, m.frameLines, "⧉")])
+	if !strings.Contains(row, "4 tools · 88.4 tok/s · 34k miss · ⧉") {
+		t.Fatalf("signoff %q does not name the miss after the rate", row)
+	}
+}
+
 // Clicking a burst's summary lists every step in full, the commands the
 // summary only names included, and clicking it again folds them away.
 func TestClickingABurstListsItsSteps(t *testing.T) {
