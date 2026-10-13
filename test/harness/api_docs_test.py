@@ -52,6 +52,7 @@ def namespace() -> dict[str, object]:
         "cells": kernel.Cells(),
         "output": kernel.Output(),
         "show_image": kernel.show_image,
+        "parallel": kernel.parallel,
     }
     for name in [
         "run",

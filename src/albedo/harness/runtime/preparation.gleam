@@ -24,7 +24,7 @@ import gleam/result
 import gleam/string
 
 const base_instructions =
-  "You are a coding agent operating inside albedo, a coding agent harness; working in the session workspace. Use the tools enabled for this session. Run tests and report real results.\n"
+  "You are a coding agent operating inside albedo, a coding agent harness; working in the session workspace. Use the tools enabled for this session. When steps do not depend on each other, start them together rather than one after another. Run tests and report real results.\n"
 
 /// Compose one session. `selected = None` reads the persisted selection; a
 /// reload supplies its proposed selection instead (it is persisted only after

@@ -388,6 +388,36 @@ def show_image(
     return albedo_api.Text("attached " + attach_image(data))
 
 
+async def parallel(*items: object, return_exceptions: bool = False) -> list[object]:
+    """Await several awaitables at once and return their results in order.
+
+    Pass job handles and calls together as they are created, or one iterable of
+    them: `await parallel(run("a"), run("b"))`,
+    `await parallel(files.find(...), files.find(...))`,
+    `await parallel([job1, job2])`. Results come back in argument order; the
+    first failure raises unless `return_exceptions=True`, which keeps the
+    successes in their place."""
+    calls: list[Awaitable[object]] = []
+    for item in items:
+        if inspect.isawaitable(item):
+            calls.append(item)
+            continue
+        if isinstance(item, Iterable) and not isinstance(item, (str, bytes)):
+            for part in item:
+                if not inspect.isawaitable(part):
+                    raise TypeError(
+                        "parallel takes awaitables, not "
+                        f"{type(part).__name__} in an iterable"
+                    )
+                calls.append(part)
+            continue
+        raise TypeError(
+            "parallel takes awaitables or an iterable of them, not "
+            f"{type(item).__name__}"
+        )
+    return list(await asyncio.gather(*calls, return_exceptions=return_exceptions))
+
+
 NATIVE = Capture("native", "native")
 NATIVE_LOCK = threading.RLock()
 NATIVE_FD = -1
@@ -1598,7 +1628,9 @@ def main():
         attach_image=attach_image,
         on_stop_job=STOP_HANDLERS.append,
     )
-    NAMESPACE.update(cells=Cells(), output=Output(), show_image=show_image)
+    NAMESPACE.update(
+        cells=Cells(), output=Output(), show_image=show_image, parallel=parallel
+    )
     try:
         LOOP.run_until_complete(albedo_api.load_plugins(modules, api, NAMESPACE))
     except Exception as error:

@@ -63,7 +63,7 @@ pub fn extension() -> extension.Extension {
 }
 
 const instructions =
-  "await web_search(query, limit=8) searches the web. It returns a record with answer (a written answer, possibly empty) and sources, each with title, url, snippet, and published; printing it shows both. Use it for anything that may have changed since you were trained: releases, docs, changelogs, errors other people hit."
+  "await web_search(query, limit=8) searches the web. It returns a record with answer (a written answer, possibly empty) and sources, each with title, url, snippet, and published; printing it shows both. Use it for anything that may have changed since you were trained: releases, docs, changelogs, errors other people hit. Independent queries run together: await parallel(web_search(a), web_search(b))."
 
 fn handle(
   providers: List(web_search.Provider),
