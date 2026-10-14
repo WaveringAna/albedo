@@ -411,6 +411,54 @@ pub fn one_long_agentic_turn_folds_its_older_steps_test() -> Nil {
   runtime.stop(host)
 }
 
+pub fn a_later_leaf_is_told_what_earlier_leaves_remember_test() -> Nil {
+  let #(host, session) = host(100_000)
+  let step = fn(i) {
+    let n = int.to_string(i)
+    [
+      types.Assistant("work " <> n <> " " <> string.repeat("w", 4000)),
+      types.ToolOutput(
+        "call-" <> n,
+        "result " <> n <> string.repeat("r", 4000),
+        [],
+      ),
+    ]
+  }
+  let first = [types.User("the task"), ..list.flat_map([1, 2, 3], step)]
+  save(host, first)
+  let assert Ok(_) =
+    compact(
+      host,
+      session,
+      fn(request) {
+        request.previous |> should.equal(None)
+        Ok("steps one and two")
+      },
+      first,
+    )
+  let more = list.flat_map([4, 5, 6], step)
+  save(host, more)
+  let assert Ok(_) =
+    compact(
+      host,
+      session,
+      fn(request) {
+        request.previous |> should.equal(Some("steps one and two"))
+        should.be_true(string.contains(
+          request.instructions,
+          "already remembers",
+        ))
+        should.be_false(mentions(request, "work 1 "))
+        Ok("steps three to five")
+      },
+      list.append(first, more),
+    )
+  let assert Ok([one, two]) = graph.frontier(runtime.ledger(host), "lcm-test")
+  #(one.summary, two.summary)
+  |> should.equal(#("steps one and two", "steps three to five"))
+  runtime.stop(host)
+}
+
 /// Folds another strategy stored over the first two user turns, the way
 /// snapcompact's archive covers everything before its cut.
 fn archive() -> extension.Extension {
