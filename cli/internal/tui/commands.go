@@ -16,7 +16,7 @@ type ChatCommand struct {
 var CommonCommands = []ChatCommand{
 	{Name: "/a", Description: "browse sessions"},
 	{Name: "/t", Description: "show or hide thinking"},
-	{Name: "/v", Description: "expand or collapse code, output and diffs"},
+	{Name: "/v", Description: "show tool calls as cards with their code and output"},
 	{Name: "/status", Description: "show state, workspace and usage"},
 	{Name: "/q", Description: "quit"},
 }

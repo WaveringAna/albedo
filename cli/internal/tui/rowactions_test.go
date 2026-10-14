@@ -54,8 +54,7 @@ func TestDraggingPastTheEdgeScrollsAndKeepsSelecting(t *testing.T) {
 	}
 }
 
-// The signoff copies the whole turn's prose as markdown, and the cells page lists every
-// call with the one under the cursor in full.
+// rowWith is the index of the first of lines that says text.
 func rowWith(t *testing.T, lines []string, text string) int {
 	t.Helper()
 	for i, line := range lines {
@@ -67,6 +66,7 @@ func rowWith(t *testing.T, lines []string, text string) int {
 	return -1
 }
 
+// The signoff copies the whole turn's prose as markdown.
 func TestSignoffCopiesTheTurnAsMarkdown(t *testing.T) {
 	m := newTestChatModel(t, &daemon.Session{ID: "s"})
 	m.SetSize(80, 40)

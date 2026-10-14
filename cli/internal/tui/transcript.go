@@ -471,11 +471,13 @@ func (r TranscriptRenderer) diffCounts(change daemon.FileChange) string {
 	return DefaultStyles.Success.Render(fmt.Sprintf("+%d", change.Added)) + " " + DefaultStyles.Error.Render(fmt.Sprintf("−%d", change.Removed))
 }
 
+// RenderToolTrace is a call's glance in normal mode: what it read, ran and
+// searched, then what it changed, with the read of an edited file folded
+// into its edit row. Verbose mode draws the call as a card instead.
 func (r TranscriptRenderer) RenderToolTrace(trace *daemon.ToolTrace, flags DisplayFlags, width int) string {
 	if trace == nil {
 		return ""
 	}
-	// Normal mode folds the read of an edited file into its edit row.
 	reads := func(path string) bool {
 		return slices.ContainsFunc(trace.Activities, func(a daemon.ToolActivity) bool { return a.Kind == "read" && a.Target == path })
 	}
@@ -483,34 +485,18 @@ func (r TranscriptRenderer) RenderToolTrace(trace *daemon.ToolTrace, flags Displ
 		return slices.ContainsFunc(trace.Changes, func(c daemon.FileChange) bool { return c.Path == path })
 	}
 	var rows []string
-	if flags.Tools && len(trace.Activities) > 0 {
-		verb := "explored"
-		if slices.ContainsFunc(trace.Activities, func(a daemon.ToolActivity) bool { return a.Kind == "run" }) {
-			verb = "executed"
-		}
-		rows = append(rows, DefaultStyles.Bold.Render(verb))
-	}
 	for _, act := range trace.Activities {
-		if !flags.Tools && act.Kind == "read" && edits(act.Target) {
+		if act.Kind == "read" && edits(act.Target) {
 			continue
 		}
-		label, style := act.Kind, DefaultStyles.Faint
-		if flags.Tools {
-			rows = append(rows, "  "+r.traceLine(style.Render(label), act.Target, isPath(act), width-2))
-		} else {
-			rows = append(rows, style.Render(r.traceLine(label, act.Target, isPath(act), width)))
-		}
+		rows = append(rows, DefaultStyles.Faint.Render(r.traceLine(act.Kind, act.Target, isPath(act), width)))
 		if act.Kind == "display" && act.Detail != "" {
 			rows = append(rows, r.renderDisplayRows(act.Target, act.Detail, width)...)
 		}
 	}
-	changeStyle := DefaultStyles.Faint
-	if flags.Tools {
-		changeStyle = DefaultStyles.Bold
-	}
 	for _, change := range trace.Changes {
 		label := "edited"
-		if !flags.Tools && reads(change.Path) {
+		if reads(change.Path) {
 			label = "read + edited"
 		}
 		counts := ""
@@ -518,7 +504,7 @@ func (r TranscriptRenderer) RenderToolTrace(trace *daemon.ToolTrace, flags Displ
 			counts = "  " + r.diffCounts(change)
 		}
 		line := r.traceLine(label, change.Path, true, width-ansi.StringWidth(counts))
-		rows = append(rows, fit(changeStyle.Render(line), counts, width))
+		rows = append(rows, fit(DefaultStyles.Faint.Render(line), counts, width))
 		if flags.Diffs {
 			if change.Kind == "diff" {
 				rows = append(rows, r.renderDiffPath(change.Diff, change.Path, width))
@@ -528,11 +514,7 @@ func (r TranscriptRenderer) RenderToolTrace(trace *daemon.ToolTrace, flags Displ
 		}
 	}
 	if trace.Truncated {
-		notice := "Some activity was not captured · /v shows what is available"
-		if flags.Tools {
-			notice = "Some activity was not captured; this list is incomplete"
-		}
-		rows = append(rows, DefaultStyles.Faint.Render(notice))
+		rows = append(rows, DefaultStyles.Faint.Render("Some activity was not captured · /v shows what is available"))
 	}
 	return strings.Join(rows, "\n")
 }
@@ -607,35 +589,23 @@ func (r TranscriptRenderer) RenderAfter(before prior, entry HistoryEntry, flags 
 			rows = append(rows, r.faintRows(render(entry.Text, width), width)...)
 		}
 	case EntryTool:
+		if flags.Tools {
+			rows = r.toolCard(entry, flags, width)
+			break
+		}
+		// a glance: the trace when the harness recorded one, else the call
 		trace := entry.ToolTrace
 		hasTrace := trace != nil && (len(trace.Activities) > 0 || len(trace.Changes) > 0)
 		failed := toolFailed(entry)
-		if !hasTrace || flags.Tools || failed {
-			// a glance in normal mode, read in full in verbose mode
+		if !hasTrace || failed {
 			style := DefaultStyles.Faint
-			clock := ""
-			if flags.Tools {
-				style = lipgloss.NewStyle()
-				clock = formatClock(entry.Timestamp)
-			}
 			if failed {
 				style = DefaultStyles.Error
 			}
-			rows = append(rows, markChrome+style.Render(toolRow(entry, failed, clock, width)))
+			rows = append(rows, markChrome+style.Render(toolRow(entry, failed, "", width)))
 		}
 		if hasTrace {
 			rows = append(rows, chrome(r.RenderToolTrace(trace, flags, width)))
-			if !flags.Tools && !failed {
-				break
-			}
-		}
-		if flags.Tools {
-			if entry.ToolName == "python" {
-				if code, ok := entry.ToolArgs["code"].(string); ok {
-					rows = append(rows, renderCopyable("```python\n"+code+"\n```", width))
-				}
-			}
-			rows = append(rows, strings.Split(cmp.Or(toolOutput(entry), "(no output)"), "\n")...)
 		}
 	case EntryTurnEnd:
 		rows = []string{r.signoff(entry)}

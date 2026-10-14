@@ -68,15 +68,15 @@ func (m *ChatModel) actAt(row int) tea.Cmd {
 	return nil
 }
 
-// toggleFold shows or folds the rest of the message whose fold row is at row,
-// the last row of its block. Only that block renders again and is spliced into
-// the settled rows. The clicked row keeps its place on screen: expanding opens
-// the text below it, and folding brings the new fold row to where it was.
-// It reports false when key names no message of yours and no note.
+// toggleFold shows or folds the rest of the message, note or tool card whose
+// fold row is at row. Only that block renders again and is spliced into the
+// settled rows. The clicked row keeps its place on screen: expanding opens the
+// text around it, and folding brings the block's first fold row to where it
+// was. It reports false when key names no such entry.
 func (m *ChatModel) toggleFold(key string, row int) bool {
 	entries := m.History.Entries()
 	at := slices.IndexFunc(entries, func(e HistoryEntry) bool {
-		return (e.Kind == EntryUser || e.Kind == EntryNote) && entryKey(e) == key
+		return (e.Kind == EntryUser || e.Kind == EntryNote || e.Kind == EntryTool) && entryKey(e) == key
 	})
 	if at < 0 {
 		return false
@@ -90,20 +90,62 @@ func (m *ChatModel) toggleFold(key string, row int) bool {
 	m.Renderer.Open[key] = !m.Renderer.Open[key]
 	m.settled = nil // kept blocks were drawn with the fold as it was
 	fresh, _ := m.Renderer.Block(entries[:at], entries[at], m.Flags)
-	from := row - m.settledOffset - (len(old) - 1)
-	if from < 0 || from+len(old) > len(m.settledLines) || m.settledLines[from+len(old)-1] != old[len(old)-1] {
+	line := row - m.settledOffset
+	clicked := -1
+	if line >= 0 && line < len(m.settledLines) {
+		clicked = slices.Index(old, m.settledLines[line])
+	}
+	from := line - clicked
+	if clicked < 0 || from+len(old) > len(m.settledLines) {
 		m.rebuildSettledLines()
 		m.refreshViewportContent()
 		return true
 	}
 	screen := row - m.scrollOffset
-	if !m.Renderer.Open[key] {
-		row += len(fresh) - len(old)
+	if m.Renderer.Open[key] {
+		row += anchorShift(old, fresh, clicked)
+	} else {
+		row += foldAt(fresh, key) - clicked
 	}
 	row -= m.replaceSettled(from, len(old), fresh)
 	m.Follow, m.scrollOffset = false, max(0, row-screen)
 	m.Follow = m.scrollOffset >= m.refreshViewportContent()
 	return true
+}
+
+// anchorShift is how far a block opening at its row clicked moved the rows
+// next to that row: a card's sections above the click open too. It follows
+// the nearest neighbor that appears once in the block.
+func anchorShift(old, fresh []string, clicked int) int {
+	for _, at := range []int{clicked - 1, clicked + 1} {
+		if at < 0 || at >= len(old) {
+			continue
+		}
+		if count(old, old[at]) == 1 {
+			if moved := slices.Index(fresh, old[at]); moved >= 0 {
+				return moved - at
+			}
+		}
+	}
+	return 0
+}
+
+func count(rows []string, row string) int {
+	n := 0
+	for _, r := range rows {
+		if r == row {
+			n++
+		}
+	}
+	return n
+}
+
+// foldAt is the index of the first of rows that folds key.
+func foldAt(rows []string, key string) int {
+	return max(0, slices.IndexFunc(rows, func(line string) bool {
+		act, ok := actionOf(line)
+		return ok && act == rowAction{verbMore, key}
+	}))
 }
 
 // toggleLookup shows or folds the rest of the web search answer whose fold
