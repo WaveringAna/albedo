@@ -526,7 +526,14 @@ pub fn a_later_leaf_is_told_what_earlier_leaves_remember_test() -> Nil {
           "already remembers",
         ))
         list.each(
-          ["Task:", "Settled:", "Contracts:", "Changes:", "Plan:", "Open:"],
+          [
+            "Task:",
+            "Settled:",
+            "Contracts:",
+            "Changes:",
+            "Next actions:",
+            "Open:",
+          ],
           fn(section) {
             should.be_true(string.contains(request.instructions, section))
           },
@@ -805,7 +812,7 @@ pub fn a_fold_that_can_make_room_still_runs_test() -> Nil {
 }
 
 pub fn merges_keep_the_memory_sections_test() -> Nil {
-  list.each(["Settled:", "Contracts:", "Plan:", "Open:"], fn(section) {
+  list.each(["Settled:", "Contracts:", "Next actions:", "Open:"], fn(section) {
     should.be_true(string.contains(lcm.merge_instructions, section))
   })
   should.be_true(string.contains(lcm.merge_instructions, "stays settled"))
