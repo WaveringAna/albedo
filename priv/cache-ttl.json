@@ -147,14 +147,17 @@
         "extension": "antigravity",
         "model": "*flash*"
       },
-      "policy": "evict",
-      "survival": {
-        "typical": 170,
-        "max": 300
-      },
+      "policy": "refresh",
+      "tiers": [
+        {
+          "seconds": 120,
+          "write": 1.0
+        }
+      ],
+      "read": 0.1,
       "evidence": "measured",
-      "source": "provider_requests: 17k gemini-3.8-flash calls over 8k tokens, hit rate by gap since the previous call",
-      "note": "Cloud Code Assist flash: 94% hit under 2 min, 56% at 2.5-3 min, 20% at 4-5 min, none past 5 min. No explicit cache, so only survival is known.",
+      "source": "provider_requests and quota_sample: 17k gemini-3.8-flash calls over 8k tokens, and 1.4k gemini-meter polls against the requests between them",
+      "note": "Cloud Code Assist flash: every access keeps a prefix alive. After a hit the next call hits 98% within 2 min, 74% at 2-3 min, 17% past 3; calls under 90s apart still hit 98% 25 min after the last miss. A prefix only just written is flaky (58% at under 30s). Each variant id (-low, -medium, -high) caches apart. The gemini meter charges a cached token 0.1 of an uncached one and nothing extra for a write.",
       "checked": "2026-10-14"
     },
     {
@@ -163,14 +166,17 @@
         "extension": "antigravity",
         "model": "*argon*"
       },
-      "policy": "evict",
-      "survival": {
-        "typical": 450,
-        "max": 600
-      },
+      "policy": "refresh",
+      "tiers": [
+        {
+          "seconds": 240,
+          "write": 1.0
+        }
+      ],
+      "read": 0.1,
       "evidence": "measured",
-      "source": "provider_requests: 319 gemini-4-argon calls over 8k tokens, hit rate by gap since the previous call",
-      "note": "Cloud Code Assist argon: hit at a 390s gap, miss at 569s; under 30s it hits 100% (296 of 296) apart from one unexplained miss at 400k. Few samples between 30s and 10 min, so typical is a midpoint, not a fit.",
+      "source": "provider_requests: 625 gemini-4-argon calls, hit rate by gap after a call that hit",
+      "note": "Cloud Code Assist argon: after a hit the next call hit every time up to 7 min (535 of 539 under 30s, 35 of 35 from 1 to 7 min), missed the only two past 7 min. Few samples past 2 min, so the tier stays short of what was seen. The quota fit puts a cached token at 0.03-0.1 of an uncached one; 0.1 is the documented discount. Each variant id caches apart.",
       "checked": "2026-10-14"
     },
     {
