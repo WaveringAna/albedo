@@ -35,6 +35,7 @@ pub fn run(
     types.Request(
       ..openai_api.request(context.model.id, [types.User(query.text)]),
       instructions: Some(web_search.instructions),
+      options: types.Options(..types.defaults, effort: Some("low")),
     )
   let tool = json.object([#("googleSearch", json.object([]))])
   use exchange <- result.try(

@@ -513,6 +513,62 @@ pub fn the_thinking_setting_follows_the_variant_without_an_effort_test() -> Nil 
   assert budget("gemini-3.1-pro-high") == 10_001
 }
 
+@external(erlang, "albedo_antigravity_catalog_test_support", "home_with_catalog")
+fn home_with_catalog(json: String) -> String
+
+@external(erlang, "albedo_antigravity_catalog_test_support", "cleanup")
+fn cleanup(home: String) -> Nil
+
+/// Cloud Code caches each Gemini variant apart, so an effort switch that
+/// moved the variant re-read the whole history uncached. The effort reaches
+/// Gemini as its thinking level instead; Claude variants still follow it.
+pub fn an_effort_switch_keeps_the_gemini_variant_test() -> Nil {
+  let entry = fn(id) {
+    "{\"id\":\""
+    <> id
+    <> "\",\"name\":\""
+    <> id
+    <> "\",\"context\":1048576,\"output\":65536,\"images\":true}"
+  }
+  let home =
+    home_with_catalog(
+      "{\"models\":["
+      <> string.join(
+        list.map(
+          [
+            "gemini-3.8-flash-low", "gemini-3.8-flash-medium",
+            "gemini-3.8-flash-high", "claude-opus-5-5-low",
+            "claude-opus-5-5-high",
+          ],
+          entry,
+        ),
+        ",",
+      )
+      <> "]}",
+    )
+  let variant = fn(id, effort) { catalog.model(home, id, effort).id }
+  assert variant("gemini-3.8-flash", Some("low")) == "gemini-3.8-flash-medium"
+  assert variant("gemini-3.8-flash", Some("high")) == "gemini-3.8-flash-medium"
+  assert variant("gemini-3.8-flash-low", Some("high")) == "gemini-3.8-flash-low"
+  assert variant("claude-opus-5-5", Some("low")) == "claude-opus-5-5-low"
+  cleanup(home)
+
+  let id = "gemini-3.8-flash-medium"
+  let request =
+    types.Request(
+      ..openai_api.request(id, [types.User("hi")]),
+      options: types.Options(..types.defaults, effort: Some("high")),
+    )
+  let sent = body(id, request)
+  assert at(sent, ["model"], decode.string) == id
+  assert at(
+      sent,
+      ["request", "generationConfig", "thinkingConfig", "thinkingLevel"],
+      decode.string,
+    )
+    == "HIGH"
+}
+
 /// Gemini signs what follows its thoughts, never the summaries, so an
 /// unsigned summary is kept as reasoning text but not replayed.
 pub fn unsigned_gemini_thoughts_are_not_replayed_test() -> Nil {

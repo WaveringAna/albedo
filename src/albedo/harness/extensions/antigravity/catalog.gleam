@@ -214,6 +214,10 @@ fn base_model_ids(home: String) -> List(String) {
 }
 
 /// Resolves a base or variant model id and optional effort to an exact backend Model variant.
+///
+/// A Gemini variant is a preset of one model whose thinking the request sets
+/// itself, but Cloud Code caches each variant apart, so the effort never moves
+/// a Gemini id: a switch would re-read the whole history uncached.
 pub fn resolve_variant(
   home: String,
   id: String,
@@ -222,7 +226,10 @@ pub fn resolve_variant(
   let all = models(home)
   let ren = renamed(home, id)
   let #(base_id, id_effort) = split_id(ren)
-  let target_effort = option.or(effort, id_effort)
+  let target_effort = case family_of_id(base_id) {
+    Gemini -> id_effort
+    Claude | GptOss -> option.or(effort, id_effort)
+  }
   let variants =
     list.filter_map(all, fn(m) {
       let #(b, e) = split_id(m.id)
@@ -273,14 +280,7 @@ fn hint(id: String) -> Model {
 
 fn infer_thinking(id: String) -> Thinking {
   let id = string.lowercase(id)
-  let gemini_levels =
-    string.starts_with(id, "gemini-3-pro")
-    || string.starts_with(id, "gemini-3.6-flash")
-    || string.starts_with(id, "gemini-3.7-flash")
-    || id == "gemini-3.1-flash-lite"
-    || string.starts_with(id, "gemini-4-")
-    || string.starts_with(id, "gemini-4.")
-  case gemini_levels {
+  case thinks_in_levels(id) {
     True -> Level
     False ->
       case
@@ -294,6 +294,22 @@ fn infer_thinking(id: String) -> Thinking {
           }
         False -> default_budget
       }
+  }
+}
+
+/// Gemini moved from token budgets to named levels with 3 Pro, 3.1 Flash Lite,
+/// 3.6 Flash, and every model from 4 on. A later Flash still takes a budget,
+/// but only as a rough level: 3.8 Flash thinks the same at 4000 as at 10000.
+fn thinks_in_levels(id: String) -> Bool {
+  case string.split(id, "-") {
+    ["gemini", "3", "pro", ..] | ["gemini", "3.1", "flash", "lite", ..] -> True
+    ["gemini", version, family, ..] ->
+      case list.map(string.split(version, "."), int.parse) {
+        [Ok(major), ..] if major >= 4 -> True
+        [Ok(3), Ok(minor)] -> family == "flash" && minor >= 6
+        _ -> False
+      }
+    _ -> False
   }
 }
 
