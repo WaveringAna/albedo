@@ -171,3 +171,22 @@ assert not capture.trace.before and not capture.trace.activities
 """)
         self.assertEqual((self.app.workspace / "late.txt").read_text(), "late\n")
         self.assertEqual(self.read_trace(result["cell_id"]), trace)
+
+    def test_display_records_trace_activity_and_returns_line_count(self):
+        result, trace = self.run_cell(
+            "receipt = display('@@ -1 +1,2 @@\\n line 1\\n+line 2\\n', title='example.py', description='added a line')\n"
+            "print(receipt)"
+        )
+        self.assertEqual(
+            result["output"].strip(), "displayed content to user (3 lines)"
+        )
+        self.assertEqual(
+            trace["activities"],
+            [
+                {
+                    "kind": "display",
+                    "target": "example.py",
+                    "detail": "**example.py**\nadded a line\n\n@@ -1 +1,2 @@\n line 1\n+line 2\n",
+                }
+            ],
+        )

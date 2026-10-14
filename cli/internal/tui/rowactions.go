@@ -112,7 +112,9 @@ func (m *ChatModel) toggleFold(key string, row int) bool {
 func (m *ChatModel) toggleLookup(key string, row int) {
 	entries := m.History.Entries()
 	at := slices.IndexFunc(entries, func(e HistoryEntry) bool {
-		return slices.ContainsFunc(factsOf(e).looked, func(look lookup) bool { return look.key == key })
+		f := factsOf(e)
+		return slices.ContainsFunc(f.looked, func(look lookup) bool { return look.key == key }) ||
+			slices.ContainsFunc(f.displayed, func(disp lookup) bool { return disp.key == key })
 	})
 	if at < 0 {
 		return

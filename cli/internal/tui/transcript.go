@@ -498,6 +498,9 @@ func (r TranscriptRenderer) RenderToolTrace(trace *daemon.ToolTrace, flags Displ
 		} else {
 			rows = append(rows, style.Render(r.traceLine(label, act.Target, isPath(act), width)))
 		}
+		if act.Kind == "display" && act.Detail != "" {
+			rows = append(rows, r.renderDisplayRows(act.Target, act.Detail, width)...)
+		}
 	}
 	changeStyle := DefaultStyles.Faint
 	if flags.Tools {

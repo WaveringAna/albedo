@@ -87,6 +87,31 @@ class Trace:
             return
         self.before[path] = snapshot(path)
 
+    def display(self, content: str, title: str = "", description: str = "") -> None:
+        if self.sealed:
+            return
+        if len(self.activities) >= 64:
+            self.truncated = True
+            return
+        label = (
+            title.strip()
+            or description.strip()
+            or next((line.strip() for line in content.splitlines() if line.strip()), "")
+            or "content"
+        )[:1000]
+        header = "\n".join(
+            part
+            for part in (
+                f"**{title.strip()[:1000]}**" if title.strip() else "",
+                description.strip()[:4000],
+            )
+            if part
+        )
+        detail = f"{header}\n\n{content}" if header and content else (header or content)
+        self.truncated |= len(detail) > 16000
+        entry = {"kind": "display", "target": label, "detail": detail[:16000]}
+        self.activities[(f"display:{len(self.activities)}", label)] = entry
+
     def finish(self) -> dict[str, object]:
         if self.sealed:
             raise RuntimeError("trace is already sealed")

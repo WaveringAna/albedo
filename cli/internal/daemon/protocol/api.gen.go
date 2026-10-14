@@ -2753,7 +2753,7 @@ type TokenObservation struct {
 
 // ToolActivity defines model for ToolActivity.
 type ToolActivity struct {
-	// Detail What the person watching sees of the result, as markdown; a web search's answer and sources.
+	// Detail What the person watching sees of the result, as markdown; a web search's answer and sources, or displayed content.
 	Detail *string `json:"detail,omitempty"`
 	Kind   string  `json:"kind"`
 	Target string  `json:"target"`

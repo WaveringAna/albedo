@@ -222,6 +222,43 @@ func TestClickingAWebSearchShowsItsWholeAnswer(t *testing.T) {
 	}
 }
 
+func TestClickingADisplayedBlockShowsAndFoldsIt(t *testing.T) {
+	m := newTestChatModel(t, &daemon.Session{ID: "s"})
+	m.SetSize(100, 30)
+	var lines []string
+	for i := range 16 {
+		lines = append(lines, fmt.Sprintf("+line %02d", i))
+	}
+	diff := "**patch.diff**\nadds lines\n\n@@ -1,0 +1,16 @@\n" + strings.Join(lines, "\n")
+	disp := daemon.ToolActivity{Kind: "display", Target: "patch.diff", Detail: diff}
+	m.appendSettledEntry(HistoryEntry{Kind: EntryUser, Text: "show diff", Timestamp: 1})
+	m.appendSettledEntry(traced([]daemon.ToolActivity{disp}))
+	m.appendSettledEntry(HistoryEntry{Kind: EntryAssistant, Text: "done", Timestamp: 3})
+	m.refreshViewportContent()
+	shown := func() string { return ansi.Strip(strings.Join(m.frameLines, "\n")) }
+	if text := shown(); !strings.Contains(text, "displayed “patch.diff”") || !strings.Contains(text, "line 00") || strings.Contains(text, "line 15") {
+		t.Fatalf("the displayed block is not summarized and folded:\n%s", text)
+	}
+	spliced := func() {
+		t.Helper()
+		got := slices.Clone(m.settledLines)
+		if m.rebuildSettledLines(); !slices.Equal(got, m.settledLines) {
+			t.Fatal("the splice drew rows a rebuild does not")
+		}
+		m.refreshViewportContent()
+	}
+	m.actAt(rowWith(t, m.frameLines, "click to expand"))
+	spliced()
+	if text := shown(); !strings.Contains(text, "line 15") || !strings.Contains(text, "show less") {
+		t.Fatalf("clicking does not show the whole displayed block:\n%s", text)
+	}
+	m.actAt(rowWith(t, m.frameLines, "show less"))
+	spliced()
+	if text := shown(); strings.Contains(text, "line 15") || !strings.Contains(text, "click to expand") {
+		t.Fatalf("clicking again does not fold the displayed block:\n%s", text)
+	}
+}
+
 // Capability notes must not pad short rows to thousands of columns.
 func TestALongNoteWrapsRowByRowAndFolds(t *testing.T) {
 	m := newTestChatModel(t, &daemon.Session{ID: "s"})

@@ -176,6 +176,8 @@ Retained kernel captures release image bytes after delivery, including error and
 
 The kernel seals each trace after execution cleanup, including failed and interrupted cells. Sealing permanently stops observation, even for background tasks that inherit the cell context. Finalization returns a detached payload and cannot run again. The kernel sends that payload through the existing `trace` event, then releases snapshots and activities when the synchronous control-stream write returns. Finalization or write failure leaves the trace sealed with its buffers retained; there is no retry. Release preserves truncation metadata.
 
+`display(content, title='', description='')` records a `display` activity on the running cell's trace (up to 16000 characters per block) and returns `displayed content to user (N lines)` so the model can show text, code, or diffs in the transcript without repeating them in its reply; the TUI renders displayed blocks under the burst (with diff or markdown styling) and folds long ones.
+
 Top-level traces emit before `done`. Nested `cells.run` traces emit before waiting for the host's `cells.finish` acknowledgement and remain separate from the parent trace. The daemon persists these events when the enclosing top-level execution completes, after which `cells.trace` can read the results independently of kernel buffers. This lifecycle applies to newly started kernels and does not change output retention, image delivery, or background task execution.
 
 interfaces: [`PythonApi`](../priv/python/albedo_api.py), [`work`](../src/albedo/harness/extensions/work/extension.gleam), [`compaction strategy`](../src/albedo/harness/compaction.gleam).

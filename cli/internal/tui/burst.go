@@ -102,6 +102,7 @@ type entryFacts struct {
 	edited    []string
 	searched  []string
 	looked    []lookup
+	displayed []lookup
 	ran       []string
 	py        []string
 	used      []string
@@ -113,8 +114,8 @@ type entryFacts struct {
 	failed    bool
 }
 
-// lookup is one web search a call made: what it asked, what it found, and the
-// key its fold opens by.
+// lookup is one web search or displayed block a call made: its label, its
+// detail, and the key its fold opens by.
 type lookup struct{ key, query, detail string }
 
 // factsOf reads one entry's contribution, using what append already computed
@@ -150,6 +151,9 @@ func factsOf(entry HistoryEntry) entryFacts {
 			case "web":
 				key := fmt.Sprintf("%x-%x", entry.Timestamp, fnv1a(fnvOffset64, f.key+"\x00"+activity.Target))
 				f.looked = append(f.looked, lookup{key, activity.Target, activity.Detail})
+			case "display":
+				key := fmt.Sprintf("%x-%x", entry.Timestamp, fnv1a(fnvOffset64, fmt.Sprintf("%s\x00display:%d\x00%s", f.key, len(f.displayed), activity.Target)))
+				f.displayed = append(f.displayed, lookup{key, activity.Target, activity.Detail})
 			case "run":
 				f.ran = append(f.ran, commandName(activity.Target))
 			}
@@ -180,6 +184,7 @@ type burst struct {
 	edited    tally
 	searched  tally
 	looked    []lookup
+	displayed []lookup
 	ran       tally
 	py        tally
 	used      tally
@@ -203,6 +208,7 @@ func (b *burst) merge(f entryFacts, entry HistoryEntry) {
 	b.edited.addAll(f.edited)
 	b.searched.addAll(f.searched)
 	b.looked = append(b.looked, f.looked...)
+	b.displayed = append(b.displayed, f.displayed...)
 	b.ran.addAll(f.ran)
 	b.py.addAll(f.py)
 	b.used.addAll(f.used)
@@ -276,6 +282,7 @@ func (r TranscriptRenderer) summary(b burst, width int, n namer) string {
 		{verb: "read", noun: "files", n: len(reads), items: pathGroups(reads)},
 		{verb: "searched", noun: "patterns", n: len(b.searched.keys), items: dedup(n.all(b.searched.keys))},
 		{verb: "looked up", noun: "searches", n: len(b.looked), items: queries(b.looked)},
+		{verb: "displayed", noun: "items", n: len(b.displayed), items: queries(b.displayed)},
 		{verb: "edited", noun: "files", n: len(edited), items: pathGroups(edited)},
 		{verb: "ran", noun: "commands", n: len(b.ran.keys), items: b.ran.counted()},
 		{verb: "python", noun: "cells", n: len(b.py.keys), items: b.py.counted()},
@@ -331,18 +338,71 @@ func (r TranscriptRenderer) foldLookup(look lookup, width int) []string {
 	for i := range rows {
 		rows[i] = markChrome + "  " + rows[i]
 	}
-	if len(rows) <= lookupRows+foldSlack {
+	return r.foldIndented(look.key, rows, lookupRows)
+}
+
+// renderDisplayRows renders a displayed block with diff or markdown styling,
+// indented by two columns.
+func (r TranscriptRenderer) renderDisplayRows(target, detail string, width int) []string {
+	if detail == "" {
+		return nil
+	}
+	bodyWidth := max(1, width-2)
+	var rendered string
+	if header, diff, ok := splitDisplayDiff(detail); ok {
+		var parts []string
+		if header != "" {
+			parts = append(parts, renderCopyable(header, bodyWidth))
+		}
+		parts = append(parts, r.renderDiffPath(diff, target, bodyWidth))
+		rendered = strings.Join(parts, "\n")
+	} else {
+		rendered = renderCopyable(detail, bodyWidth)
+	}
+	var rows []string
+	for line := range strings.SplitSeq(rendered, "\n") {
+		for _, chunk := range markChunks(line, wrapOrChunkLine(line, bodyWidth)) {
+			rows = append(rows, "  "+chunk)
+		}
+	}
+	return rows
+}
+
+// foldDisplay is a displayed block under its burst: rendered with diff or
+// markdown styling and folded past foldRows until its key is in Open.
+func (r TranscriptRenderer) foldDisplay(disp lookup, width int) []string {
+	rows := r.renderDisplayRows(disp.query, disp.detail, width)
+	if len(rows) == 0 {
+		return nil
+	}
+	return r.foldIndented(disp.key, rows, foldRows)
+}
+
+func (r TranscriptRenderer) foldIndented(key string, rows []string, limit int) []string {
+	if len(rows) <= limit+foldSlack {
 		return rows
 	}
-	if r.Open[look.key] {
-		return append(rows, r.foldRow(look.key, "  "+toggleOpen+"show less"))
+	if r.Open[key] {
+		return append(rows, r.foldRow(key, "  "+toggleOpen+"show less"))
 	}
-	label := fmt.Sprintf("  %s%d more lines · click to expand", toggleClosed, len(rows)-lookupRows)
-	return append(rows[:lookupRows:lookupRows], r.foldRow(look.key, label))
+	label := fmt.Sprintf("  %s%d more lines · click to expand", toggleClosed, len(rows)-limit)
+	return append(rows[:limit:limit], r.foldRow(key, label))
+}
+
+func splitDisplayDiff(detail string) (header, diff string, ok bool) {
+	lines := strings.Split(detail, "\n")
+	for i, line := range lines {
+		if diffHunk.MatchString(line) ||
+			strings.HasPrefix(line, "diff --git ") ||
+			(strings.HasPrefix(line, "--- ") && i+1 < len(lines) && strings.HasPrefix(lines[i+1], "+++ ")) {
+			return strings.TrimSpace(strings.Join(lines[:i], "\n")), strings.Join(lines[i:], "\n"), true
+		}
+	}
+	return "", "", false
 }
 
 // countedFirst ranks which list turns into a count first.
-var countedFirst = map[string]int{"read": 0, "searched": 1, "used": 2, "ran": 3, "python": 4, "looked up": 5, "edited": 6}
+var countedFirst = map[string]int{"read": 0, "searched": 1, "used": 2, "ran": 3, "python": 4, "looked up": 5, "displayed": 6, "edited": 7}
 
 // shorten hides one more item, and reports whether any was left to hide.
 func shorten(clauses []*clause) bool {
@@ -402,6 +462,9 @@ func (r TranscriptRenderer) RenderBurst(entries []HistoryEntry, flags DisplayFla
 	}
 	for _, look := range b.looked {
 		rows = append(rows, r.foldLookup(look, width)...)
+	}
+	for _, disp := range b.displayed {
+		rows = append(rows, r.foldDisplay(disp, width)...)
 	}
 	if flags.Diffs {
 		for _, change := range b.changes {

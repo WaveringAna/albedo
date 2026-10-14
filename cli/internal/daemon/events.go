@@ -10,9 +10,9 @@ import (
 
 // ToolActivity records display-only execution evidence, not model-facing tool output.
 type ToolActivity struct {
-	Kind   string `json:"kind"` // "read" | "search" | "list" | "run" | "web"
+	Kind   string `json:"kind"` // "read" | "search" | "list" | "run" | "web" | "display"
 	Target string `json:"target"`
-	// Detail is the markdown a web search answered with; empty otherwise.
+	// Detail is the markdown a web search answered with or display() showed; empty otherwise.
 	Detail string `json:"detail,omitempty"`
 }
 
@@ -48,7 +48,7 @@ func ParseToolTrace(data json.RawMessage) *ToolTrace {
 
 	for _, act := range trace.Activities {
 		switch act.Kind {
-		case "read", "search", "list", "run", "web":
+		case "read", "search", "list", "run", "web", "display":
 		default:
 			return nil
 		}

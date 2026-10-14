@@ -388,6 +388,33 @@ def show_image(
     return albedo_api.Text("attached " + attach_image(data))
 
 
+def display(
+    content: str,
+    title: str = "",
+    description: str = "",
+) -> albedo_api.Text:
+    """Display text, code, or a diff directly to the user in the transcript,
+    with an optional title and description, instead of repeating it in your
+    reply."""
+    if not isinstance(content, str):
+        raise TypeError(f"display content must be str, not {type(content).__name__}")
+    if not isinstance(title, str):
+        raise TypeError(f"display title must be str, not {type(title).__name__}")
+    if not isinstance(description, str):
+        raise TypeError(
+            f"display description must be str, not {type(description).__name__}"
+        )
+    capture = CELL.get()
+    if capture is None or capture.kind != "cell" or capture.id not in ACTIVE_CAPTURES:
+        raise RuntimeError(
+            "display attaches to a running cell; background work has no trace to carry it"
+        )
+    capture.trace.display(content, title=title, description=description)
+    lines = len(content.splitlines()) if content else 0
+    unit = "line" if lines == 1 else "lines"
+    return albedo_api.Text(f"displayed content to user ({lines} {unit})")
+
+
 async def parallel(*items: object, return_exceptions: bool = False) -> list[object]:
     """Await several awaitables at once and return their results in order.
 
@@ -1629,7 +1656,11 @@ def main():
         on_stop_job=STOP_HANDLERS.append,
     )
     NAMESPACE.update(
-        cells=Cells(), output=Output(), show_image=show_image, parallel=parallel
+        cells=Cells(),
+        output=Output(),
+        show_image=show_image,
+        display=display,
+        parallel=parallel,
     )
     try:
         LOOP.run_until_complete(albedo_api.load_plugins(modules, api, NAMESPACE))
