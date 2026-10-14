@@ -2772,7 +2772,13 @@ type ToolActivity struct {
 	// Detail What the person watching sees of the result, as markdown; a web search's answer and sources, or displayed content.
 	Detail *string `json:"detail,omitempty"`
 	Kind   string  `json:"kind"`
-	Target string  `json:"target"`
+
+	// Ms How long the call took, when it ended while its cell's trace was open.
+	Ms *int64 `json:"ms,omitempty"`
+
+	// Ok Whether the call worked, when it ended while its cell's trace was open.
+	Ok     *bool  `json:"ok,omitempty"`
+	Target string `json:"target"`
 }
 
 // ToolProgress Examples: {"call_id":"progress-1","intent":"unknown","name":"python","phase":"generating","preview":{"offset_scalars":0,"text":"print(\"hello\")"},"tool_call_id":null}

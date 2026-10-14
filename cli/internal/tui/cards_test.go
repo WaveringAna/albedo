@@ -107,3 +107,21 @@ func TestToolCardContainsHostileOutput(t *testing.T) {
 		t.Fatalf("output was not cleaned:\n%s", screen)
 	}
 }
+
+// A call inside a cell shows how it ended and how long it took, when the
+// kernel recorded both; one still running when the cell ended shows neither.
+func TestCardCallsShowOutcomeAndDuration(t *testing.T) {
+	ms, worked, failed := int64(1500), true, false
+	call := pythonCall("x = 1", "", 1)
+	call.ToolTrace = &daemon.ToolTrace{Activities: []daemon.ToolActivity{
+		{Kind: "run", Target: "go test ./...", MS: &ms, OK: &worked},
+		{Kind: "mcp", Target: "fake/echo", MS: &ms, OK: &failed},
+		{Kind: "run", Target: "sleep 600"},
+	}}
+	screen := ansi.Strip(verboseChat(t, 40, call).Viewport.View())
+	for _, want := range []string{"✓ run go test ./... 1.5s", "✗ mcp fake/echo 1.5s", "· run sleep 600"} {
+		if !strings.Contains(screen, want) {
+			t.Fatalf("card lacks %q:\n%s", want, screen)
+		}
+	}
+}

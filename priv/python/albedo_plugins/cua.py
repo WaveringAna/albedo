@@ -917,14 +917,19 @@ class _DriverClient:
         raw_envelope: bool = False,
     ) -> tuple[dict[str, Any], Record]:
         args = dict(arguments or {})
-        albedo_trace.note("cua", tool, json.dumps(args, default=str)[:512])
 
         async def call(given: dict[str, object]) -> dict[str, Any]:
             return await self.request(
                 "tools/call", {"name": tool, "arguments": given}, timeout=timeout
             )
 
-        envelope = await hook.around("cua." + tool, args, call)
+        envelope = await albedo_trace.noted(
+            "cua",
+            tool,
+            hook.around("cua." + tool, args, call),
+            lambda envelope: (envelope.get("isError") is not True, ""),
+            json.dumps(args, default=str)[:512],
+        )
         if envelope.get("isError") is True:
             raise _extract_error(tool, envelope)
         structured = envelope.get("structuredContent")

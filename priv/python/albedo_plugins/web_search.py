@@ -38,15 +38,19 @@ host: Host
 @hook.reported("web_search", {"query": "query", "limit": "limit"})
 async def web_search(query: str, limit: int = 8) -> WebSearch:
     """Search the web: a written answer and the sources behind it."""
-    found = cast(
-        dict, await host("web_search.search", {"query": query, "limit": limit})
+
+    async def search() -> WebSearch:
+        found = cast(
+            dict, await host("web_search.search", {"query": query, "limit": limit})
+        )
+        return WebSearch(
+            answer=found["answer"],
+            sources=[Record(source) for source in found["sources"]],
+        )
+
+    return await albedo_trace.noted(
+        "web", query, search(), lambda result: (True, result.markdown())
     )
-    result = WebSearch(
-        answer=found["answer"],
-        sources=[Record(source) for source in found["sources"]],
-    )
-    albedo_trace.note("web", query, result.markdown())
-    return result
 
 
 def setup(api: PythonApi) -> dict[str, object]:

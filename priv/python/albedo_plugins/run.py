@@ -297,8 +297,7 @@ class Job(JobOutput):
         )
         if watch_output is not None:
             watch_output(self.id, self._mark_read)
-        if traced:
-            albedo_trace.note("run", self.command)
+        self._done = albedo_trace.note("run", self.command) if traced else None
         data = None if isinstance(stdin, Job) else stdin
         with albedo_trace.unobserved():  # the cell ran argv, not the wrapper around it
             self.spawning = loop.create_task(self._launch(cwd, env, data, self.feed))
@@ -411,6 +410,8 @@ class Job(JobOutput):
                 )
             elif not ending.gone:
                 self.capture.write(f"\n[cleanup failed: {ending.report()}]\n")
+            if self._done is not None:
+                self._done(ok=self.exit_code == 0 and not self.timed_out)
             if self._hooked is not None:
                 self.capture.write(
                     await hook.job_ended(self._hooked, self.exit_code, self.timed_out)

@@ -381,16 +381,20 @@ class Files:
             raise ValueError("0 <= context <= 50")
         return Search(
             "files.find",
-            lambda: self._find(
+            lambda: albedo_trace.noted(
+                "search",
                 pattern,
-                path,
-                glob,
-                context,
-                max_results,
-                literal,
-                case_sensitive,
-                hidden,
-                ignored,
+                self._find(
+                    pattern,
+                    path,
+                    glob,
+                    context,
+                    max_results,
+                    literal,
+                    case_sensitive,
+                    hidden,
+                    ignored,
+                ),
             ),
         )
 
@@ -406,7 +410,6 @@ class Files:
         hidden: bool,
         ignored: bool,
     ) -> Rows:
-        albedo_trace.note("search", pattern)
         targets = _targets(path)
         _require_roots(targets)
         if not _which("rg"):

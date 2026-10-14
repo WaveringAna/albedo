@@ -172,6 +172,15 @@ assert not capture.trace.before and not capture.trace.activities
         self.assertEqual((self.app.workspace / "late.txt").read_text(), "late\n")
         self.assertEqual(self.read_trace(result["cell_id"]), trace)
 
+    def test_awaited_jobs_record_how_long_they_ran_and_how_they_ended(self):
+        _, trace = self.run_cell(
+            "ok = run('true'); await ok\nbad = run('false'); await bad"
+        )
+        runs = {a["target"]: a for a in trace["activities"] if a["kind"] == "run"}
+        self.assertIs(runs["true"]["ok"], True)
+        self.assertIs(runs["false"]["ok"], False)
+        self.assertGreaterEqual(runs["true"]["ms"], 0)
+
     def test_display_records_trace_activity_and_returns_line_count(self):
         result, trace = self.run_cell(
             "receipt = display('@@ -1 +1,2 @@\\n line 1\\n+line 2\\n', title='example.py', description='added a line')\n"

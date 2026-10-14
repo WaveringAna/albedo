@@ -5,8 +5,8 @@ This is observation, not a sandbox. External processes and native writes may byp
 
 from __future__ import annotations
 
-from collections.abc import Callable, Generator
-from typing import Protocol, cast
+from collections.abc import Awaitable, Callable, Generator
+from typing import Protocol, TypeVar, cast
 import albedo_shell
 import contextlib
 import contextvars
@@ -14,6 +14,7 @@ import difflib
 import os
 import shlex
 import sys
+import time
 
 GUARD = contextvars.ContextVar("albedo_trace_guard", default=False)
 LIMIT = 128 * 1024
@@ -51,25 +52,46 @@ def command(args: object) -> str:
     return shlex.join([name, *argv[1:]])
 
 
+# Records how a noted call ended: whether it worked, and what the person
+# watching sees of its result.
+Done = Callable[..., None]
+
+
+def _ignored(ok: bool = True, detail: str = "") -> None:
+    return None
+
+
 class Trace:
     def __init__(self):
-        self.activities: dict[tuple[str, str], dict[str, str]] = {}
+        self.activities: dict[tuple[str, str], dict[str, object]] = {}
         self.before: dict[str, str | None] = {}
         self.truncated: bool = False
         self.sealed: bool = False
 
-    def activity(self, kind: str, target: object, detail: str = "") -> None:
+    def activity(self, kind: str, target: object, detail: str = "") -> Done:
         if self.sealed:
-            return
+            return _ignored
         if len(self.activities) >= 64:
             self.truncated = True
-        else:
-            target = str(target)[:1000]
-            entry = {"kind": kind, "target": target}
+            return _ignored
+        target = str(target)[:1000]
+        entry: dict[str, object] = {"kind": kind, "target": target}
+        started = time.monotonic()
+
+        def done(ok: bool = True, detail: str = "") -> None:
+            if self.sealed:
+                return
+            entry["ms"] = round((time.monotonic() - started) * 1000)
+            entry["ok"] = ok
             if detail:
                 self.truncated |= len(detail) > 16000
                 entry["detail"] = detail[:16000]
-            self.activities[(kind, target)] = entry
+
+        if detail:
+            self.truncated |= len(detail) > 16000
+            entry["detail"] = detail[:16000]
+        self.activities[(kind, target)] = entry
+        return done
 
     def renamed(self, source: str, destination: str) -> None:
         if self.sealed or source == destination:
@@ -109,7 +131,11 @@ class Trace:
         )
         detail = f"{header}\n\n{content}" if header and content else (header or content)
         self.truncated |= len(detail) > 16000
-        entry = {"kind": "display", "target": label, "detail": detail[:16000]}
+        entry: dict[str, object] = {
+            "kind": "display",
+            "target": label,
+            "detail": detail[:16000],
+        }
         self.activities[(f"display:{len(self.activities)}", label)] = entry
 
     def finish(self) -> dict[str, object]:
@@ -199,13 +225,39 @@ def _no_capture() -> None:
 current: Callable[[], TracedCapture | None] = _no_capture
 
 
-def note(kind: str, target: str, detail: str = "") -> None:
+def note(kind: str, target: str, detail: str = "") -> Done:
     """Record what a harness tool did for the running cell, as it was asked
     for: the command run() started, the pattern files.find searched. `detail`
-    is what the person watching sees of its result, such as a search's answer."""
+    is what the person watching sees of its result, such as a search's answer.
+    Answers `done(ok=True, detail="")`, which records how the call ended and
+    how long it took, while the cell's trace is still open."""
     capture = current()
-    if capture is not None:
-        capture.trace.activity(kind, target, detail)
+    if capture is None:
+        return _ignored
+    return capture.trace.activity(kind, target, detail)
+
+
+Result = TypeVar("Result")
+
+
+async def noted(
+    kind: str,
+    target: str,
+    work: Awaitable[Result],
+    judge: Callable[[Result], tuple[bool, str]] | None = None,
+    detail: str = "",
+) -> Result:
+    """Awaits `work`, noted in the cell's trace with how long it took and how
+    it ended: failed if it raised, else as `judge` reads its result (whether
+    it worked, and the detail to show in place of `detail`)."""
+    done = note(kind, target, detail)
+    try:
+        result = await work
+    except BaseException:
+        done(ok=False)
+        raise
+    done(*(judge(result) if judge else ()))
+    return result
 
 
 def install(get_capture: Callable[[], TracedCapture | None]) -> None:

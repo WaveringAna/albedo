@@ -119,8 +119,13 @@ func (r TranscriptRenderer) cardCalls(trace *daemon.ToolTrace, flags DisplayFlag
 	}
 	var rows []string
 	for _, act := range trace.Activities {
-		verb := DefaultStyles.Busy.Render(act.Kind)
-		rows = append(rows, markChrome+panel(verb+" "+DefaultStyles.Faint.Render(r.shortTarget(act.Target, isPath(act), width-ansi.StringWidth(act.Kind)-1))))
+		head := callGlyph(act) + " " + DefaultStyles.Busy.Render(act.Kind) + " "
+		took := ""
+		if act.MS != nil {
+			took = " " + DefaultStyles.Decor.Render(formatMillis(*act.MS))
+		}
+		target := r.shortTarget(act.Target, isPath(act), width-ansi.StringWidth(head)-ansi.StringWidth(took))
+		rows = append(rows, markChrome+panel(head+DefaultStyles.Faint.Render(target)+took))
 		if act.Kind == "display" && act.Detail != "" {
 			for _, row := range r.renderDisplayRows(act.Target, act.Detail, width) {
 				rows = append(rows, panel(row))
@@ -132,7 +137,7 @@ func (r TranscriptRenderer) cardCalls(trace *daemon.ToolTrace, flags DisplayFlag
 		if change.Kind == "diff" {
 			counts = "  " + r.diffCounts(change)
 		}
-		line := r.traceLine(DefaultStyles.Busy.Render("edited"), change.Path, true, width-ansi.StringWidth(counts))
+		line := r.traceLine(DefaultStyles.Success.Render("✓")+" "+DefaultStyles.Busy.Render("edited"), change.Path, true, width-ansi.StringWidth(counts))
 		rows = append(rows, markChrome+panel(fit(line, counts, width)))
 		if !flags.Diffs {
 			continue
@@ -207,8 +212,7 @@ func cardName(entry HistoryEntry) string {
 	return entry.ToolName
 }
 
-// cellDuration is how long a python cell ran, from its result: 40ms, 1.5s,
-// or past a minute 2m 3s.
+// cellDuration is how long a python cell ran, from its result.
 func cellDuration(entry HistoryEntry) string {
 	var cell struct {
 		Duration float64 `json:"duration"`
@@ -216,13 +220,32 @@ func cellDuration(entry HistoryEntry) string {
 	if entry.ToolName != "python" || json.Unmarshal([]byte(entry.ToolResult), &cell) != nil || cell.Duration <= 0 {
 		return ""
 	}
-	switch ms := int64(cell.Duration * 1000); {
+	return formatMillis(int64(cell.Duration * 1000))
+}
+
+// formatMillis is a call's duration as pi shows it: 40ms, 1.5s, or past a
+// minute 2m 3s.
+func formatMillis(ms int64) string {
+	switch {
 	case ms < 1000:
 		return fmt.Sprintf("%dms", ms)
 	case ms < 60_000:
-		return fmt.Sprintf("%.1fs", cell.Duration)
+		return fmt.Sprintf("%.1fs", float64(ms)/1000)
 	default:
 		return formatElapsed(ms)
+	}
+}
+
+// callGlyph is how a call inside a cell ended: ✓ or ✗, or · for a call
+// still running when its cell finished, or one that records no outcome.
+func callGlyph(act daemon.ToolActivity) string {
+	switch {
+	case act.OK == nil:
+		return DefaultStyles.Faint.Render("·")
+	case *act.OK:
+		return DefaultStyles.Success.Render("✓")
+	default:
+		return DefaultStyles.Error.Render("✗")
 	}
 }
 

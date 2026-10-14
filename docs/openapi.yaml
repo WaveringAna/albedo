@@ -6939,7 +6939,7 @@ components:
       properties:
         kind:
           type: string
-          enum: [read, search, list, run, web, display]
+          enum: [read, search, list, run, web, display, mcp, cua]
         target:
           type: string
           maxLength: 1000
@@ -6947,6 +6947,13 @@ components:
           type: string
           maxLength: 16000
           description: What the person watching sees of the result, as markdown; a web search's answer and sources, or displayed content.
+        ms:
+          type: integer
+          minimum: 0
+          description: How long the call took, when it ended while its cell's trace was open.
+        ok:
+          type: boolean
+          description: Whether the call worked, when it ended while its cell's trace was open.
       required: [kind, target]
       additionalProperties: false
     FileDiff:

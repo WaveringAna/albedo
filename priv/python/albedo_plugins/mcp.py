@@ -79,13 +79,18 @@ class Mcp:
         """Call one operation by advertised name or `server/tool`; keyword
         arguments join `arguments`."""
         merged = {**(arguments or {}), **kwargs}
-        albedo_trace.note("mcp", name, str(merged)[:512])
 
         async def call(given: dict[str, object]) -> Record:
             result = await self._host("mcp.call", given)
             return cast(Record, _record(result))
 
-        return await hook.around("mcp.call", {"name": name, "arguments": merged}, call)
+        return await albedo_trace.noted(
+            "mcp",
+            name,
+            hook.around("mcp.call", {"name": name, "arguments": merged}, call),
+            lambda result: (not getattr(result, "isError", False), ""),
+            str(merged)[:512],
+        )
 
 
 def _identifier(value: str) -> str:
