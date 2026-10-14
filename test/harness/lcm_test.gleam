@@ -487,6 +487,12 @@ pub fn a_later_leaf_is_told_what_earlier_leaves_remember_test() -> Nil {
           request.instructions,
           "already remembers",
         ))
+        list.each(
+          ["Task:", "Settled:", "Contracts:", "Changes:", "Plan:", "Open:"],
+          fn(section) {
+            should.be_true(string.contains(request.instructions, section))
+          },
+        )
         should.be_false(mentions(request, "work 1 "))
         Ok("steps three to five")
       },
@@ -563,4 +569,11 @@ pub fn switching_to_lcm_points_at_the_archive_and_folds_the_live_rows_into_one_l
   |> should.equal(#(s5.source.seq, s8.source.seq))
   live.summary |> should.equal("the live window, summarized once")
   runtime.stop(host)
+}
+
+pub fn merges_keep_the_memory_sections_test() -> Nil {
+  list.each(["Settled:", "Contracts:", "Plan:", "Open:"], fn(section) {
+    should.be_true(string.contains(lcm.merge_instructions, section))
+  })
+  should.be_true(string.contains(lcm.merge_instructions, "stays settled"))
 }
