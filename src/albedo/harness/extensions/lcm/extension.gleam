@@ -631,10 +631,19 @@ fn summarize_leaf(
   }
   case eligible, list.last(eligible) {
     [first, ..], Ok(last) -> {
+      // The rows go out as the request's provider reads them, the way a
+      // turn's history does: another provider's output is converted first.
+      use inputs <- result.try(
+        context.project(
+          list.map(eligible, fn(item) {
+            #(item.entry.provider, item.entry.input)
+          }),
+        ),
+      )
       use summary <- result.try(summary(
         context,
         remembered,
-        list.map(eligible, fn(item) { item.entry.input }),
+        inputs,
         leaf_instructions,
         source_text,
       ))

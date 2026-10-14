@@ -320,6 +320,7 @@ pub fn the_trigger_reads_the_tokens_the_provider_reported_test() -> Nil {
       types.any_images,
       reported,
       fn() { Nil },
+      compaction.unprojected,
     )
   }
   // Under the 90% trigger by albedo's own count, over it by the provider's.
@@ -327,6 +328,43 @@ pub fn the_trigger_reads_the_tokens_the_provider_reported_test() -> Nil {
   quiet.compacted |> should.be_false
   let assert Ok(due) = prepare(Some(19_000))
   due.compacted |> should.be_true
+  runtime.stop(host)
+}
+
+pub fn a_leaf_summarizes_its_rows_as_the_requests_provider_reads_them_test() -> Nil {
+  let #(host, session) = host(20_000)
+  let history = [
+    types.User("the task"),
+    ..list.flat_map([1, 2, 3, 4], fn(i) {
+      let n = int.to_string(i)
+      [
+        types.Assistant("look " <> n),
+        types.ToolOutput("call-" <> n, string.repeat("r", 4000), []),
+      ]
+    })
+  ]
+  save(host, history)
+  let assert Ok(_) =
+    runtime.prepare_view_scoped(
+      host,
+      session,
+      "model",
+      "model",
+      None,
+      "",
+      fn(request) {
+        // Every evicted row arrives converted, none as it was written.
+        should.be_true(mentions(request, "converted"))
+        should.be_false(mentions(request, "look 1"))
+        Ok("folded")
+      },
+      history,
+      True,
+      types.any_images,
+      None,
+      fn() { Nil },
+      fn(rows) { Ok(list.map(rows, fn(_) { types.Assistant("converted") })) },
+    )
   runtime.stop(host)
 }
 

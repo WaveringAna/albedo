@@ -64,7 +64,21 @@ pub type Context {
     /// Called once a compaction is about to start, so whoever waits on the
     /// request can say why it takes longer.
     compacting: fn() -> Nil,
+    /// Durable rows, each with the provider that wrote it, as the provider
+    /// carrying the request reads them: the conversion a turn's history goes
+    /// through, so another provider's or protocol's output arrives in a shape
+    /// this one accepts.
+    project: fn(List(#(Option(String), types.Input))) ->
+      Result(List(types.Input), String),
   )
+}
+
+/// The rows as they were written, for a caller with no provider to convert
+/// them for.
+pub fn unprojected(
+  rows: List(#(Option(String), types.Input)),
+) -> Result(List(types.Input), String) {
+  Ok(list.map(rows, fn(row) { row.1 }))
 }
 
 /// The provider carrying a request and the input kinds its model accepts, as

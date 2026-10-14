@@ -4,6 +4,7 @@ import albedo/daemon/conversation
 import albedo/daemon/events as view
 import albedo/daemon/image_fit
 import albedo/daemon/message_content
+import albedo/daemon/projection
 import albedo/daemon/requests
 import albedo/daemon/store
 import albedo/daemon/stream_trace
@@ -500,6 +501,12 @@ fn prepare(
     state.upstream.images,
     state.reported,
     state.report_compacting,
+    fn(rows) {
+      rows
+      |> list.reverse
+      |> list.map(fn(row) { transcript.Entry(row.1, None, row.0, None, None) })
+      |> projection.for_model(state.profile, state.upstream.protocol)
+    },
   )
 }
 
