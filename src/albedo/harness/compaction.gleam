@@ -64,12 +64,8 @@ pub type Context {
     /// Called once a compaction is about to start, so whoever waits on the
     /// request can say why it takes longer.
     compacting: fn() -> Nil,
-    /// Durable rows, each with the provider that wrote it, as the provider
-    /// carrying the request reads them: the conversion a turn's history goes
-    /// through, so another provider's or protocol's output arrives in a shape
-    /// this one accepts.
-    project: fn(List(#(Option(String), types.Input))) ->
-      Result(List(types.Input), String),
+    /// How this request's provider reads durable rows; see `Project`.
+    project: Project,
   )
 }
 
@@ -113,9 +109,17 @@ pub type Folds {
     /// The strategy that writes these folds. It reads its own state directly,
     /// so the runtime leaves this provider out while that strategy is active.
     owner: String,
-    apply: fn(store.Store, String, List(types.Input)) -> Result(Prior, String),
+    apply: fn(store.Store, String, Project, List(types.Input)) ->
+      Result(Prior, String),
   )
 }
+
+/// Durable rows, each with the provider that wrote it, as the provider
+/// carrying the request reads them: the conversion a turn's history goes
+/// through, so another provider's or protocol's output arrives in a shape
+/// this one accepts.
+pub type Project =
+  fn(List(#(Option(String), types.Input))) -> Result(List(types.Input), String)
 
 /// `Ok(Nil)` when `condition` holds, else `Error(message)`: the guard every
 /// strategy and retrieval tool states as a boolean with one error string.
@@ -238,10 +242,16 @@ pub fn compose_prior(
   providers: List(Folds),
   ledger: store.Store,
   session: String,
+  project: Project,
 ) -> fn(List(types.Input)) -> Result(Prior, String) {
   fn(history) {
     list.try_fold(providers, Prior([], history), fn(prior, provider) {
-      use next <- result.try(provider.apply(ledger, session, prior.rest))
+      use next <- result.try(provider.apply(
+        ledger,
+        session,
+        project,
+        prior.rest,
+      ))
       Ok(Prior(list.append(prior.folds, next.folds), next.rest))
     })
   }

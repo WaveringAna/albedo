@@ -246,7 +246,11 @@ pub fn memory() -> extension.Extension {
       extension.FoldPlugin(compaction.Folds(
         "snapcompact",
         "snapcompact",
-        stored_prior,
+        // The archive cut is counted in user messages, which no provider's
+        // conversion changes.
+        fn(ledger, session, _, history) {
+          stored_prior(ledger, session, history)
+        },
       )),
     ],
     initialise,

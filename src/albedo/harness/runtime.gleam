@@ -1334,8 +1334,7 @@ pub fn prepare_view_scoped(
   images: types.ImageLimits,
   reported: Option(Int),
   compacting: fn() -> Nil,
-  project: fn(List(#(Option(String), types.Input))) ->
-    Result(List(types.Input), String),
+  project: compaction.Project,
 ) -> Result(compaction.Prepared, String) {
   view_scoped(
     runtime,
@@ -1399,8 +1398,7 @@ fn view_scoped(
   images: types.ImageLimits,
   reported: Option(Int),
   compacting: fn() -> Nil,
-  project: fn(List(#(Option(String), types.Input))) ->
-    Result(List(types.Input), String),
+  project: compaction.Project,
   view: fn(compaction.Strategy, compaction.Context, List(types.Input)) ->
     Result(compaction.Prepared, String),
 ) -> Result(compaction.Prepared, String) {
@@ -1434,6 +1432,7 @@ fn view_scoped(
             }),
             runtime.ledger,
             session.id,
+            project,
           ),
           reader(info),
           images,

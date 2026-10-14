@@ -556,7 +556,7 @@ fn archive() -> extension.Extension {
     [],
     [
       extension.FoldPlugin(
-        compaction.Folds("archive", "archive", fn(_, _, history) {
+        compaction.Folds("archive", "archive", fn(_, _, _, history) {
           let assert Ok(#(_, rest)) =
             compaction.resume(history, compaction.cut_of(list.take(history, 4)))
           Ok(compaction.Prior([types.User("[archive pages]")], rest))
@@ -606,6 +606,105 @@ pub fn switching_to_lcm_points_at_the_archive_and_folds_the_live_rows_into_one_l
   #(live.first_seq, live.last_seq)
   |> should.equal(#(s5.source.seq, s8.source.seq))
   live.summary |> should.equal("the live window, summarized once")
+  runtime.stop(host)
+}
+
+/// Another strategy's folds whose rest the transcript cannot be matched to:
+/// its first message was rewritten after the cut.
+fn mismatched_archive() -> extension.Extension {
+  extension.Extension(
+    "archive",
+    "stand-in whose cut the transcript cannot place",
+    [],
+    [
+      extension.FoldPlugin(
+        compaction.Folds("archive", "archive", fn(_, _, _, history) {
+          let assert Ok(#(_, [_, ..rest])) =
+            compaction.resume(history, compaction.cut_of(list.take(history, 4)))
+          Ok(
+            compaction.Prior([types.User("[archive pages]")], [
+              types.User("rewritten"),
+              ..rest
+            ]),
+          )
+        }),
+      ),
+    ],
+    fn(_) { Ok(Nil) },
+  )
+}
+
+pub fn an_unplaceable_cut_folds_from_the_first_row_instead_of_failing_test() -> Nil {
+  let #(host, session) = host_with(2000, [mismatched_archive()])
+  let history = [
+    types.User("old one"),
+    types.Assistant("old answer one"),
+    types.User("old two"),
+    types.Assistant("old answer two"),
+    types.User("live one"),
+    types.Assistant("live answer one"),
+    types.User("tail"),
+  ]
+  save(host, history)
+  let assert Ok(_) =
+    compact(
+      host,
+      session,
+      fn(request) {
+        should.be_true(mentions(request, "old one"))
+        Ok("everything before the tail")
+      },
+      history,
+    )
+  let assert Ok([leaf]) = graph.frontier(runtime.ledger(host), "lcm-test")
+  leaf.summary |> should.equal("everything before the tail")
+  runtime.stop(host)
+}
+
+pub fn the_tail_is_the_uncovered_rows_as_the_provider_reads_them_test() -> Nil {
+  let #(host, session) = host(100_000)
+  let history = [
+    types.User("the task"),
+    types.Assistant("first look " <> string.repeat("w", 30_000)),
+    types.User("next ask"),
+    types.Assistant("second look"),
+  ]
+  save(host, history)
+  let assert Ok(_) = compact(host, session, fn(_) { Ok("folded") }, history)
+  // A conversion that is not one input per row, as a protocol switch makes.
+  let project = fn(rows: List(#(option.Option(String), types.Input))) {
+    Ok(
+      list.flat_map(rows, fn(row) {
+        case row.1 {
+          types.Assistant(text) -> [types.Assistant("converted " <> text)]
+          input -> [input, input]
+        }
+      }),
+    )
+  }
+  let assert Ok(prepared) =
+    runtime.prepare_view_scoped(
+      host,
+      session,
+      "model",
+      "model",
+      None,
+      "",
+      fn(_) { panic as "no compaction is due" },
+      history,
+      False,
+      types.any_images,
+      None,
+      fn() { Nil },
+      project,
+    )
+  let assert [_, ..tail] = prepared.inputs
+  tail
+  |> should.equal([
+    types.User("next ask"),
+    types.User("next ask"),
+    types.Assistant("converted second look"),
+  ])
   runtime.stop(host)
 }
 

@@ -4,6 +4,7 @@
 import albedo/daemon/conversation
 import albedo/daemon/family
 import albedo/daemon/store
+import albedo/harness/compaction
 import albedo/harness/extensions
 import albedo/harness/extensions/lcm/extension as lcm
 import albedo/harness/extensions/lcm/graph
@@ -93,13 +94,15 @@ pub fn below_trigger_and_stored_prior_do_not_decode_archived_payloads_test() -> 
     types.Assistant("tail"),
   ]) = prepared
   should.be_true(string.contains(summary, "archived prefix"))
-  decodes |> should.equal(0)
+  // Only the two rows after the summary, which the request shows as the
+  // provider reads them; the archived prefix is never decoded.
+  decodes |> should.equal(2)
   let #(prior, decodes) =
     count_decodes(store.owner(ledger), fn() {
-      lcm.stored_prior(ledger, "preparation", inputs)
+      lcm.stored_prior(ledger, "preparation", compaction.unprojected, inputs)
     })
   let assert Ok(_) = prior
-  decodes |> should.equal(0)
+  decodes |> should.equal(2)
   let assert Ok(_) =
     conversation.commit_from(
       ledger,
@@ -140,7 +143,9 @@ pub fn below_trigger_and_stored_prior_do_not_decode_archived_payloads_test() -> 
       )
     })
   let assert Ok(_) = compacted
-  decodes |> should.equal(3)
+  // The same three rows, then the two the new leaf leaves uncovered, read
+  // once as the request shows them to size any relief.
+  decodes |> should.equal(5)
   graph.last_seq(ledger, "preparation") |> should.equal(Ok(last.source.seq + 2))
   runtime.stop(host)
 }

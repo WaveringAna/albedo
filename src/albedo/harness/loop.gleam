@@ -506,6 +506,8 @@ fn prepare(
       |> list.reverse
       |> list.map(fn(row) { transcript.Entry(row.1, None, row.0, None, None) })
       |> projection.for_model(state.profile, state.upstream.protocol)
+      // The projection answers newest first, as the session keeps history.
+      |> result.map(list.reverse)
     },
   )
 }

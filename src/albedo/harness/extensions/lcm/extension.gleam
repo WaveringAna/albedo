@@ -83,6 +83,7 @@ fn bundle(
 pub fn stored_prior(
   ledger: store.Store,
   session: String,
+  project: compaction.Project,
   history: List(types.Input),
 ) -> Result(compaction.Prior, String) {
   use available <- result.try(graph.storage_available(ledger))
@@ -100,7 +101,14 @@ pub fn stored_prior(
         snapshot,
         covered,
       ))
-      Ok(split(frontier, history, stats))
+      use uncovered <- result.try(uncovered_of(
+        ledger,
+        project,
+        snapshot,
+        covered,
+        stats,
+      ))
+      Ok(split(frontier, history, uncovered))
     }
   }
 }
@@ -151,7 +159,8 @@ fn project(
   context: compaction.Context,
   history: List(types.Input),
 ) -> Result(compaction.View, String) {
-  use Saved(frontier:, stats:, ..) <- result.try(saved(context))
+  use Saved(frontier:, ..) as state <- result.try(saved(context))
+  use uncovered <- result.try(shown(context, state))
   let window =
     compaction.effective_window(config.context_window_tokens, context, history)
   // Until the first compaction seeds the graph, the request is what the
@@ -160,7 +169,7 @@ fn project(
     [] ->
       context.prior(history)
       |> result.map(fn(prior) { list.append(prior.folds, prior.rest) })
-    _ -> Ok(projection(frontier, history, stats))
+    _ -> Ok(projection(frontier, history, uncovered))
   })
   // The provider's count for the previous request, once this run has one.
   let #(measured, measure) = case context.reported {
@@ -265,15 +274,16 @@ fn compact(
     [] -> Ok(Nil)
     _ -> summarize_leaf(context, frontier, eligible)
   })
-  use Saved(frontier:, stats:, ..) <- result.try(saved(context))
+  use Saved(frontier:, ..) as state <- result.try(saved(context))
+  use uncovered <- result.try(shown(context, state))
   use frontier <- result.try(
-    case landing(frontier, history, stats, context, capacity, config) {
+    case landing(frontier, history, uncovered, context, capacity, config) {
       Some(landing) ->
-        relieve(context, frontier, history, stats, landing, pressure_passes)
+        relieve(context, frontier, history, uncovered, landing, pressure_passes)
       None -> Ok(frontier)
     },
   )
-  let next = projection(frontier, history, stats)
+  let next = projection(frontier, history, uncovered)
   use _ <- result.try(compaction.require(
     context.pinned_tokens + compaction.estimate_inputs(next) < capacity
       || context.force,
@@ -323,7 +333,7 @@ fn before_newest_turn(
 fn landing(
   frontier: List(graph.Node),
   history: List(types.Input),
-  stats: conversation.SourceStats,
+  uncovered: Uncovered,
   context: compaction.Context,
   capacity: Int,
   config: Config,
@@ -331,7 +341,7 @@ fn landing(
   let trigger = capacity * trigger_percent(config, capacity) / 100
   let floor =
     context.pinned_tokens
-    + compaction.estimate_inputs(projection(frontier, history, stats))
+    + compaction.estimate_inputs(projection(frontier, history, uncovered))
     - compaction.estimate_inputs(list.map(frontier, node_input))
   case floor < trigger / 2, floor < trigger {
     True, _ -> Some(trigger / 2)
@@ -349,13 +359,13 @@ fn relieve(
   context: compaction.Context,
   frontier: List(graph.Node),
   history: List(types.Input),
-  stats: conversation.SourceStats,
+  uncovered: Uncovered,
   landing: Int,
   passes: Int,
 ) -> Result(List(graph.Node), String) {
   let estimated =
     context.pinned_tokens
-    + compaction.estimate_inputs(projection(frontier, history, stats))
+    + compaction.estimate_inputs(projection(frontier, history, uncovered))
   use <- bool.guard(estimated <= landing || passes == 0, Ok(frontier))
   case oldest_batch(frontier, estimated - landing, 0, []) {
     [] -> Ok(frontier)
@@ -385,7 +395,7 @@ fn relieve(
       use next <- result.try(graph.frontier(context.store, context.session))
       case batch {
         [_] -> Ok(next)
-        _ -> relieve(context, next, history, stats, landing, passes - 1)
+        _ -> relieve(context, next, history, uncovered, landing, passes - 1)
       }
     }
   }
@@ -428,35 +438,43 @@ fn seed(
 ) -> Result(Bool, String) {
   use compaction.Prior(folds, rest) <- result.try(context.prior(history))
   use <- bool.guard(folds == [], Ok(False))
-  let unplaced = "the previous strategy's cut does not match the transcript"
-  use cut <- result.try(
-    conversation.latest_user_seq(
-      context.store,
-      snapshot,
-      list.count(rest, compaction.is_user),
-    )
-    |> result.try(option.to_result(_, unplaced)),
-  )
-  // `rest` starts at the cut's user message; its row must be that message.
-  use opening <- result.try(
-    conversation.fold_sources(
-      context.store,
-      snapshot,
-      cut,
-      cut,
-      None,
-      fn(_, item) { conversation.Stop(Some(item.entry.input)) },
-    ),
-  )
-  use _ <- result.try(compaction.require(
-    opening == option.from_result(list.first(rest)),
-    unplaced,
-  ))
-  use archived <- result.try(conversation.rows_before(
+  use cut <- result.try(conversation.latest_user_seq(
     context.store,
     snapshot,
-    cut,
+    list.count(rest, compaction.is_user),
   ))
+  // `rest` starts at the cut's user message, and the rows from there,
+  // projected as a turn's are, must be exactly `rest`.
+  use placed <- result.try(case cut {
+    None -> Ok(None)
+    Some(cut) ->
+      conversation.fold_sources(
+        context.store,
+        snapshot,
+        cut,
+        snapshot.upper,
+        [],
+        fn(rows, item) {
+          conversation.Continue([
+            #(item.entry.provider, item.entry.input),
+            ..rows
+          ])
+        },
+      )
+      |> result.try(fn(rows) { context.project(list.reverse(rows)) })
+      |> result.map(fn(projected) {
+        case projected == rest {
+          True -> Some(cut)
+          False -> None
+        }
+      })
+  })
+  use archived <- result.try(case placed {
+    Some(cut) -> conversation.rows_before(context.store, snapshot, cut)
+    None -> Ok(None)
+  })
+  // A cut the transcript cannot place seeds nothing: the compaction folds
+  // from the first row, as for a session that never had another strategy.
   case archived {
     None -> Ok(False)
     Some(#(first, last)) ->
@@ -481,6 +499,13 @@ type Saved {
   )
 }
 
+/// What a request shows of the rows the frontier does not cover: those rows
+/// as the request's provider reads them, and the newest user message when
+/// the frontier has folded it.
+type Uncovered {
+  Uncovered(tail: List(types.Input), task: Option(#(Int, types.Input)))
+}
+
 fn saved(context: compaction.Context) -> Result(Saved, String) {
   use snapshot <- result.try(conversation.snapshot(
     context.store,
@@ -494,6 +519,56 @@ fn saved(context: compaction.Context) -> Result(Saved, String) {
     covered,
   ))
   Ok(Saved(snapshot, covered, frontier, stats))
+}
+
+/// What a request built on `saved` shows of the rows its frontier does not
+/// cover; nothing to read while the frontier is empty.
+fn shown(
+  context: compaction.Context,
+  saved: Saved,
+) -> Result(Uncovered, String) {
+  case saved.frontier {
+    [] -> Ok(Uncovered([], None))
+    _ ->
+      uncovered_of(
+        context.store,
+        context.project,
+        saved.snapshot,
+        saved.covered,
+        saved.stats,
+      )
+  }
+}
+
+/// The rows after `covered`, projected the way a turn projects its history.
+/// A cut falls between steps and so never inside one response's items, which
+/// a conversion may merge or split: these rows project to exactly the end of
+/// the history they belong to, whatever providers wrote it.
+fn uncovered_of(
+  ledger: store.Store,
+  project: compaction.Project,
+  snapshot: conversation.Snapshot,
+  covered: Int,
+  stats: conversation.SourceStats,
+) -> Result(Uncovered, String) {
+  let rows = fn(first, last) {
+    conversation.fold_sources(ledger, snapshot, first, last, [], fn(rows, item) {
+      conversation.Continue([#(item.entry.provider, item.entry.input), ..rows])
+    })
+    |> result.try(fn(rows) { project(list.reverse(rows)) })
+  }
+  use tail <- result.try(rows(covered + 1, snapshot.upper))
+  use task <- result.try(case stats.latest_user {
+    Some(seq) if seq <= covered ->
+      rows(seq, seq)
+      |> result.map(fn(inputs) {
+        list.first(inputs)
+        |> option.from_result
+        |> option.map(fn(input) { #(seq, input) })
+      })
+    _ -> Ok(None)
+  })
+  Ok(Uncovered(tail, task))
 }
 
 fn view(
@@ -540,47 +615,36 @@ fn view(
 fn projection(
   frontier: List(graph.Node),
   history: List(types.Input),
-  stats: conversation.SourceStats,
+  uncovered: Uncovered,
 ) -> List(types.Input) {
-  let compaction.Prior(folds, rest) = split(frontier, history, stats)
+  let compaction.Prior(folds, rest) = split(frontier, history, uncovered)
   list.append(folds, rest)
 }
 
-/// The frontier's nodes, then every row they do not cover, verbatim. History
-/// holds one input per transcript row, so the uncovered rows are its newest
-/// `uncovered_rows` inputs, wherever the cursor falls inside a turn. When the
-/// newest user message is folded, it stays verbatim too, before the first
-/// node that reaches past it: a long agentic turn keeps its task word for
-/// word however many times its steps fold.
+/// The frontier's nodes, then every row they do not cover. When the newest
+/// user message is folded, it stays verbatim too, before the first node that
+/// reaches past it: a long agentic turn keeps its task word for word however
+/// many times its steps fold.
 fn split(
   frontier: List(graph.Node),
   history: List(types.Input),
-  stats: conversation.SourceStats,
+  uncovered: Uncovered,
 ) -> compaction.Prior {
-  case frontier {
-    [] -> compaction.Prior([], history)
-    nodes -> {
-      let length = list.length(history)
-      let folds = case
-        stats.latest_user,
-        stats.after_latest_user >= stats.uncovered_rows
-      {
-        Some(seq), True -> {
-          let #(before, after) =
-            list.split_while(nodes, fn(node) { node.last_seq < seq })
-          let task =
-            list.drop(history, length - 1 - stats.after_latest_user)
-            |> list.take(1)
-          list.flatten([
-            list.map(before, node_input),
-            task,
-            list.map(after, node_input),
-          ])
-        }
-        _, _ -> list.map(nodes, node_input)
-      }
-      compaction.Prior(folds, list.drop(history, length - stats.uncovered_rows))
+  case frontier, uncovered.task {
+    [], _ -> compaction.Prior([], history)
+    nodes, Some(#(seq, task)) -> {
+      let #(before, after) =
+        list.split_while(nodes, fn(node) { node.last_seq < seq })
+      compaction.Prior(
+        list.flatten([
+          list.map(before, node_input),
+          [task],
+          list.map(after, node_input),
+        ]),
+        uncovered.tail,
+      )
     }
+    nodes, None -> compaction.Prior(list.map(nodes, node_input), uncovered.tail)
   }
 }
 
