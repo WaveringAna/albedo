@@ -677,6 +677,63 @@ fn split_runs(
   }
 }
 
+/// `items` cut into steps, the turns a cut may fall between: a user message,
+/// a model response, or the tool results that follow one. A model response
+/// and its results stay apart from what comes after but never from each
+/// other, so a cut cannot strand a tool call from its result.
+pub fn split_steps(
+  items: List(a),
+  input: fn(a) -> types.Input,
+) -> List(List(a)) {
+  split_step_runs(items, input, None, [], [])
+}
+
+fn split_step_runs(
+  items: List(a),
+  input: fn(a) -> types.Input,
+  previous: Option(types.Input),
+  current: List(a),
+  complete: List(List(a)),
+) -> List(List(a)) {
+  case items, current {
+    [], [] -> list.reverse(complete)
+    [], _ -> list.reverse([list.reverse(current), ..complete])
+    [item, ..rest], _ -> {
+      let this = input(item)
+      let starts = case previous {
+        None -> True
+        Some(before) -> step_starts(before, this)
+      }
+      case starts, current {
+        True, [_, ..] ->
+          split_step_runs(rest, input, Some(this), [item], [
+            list.reverse(current),
+            ..complete
+          ])
+        _, _ ->
+          split_step_runs(rest, input, Some(this), [item, ..current], complete)
+      }
+    }
+  }
+}
+
+/// A user message always starts a step; a model item starts one unless it
+/// continues the model's own response; a tool result never does.
+fn step_starts(previous: types.Input, input: types.Input) -> Bool {
+  case is_user(input), is_model(input), is_model(previous) {
+    True, _, _ -> True
+    _, True, False -> True
+    _, _, _ -> False
+  }
+}
+
+fn is_model(input: types.Input) -> Bool {
+  case input {
+    types.Replay(_) | types.Assistant(_) -> True
+    _ -> False
+  }
+}
+
 pub fn is_user(input: types.Input) -> Bool {
   case input {
     types.User(_) | types.UserImage(_, _) -> True

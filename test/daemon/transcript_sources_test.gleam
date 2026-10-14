@@ -101,7 +101,7 @@ pub fn metadata_range_and_backfill_resume_test() -> Nil {
   quarantined |> should.equal([#(260, <<0>>)])
   let assert Ok(snapshot) = conversation.snapshot(ledger, "session")
   let assert Ok(stats) = conversation.source_stats(ledger, snapshot, 128)
-  stats |> should.equal(conversation.SourceStats(Some(260), True, 132))
+  stats |> should.equal(conversation.SourceStats(Some(260), True, 132, 132))
   let assert Ok(selected) =
     conversation.fold_sources(ledger, snapshot, 128, 132, [], fn(acc, row) {
       conversation.Continue([row.source.seq, ..acc])

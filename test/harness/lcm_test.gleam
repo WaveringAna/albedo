@@ -149,7 +149,8 @@ fn leaves(host: runtime.Runtime, count: Int, size: Int) -> List(types.Input) {
         )
       }),
     )
-  let tail = [types.User("tail"), types.Assistant("tail answer")]
+  // One step: always the verbatim tail, so these tests fold nothing new.
+  let tail = [types.User("tail")]
   save(host, tail)
   list.append(raw, tail)
 }
@@ -337,6 +338,53 @@ pub fn one_compaction_folds_its_whole_window_into_one_leaf_test() -> Nil {
   #(leaf.first_seq, leaf.last_seq)
   |> should.equal(#(s1.source.seq, s6.source.seq))
   leaf.summary |> should.equal("all three turns")
+  runtime.stop(host)
+}
+
+pub fn one_long_agentic_turn_folds_its_older_steps_test() -> Nil {
+  let #(host, session) = host(100_000)
+  let ledger = runtime.ledger(host)
+  let step = fn(i) {
+    let n = int.to_string(i)
+    [
+      types.Assistant("work " <> n <> " " <> string.repeat("w", 4000)),
+      types.ToolOutput(
+        "call-" <> n,
+        "result " <> n <> string.repeat("r", 4000),
+        [],
+      ),
+    ]
+  }
+  let history = [
+    types.User("the task"),
+    ..list.flat_map([1, 2, 3, 4, 5, 6], step)
+  ]
+  save(host, history)
+
+  let assert Ok(view) =
+    compact(
+      host,
+      session,
+      fn(request) {
+        case mentions(request, "work 5"), mentions(request, "work 6") {
+          True, False -> Ok("the first five steps")
+          _, _ -> panic as "the fold holds every step but the newest"
+        }
+      },
+      history,
+    )
+  let assert Ok(rows) = conversation.load_sources(ledger, "lcm-test")
+  let assert Ok([leaf]) = graph.frontier(ledger, "lcm-test")
+  let assert [first, ..] = rows
+  let assert Ok(fifth_result) = list.first(list.drop(rows, 10))
+  #(leaf.first_seq, leaf.last_seq)
+  |> should.equal(#(first.source.seq, fifth_result.source.seq))
+  let assert [summary, last_work, last_result] = view
+  should.be_true(case summary {
+    types.User(text) -> string.contains(text, "the first five steps")
+    _ -> False
+  })
+  list.drop(history, 11) |> should.equal([last_work, last_result])
   runtime.stop(host)
 }
 

@@ -35,10 +35,6 @@ pub type Config {
   )
 }
 
-type ModelUnit {
-  ModelUnit(items: List(types.Input), tokens: Int)
-}
-
 fn default_config() -> Config {
   Config(None, None, 20)
 }
@@ -104,7 +100,7 @@ pub fn stored_prior(
         snapshot,
         covered,
       ))
-      Ok(split(frontier, history, stats, 0))
+      Ok(split(frontier, history, stats))
     }
   }
 }
@@ -164,7 +160,7 @@ fn project(
     [] ->
       context.prior(history)
       |> result.map(fn(prior) { list.append(prior.folds, prior.rest) })
-    _ -> Ok(projection(frontier, history, stats, 1))
+    _ -> Ok(projection(frontier, history, stats))
   })
   let estimated = context.pinned_tokens + compaction.estimate_inputs(current)
   case window {
@@ -235,14 +231,20 @@ fn compact(
     )
     |> result.map(list.reverse),
   )
-  // A forced compaction folds even a history the tail would hold whole,
-  // keeping only the newest turn.
+  // The tail's share means something only of a real window; a forced
+  // compaction without one, or whose tail would hold everything, keeps the
+  // newest user turn instead.
+  let known =
+    option.is_some(context.session_window)
+    || option.is_some(config.context_window_tokens)
+    || option.is_some(context.capacity)
   let eligible = case
-    before_tail(uncovered, capacity * config.tail_percent / 100),
-    context.force
+    known,
+    before_tail(uncovered, capacity * config.tail_percent / 100)
   {
-    [], True -> before_tail(uncovered, 0)
-    eligible, _ -> eligible
+    True, [_, ..] as rows -> rows
+    _, _ if context.force -> before_newest_turn(uncovered)
+    _, rows -> rows
   }
   use _ <- result.try(compaction.require(
     eligible != [] || frontier != [],
@@ -260,7 +262,7 @@ fn compact(
       None -> Ok(frontier)
     },
   )
-  let next = projection(frontier, history, stats, 1)
+  let next = projection(frontier, history, stats)
   use _ <- result.try(compaction.require(
     context.pinned_tokens + compaction.estimate_inputs(next) < capacity
       || context.force,
@@ -269,16 +271,14 @@ fn compact(
   Ok(frontier != previous)
 }
 
-/// The rows before the verbatim tail: the newest whole turns that fit
-/// `budget` tokens, and at least the newest turn, stay out of the fold.
+/// The rows before the verbatim tail: the newest steps that fit `budget`
+/// tokens, and at least the newest step, stay out of the fold. Steps cut
+/// inside a turn too, so one long agentic turn still folds its older work.
 fn before_tail(
   rows: List(transcript.SourcedEntry),
   budget: Int,
 ) -> List(transcript.SourcedEntry) {
-  let turns =
-    compaction.split_starts(rows, fn(row) {
-      compaction.is_user(row.entry.input)
-    })
+  let turns = compaction.split_steps(rows, fn(row) { row.entry.input })
   let kept =
     turns
     |> list.reverse
@@ -288,6 +288,22 @@ fn before_tail(
   turns
   |> list.take(list.length(turns) - list.length(kept))
   |> list.flatten
+}
+
+/// The rows before the newest user message, for a forced compaction that
+/// keeps the newest turn whole; inside a session that is a single turn, the
+/// rows before its newest step.
+fn before_newest_turn(
+  rows: List(transcript.SourcedEntry),
+) -> List(transcript.SourcedEntry) {
+  let turns =
+    compaction.split_starts(rows, fn(row) {
+      compaction.is_user(row.entry.input)
+    })
+  case turns {
+    [_, _, ..] -> list.flatten(list.take(turns, list.length(turns) - 1))
+    _ -> before_tail(rows, 0)
+  }
 }
 
 /// Where relief aims: half the trigger, or the trigger itself when the
@@ -304,7 +320,7 @@ fn landing(
   let trigger = capacity * trigger_percent(config, capacity) / 100
   let floor =
     context.pinned_tokens
-    + compaction.estimate_inputs(projection(frontier, history, stats, 1))
+    + compaction.estimate_inputs(projection(frontier, history, stats))
     - compaction.estimate_inputs(list.map(frontier, node_input))
   case floor < trigger / 2, floor < trigger {
     True, _ -> Some(trigger / 2)
@@ -327,7 +343,7 @@ fn relieve(
 ) -> Result(List(graph.Node), String) {
   let estimated =
     context.pinned_tokens
-    + compaction.estimate_inputs(projection(frontier, history, stats, 1))
+    + compaction.estimate_inputs(projection(frontier, history, stats))
   use <- bool.guard(estimated <= landing || passes == 0, Ok(frontier))
   case oldest_batch(frontier, estimated - landing, 0, []) {
     [] -> Ok(frontier)
@@ -496,33 +512,26 @@ fn projection(
   frontier: List(graph.Node),
   history: List(types.Input),
   stats: conversation.SourceStats,
-  minimum_tail_units: Int,
 ) -> List(types.Input) {
-  let compaction.Prior(folds, rest) =
-    split(frontier, history, stats, minimum_tail_units)
+  let compaction.Prior(folds, rest) = split(frontier, history, stats)
   list.append(folds, rest)
 }
 
-/// The frontier's nodes, then every turn they do not cover, verbatim.
+/// The frontier's nodes, then every row they do not cover, verbatim. History
+/// holds one input per transcript row, so the uncovered rows are its newest
+/// `uncovered_rows` inputs, wherever the cursor falls inside a turn.
 fn split(
   frontier: List(graph.Node),
   history: List(types.Input),
   stats: conversation.SourceStats,
-  minimum_tail_units: Int,
 ) -> compaction.Prior {
   case frontier {
     [] -> compaction.Prior([], history)
-    nodes -> {
-      // An assistant or tool result can follow the cursor without a user row.
-      // Retain its whole projected unit until live source references permit
-      // a narrower cut.
-      let minimum = case stats.uncovered {
-        False -> minimum_tail_units
-        True -> int.max(1, minimum_tail_units)
-      }
-      let tail = retain_tail(history, int.max(minimum, stats.uncovered_users))
-      compaction.Prior(list.map(nodes, node_input), tail)
-    }
+    nodes ->
+      compaction.Prior(
+        list.map(nodes, node_input),
+        list.drop(history, list.length(history) - stats.uncovered_rows),
+      )
   }
 }
 
@@ -565,21 +574,6 @@ fn summarize_leaf(
     }
     _, _ -> Error("cannot summarize an empty source range")
   }
-}
-
-fn model_units(history: List(types.Input)) -> List(ModelUnit) {
-  compaction.split_starts(history, compaction.is_user)
-  |> list.map(fn(items) { ModelUnit(items, compaction.estimate_inputs(items)) })
-}
-
-fn retain_tail(
-  history: List(types.Input),
-  required_units: Int,
-) -> List(types.Input) {
-  model_units(history)
-  |> list.reverse
-  |> compaction.keep_tail(required_units, None, fn(unit) { unit.tokens })
-  |> list.flat_map(fn(unit) { unit.items })
 }
 
 pub const merge_instructions =
