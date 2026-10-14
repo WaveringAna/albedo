@@ -34,6 +34,7 @@ call made inside a cell, whose `within` is the model call that ran the cell:
 | `mail.submit` | `to`, `body` |
 | `agents.spawn`, `.cancel`, `.close`, `.cancel_all`, `.delete` | what the daemon is asked |
 | `web_search` | `query`, `limit` |
+| `cua.<tool>` | the driver tool's arguments (clicks, typing, keys, launches, and its reads) |
 | `browser.goto`, `.click`, `.fill`, `.press`, `.evaluate` | the method's own (`url`, `ref`, `text`, `key`, `expression`) |
 
 The file and command argument names are Claude Code's, so command hooks read
@@ -46,7 +47,7 @@ The kernel reports these through the core `hook.call` and `hook.called` host
 routes (`priv/python/albedo_plugins/hook.py`, which the kernel loads only while
 some extension hooks the session). A block raises `PermissionError` in the
 cell, a rewrite changes only the arguments it names, context and notes print
-into the cell's output, and `run` reports `Called` when its job ends, with
+into the cell's output (a call's output is cut to 64 KiB before hooks see it), and `run` reports `Called` when its job ends, with
 `{"exit_code", "timed_out"}` as output and the hooks' lines appended to the
 job's output. A kernel that cannot reach the daemon within 30 s runs the call
 anyway.

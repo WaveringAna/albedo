@@ -23,6 +23,7 @@ from typing import Any, cast
 
 from albedo_api import PythonApi, Record, check_timeout
 import albedo_trace
+from albedo_plugins import hook
 
 STARTUP_TIMEOUT = 15.0
 CALL_TIMEOUT = 60.0
@@ -917,11 +918,13 @@ class _DriverClient:
     ) -> tuple[dict[str, Any], Record]:
         args = dict(arguments or {})
         albedo_trace.note("cua", tool, json.dumps(args, default=str)[:512])
-        envelope = await self.request(
-            "tools/call",
-            {"name": tool, "arguments": args},
-            timeout=timeout,
-        )
+
+        async def call(given: dict[str, object]) -> dict[str, Any]:
+            return await self.request(
+                "tools/call", {"name": tool, "arguments": given}, timeout=timeout
+            )
+
+        envelope = await hook.around("cua." + tool, args, call)
         if envelope.get("isError") is True:
             raise _extract_error(tool, envelope)
         structured = envelope.get("structuredContent")

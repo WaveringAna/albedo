@@ -120,7 +120,7 @@ fn answered(
 ```
 
 ### Calls inside a cell
-Most of what the model does happens inside one `python` call, so hooks also hear about the calls a cell makes: `run`, `files.edit`, `files.write`, `mcp.call`, `mail.submit`, the agents calls that change another session, `web_search`, the browser actions, and the remote equivalents. Their `within` names the model call that ran the cell. A block raises `PermissionError` in the cell.
+Most of what the model does happens inside one `python` call, so hooks also hear about the calls a cell makes: `run`, `files.edit`, `files.write`, `mcp.call`, `mail.submit`, the agents calls that change another session, `web_search`, the browser actions, every `cua` driver call, and the remote equivalents. Their `within` names the model call that ran the cell. A block raises `PermissionError` in the cell.
 
 A Python plugin reports a call of its own with `albedo_plugins.hook`. Decorate the method and map its parameters to the argument names hooks see:
 

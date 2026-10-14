@@ -19,6 +19,9 @@ import albedo_trace
 Method = TypeVar("Method", bound=Callable[..., Any])
 Result = TypeVar("Result")
 
+# The most of a call's output hooks are told; a screenshot need not cross.
+OUTPUT_LIMIT = 65_536
+
 host: Host | None = None
 host_now: Callable[[str, dict[str, object]], object] | None = None
 
@@ -66,7 +69,7 @@ class Call:
     def outcome(self, output: str) -> dict[str, object]:
         return {
             "call": self.call,
-            "output": output,
+            "output": output[:OUTPUT_LIMIT],
             "started_ms": self.started,
             "finished_ms": now_ms(),
         }
