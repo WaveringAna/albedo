@@ -173,10 +173,10 @@
           "write": 1.0
         }
       ],
-      "read": 0.1,
+      "read": 0.05,
       "evidence": "measured",
       "source": "provider_requests: 625 gemini-4-argon calls, hit rate by gap after a call that hit",
-      "note": "Cloud Code Assist argon: after a hit the next call hit every time up to 7 min (535 of 539 under 30s, 35 of 35 from 1 to 7 min), missed the only two past 7 min. Few samples past 2 min, so the tier stays short of what was seen. The quota fit puts a cached token at 0.03-0.1 of an uncached one; 0.1 is the documented discount. Each variant id caches apart.",
+      "note": "Cloud Code Assist argon: after a hit the next call hit every time up to 7 min (535 of 539 under 30s, 35 of 35 from 1 to 7 min), missed the only two past 7 min. Few samples past 2 min, so the tier stays short of what was seen. Google documents a 95% discount on argon cache hits, and the quota fit puts a cached token at 0.03-0.1 of an uncached one. Each variant id caches apart.",
       "checked": "2026-10-14"
     },
     {
