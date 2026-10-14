@@ -287,17 +287,20 @@ fold([{attest, _, _} = Segment | Rest], Hasher, Out) ->
     fold(Rest, done, [Value | Out]).
 
 %% The next response headers or body chunk, waiting at most Timeout ms for
-%% each read instead of the budget the connection was opened with.
+%% each read, body chunks included, instead of the budget the connection was
+%% opened with.
 receive_message({albedo_http, Owner, Ref} = Connection, Timeout)
         when Owner =:= self(), is_integer(Timeout), Timeout > 0 ->
     case get({?MODULE, Ref}) of
         undefined -> receive_message(Connection);
         #{timeout := Opened} = State ->
-            put({?MODULE, Ref}, State#{timeout := Timeout}),
+            put({?MODULE, Ref}, State#{timeout := Timeout, body_wait => Timeout}),
             Result = receive_message(Connection),
             case get({?MODULE, Ref}) of
                 undefined -> ok;
-                After -> put({?MODULE, Ref}, After#{timeout := Opened})
+                After ->
+                    put({?MODULE, Ref},
+                        maps:remove(body_wait, After#{timeout := Opened}))
             end,
             Result
     end;
@@ -354,9 +357,10 @@ next(#{phase := {body, Framing, Buffer}} = State) ->
                 _ -> closed_early
             end,
             %% Servers that buffer a whole tool call send nothing while
-            %% they generate it; keepalive, not a deadline, finds a dead peer.
+            %% they generate it; keepalive, not a deadline, finds a dead peer,
+            %% unless the caller set a budget for this read.
             await(State, Rest, fun(More) -> {body, Next, More} end, OnClose,
-                  infinity);
+                  maps:get(body_wait, State, infinity));
         {error, Reason} ->
             {error, {transport_error, <<"response failed: ", Reason/binary>>}, State}
     end.

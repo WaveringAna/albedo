@@ -142,12 +142,11 @@ pub fn headers(client: Client, model: String) -> List(#(String, String)) {
 /// One streaming POST whose SSE payloads a reducer turns into events and a
 /// turn. A provider with its own wire format drives this directly.
 ///
-/// `timeout_ms` bounds connecting and each wait for transport data. With
-/// `first_event_timeout_ms`, the response headers and its first event share
-/// that budget instead, counted from when the request went out, and
-/// `timeout_ms` bounds the waits after it: a model that thinks silently
-/// before it streams anything gets its own allowance, while a dead
-/// connection still fails on the shorter one.
+/// `timeout_ms` bounds connecting and the wait for response headers; after
+/// them a silent body is awaited while TCP keepalive finds the peer alive.
+/// With `first_event_timeout_ms`, the headers and the first event share that
+/// budget instead, counted from when the request went out: a model that
+/// thinks silently before it streams anything gets its own allowance.
 pub type Exchange {
   Exchange(
     url: String,
@@ -414,20 +413,26 @@ fn elapsed(thinking: Thinking, now: Int) -> Int {
 }
 
 /// The next message, within what is left of the first-event deadline while
-/// one runs, else within the idle budget.
+/// one runs. Otherwise headers wait the idle budget and a body chunk waits
+/// while the connection is alive.
 fn receive(
   connection: transport.Connection,
   wait: Wait,
   phase: types.TimeoutPhase,
 ) -> Result(transport.Message, Error) {
-  let #(budget, waited) = case wait.first_event, phase {
+  case wait.first_event, phase {
     Some(#(deadline, total)), types.AwaitingHeaders
     | Some(#(deadline, total)), types.AwaitingFirstEvent
-    -> #(int.max(1, deadline - clock.monotonic_ms()), total)
-    _, _ -> #(wait.idle_ms, wait.idle_ms)
+    ->
+      transport.receive_within(
+        connection,
+        int.max(1, deadline - clock.monotonic_ms()),
+      )
+      |> result.map_error(transport_error(_, phase, total))
+    _, _ ->
+      transport.receive(connection)
+      |> result.map_error(transport_error(_, phase, wait.idle_ms))
   }
-  transport.receive_within(connection, budget)
-  |> result.map_error(transport_error(_, phase, waited))
 }
 
 fn transport_error(
