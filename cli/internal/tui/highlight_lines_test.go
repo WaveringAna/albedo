@@ -16,8 +16,9 @@ func TestHighlightLinesMatchesOneLineAtATime(t *testing.T) {
 	lines := []string{"func main() {", "\tx := \"a string\" // note", "\treturn 42", "}", "", "/* open comment", "import \"fmt\""}
 	for _, name := range []string{"x.go", "x.py", "x.gleam", "x.md", "noext"} {
 		lexer := lexerFor(name)
-		got := HighlightLines(lines, lexer)
-		if again := HighlightLines(lines, lexer); !slices.Equal(again, got) {
+		cache := &highlightCache{}
+		got := HighlightLines(lines, lexer, cache)
+		if again := HighlightLines(lines, lexer, cache); !slices.Equal(again, got) {
 			t.Errorf("%s: cached lines differ: %q", name, again)
 		}
 		for i, line := range lines {

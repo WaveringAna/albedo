@@ -19,8 +19,8 @@ import (
 // HighlightLines colors lines of code the way a reply's code blocks are
 // colored: the lexer chroma matched to the file, in the theme built from the
 // terminal's palette. Each line is lexed alone; lines no lexer claims stay as
-// they are. Lines already colored come from highlights.
-func HighlightLines(lines []string, lexer chroma.Lexer) []string {
+// they are. Lines already colored come from cache, which may be nil.
+func HighlightLines(lines []string, lexer chroma.Lexer, cache *highlightCache) []string {
 	if lexer == nil || len(lines) == 0 {
 		return lines
 	}
@@ -31,7 +31,7 @@ func HighlightLines(lines []string, lexer chroma.Lexer) []string {
 	out := make([]string, len(lines))
 	var missing []int
 	for i, line := range lines {
-		if colored, ok := highlights.get(key(line)); ok {
+		if colored, ok := cache.get(key(line)); ok {
 			out[i] = colored
 		} else {
 			missing = append(missing, i)
@@ -64,16 +64,16 @@ func HighlightLines(lines []string, lexer chroma.Lexer) []string {
 	for n, i := range missing {
 		// the separator leaves an empty styled run on each line
 		out[i] = emptyRuns.ReplaceAllString(colored[n], "")
-		highlights.put(key(lines[i]), out[i])
+		cache.put(key(lines[i]), out[i])
 	}
 	return out
 }
 
 type highlightKey struct{ lexer, theme, line string }
 
-// highlightCache keeps colored lines up to a byte budget, then starts over:
-// toggling diffs re-renders every diff in the transcript, and lexing is most
-// of that work.
+// highlightCache keeps one chat's colored lines up to a byte budget, then
+// starts over: toggling diffs re-renders every diff in the transcript, and
+// lexing is most of that work. It goes with the chat that owns it.
 type highlightCache struct {
 	mu    sync.Mutex
 	lines map[highlightKey]string
@@ -82,9 +82,10 @@ type highlightCache struct {
 
 const highlightBudget = 4 << 20
 
-var highlights highlightCache
-
 func (c *highlightCache) get(key highlightKey) (string, bool) {
+	if c == nil {
+		return "", false
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	colored, ok := c.lines[key]
@@ -92,6 +93,9 @@ func (c *highlightCache) get(key highlightKey) (string, bool) {
 }
 
 func (c *highlightCache) put(key highlightKey, colored string) {
+	if c == nil {
+		return
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	size := len(key.line) + len(colored)

@@ -33,6 +33,8 @@ type TranscriptRenderer struct {
 	// Workspace roots the paths trace rows name.
 	Workspace string
 	BodyWidth int
+	// highlights keeps the chat's colored diff lines; nil keeps none.
+	highlights *highlightCache
 }
 
 func NewTranscriptRenderer() TranscriptRenderer {
@@ -227,7 +229,7 @@ func (r TranscriptRenderer) renderDiffPath(diff, path string, width int) string 
 			code = append(code, row.content)
 		}
 	}
-	code = HighlightLines(code, lexerFor(path))
+	code = HighlightLines(code, lexerFor(path), r.highlights)
 	var rows []string
 	for _, row := range parsed {
 		body := keepBackground(DefaultStyles.Faint.Render(row.content))
