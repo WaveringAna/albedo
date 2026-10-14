@@ -73,6 +73,40 @@ fn token(access: antigravity.Access) -> String {
   access.token
 }
 
+/// A request racing a cache's expiry, such as a warming ping, gives up at
+/// its first limit: a sibling or a wait would land it after the cache is gone.
+pub fn an_impatient_request_neither_hops_nor_waits_test() -> Nil {
+  let tried = process.new_subject()
+  let pool =
+    rotation.Pool(
+      current: fn() { Ok("a2") },
+      mark: fn(_, _) { Some(rotation.Marked(rotation.Brief, True)) },
+      same: fn(a, b) { a == b },
+      stream: limited_stream(["a1", "a2"], capacity, tried, fn(account) {
+        account
+      }),
+      reject: fn(_) { Nil },
+    )
+  let upstream =
+    rotation.upstream(
+      "https://cloudcode.example",
+      types.ChatCompletions,
+      pool,
+      "a1",
+      fn(_, _) { None },
+      fn(account) { account },
+      types.any_images,
+    )
+  let ping =
+    types.Request(
+      ..request(),
+      options: types.Options(..types.defaults, patient: False),
+    )
+  upstream.stream(ping, fn(_) { types.Continue })
+  |> should.equal(Error(types.HttpError(429, capacity)))
+  drain(tried, []) |> should.equal(["a1"])
+}
+
 pub fn antigravity_sessions_spread_and_stick_test() -> Nil {
   let #(root, _, home) = fixture()
   let _ = write(home, "creds.json", google_accounts)

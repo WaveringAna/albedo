@@ -307,6 +307,7 @@ fn options_decoder() -> decode.Decoder(types.Options) {
     option.or(effort, nested_effort),
     format,
     True,
+    True,
   ))
 }
 

@@ -232,10 +232,13 @@ pub type Options {
     /// one-off request, such as a summary nobody sends again, should not
     /// pay for a write; providers that cache implicitly ignore it.
     cache: Bool,
+    /// Whether a rate-limited request may wait for room or move to another
+    /// account. One racing a cache's expiry gives up at its first limit.
+    patient: Bool,
   )
 }
 
-pub const defaults = Options(None, None, [], None, None, None, None, True)
+pub const defaults = Options(None, None, [], None, None, None, None, True, True)
 
 pub type ToolChoice {
   AnyTool

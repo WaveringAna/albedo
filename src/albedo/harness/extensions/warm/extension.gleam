@@ -156,10 +156,11 @@ fn due(
 }
 
 /// A ping: the call as sent, with the smallest output budget the protocol
-/// accepts. The next one is scheduled only while the stretch still holds:
-/// a failed or refused ping ends it, and so does a cold one that should have
-/// been warm, since the TTL model was wrong — its request row keeps the
-/// evidence.
+/// accepts. It gives up at its first rate limit: a wait or another account
+/// would land it after the cache is gone, with the session waiting on it.
+/// The next one is scheduled only while the stretch still holds: a failed or
+/// refused ping ends it, and so does a cold one that should have been warm,
+/// since the TTL model was wrong — its request row keeps the evidence.
 fn ping(inbox: Subject(Message), warmer: Warmer) -> Warmer {
   case due(warmer) {
     None -> warmer
@@ -169,6 +170,7 @@ fn ping(inbox: Subject(Message), warmer: Warmer) -> Warmer {
         types.Request(
           ..call.request,
           max_output_tokens: Some(ping_budget(call.protocol)),
+          options: types.Options(..call.request.options, patient: False),
         )
       let outcome = handle.call(request, call.prefix)
       let warmer = Warmer(..warmer, pings: warmer.pings + 1)

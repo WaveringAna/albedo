@@ -186,7 +186,12 @@ pub fn upstream(
     protocol,
     fn(request, on_event) {
       served(slot, first)
-      stream(pool, first, request, on_event, budget(), fn(account) {
+      let budget = case request.options.patient {
+        True -> budget()
+        // No hop left and every wait taken: the first limit ends it.
+        False -> Budget(..budget(), hops: 0, waits: list.length(waits))
+      }
+      stream(pool, first, request, on_event, budget, fn(account) {
         served(slot, account)
       })
     },
