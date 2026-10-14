@@ -128,31 +128,31 @@ pub fn read_compact_at(
   let #(source, message) = case session_window, model_window {
     option.Some(tokens), option.Some(default_tokens) -> #(
       "session",
-      "this session compacts against a "
+      "This session compacts against a "
         <> int.to_string(tokens)
         <> "-token window (model default: "
         <> int.to_string(default_tokens)
-        <> "); /compact-at default restores the model's window",
+        <> "); /compact-at default restores the model's window.",
     )
     option.Some(tokens), option.None -> #(
       "session",
-      "this session compacts against a "
+      "This session compacts against a "
         <> int.to_string(tokens)
-        <> "-token window",
+        <> "-token window.",
     )
     option.None, option.Some(tokens) -> #(
       "model",
-      "this session uses "
+      "This session uses "
         <> state.info.model
         <> "'s "
         <> int.to_string(tokens)
-        <> "-token window; /compact-at <tokens> overrides it for this session",
+        <> "-token window; /compact-at <tokens> overrides it for this session.",
     )
     option.None, option.None -> #(
       "unknown",
-      "no context window is configured or catalogued for "
+      "No context window is configured or catalogued for "
         <> state.info.model
-        <> "; /compact-at <tokens> sets one for this session",
+        <> "; /compact-at <tokens> sets one for this session.",
     )
   }
   Ok(

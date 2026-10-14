@@ -1613,6 +1613,41 @@ paths:
           enum: [extensions, skills, instructions, mcp, commands]
       - $ref: '#/components/parameters/Limit'
       - $ref: '#/components/parameters/Next'
+  /sessions/{session_id}/context-window:
+    get:
+      operationId: getContextWindow
+      summary: Read the window this session compacts against
+      tags:
+      - sessions
+      responses:
+        '200':
+          description: Successful result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContextWindow'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '405':
+          $ref: '#/components/responses/Problem405'
+        '406':
+          $ref: '#/components/responses/Problem406'
+        '503':
+          $ref: '#/components/responses/Problem503'
+        '404':
+          $ref: '#/components/responses/Problem404'
+      description: 'The session''s own window outranks the model''s. Reads do not prepare a request, so the
+        answer is available while the prepared context is pending. Requires capability `context: 1`.'
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ID'
   /sessions/{session_id}/reload:
     post:
       operationId: reloadSession
@@ -7552,6 +7587,33 @@ components:
           - $ref: '#/components/schemas/PageToken'
           - type: 'null'
       required: [items, next]
+      additionalProperties: false
+    ContextWindow:
+      type: object
+      properties:
+        context_window:
+          description: The window set for this session. Null when it uses the model's.
+          anyOf:
+          - $ref: '#/components/schemas/Counter'
+          - type: 'null'
+        model_context_tokens:
+          description: The model's own window, with any raised cap or context limit applied. Null when the
+            catalog does not know the model.
+          anyOf:
+          - $ref: '#/components/schemas/Counter'
+          - type: 'null'
+        effective_context_tokens:
+          description: The window compaction measures against.
+          anyOf:
+          - $ref: '#/components/schemas/Counter'
+          - type: 'null'
+        source:
+          type: string
+          enum: [session, model, unknown]
+        message:
+          type: string
+          description: One sentence a client can show as it is.
+      required: [context_window, model_context_tokens, effective_context_tokens, source, message]
       additionalProperties: false
     ContextRead:
       oneOf:

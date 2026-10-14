@@ -502,6 +502,22 @@ type ContextSummary struct {
 	State               string            `json:"state"`
 }
 
+// ContextWindow defines model for ContextWindow.
+type ContextWindow struct {
+	// ContextWindow The window set for this session. Null when it uses the model's.
+	ContextWindow *Counter `json:"context_window" nullable:"true"`
+
+	// EffectiveContextTokens The window compaction measures against.
+	EffectiveContextTokens *Counter `json:"effective_context_tokens" nullable:"true"`
+
+	// Message One sentence a client can show as it is.
+	Message string `json:"message"`
+
+	// ModelContextTokens The model's own window, with any raised cap or context limit applied. Null when the catalog does not know the model.
+	ModelContextTokens *Counter `json:"model_context_tokens" nullable:"true"`
+	Source             string   `json:"source"`
+}
+
 // ContinueInputRequest defines model for ContinueInputRequest.
 type ContinueInputRequest struct {
 	ClientID *string `json:"client_id,omitempty"`
@@ -4200,6 +4216,13 @@ type ClientInterface interface {
 	// Corresponds with GET /sessions/{session_id}/context (the `GetContext` operationId).
 	GetContext(ctx context.Context, sessionID ID, params *GetContextParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	// GetContextWindow Read the window this session compacts against
+	//
+	// The session's own window outranks the model's. Reads do not prepare a request, so the answer is available while the prepared context is pending. Requires capability `context: 1`.
+	//
+	// Corresponds with GET /sessions/{session_id}/context-window (the `GetContextWindow` operationId).
+	GetContextWindow(ctx context.Context, sessionID ID, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// GetHistory Page history or fork checkpoints
 	//
 	// Use only one of before/after/next. Durable positions are independent of actor replay. Pages are ascending and preserve complete display groups where bounded.
@@ -5730,6 +5753,23 @@ func (c *Client) CompactSession(ctx context.Context, sessionID ID, body CompactS
 // Corresponds with GET /sessions/{session_id}/context (the `GetContext` operationId).
 func (c *Client) GetContext(ctx context.Context, sessionID ID, params *GetContextParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewGetContextRequest(c.Server, sessionID, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// GetContextWindow Read the window this session compacts against
+//
+// The session's own window outranks the model's. Reads do not prepare a request, so the answer is available while the prepared context is pending. Requires capability `context: 1`.
+//
+// Corresponds with GET /sessions/{session_id}/context-window (the `GetContextWindow` operationId).
+func (c *Client) GetContextWindow(ctx context.Context, sessionID ID, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetContextWindowRequest(c.Server, sessionID)
 	if err != nil {
 		return nil, err
 	}
@@ -9624,6 +9664,40 @@ func NewGetContextRequest(server string, sessionID ID, params *GetContextParams)
 			rawQueryFragments = append(rawQueryFragments, encoded)
 		}
 		queryURL.RawQuery = strings.Join(rawQueryFragments, "&")
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewGetContextWindowRequest constructs an http.Request for the GetContextWindow method
+func NewGetContextWindowRequest(server string, sessionID ID) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "session_id", sessionID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/sessions/%s/context-window", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
 	}
 
 	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)

@@ -482,6 +482,13 @@ pub fn commands(
   actor.call(session, 15_000, ReadCommands)
 }
 
+/// The window this session compacts against and where it comes from.
+pub fn read_compact_at(session: Session) -> Result(json.Json, String) {
+  actor_call.try_call(session, 5000, ReadCompactAt)
+  |> result.replace_error("context window unavailable")
+  |> result.flatten
+}
+
 pub fn interrupt(session: Session) -> Bool {
   actor.call(session, 5000, Interrupt)
 }
@@ -1953,7 +1960,7 @@ fn command_op(
     command.EffortGet -> actor.call(session, 5000, ReadEffort)
     command.EffortSelect(level) ->
       actor.call(session, 5000, ChangeEffort(level, _))
-    command.CompactAtGet -> actor.call(session, 5000, ReadCompactAt)
+    command.CompactAtGet -> read_compact_at(session)
     command.CompactAtSet(tokens) ->
       actor.call(session, 5000, ChangeCompactAt(tokens, _))
     command.ContextSummary -> Ok(context(session))

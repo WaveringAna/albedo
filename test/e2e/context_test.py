@@ -186,6 +186,12 @@ class ContextTest(unittest.TestCase):
         with self.app.api(configuration) as response:
             self.assertEqual(json.load(response)["context_window"], 50000)
             etag = response.headers["ETag"]
+        window = self.read(f"/sessions/{session}/context-window")
+        self.assertEqual(window["context_window"], 50000)
+        self.assertEqual(window["effective_context_tokens"], 50000)
+        self.assertEqual(window["model_context_tokens"], 200000)
+        self.assertEqual(window["source"], "session")
+        self.assertIn("50000-token window", window["message"])
         self.app.prompt(session, "probe compact-at via python").close()
         self.app.idle(session)
         snapshot = self.read(f"/sessions/{session}/context")
@@ -204,6 +210,14 @@ class ContextTest(unittest.TestCase):
             self.assertIsNone(json.load(response)["context_window"])
         # Clearing the session window invalidates the prepared context snapshot.
         self.assertEqual(self.read(f"/sessions/{session}/context")["state"], "pending")
+        # The window answers without a prepared request.
+        window = self.read(f"/sessions/{session}/context-window")
+        self.assertIsNone(window["context_window"])
+        self.assertEqual(window["effective_context_tokens"], 200000)
+        self.assertEqual(window["source"], "model")
+        with self.assertRaises(urllib.error.HTTPError) as missing:
+            self.read(f"/sessions/{operation_id()}/context-window")
+        self.assertEqual(missing.exception.code, 404)
         self.app.prompt(session, "back to the catalog window").close()
         self.app.idle(session)
         compaction = self.read(f"/sessions/{session}/context")["compaction"]
@@ -234,6 +248,9 @@ class ContextTest(unittest.TestCase):
         self.assertEqual(fixture_model["effective_context_tokens"], 100000)
         self.assertEqual(fixture_model["max_context_tokens"], 200000)
         self.assertFalse(fixture_model["raised"])
+        window = self.read(f"/sessions/{session}/context-window")
+        self.assertEqual(window["model_context_tokens"], 100000)
+        self.assertEqual(window["effective_context_tokens"], 100000)
 
         self.app.prompt(session, "compact against context-limits.json").close()
         self.app.idle(session)

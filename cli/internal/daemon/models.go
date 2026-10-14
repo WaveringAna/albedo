@@ -13,19 +13,18 @@ import (
 )
 
 type Model struct {
-	ID, Label, CapKey                             string
-	Efforts, Input                                []string
-	Context, EffectiveContext, MaxContext, Output int
-	Raised                                        bool
+	ID, Label, CapKey           string
+	Efforts, Input              []string
+	Context, MaxContext, Output int
+	Raised                      bool
 }
 type EffortResult struct {
 	Effort, Message, ETag string
 	Available             []string
 }
 type CompactAtResult struct {
-	ContextWindow    *int64
-	EffectiveContext int
-	Message, ETag    string
+	ContextWindow *int64
+	Message, ETag string
 }
 type ModelSelection struct{ Provider, Model, Protocol, Effort, ETag, DefaultETag, ModelsETag string }
 type ModelSelectionRequest struct{ Model, Provider, Effort, ETag string }
@@ -69,7 +68,7 @@ func listModels(ctx context.Context, conn *Connection, params protocol.ListModel
 			if row.ID == "" || row.CapKey == "" || row.Efforts == nil {
 				return fieldError("model")
 			}
-			model := Model{ID: row.ID, Label: row.Label, CapKey: row.CapKey, Input: row.InputModalities, Context: int(value(row.DefaultContextTokens)), EffectiveContext: int(value(row.EffectiveContextTokens)), MaxContext: int(value(row.MaxContextTokens)), Output: int(value(row.MaxOutputTokens)), Raised: row.Raised}
+			model := Model{ID: row.ID, Label: row.Label, CapKey: row.CapKey, Input: row.InputModalities, Context: int(value(row.DefaultContextTokens)), MaxContext: int(value(row.MaxContextTokens)), Output: int(value(row.MaxOutputTokens)), Raised: row.Raised}
 			for _, effort := range row.Efforts {
 				model.Efforts = append(model.Efforts, effort.ID)
 			}
@@ -193,42 +192,17 @@ func ParseTokenWindow(raw string) (int64, error) {
 	return tokens, nil
 }
 
+// ReadCompactAt reports the window the session compacts against, in the
+// daemon's words.
 func ReadCompactAt(ctx context.Context, conn *Connection, session Session) (CompactAtResult, error) {
-	configuration, err := GetSessionConfiguration(ctx, conn, session.ID)
+	var window protocol.ContextWindow
+	err := executeRead(ctx, conn, operation{Capability: "context", Name: "read context window", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
+		return protocol.NewGetContextWindowRequest(base, session.ID)
+	}, Policy: readRecovery}, func(data []byte) error { return decodeRequired(data, &window) })
 	if err != nil {
 		return CompactAtResult{}, err
 	}
-	var modelWindow int
-	if session.Model != "" {
-		params := protocol.ListModelsParams{Model: &session.Model}
-		if session.Provider != "" {
-			params.ProviderProfile = &session.Provider
-		}
-		if models, listErr := listModels(ctx, conn, params); listErr == nil {
-			for _, model := range models {
-				if model.ID == session.Model {
-					modelWindow = model.EffectiveContext
-					break
-				}
-			}
-		}
-	}
-	window := configuration.Value.ContextWindow
-	effective := modelWindow
-	var message string
-	switch {
-	case window != nil && modelWindow > 0:
-		effective = int(*window)
-		message = fmt.Sprintf("This session compacts against a %d-token window (model default: %d); /compact-at default restores the model's window.", *window, modelWindow)
-	case window != nil:
-		effective = int(*window)
-		message = fmt.Sprintf("This session compacts against a %d-token window.", *window)
-	case modelWindow > 0:
-		message = fmt.Sprintf("This session uses %s's %d-token window; /compact-at <tokens> overrides it for this session.", session.Model, modelWindow)
-	default:
-		message = fmt.Sprintf("No context window is configured or catalogued for %s; /compact-at <tokens> sets one for this session.", session.Model)
-	}
-	return CompactAtResult{ContextWindow: window, EffectiveContext: effective, Message: message, ETag: configuration.ETag}, nil
+	return CompactAtResult{ContextWindow: window.ContextWindow, Message: window.Message}, nil
 }
 
 // SelectCompactAt sets or clears the session's context window override.
@@ -247,7 +221,7 @@ func SelectCompactAt(ctx context.Context, conn *Connection, session Session, raw
 		return CompactAtResult{}, err
 	}
 	if window != nil {
-		return CompactAtResult{ContextWindow: result.ContextWindow, EffectiveContext: int(*window), Message: fmt.Sprintf("Context window for this session set to %d tokens.", *window), ETag: result.ETag}, nil
+		return CompactAtResult{ContextWindow: result.ContextWindow, Message: fmt.Sprintf("Context window for this session set to %d tokens.", *window), ETag: result.ETag}, nil
 	}
 	return CompactAtResult{ContextWindow: nil, Message: "Restored the model's default context window for this session.", ETag: result.ETag}, nil
 }

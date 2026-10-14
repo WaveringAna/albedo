@@ -1280,6 +1280,33 @@ pub fn delete(
   http_api.answer(outcome)
 }
 
+/// The window a session compacts against: its own, else its model's.
+pub fn context_window(
+  registry: Subject(Message),
+  id: String,
+  req: request.Request(BitArray),
+) -> response.Response(mist.ResponseData) {
+  let outcome = {
+    use _ <- result.try(http_api.json_parameters(req, []))
+    use host <- result.try(
+      registry.host(registry) |> result.map_error(http_api.failure),
+    )
+    use _ <- result.try(
+      conversation.get(runtime.ledger(host), id)
+      |> result.map_error(http_api.failure),
+    )
+    use worker <- result.try(
+      actor.call(registry, 5000, Lookup(id, _))
+      |> result.map_error(http_api.failure),
+    )
+    use window <- result.try(
+      session.read_compact_at(worker) |> result.map_error(http_api.failure),
+    )
+    Ok(http_api.reply(200, window))
+  }
+  http_api.answer(outcome)
+}
+
 pub fn upgrade(
   registry: Subject(Message),
   id: String,

@@ -92,6 +92,7 @@ own section. An omitted method is unsupported. `GET` defaults to JSON.
 | `/sessions/{session_id}/history/{entry_id}` | GET | Read full content of a large transcript entry in bounded pieces |
 | `/sessions/{session_id}/active-output/{content_id}` | GET | Read an unfinished output prefix fixed by a captured snapshot |
 | `/sessions/{session_id}/context` | GET | Prepared request inspection and provider request records |
+| `/sessions/{session_id}/context-window` | GET | The window this session compacts against, its source, and a sentence to show |
 | `/sessions/{session_id}/catalog` | GET | Fresh discovery and separately identified loaded composition |
 | `/sessions/{session_id}/reload` | POST | Reload session composition, model catalogs, or both |
 | `/sessions/{session_id}/kernel/upgrade` | POST | Explicitly replace this session's Python kernel |

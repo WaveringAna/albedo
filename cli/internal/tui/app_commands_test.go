@@ -268,6 +268,21 @@ func TestPreviewCallbackKeepsConnectionAcrossAppChanges(t *testing.T) {
 		t.Fatalf("preview followed changed app state %+v", msg)
 	}
 }
+func TestCompactAtWithoutArgumentsShowsTheDaemonsSentence(t *testing.T) {
+	conn := commandTestConnection(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "GET" || r.URL.Path != "/sessions/original/context-window" {
+			t.Errorf("unexpected compact-at read %s %s", r.Method, r.URL)
+		}
+		_, _ = w.Write([]byte(`{"context_window":null,"model_context_tokens":200000,"effective_context_tokens":200000,"source":"model","message":"This session uses current's 200000-token window."}`))
+	})
+	session := &daemon.Session{ID: "original", Model: "current"}
+	app := &AppModel{Conn: conn, ActiveSession: session, Chat: ChatModel{SessionID: "original", Model: "current"}}
+	app.CommandGen = 3
+	msg := app.executeCommandCmd("/compact-at", "", 3)().(commandExecutedMsg)
+	if msg.Err != nil || msg.WindowChanged || msg.Message != "This session uses current's 200000-token window." {
+		t.Fatalf("compact-at read failed: %+v", msg)
+	}
+}
 func TestCompactAtCommandUpdatesSessionAndChatWindow(t *testing.T) {
 	var patched map[string]any
 	conn := commandTestConnection(t, func(w http.ResponseWriter, r *http.Request) {
