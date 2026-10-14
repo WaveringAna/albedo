@@ -288,6 +288,61 @@ fn responses_parts_decoder() -> decode.Decoder(#(String, List(types.ToolCall))) 
   }
 }
 
+/// The readable reasoning an assistant output item carries: chat-completions
+/// `reasoning_content` or `reasoning`, or a Responses reasoning item's summary
+/// and reasoning text. Encrypted reasoning and signatures are opaque outside
+/// their own provider request and contribute nothing.
+pub fn assistant_thinking(item: types.ReplayItem) -> String {
+  let decoder = case types.replay_protocol(item) {
+    types.ChatCompletions -> chat_thinking_decoder()
+    types.Responses -> responses_thinking_decoder()
+  }
+  types.inspect_item(item, decoder) |> result.unwrap("")
+}
+
+fn chat_thinking_decoder() -> decode.Decoder(String) {
+  let text = fn(key) {
+    decode.optional_field(
+      key,
+      "",
+      decode.optional(decode.string) |> decode.map(option.unwrap(_, "")),
+      decode.success,
+    )
+  }
+  use content <- decode.then(text("reasoning_content"))
+  use reasoning <- decode.then(text("reasoning"))
+  decode.success(case content, reasoning {
+    "", other | other, "" -> other
+    content, reasoning if content == reasoning -> content
+    content, reasoning -> content <> "\n" <> reasoning
+  })
+}
+
+fn responses_thinking_decoder() -> decode.Decoder(String) {
+  use kind <- decode.field("type", decode.string)
+  case kind {
+    "reasoning" -> {
+      let texts =
+        decode.optional(
+          decode.list(decode.optional_field(
+            "text",
+            "",
+            decode.string,
+            decode.success,
+          )),
+        )
+        |> decode.map(option.unwrap(_, []))
+      use summary <- decode.optional_field("summary", [], texts)
+      use content <- decode.optional_field("content", [], texts)
+      list.append(summary, content)
+      |> list.filter(fn(text) { text != "" })
+      |> string.join("\n")
+      |> decode.success
+    }
+    _ -> decode.success("")
+  }
+}
+
 fn call_decoder() -> decode.Decoder(types.ToolCall) {
   use id <- decode.field("id", decode.string)
   use name <- decode.subfield(["function", "name"], decode.string)
@@ -795,13 +850,19 @@ pub fn render_summary_input(input: types.Input) -> String {
   }
 }
 
-/// A provider item as the text it said and the calls it made. An item with
-/// neither, such as encrypted reasoning, contributes nothing; a shape this
-/// does not read is shown as its JSON, so no call is lost.
+/// A provider item as the reasoning it showed, the text it said and the calls
+/// it made: decisions an agent makes while thinking are often written nowhere
+/// else. An item with none of these, such as encrypted reasoning, contributes
+/// nothing; a shape this does not read is shown as its JSON, so no call is
+/// lost.
 fn render_replay(item: types.ReplayItem) -> String {
   case assistant_parts(item) {
     Ok(#(text, calls)) ->
       [
+        case assistant_thinking(item) {
+          "" -> []
+          thinking -> ["[assistant thinking]\n" <> summary_text(thinking)]
+        },
         case text {
           "" -> []
           _ -> ["[assistant]\n" <> summary_text(text)]
