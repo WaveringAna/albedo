@@ -6,6 +6,7 @@ from __future__ import annotations
 from typing import cast
 
 from albedo_api import Host, PythonApi, Record
+from albedo_plugins import hook
 
 
 class Receipt(Record):
@@ -23,6 +24,7 @@ host: Host
 
 
 class Mail:
+    @hook.reported("mail.submit", {"to": "to", "body": "body"})
     async def submit(self, to: object, body: str) -> Receipt:
         """Send `body` to "parent", a child or sibling by name, an agent
         handle, or any session id."""

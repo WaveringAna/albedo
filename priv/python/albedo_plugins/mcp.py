@@ -15,6 +15,7 @@ import re
 
 from albedo_api import Host, PythonApi, Record
 import albedo_trace
+from albedo_plugins import hook
 
 Operation = dict[str, object]
 
@@ -79,8 +80,12 @@ class Mcp:
         arguments join `arguments`."""
         merged = {**(arguments or {}), **kwargs}
         albedo_trace.note("mcp", name, str(merged)[:512])
-        result = await self._host("mcp.call", {"name": name, "arguments": merged})
-        return cast(Record, _record(result))
+
+        async def call(given: dict[str, object]) -> Record:
+            result = await self._host("mcp.call", given)
+            return cast(Record, _record(result))
+
+        return await hook.around("mcp.call", {"name": name, "arguments": merged}, call)
 
 
 def _identifier(value: str) -> str:

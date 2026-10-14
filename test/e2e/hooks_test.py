@@ -3,6 +3,7 @@ before they happen, rewrites and context must reach the provider, and the
 Stop continuation must stay bounded. Every test owns the global hooks.json."""
 
 import json
+import time
 import unittest
 
 from harness import Albedo, Provider, exclusive, python, text
@@ -79,6 +80,16 @@ class HooksTests(unittest.TestCase):
         self.assertEqual(payload["prompt"], "actual prompt")
         self.assertEqual(payload["session_id"], self.sid)
         self.assertEqual(payload["cwd"], str(self.app.workspace))
+        # The transcript shows hook context as a note from the extension, not
+        # as something the user wrote.
+        notes = [
+            item
+            for item in self.app.history(self.sid)["items"]
+            if "PROMPT_CONTEXT" in json.dumps(item)
+        ]
+        self.assertEqual([item["kind"] for item in notes], ["note"])
+        self.assertIn('"origin"', json.dumps(notes))
+        self.assertIn("hooks", json.dumps(notes))
 
         self.configure(("UserPromptSubmit", "", "echo PROMPT_DENIED >&2; exit 2", 5))
         self.assertEqual(self.turn(), [])
@@ -142,6 +153,34 @@ class HooksTests(unittest.TestCase):
         events = self.events()
         for report in ("CRASH", "invalid hook JSON", "timed out"):
             self.assertIn(report, events)
+
+    def test_async_plugin_calls_are_gated_and_rewritten(self):
+        other = self.app.session()
+        rewrite = {
+            "hookSpecificOutput": {"updatedInput": {"to": other, "body": "REWRITTEN"}}
+        }
+        self.configure(
+            ("PreToolUse", "^mail\\.submit$", f"echo '{json.dumps(rewrite)}'", 5),
+            (
+                "PostToolUse",
+                "^mail\\.submit$",
+                """echo '{"hookSpecificOutput":{"additionalContext":"POST_MAIL"}}'""",
+                5,
+            ),
+        )
+        self.replies[:] = [
+            python(f"r = await mail.submit({other!r}, 'original'); print(r.status)"),
+            text("done"),
+        ]
+        requests = self.turn()
+        self.assertTrue(any("POST_MAIL" in json.dumps(r["input"]) for r in requests))
+        deadline = time.monotonic() + 20
+        while "REWRITTEN" not in json.dumps(self.app.history(other)):
+            self.assertLess(
+                time.monotonic(), deadline, "the rewritten letter never arrived"
+            )
+            time.sleep(0.1)
+        self.assertNotIn("original", json.dumps(self.app.history(other)))
 
 
 if __name__ == "__main__":

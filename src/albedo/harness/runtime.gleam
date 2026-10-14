@@ -1045,7 +1045,7 @@ pub fn instructions(session: Session) -> String {
 }
 
 /// Asks every hook this session composed about one step of its turn.
-pub fn hook(session: Session, event: hook.Event) -> hook.Verdict {
+pub fn hook(session: Session, event: hook.Event) -> hook.Answer {
   hook.ask(composition.hooks(session.composition), event)
 }
 

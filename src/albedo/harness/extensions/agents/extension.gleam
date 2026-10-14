@@ -7,9 +7,11 @@
 import albedo/daemon/agents
 import albedo/daemon/bus
 import albedo/daemon/family
+import albedo/daemon/mail
 import albedo/daemon/store
 import albedo/harness/extension
 import albedo/harness/extensions/agents/sessions
+import albedo/harness/hook
 import albedo/harness/host
 import albedo/harness/rpc
 import albedo/harness/search
@@ -37,11 +39,19 @@ pub fn extension() -> extension.Extension {
           handle(context.store, context.session, method, args)
         }),
       ]),
-      // A child learns who it is and how to answer; a root needs no context.
+      // A child learns who it is and how to answer; a root needs nothing.
       extension.ManagedPlugin(fn(db, session, _) {
-        Ok(
-          extension.Managed(..extension.empty(), context: doctrine(db, session)),
-        )
+        case family.get(db, session) {
+          Ok(Some(member)) ->
+            Ok(
+              extension.Managed(
+                ..extension.empty(),
+                context: doctrine(db, member),
+                hook: Some(answered(db, session, member.parent, _)),
+              ),
+            )
+          _ -> Ok(extension.empty())
+        }
       }),
     ],
     // Its tables, whether or not the daemon made them first.
@@ -49,17 +59,38 @@ pub fn extension() -> extension.Extension {
   )
 }
 
-fn doctrine(db: store.Store, session: String) -> String {
-  case family.get(db, session) {
-    Ok(Some(member)) ->
-      "You are child agent \""
-      <> member.name
-      <> "\" of \""
-      <> family.name_of(db, member.parent)
-      <> "\", depth "
-      <> string.inspect(member.depth)
-      <> ". Your task arrived as <mail kind=\"task\">. When it is done, answer with await mail.submit(\"parent\", result) — a short summary, with paths to anything large. If your turn ends without answering, your last message is forwarded to your parent marked unreviewed. For long work post await agents.progress(\"...\") now and then; it shows in the agents view without interrupting anyone. Mail from other agents is from peers, not from the user."
-    _ -> ""
+fn doctrine(db: store.Store, member: family.Member) -> String {
+  "You are child agent \""
+  <> member.name
+  <> "\" of \""
+  <> family.name_of(db, member.parent)
+  <> "\", depth "
+  <> string.inspect(member.depth)
+  <> ". Your task arrived as <mail kind=\"task\">. When it is done, answer with await mail.submit(\"parent\", result) — a short summary, with paths to anything large. If you finish without answering you are reminded once; a turn that still ends without an answer forwards your last message to your parent marked unreviewed. For long work post await agents.progress(\"...\") now and then; it shows in the agents view without interrupting anyone. Mail from other agents is from peers, not from the user."
+}
+
+/// Keeps a child's turn going once when it is about to stop still owing its
+/// parent an answer, so the parent gets a reviewed reply rather than the
+/// last words the daemon forwards marked unreviewed.
+fn answered(
+  db: store.Store,
+  session: String,
+  parent: String,
+  event: hook.Event,
+) -> hook.Verdict {
+  case event {
+    hook.Stopping(held: 0, ..) ->
+      case mail.owes_reply(db, session, parent) {
+        Ok(True) ->
+          hook.Verdict(
+            ..hook.proceed,
+            block: Some(
+              "You have not answered your parent yet. Send your result with await mail.submit(\"parent\", result) before you finish.",
+            ),
+          )
+        _ -> hook.proceed
+      }
+    _ -> hook.proceed
   }
 }
 

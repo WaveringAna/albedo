@@ -167,6 +167,7 @@ packaged short names resolve to `albedo_plugins.*`; dotted names select installe
 - `api.capture(id)` retains bounded output.
 - `await api.host("namespace.method", args)` calls an enabled host route.
 - `api.attach_image(data)` attaches PNG, JPEG, or WebP bytes to the running cell's result.
+- `albedo_plugins.hook` reports a call with effects to the session's [hooks](hooks.md): `@hook.reported(name, {parameter: argument})` on the method, or `await hook.around(name, arguments, call)`.
 
 ## images in tool results
 

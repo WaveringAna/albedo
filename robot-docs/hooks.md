@@ -6,6 +6,8 @@ hook: Some(ask))`, where `ask: fn(hook.Event) -> hook.Verdict`
 ([`hook.gleam`](../src/albedo/harness/hook.gleam)). The installed `hooks`
 extension builds Claude Code compatible command hooks on it; an exporter of
 traces, a policy, or an audit log is an extension of the same shape.
+[docs/extensions.md](../docs/extensions.md#hooks) has the human-facing
+version with examples.
 
 ## events
 
@@ -21,17 +23,33 @@ Any verdict can carry `notes` (shown to the user, never the model) and `halt`
 committed). Context is committed as user input ahead of the next model call.
 
 `call` is a model tool call (`name` is the tool, `arguments` its JSON), or a
-call made inside a cell: `run` (`{"command"}`), `files.edit`
-(`{"file_path", "old_string", "new_string"}`) and `files.write`
-(`{"file_path", "content"}`), whose `within` is the model call that ran the
-cell. The inner argument names are Claude Code's, so command hooks read them
-unchanged. The kernel reports inner calls through the core `hook.call` and
-`hook.called` host routes (`priv/python/albedo_plugins/hook.py`, which the
-kernel loads only while some extension hooks the session); a block raises
-`PermissionError` in the cell, context and notes print into the cell's output,
-and `run` reports `Called` when its job ends, with `{"exit_code",
-"timed_out"}` as output and the hooks' lines appended to the job's output. A
-kernel that cannot reach the daemon within 30 s runs the call anyway.
+call made inside a cell, whose `within` is the model call that ran the cell:
+
+| name | arguments |
+| --- | --- |
+| `run` | `command`; `host` too for `rem.run`/`rem.shell` in ssh command mode |
+| `files.edit` | `file_path`, `old_string`, `new_string` |
+| `files.write` | `file_path`, `content`; `host` too for `rem.write` |
+| `mcp.call` | `name`, `arguments` (also `mcp.<server>.<tool>(...)`) |
+| `mail.submit` | `to`, `body` |
+| `agents.spawn`, `.cancel`, `.close`, `.cancel_all`, `.delete` | what the daemon is asked |
+| `web_search` | `query`, `limit` |
+| `browser.goto`, `.click`, `.fill`, `.press`, `.evaluate` | the method's own (`url`, `ref`, `text`, `key`, `expression`) |
+
+The file and command argument names are Claude Code's, so command hooks read
+them unchanged. A remote kernel loads the same modules, so its `run` and
+`files` report through the relayed host connection like local ones. Wrapping a
+new plugin call is one line: `@hook.reported(name, {parameter: argument})` on
+the method, or `await hook.around(name, arguments, call)`.
+
+The kernel reports these through the core `hook.call` and `hook.called` host
+routes (`priv/python/albedo_plugins/hook.py`, which the kernel loads only while
+some extension hooks the session). A block raises `PermissionError` in the
+cell, a rewrite changes only the arguments it names, context and notes print
+into the cell's output, and `run` reports `Called` when its job ends, with
+`{"exit_code", "timed_out"}` as output and the hooks' lines appended to the
+job's output. A kernel that cannot reach the daemon within 30 s runs the call
+anyway.
 
 ## combining
 
@@ -63,6 +81,13 @@ extension.ManagedPlugin(fn(_, session, _) {
 })
 ```
 
+## built-in hooks
+
+`agents` hooks a child session: when it is about to stop while it still owes
+its parent an answer (`mail.owes_reply`), it keeps the turn going once with a
+reminder to `mail.submit("parent", ...)`. The unreviewed forward of its last
+words stays the fallback.
+
 ## command hooks
 
 `hooks` is installed and off; enable it with `/extensions`. It reads
@@ -82,7 +107,8 @@ file is read: a checkout cannot plant hooks.
 
 Events map to `UserPromptSubmit`, `PreToolUse`, `PostToolUse` and `Stop`.
 Matchers are Python regular expressions searched in the tool name (`Bash`,
-`Edit` and `Write` for the inner calls, the model tool's own name otherwise);
+`Edit` and `Write` for `run`, `files.edit` and `files.write`, the call's own
+name otherwise);
 empty or `*` matches everything. When the file configures an event, the
 daemon starts `priv/python/albedo_hook_command.py` with python3 and the
 model tools' clean environment; it runs the matching commands concurrently

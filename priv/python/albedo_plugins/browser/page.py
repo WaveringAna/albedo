@@ -17,6 +17,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
+from albedo_plugins.hook import reported
+
 from . import hooks, javascript as js
 from .capture import CaptureLimits, FrameSession, Reference, capture_frames
 from .errors import (
@@ -672,6 +674,7 @@ class Page:
                     )
                 raise
 
+    @reported("browser.evaluate", {"expression": "expression"})
     async def evaluate(
         self,
         expression: str,
@@ -705,6 +708,7 @@ class Page:
         result = await cdp.send("Runtime.evaluate", params, timeout=timeout)
         return self._value(result)
 
+    @reported("browser.goto", {"url": "url"})
     async def goto(
         self, url: str, *, wait: str = "domcontentloaded", timeout: float = 30
     ) -> JSON:
@@ -955,6 +959,7 @@ class Page:
             "name": str(node.get("name", {}).get("value", ""))[:80],
         }
 
+    @reported("browser.click", {"ref": "ref"})
     async def click(self, ref: str | Node, *, button: str = "left") -> JSON:
         if button not in {"left", "right", "middle"}:
             raise ValueError("button must be left, right, or middle")
@@ -1009,6 +1014,7 @@ class Page:
                             )
         return copy.deepcopy(receipt)
 
+    @reported("browser.fill", {"ref": "ref", "text": "text"})
     async def fill(self, ref: str | Node, text: str) -> JSON:
         if not isinstance(text, str):
             raise TypeError("text must be a string")
@@ -1098,6 +1104,7 @@ class Page:
                     "Input.dispatchKeyEvent", {"type": "keyUp", **params}, timeout=2
                 )
 
+    @reported("browser.press", {"key": "key", "ref": "ref"})
     async def press(self, key: str, *, ref: str | Node | None = None) -> JSON:
         if key not in {
             "Enter",

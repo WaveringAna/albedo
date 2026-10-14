@@ -1,6 +1,7 @@
 //// Hooks: what a turn asks its extensions as it goes, and how their answers
 //// combine. Any managed extension may contribute one; see robot-docs/hooks.md.
 
+import albedo/daemon/note
 import albedo/harness/host
 import albedo/harness/protect
 import gleam/dynamic/decode
@@ -48,25 +49,43 @@ pub const proceed = Verdict(None, None, [], [], None)
 pub type Hook =
   #(String, fn(Event) -> Verdict)
 
+/// What every hook said, merged, and which extension the block or halt
+/// that won came from.
+pub type Answer {
+  Answer(verdict: Verdict, by: String)
+}
+
 /// Asks every hook in order. The first block, rewrite or halt wins, a later
 /// hook sees the arguments an earlier one rewrote, and a crashed hook is a
-/// note.
-pub fn ask(hooks: List(Hook), event: Event) -> Verdict {
-  let #(_, verdict) =
-    list.fold(hooks, #(event, proceed), fn(state, hook) {
-      let #(event, verdict) = state
-      let answer = case protect.attempt(fn() { hook.1(event) }) {
-        Ok(answer) -> answer
+/// note. Context comes back as notes naming the extension that wrote it, so
+/// the transcript never shows it as the user's.
+pub fn ask(hooks: List(Hook), event: Event) -> Answer {
+  let #(_, answer) =
+    list.fold(hooks, #(event, Answer(proceed, "")), fn(state, hook) {
+      let #(event, Answer(verdict, by)) = state
+      let #(name, ask) = hook
+      let next = case protect.attempt(fn() { ask(event) }) {
+        Ok(next) ->
+          Verdict(..next, context: list.map(next.context, note.wrap(name, _)))
         Error(crash) ->
-          Verdict(..proceed, notes: [hook.0 <> " hook crashed: " <> crash])
+          Verdict(..proceed, notes: [name <> " hook crashed: " <> crash])
       }
-      let event = case event, answer.arguments {
+      let event = case event, next.arguments {
         Calling(call), Some(arguments) -> Calling(Call(..call, arguments:))
         _, _ -> event
       }
-      #(event, merge(verdict, answer))
+      let by = case verdict.block, verdict.halt, next.block, next.halt {
+        None, None, Some(_), _ | None, None, _, Some(_) -> name
+        _, _, _, _ -> by
+      }
+      #(event, Answer(merge(verdict, next), by))
     })
-  verdict
+  answer
+}
+
+/// `reason`, from the extension `by`, as input the model reads.
+pub fn input(by: String, reason: String) -> String {
+  note.wrap(by, reason)
 }
 
 fn merge(first: Verdict, next: Verdict) -> Verdict {
@@ -77,6 +96,14 @@ fn merge(first: Verdict, next: Verdict) -> Verdict {
     notes: list.append(first.notes, next.notes),
     halt: option.or(first.halt, next.halt),
   )
+}
+
+/// A note's body, for text that goes somewhere notes are not read.
+fn body(text: String) -> String {
+  case note.parse(text) {
+    Some(#(_, body)) -> body
+    None -> text
+  }
 }
 
 /// The `hook.call` and `hook.called` host route a kernel reports its inner
@@ -104,7 +131,7 @@ pub fn route(hooks: List(Hook)) -> host.Route {
     case event {
       Error(_) -> Error(#("invalid", "invalid hook event"))
       Ok(event) -> {
-        let verdict = ask(hooks, event)
+        let verdict = ask(hooks, event).verdict
         Ok(
           json.object([
             #(
@@ -112,7 +139,10 @@ pub fn route(hooks: List(Hook)) -> host.Route {
               json.nullable(option.or(verdict.block, verdict.halt), json.string),
             ),
             #("arguments", json.nullable(verdict.arguments, json.string)),
-            #("context", json.array(verdict.context, json.string)),
+            #(
+              "context",
+              json.array(list.map(verdict.context, body), json.string),
+            ),
             #("notes", json.array(verdict.notes, json.string)),
           ]),
         )

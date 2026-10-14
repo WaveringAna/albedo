@@ -234,6 +234,38 @@ class RemoteKernelTests(unittest.TestCase):
         ]
         return results[-1]
 
+    def test_remote_calls_reach_the_session_hooks(self):
+        with self.app.api("/settings?group=extensions") as response:
+            validator = response.getheader("ETag")
+            response.read()
+        self.app.api(
+            "/settings?group=extensions",
+            {"defaults": {"hooks": True}},
+            method="PATCH",
+            headers={"If-Match": validator},
+        ).close()
+        deny = {"type": "command", "command": "echo DENIED >&2; exit 2"}
+        hooks = {"PreToolUse": [{"matcher": "^(Bash|Write)$", "hooks": [deny]}]}
+        (self.app.home / "hooks.json").write_text(json.dumps({"hooks": hooks}))
+        # A remote kernel's own run() reports through the relayed host call.
+        remote = self.create(f"fakehost:{self.project}")["id"]
+        result = self.cell(
+            remote,
+            "try:\n    run('touch', 'forbidden')\nexcept PermissionError as e:\n    print(e)",
+        )
+        self.assertIn("DENIED", result["output"], result)
+        self.assertFalse((self.project / "forbidden").exists())
+        # rem.write crosses ssh from this kernel and reports as files.write.
+        local = self.create(str(self.app.workspace))["id"]
+        result = self.cell(
+            local,
+            f"rem = await remote.connect('fakehost:{self.project}')\n"
+            "try:\n    await rem.write('written', 'x')\n"
+            "except PermissionError as e:\n    print(e)",
+        )
+        self.assertIn("DENIED", result["output"], result)
+        self.assertFalse((self.project / "written").exists())
+
     def test_a_remote_kernel_runs_in_the_remote_folder_from_the_staged_bundle(self):
         session = self.create(f"fakehost:{self.project}")["id"]
         result = self.cell(

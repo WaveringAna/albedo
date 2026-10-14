@@ -38,7 +38,6 @@ from albedo_plugins import hook
 import albedo_shims
 import albedo_trace
 import asyncio
-import json
 import os
 import shlex
 import shutil
@@ -413,11 +412,9 @@ class Job(JobOutput):
             elif not ending.gone:
                 self.capture.write(f"\n[cleanup failed: {ending.report()}]\n")
             if self._hooked is not None:
-                outcome = {"exit_code": self.exit_code, "timed_out": self.timed_out}
-                said = await asyncio.to_thread(
-                    self._hooked.finished, json.dumps(outcome)
+                self.capture.write(
+                    await hook.job_ended(self._hooked, self.exit_code, self.timed_out)
                 )
-                self.capture.write("".join(f"{line}\n" for line in said))
             send(
                 {
                     "type": "job",
@@ -757,7 +754,7 @@ def run(
                 )
             raise FileNotFoundError(f"{argv[0]}: no such program on PATH")
     line = shlex.join(argv)
-    hooked = hook.Call("run", {"command": line})
+    hooked = hook.before("run", {"command": line})
     command = hooked.arguments.get("command")
     if isinstance(command, str) and command != line:
         argv = shlex.split(command)

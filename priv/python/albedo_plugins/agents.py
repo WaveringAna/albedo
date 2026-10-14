@@ -11,10 +11,16 @@ from dataclasses import dataclass, field
 from typing import cast
 
 from albedo_api import Host, PythonApi, Record
+from albedo_plugins import hook
 
 host: Host
 _models_seen = False
 _last_progress = 0.0
+
+
+async def _act(method: str, args: dict[str, object]) -> object:
+    """A host call that changes another session, reported to the hooks."""
+    return await hook.around(method, args, lambda given: host(method, given))
 
 
 class MessagePage(Record):
@@ -87,7 +93,7 @@ class Agent:
         return _agent(
             cast(
                 dict,
-                await host(
+                await _act(
                     "agents.spawn", {"task": brief, "name": name, "model": model}
                 ),
             )
@@ -111,12 +117,12 @@ class Agent:
         """Stop this child's running turn; it keeps its session and work. With
         `tree=True` its own children, and theirs, are stopped too. True when a
         turn was running."""
-        stopped = await host("agents.cancel", {"id": self.id, "tree": tree})
+        stopped = await _act("agents.cancel", {"id": self.id, "tree": tree})
         return bool(cast(list, stopped))
 
     async def close(self) -> bool:
         """Done with this child: stop it, keep its messages and files, free its kernel."""
-        return bool(await host("agents.close", {"id": self.id}))
+        return bool(await _act("agents.close", {"id": self.id}))
 
     async def messages(
         self, seq: int = 0, *, offset: int = 0, limit: int = 4000
@@ -153,7 +159,7 @@ class Agent:
         )
 
     async def delete(self) -> None:
-        await host("agents.delete", {"id": self.id})
+        await _act("agents.delete", {"id": self.id})
 
 
 def _agent(raw: dict) -> Agent:
@@ -214,7 +220,7 @@ class Agents:
         """Stop the running turn of every one of your children, and with
         `tree=True` (the default) everything beneath them. Returns the ids of the
         sessions that were running. They keep their sessions and work."""
-        stopped = await host("agents.cancel_all", {"tree": tree})
+        stopped = await _act("agents.cancel_all", {"tree": tree})
         return list(cast(list, stopped))
 
     async def progress(self, text: str) -> bool:

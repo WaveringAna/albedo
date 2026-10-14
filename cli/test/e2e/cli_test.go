@@ -305,7 +305,8 @@ func TestCLICommandsReachAChildByItsFullID(t *testing.T) {
 	}
 	cli(t, "send", child.ID, "child second turn")
 	waitIdle(t, child.ID, profile, 2)
-	if text := cli(t, "sessions", "read", child.ID, "2"); !strings.Contains(text, "[user] child first turn") || !strings.Contains(text, "[assistant] echo: <mail") || !strings.Contains(text, "echo: child second turn") {
+	// Each turn may carry the agents hook's reminder to answer the parent.
+	if text := cli(t, "sessions", "read", child.ID, "10"); !strings.Contains(text, "[user] child first turn") || !strings.Contains(text, "[assistant] echo: <mail") || !strings.Contains(text, "echo: child second turn") {
 		t.Fatalf("full child ID did not reach its transcript:\n%s", text)
 	}
 	cli(t, "stop", child.ID)

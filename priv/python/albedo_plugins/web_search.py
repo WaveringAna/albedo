@@ -4,6 +4,7 @@ from typing import cast
 
 from albedo_api import Host, PythonApi, Record
 import albedo_trace
+from albedo_plugins import hook
 
 
 class WebSearch(Record):
@@ -34,6 +35,7 @@ class WebSearch(Record):
 host: Host
 
 
+@hook.reported("web_search", {"query": "query", "limit": "limit"})
 async def web_search(query: str, limit: int = 8) -> WebSearch:
     """Search the web: a written answer and the sources behind it."""
     found = cast(

@@ -522,7 +522,7 @@ type Invoked {
 fn invoke(state: Loop, call: types.ToolCall) -> Result(Invoked, String) {
   let asked = hook.Call(call.id, call.name, call.arguments, None)
   let started = requests.now()
-  use calling <- result.try(hooked(state, hook.Calling(asked)))
+  use hook.Answer(calling, _) <- result.try(hooked(state, hook.Calling(asked)))
   let call =
     types.ToolCall(
       ..call,
@@ -548,7 +548,7 @@ fn invoke(state: Loop, call: types.ToolCall) -> Result(Invoked, String) {
     types.ToolOutput(_, body, _) -> body
     _ -> ""
   }
-  let called =
+  let hook.Answer(called, by) =
     runtime.hook(
       state.kernel,
       hook.Called(
@@ -563,7 +563,7 @@ fn invoke(state: Loop, call: types.ToolCall) -> Result(Invoked, String) {
   let added =
     list.flatten([
       calling.context,
-      option.values([called.block]),
+      option.values([option.map(called.block, hook.input(by, _))]),
       called.context,
     ])
   Ok(Invoked(call, output, list.map(added, types.User), called.halt))
@@ -571,12 +571,12 @@ fn invoke(state: Loop, call: types.ToolCall) -> Result(Invoked, String) {
 
 /// Asks the session's hooks, shows the user their notes, and ends the turn
 /// if one of them asked to.
-fn hooked(state: Loop, event: hook.Event) -> Result(hook.Verdict, String) {
-  let verdict = runtime.hook(state.kernel, event)
-  note(state, verdict)
-  case verdict.halt {
+fn hooked(state: Loop, event: hook.Event) -> Result(hook.Answer, String) {
+  let answer = runtime.hook(state.kernel, event)
+  note(state, answer.verdict)
+  case answer.verdict.halt {
     Some(reason) -> Error("stopped by a hook: " <> reason)
-    None -> Ok(verdict)
+    None -> Ok(answer)
   }
 }
 
@@ -606,7 +606,10 @@ fn prompted(
 ) -> Result(Option(List(types.Input)), String) {
   case step, inputs {
     0, [types.User(text), ..] | 0, [types.UserImage(text, _), ..] -> {
-      use verdict <- result.try(hooked(state, hook.Prompted(text)))
+      use hook.Answer(verdict, _) <- result.try(hooked(
+        state,
+        hook.Prompted(text),
+      ))
       case verdict.block {
         Some(reason) -> {
           state.publish(view.note(
@@ -641,10 +644,14 @@ fn stopping(
         |> list.map(message_content.output_text)
         |> list.filter(fn(text) { text != "" })
         |> string.join("\n\n")
-      use verdict <- result.try(hooked(state, hook.Stopping(reply, state.held)))
+      use hook.Answer(verdict, by) <- result.try(hooked(
+        state,
+        hook.Stopping(reply, state.held),
+      ))
+      let block = option.map(verdict.block, hook.input(by, _))
       let held =
         list.map(
-          list.append(option.values([verdict.block]), verdict.context),
+          list.append(option.values([block]), verdict.context),
           types.User,
         )
       use _ <- result.try(commit_hooked(state, held, conversation.Model))

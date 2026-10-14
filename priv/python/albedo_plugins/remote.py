@@ -36,6 +36,7 @@ import albedo_bundle
 from albedo_values import InvalidValue, decode
 import albedo_shell
 import albedo_ssh
+from albedo_plugins import hook
 from albedo_plugins.run import notice
 
 CONNECT_TIMEOUT = 60  # seconds before an unreachable target gives up
@@ -992,9 +993,21 @@ class RemoteConnection:
         """Replace a remote file, text or binary. The content travels on
         stdin, never in the command line, which a host caps (128 KiB per
         argument on Linux)."""
-        remote = _remote_path(self, path)
         data = content.encode() if isinstance(content, str) else bytes(content)
-        await self._ssh(f"cat > {shlex.quote(remote)}", timeout, data)
+        shown = content if isinstance(content, str) else f"<{len(data)} bytes>"
+
+        async def write(given: dict[str, object]) -> None:
+            text = given["content"]
+            body = data if text == shown else str(text).encode()
+            remote = _remote_path(self, str(given["file_path"]))
+            await self._ssh(f"cat > {shlex.quote(remote)}", timeout, body)
+
+        arguments: dict[str, object] = {
+            "file_path": path,
+            "content": shown,
+            "host": self.host,
+        }
+        await hook.around("files.write", arguments, write)
 
     # --- degraded mode ---
 
@@ -1023,7 +1036,13 @@ class RemoteConnection:
                 raise albedo_shell.refusal(
                     f"`{os.path.basename(argv[0])} -c`", script=script
                 )
-            return FallbackJob(self, argv, timeout, cwd=cwd, env=env, stdin=stdin)
+            line = shlex.join(argv)
+            hooked = hook.before("run", {"command": line, "host": self.host})
+            command = str(hooked.arguments.get("command", line))
+            argv = argv if command == line else shlex.split(command)
+            return FallbackJob(
+                self, argv, timeout, cwd=cwd, env=env, stdin=stdin, hooked=hooked
+            )
 
         return run
 
@@ -1048,6 +1067,8 @@ class RemoteConnection:
             check_timeout(timeout)
             if not (stdin is None or isinstance(stdin, (str, bytes))):
                 raise TypeError("in ssh command mode stdin is text or bytes")
+            hooked = hook.before("run", {"command": script, "host": self.host})
+            script = str(hooked.arguments.get("command", script))
             return FallbackJob(
                 self,
                 ["bash", "-c", script],
@@ -1056,6 +1077,7 @@ class RemoteConnection:
                 env=env,
                 stdin=stdin,
                 shell=script,
+                hooked=hooked,
             )
 
         return shell
@@ -1183,8 +1205,10 @@ class FallbackJob(JobOutput):
         env: dict[str, object] | None = None,
         stdin: str | bytes | None = None,
         shell: str | None = None,
+        hooked: hook.Call | None = None,
     ) -> None:
         self.id = uuid.uuid4().hex
+        self._hooked = hooked
         self.argv = argv
         self.command = shell if shell is not None else shlex.join(argv)
         self.timed_out = False
@@ -1250,6 +1274,10 @@ class FallbackJob(JobOutput):
             )
         finally:
             copying.cancel()
+            if self._hooked is not None:
+                self.capture.write(
+                    await hook.job_ended(self._hooked, self.exit_code, self.timed_out)
+                )
             self.capture.end_spill()
             self.duration = loop.time() - self.started
             _fallback_live.pop(self.id, None)

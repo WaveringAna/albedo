@@ -27,10 +27,22 @@ def wait_for(predicate, timeout=40):
     raise AssertionError("agent event never arrived")
 
 
+REMINDER = "You have not answered your parent yet."
+
+
 class AgentsTests(unittest.TestCase):
     def setUp(self):
         def answer(request):
-            user = latest_user(request)
+            # A child reminded to answer its parent repeats what it found.
+            users = [
+                item["content"]
+                for item in request.get("messages", [])
+                if item.get("role") == "user" and isinstance(item.get("content"), str)
+            ]
+            user = next(
+                (item for item in reversed(users) if REMINDER not in item),
+                latest_user(request),
+            )
             line = user.splitlines()[-2 if "</mail>" in user else -1]
             return text("answered: " + line)
 
@@ -255,6 +267,8 @@ class AgentsTests(unittest.TestCase):
         forwarded = wait_for(lambda: self.asked('kind="unreviewed"'))[0]
         self.assertIn('from="coder"', forwarded)
         self.assertIn("answered: map every wake path", forwarded)
+        # Asked once to answer before it stopped; the forward is the fallback.
+        self.assertEqual(len(self.asked(REMINDER)), 1)
         self.app.idle(parent)
         self.app.idle(child["id"])
         self.assertEqual(
@@ -877,10 +891,11 @@ class AgentsTests(unittest.TestCase):
             self.assertEqual(made["model"], f"fixture-beta-{self.provider.route}")
             self.assertEqual(made["parent_id"], parent)
             self.app.idle(made["id"])
+        # Each child's requests repeat its task, so count distinct letters.
         tasks = wait_for(
             lambda: (
-                self.asked('kind="task">\ncross-provider')
-                if len(self.asked('kind="task">\ncross-provider')) == 2
+                set(self.asked('kind="task">\ncross-provider'))
+                if len(set(self.asked('kind="task">\ncross-provider'))) == 2
                 else None
             )
         )
