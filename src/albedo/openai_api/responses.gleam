@@ -406,8 +406,16 @@ fn failed(value: dynamic.Dynamic) -> Result(a, types.Error) {
   )
 }
 
+/// An `error` event carries its message at the top, as the Responses stream
+/// documents, or nested under `error` the way an error body nests it.
 fn provider_error(value: dynamic.Dynamic) -> Result(a, types.Error) {
-  provider_failure(value, decode.at(["message"], decode.string), "error")
+  provider_failure(
+    value,
+    decode.one_of(decode.at(["message"], decode.string), [
+      decode.at(["error", "message"], decode.string),
+    ]),
+    "error",
+  )
 }
 
 fn provider_failure(
@@ -415,9 +423,15 @@ fn provider_failure(
   decoder: decode.Decoder(String),
   context: String,
 ) -> Result(a, types.Error) {
+  // An event of an unknown shape is shown as it came, so its cause is not
+  // lost behind a decode error.
   let message = case decode.run(value, decoder) {
     Ok(message) -> message
-    Error(error) -> "malformed " <> context <> ": " <> string.inspect(error)
+    Error(_) ->
+      "provider sent an unrecognised "
+      <> context
+      <> " event: "
+      <> json.to_string(types.encode_value(value))
   }
   Error(types.ProviderError(message))
 }

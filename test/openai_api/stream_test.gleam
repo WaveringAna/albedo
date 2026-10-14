@@ -6,6 +6,7 @@ import gleam/dynamic/decode
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/string
 
 pub fn responses_incomplete_never_exposes_executable_calls_test() -> Result(
   #(stream.State, List(types.Event), Option(types.Turn)),
@@ -25,6 +26,22 @@ pub fn responses_provider_failures_and_malformed_fields_are_typed_test() -> Nil 
     "{\"type\":\"response.failed\",\"response\":{\"error\":{\"message\":\"capacity\"}}}"
   assert send(stream.new(types.Responses), "response.failed", failed)
     == Error(types.ProviderError("capacity"))
+  // An error event names its cause at the top or nested under `error`; one
+  // of neither shape is shown as it came rather than as a decode failure.
+  let top = "{\"type\":\"error\",\"message\":\"rate limited\"}"
+  assert send(stream.new(types.Responses), "error", top)
+    == Error(types.ProviderError("rate limited"))
+  let nested =
+    "{\"type\":\"error\",\"error\":{\"type\":\"server_error\",\"message\":\"overloaded\"}}"
+  assert send(stream.new(types.Responses), "error", nested)
+    == Error(types.ProviderError("overloaded"))
+  let assert Error(types.ProviderError(unknown)) =
+    send(
+      stream.new(types.Responses),
+      "error",
+      "{\"type\":\"error\",\"code\":\"context_length_exceeded\"}",
+    )
+  assert string.contains(unknown, "context_length_exceeded")
   let malformed = "{\"type\":\"response.created\",\"response\":{\"id\":42}}"
   let assert Error(types.InvalidEvent(_)) =
     send(stream.new(types.Responses), "response.created", malformed)
