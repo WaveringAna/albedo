@@ -152,6 +152,24 @@ fn trigger_percent(config: Config, capacity: Int) -> Int {
 
 const small_window_trigger = 75
 
+/// Why a request over the trigger is sent without folding.
+pub const window_too_small =
+  "the window is too small for this model's prompt and verbatim tail: a fold would evict less than the tail it keeps, so it cannot make room; raise the session's context window or lower lcm tailPercent"
+
+/// Tokens of the steps in `inputs` that a fold with a `budget`-token tail
+/// would evict.
+fn foldable_tokens(inputs: List(types.Input), budget: Int) -> Int {
+  let steps = compaction.split_steps(inputs, fn(input) { input })
+  let kept =
+    steps
+    |> list.reverse
+    |> compaction.keep_tail(1, Some(budget), compaction.estimate_inputs)
+  steps
+  |> list.take(list.length(steps) - list.length(kept))
+  |> list.flatten
+  |> compaction.estimate_inputs
+}
+
 /// The stored frontier's summary nodes ahead of a verbatim tail, and whether
 /// that request reached the trigger.
 fn project(
@@ -165,11 +183,14 @@ fn project(
     compaction.effective_window(config.context_window_tokens, context, history)
   // Until the first compaction seeds the graph, the request is what the
   // previous strategy's stored folds already made of this history.
-  use current <- result.try(case frontier {
+  // `rows` is the part of it a fold could take: everything but summaries.
+  use #(current, rows) <- result.try(case frontier {
     [] ->
       context.prior(history)
-      |> result.map(fn(prior) { list.append(prior.folds, prior.rest) })
-    _ -> Ok(projection(frontier, history, uncovered))
+      |> result.map(fn(prior) {
+        #(list.append(prior.folds, prior.rest), prior.rest)
+      })
+    _ -> Ok(#(projection(frontier, history, uncovered), uncovered.tail))
   })
   // The provider's count for the previous request, once this run has one.
   let #(measured, measure) = case context.reported {
@@ -199,19 +220,37 @@ fn project(
     Some(compaction.Capacity(tokens: capacity, source: capacity_source)) -> {
       use _ <- result.try(compaction.fits_pinned(context, capacity))
       let trigger = trigger_percent(config, capacity)
+      let over = compaction.triggered(False, measured, Some(capacity), trigger)
+      // A fold that would evict less than it keeps verbatim cannot make room:
+      // the pinned prompt and the tail already fill the window below the
+      // trigger. Folding again every turn would only cost a summarizer call,
+      // so the request goes out as it is until there is that much to fold or
+      // the window itself is reached.
+      let budget = capacity * config.tail_percent / 100
+      let helps =
+        foldable_tokens(rows, budget) >= budget || measured >= capacity
       Ok(view(
         current,
         frontier,
-        case frontier {
-          [] -> "not_needed"
-          _ -> "compacted"
+        case over, helps, frontier {
+          True, False, _ -> "window_too_small"
+          _, _, [] -> "not_needed"
+          _, _, _ -> "compacted"
         },
-        measure <> "; window from " <> capacity_source,
+        case over && !helps {
+          True ->
+            measure
+            <> "; window from "
+            <> capacity_source
+            <> "; "
+            <> window_too_small
+          False -> measure <> "; window from " <> capacity_source
+        },
         Some(capacity),
         measured,
         trigger,
         history,
-        compaction.triggered(False, measured, Some(capacity), trigger),
+        over && helps,
         option.is_some(context.reported),
       ))
     }

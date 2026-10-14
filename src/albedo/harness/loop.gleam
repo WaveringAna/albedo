@@ -72,6 +72,9 @@ pub type Loop {
     /// Tells the session a compaction started ahead of a request; the
     /// request's recorded context ends it.
     report_compacting: fn() -> Nil,
+    /// Whether this run already told the session its window is too small
+    /// for compaction to make room.
+    warned_small: Bool,
   )
 }
 
@@ -142,6 +145,7 @@ pub fn run(
       ))
     Pinned(..) -> Nil
   }
+  let state = warn_small(state, prepared.observation)
   let current_instructions = request_instructions(state)
   let request = request(state, current_instructions, history)
   state.record_context(request, prepared.observation, prepared.compacted)
@@ -479,6 +483,23 @@ fn run_tool(
 /// A checkpoint event a client may refuse; a refusal ends the turn cancelled.
 fn checkpoint(state: Loop) -> Result(Nil, String) {
   compaction.require(state.publish(view.Checkpoint), "cancelled")
+}
+
+/// Tells the session once per run that its strategy sends requests over the
+/// trigger because a fold cannot make room, so the cause is seen rather than
+/// guessed from a growing context.
+fn warn_small(
+  state: Loop,
+  observation: Option(compaction.Observation),
+) -> Loop {
+  case observation, state.warned_small {
+    Some(compaction.Observation(status: "window_too_small", source:, ..)), False
+    -> {
+      let _ = state.publish(view.note("compaction", source))
+      Loop(..state, warned_small: True)
+    }
+    _, _ -> state
+  }
 }
 
 /// The request this turn or a forced compaction prepares: its scoped strategy

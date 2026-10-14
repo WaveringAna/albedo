@@ -393,6 +393,7 @@ pub fn start(
       // Saved usage may describe a request a compaction since replaced.
       None,
       fn() { report(owner, messages.compacting(run_id, _)) },
+      False,
     )
   let pid =
     process.spawn_unlinked(fn() {

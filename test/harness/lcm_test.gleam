@@ -708,6 +708,102 @@ pub fn the_tail_is_the_uncovered_rows_as_the_provider_reads_them_test() -> Nil {
   runtime.stop(host)
 }
 
+/// A host whose verbatim tail takes `tail` percent of a `capacity` window.
+fn tight(capacity: Int, tail: Int) -> #(runtime.Runtime, runtime.Session) {
+  let installed = [
+    memory.extension(),
+    lcm.configured_extension(lcm.Config(Some(capacity), Some(75), tail)),
+  ]
+  let assert Ok(host) =
+    runtime.start_with_config(
+      ":memory:",
+      extensions.Config(installed, ["lcm-memory", "lcm"]),
+    )
+  let ledger = runtime.ledger(host)
+  let assert Ok(_) = conversation.initialise(ledger)
+  let assert Ok(_) = family.initialise(ledger)
+  let assert Ok(_) =
+    conversation.create(
+      ledger,
+      conversation.Info(
+        "lcm-test",
+        "new session",
+        "/tmp",
+        "provider",
+        "model",
+        types.Responses,
+        conversation.Idle,
+        None,
+        None,
+      ),
+    )
+  let assert Ok(session) = runtime.open_session(host, "lcm-test", "/tmp")
+  #(host, session)
+}
+
+fn prepare_reported(
+  host: runtime.Runtime,
+  session: runtime.Session,
+  history: List(types.Input),
+  reported: Int,
+) -> Result(compaction.Prepared, String) {
+  runtime.prepare_view_scoped(
+    host,
+    session,
+    "model",
+    "model",
+    None,
+    "",
+    fn(_) { Ok("folded") },
+    history,
+    False,
+    types.any_images,
+    Some(reported),
+    fn() { Nil },
+    compaction.unprojected,
+  )
+}
+
+pub fn a_window_too_small_to_make_room_is_reported_not_folded_test() -> Nil {
+  let #(host, session) = tight(1000, 40)
+  // Over the trigger, but all a fold could take is the opening message: the
+  // newest step alone outweighs the 400-token tail.
+  let history = [
+    types.User("the task"),
+    types.Assistant("look " <> string.repeat("w", 1400)),
+    types.ToolOutput("call-1", string.repeat("r", 1400), []),
+  ]
+  save(host, history)
+  let assert Ok(prepared) = prepare_reported(host, session, history, 800)
+  prepared.compacted |> should.be_false
+  let assert Some(observation) = prepared.observation
+  observation.status |> should.equal("window_too_small")
+  should.be_true(string.contains(observation.source, lcm.window_too_small))
+  // At the window itself there is nothing left but to fold, which here
+  // cannot fit either; it is attempted rather than sent as it is.
+  let assert Error(reason) = prepare_reported(host, session, history, 1000)
+  should.be_true(string.contains(reason, "do not fit the context window"))
+  runtime.stop(host)
+}
+
+pub fn a_fold_that_can_make_room_still_runs_test() -> Nil {
+  let #(host, session) = tight(1000, 20)
+  let history = [
+    types.User("the task"),
+    ..list.flat_map([1, 2, 3, 4], fn(i) {
+      let n = int.to_string(i)
+      [
+        types.Assistant("look " <> n),
+        types.ToolOutput("call-" <> n, string.repeat("r", 600), []),
+      ]
+    })
+  ]
+  save(host, history)
+  let assert Ok(prepared) = prepare_reported(host, session, history, 800)
+  prepared.compacted |> should.be_true
+  runtime.stop(host)
+}
+
 pub fn merges_keep_the_memory_sections_test() -> Nil {
   list.each(["Settled:", "Contracts:", "Plan:", "Open:"], fn(section) {
     should.be_true(string.contains(lcm.merge_instructions, section))
