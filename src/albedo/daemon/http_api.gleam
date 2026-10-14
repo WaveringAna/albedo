@@ -3,6 +3,7 @@
 
 import albedo/daemon/operations
 import albedo/daemon/session/creation
+import albedo/harness/context_limits
 import albedo/harness/location
 import albedo/harness/ssh
 import albedo/text_scalars
@@ -507,7 +508,7 @@ fn negotiate(req: request.Request(a), live: Bool) -> Result(Bool, Failure) {
 /// A session's compaction window: a positive token count.
 pub fn context_window() -> decode.Decoder(Int) {
   use tokens <- decode.then(decode.int)
-  case tokens > 0 && tokens <= 100_000_000 {
+  case context_limits.is_window(tokens) {
     True -> decode.success(tokens)
     False -> decode.failure(0, "a positive token count")
   }

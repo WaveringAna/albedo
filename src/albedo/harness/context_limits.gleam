@@ -123,7 +123,7 @@ fn globs_decoder() -> decode.Decoder(Option(List(String))) {
 fn positive_tokens() -> decode.Decoder(Int) {
   decode.int
   |> decode.then(fn(value) {
-    case value > 0 && value <= 100_000_000 {
+    case is_window(value) {
       True -> decode.success(value)
       False -> decode.failure(0, "a positive token count")
     }
@@ -166,6 +166,14 @@ fn report(position: Int, errors: List(decode.DecodeError)) -> Nil {
   )
 }
 
+/// The largest context window, in tokens, that a session or an entry may name.
+const max_window = 100_000_000
+
+/// Whether `tokens` is a window the daemon accepts.
+pub fn is_window(tokens: Int) -> Bool {
+  tokens > 0 && tokens <= max_window
+}
+
 /// Parses a human token count such as `100k`, `1.5m`, or `150000` (with
 /// optional underscores or commas).
 pub fn parse_tokens(raw: String) -> Result(Int, String) {
@@ -206,7 +214,7 @@ pub fn parse_tokens(raw: String) -> Result(Int, String) {
         }
       }
   })
-  case tokens > 0 && tokens <= 100_000_000 {
+  case is_window(tokens) {
     True -> Ok(tokens)
     False -> Error(invalid_tokens(raw))
   }

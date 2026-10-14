@@ -143,6 +143,9 @@ func SelectEffort(ctx context.Context, conn *Connection, session Session, effort
 	return EffortResult{Effort: result.Effort, Message: "Effort saved.", ETag: result.ETag}, err
 }
 
+// maxContextWindow is the daemon's ceiling on a session window (context_limits.is_window).
+const maxContextWindow = 100_000_000
+
 // ParseTokenWindow parses a positive token count such as 100k, 1.5m, or 250000.
 func ParseTokenWindow(raw string) (int64, error) {
 	cleaned := strings.ToLower(strings.TrimSpace(raw))
@@ -184,7 +187,7 @@ func ParseTokenWindow(raw string) (int64, error) {
 		}
 		tokens = whole * multiplier
 	}
-	if tokens <= 0 || tokens > 100_000_000 {
+	if tokens <= 0 || tokens > maxContextWindow {
 		return 0, fmt.Errorf("expected a positive token count such as 100k, 250000, or 1m, not %s", raw)
 	}
 	return tokens, nil
@@ -239,15 +242,7 @@ func SelectCompactAt(ctx context.Context, conn *Connection, session Session, raw
 		}
 		window = &parsed
 	}
-	etag := session.ETag
-	if etag == "" {
-		configuration, err := GetSessionConfiguration(ctx, conn, session.ID)
-		if err != nil {
-			return CompactAtResult{}, err
-		}
-		etag = configuration.ETag
-	}
-	result, err := patchSession(ctx, conn, session.ID, etag, map[string]any{"context_window": window})
+	result, err := SetContextWindow(ctx, conn, session.ID, session.ETag, window)
 	if err != nil {
 		return CompactAtResult{}, err
 	}

@@ -61,7 +61,7 @@ func (s *Service) RunPrompt(ctx context.Context, options PromptOptions) (PromptR
 			}
 		}
 		if options.ContextWindow > 0 {
-			if _, windowErr := daemon.SetContextWindow(ctx, conn, sessionID, options.ContextWindow); windowErr != nil {
+			if _, windowErr := daemon.SetContextWindow(ctx, conn, sessionID, "", &options.ContextWindow); windowErr != nil {
 				return PromptResult{}, windowErr
 			}
 		}

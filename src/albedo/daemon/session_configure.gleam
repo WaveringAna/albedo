@@ -9,6 +9,7 @@ import albedo/daemon/session_provider
 import albedo/daemon/session_state
 import albedo/daemon/store
 import albedo/daemon/turn
+import albedo/harness/context_limits
 import albedo/harness/extension
 import albedo/harness/extension/selection
 import albedo/harness/runtime
@@ -230,9 +231,8 @@ fn request_patch(
         True -> Error("changing the context window requires an idle session")
         False -> Ok(Nil)
       })
-      use _ <- result.try(case tokens {
-        Some(value) if value <= 0 || value > 100_000_000 ->
-          Error("context window must be a positive token count")
+      use _ <- result.try(case option.map(tokens, context_limits.is_window) {
+        Some(False) -> Error("context window must be a positive token count")
         _ -> Ok(Nil)
       })
       Ok(#(expected, config.Patch(..empty, context_window: Some(tokens))))

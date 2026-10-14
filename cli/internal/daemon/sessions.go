@@ -190,13 +190,17 @@ func RenameSession(ctx context.Context, conn *Connection, id, name, etag string)
 	return patchSession(ctx, conn, id, etag, protocol.SessionPatch{Name: &name})
 }
 
-// SetContextWindow sets the tokens a session compacts against.
-func SetContextWindow(ctx context.Context, conn *Connection, id string, tokens int64) (Session, error) {
-	configuration, err := GetSessionConfiguration(ctx, conn, id)
-	if err != nil {
-		return Session{}, err
+// SetContextWindow sets the tokens a session compacts against, or restores the
+// model's window when tokens is nil. An empty etag reads the current one.
+func SetContextWindow(ctx context.Context, conn *Connection, id, etag string, tokens *int64) (Session, error) {
+	if etag == "" {
+		configuration, err := GetSessionConfiguration(ctx, conn, id)
+		if err != nil {
+			return Session{}, err
+		}
+		etag = configuration.ETag
 	}
-	return patchSession(ctx, conn, id, configuration.ETag, protocol.SessionPatch{ContextWindow: &tokens})
+	return patchSession(ctx, conn, id, etag, map[string]any{"context_window": tokens})
 }
 func ForkSession(ctx context.Context, conn *Connection, id string, body ForkRequest) (Session, error) {
 	return CreateSession(ctx, conn, CreateSessionRequest{Kind: "fork", SourceSessionID: id, CheckpointID: body.Checkpoint})
