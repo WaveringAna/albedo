@@ -6,6 +6,7 @@ import (
 	"cmp"
 	"encoding/json"
 	"fmt"
+	"github.com/alecthomas/chroma/v2"
 	"github.com/alecthomas/chroma/v2/lexers"
 	"github.com/charmbracelet/x/ansi"
 	"os"
@@ -175,9 +176,6 @@ func (r TranscriptRenderer) renderDiffPath(diff, path string, width int) string 
 	if width < 8 {
 		return "…"
 	}
-	var rows []string
-	oldLine, newLine := 0, 0
-	lexer := lexers.Match(filepath.Base(path))
 	clean := func(text string) string {
 		return strings.Map(func(ch rune) rune {
 			if ch == '\t' || ch < 32 || ch == 127 {
@@ -186,25 +184,16 @@ func (r TranscriptRenderer) renderDiffPath(diff, path string, width int) string 
 			return ch
 		}, text)
 	}
-	row := func(gutter, content, bg string, syntax bool) {
-		body := keepBackground(DefaultStyles.Faint.Render(content))
-		if syntax {
-			body = keepBackground(HighlightCode(content, lexer))
-		}
-		for i, part := range strings.Split(ansi.Hardwrap(body, max(1, width-ansi.StringWidth(gutter)), true), "\n") {
-			prefix := gutter
-			if i > 0 {
-				prefix = strings.Repeat(" ", ansi.StringWidth(gutter))
-			}
-			cell := prefix + part
-			rows = append(rows, bg+cell+strings.Repeat(" ", max(0, width-ansi.StringWidth(cell)))+ansiReset)
-		}
+	type diffRow struct {
+		gutter, content, bg string
+		syntax              bool
 	}
 	panel, add, remove := diffPanel(), diffAdded(), diffRemoved()
 	gutter := func(style lipgloss.Style, n int, sign string) string {
 		return keepBackground(style.Render(fmt.Sprintf("%4d %s ", n, sign)))
 	}
-	row(" ", clean(r.named(path)), panel, false)
+	parsed := []diffRow{{" ", clean(r.named(path)), panel, false}}
+	oldLine, newLine := 0, 0
 	for line := range strings.SplitSeq(diff, "\n") {
 		if line == "" || strings.HasPrefix(line, "--- ") || strings.HasPrefix(line, "+++ ") {
 			continue
@@ -212,25 +201,64 @@ func (r TranscriptRenderer) renderDiffPath(diff, path string, width int) string 
 		if hunk := diffHunk.FindStringSubmatch(line); hunk != nil {
 			oldLine, _ = strconv.Atoi(hunk[1])
 			newLine, _ = strconv.Atoi(hunk[2])
-			row(" ⋮ ", clean(line), panel, false)
+			parsed = append(parsed, diffRow{" ⋮ ", clean(line), panel, false})
 			continue
 		}
 		switch line[0] {
 		case '+':
-			row(gutter(DefaultStyles.Success, newLine, "+"), clean(line[1:]), add, true)
+			parsed = append(parsed, diffRow{gutter(DefaultStyles.Success, newLine, "+"), clean(line[1:]), add, true})
 			newLine++
 		case '-':
-			row(gutter(DefaultStyles.Error, oldLine, "-"), clean(line[1:]), remove, true)
+			parsed = append(parsed, diffRow{gutter(DefaultStyles.Error, oldLine, "-"), clean(line[1:]), remove, true})
 			oldLine++
 		case ' ':
-			row(gutter(DefaultStyles.Decor, newLine, " "), clean(line[1:]), panel, true)
+			parsed = append(parsed, diffRow{gutter(DefaultStyles.Decor, newLine, " "), clean(line[1:]), panel, true})
 			newLine++
 			oldLine++
 		default:
-			row(" ⋮ ", clean(line), panel, false)
+			parsed = append(parsed, diffRow{" ⋮ ", clean(line), panel, false})
+		}
+	}
+	// One highlighting pass for the whole diff: chroma rebuilds its theme
+	// table on every call.
+	var code []string
+	for _, row := range parsed {
+		if row.syntax {
+			code = append(code, row.content)
+		}
+	}
+	code = HighlightLines(code, lexerFor(path))
+	var rows []string
+	for _, row := range parsed {
+		body := keepBackground(DefaultStyles.Faint.Render(row.content))
+		if row.syntax {
+			body, code = keepBackground(code[0]), code[1:]
+		}
+		for i, part := range strings.Split(ansi.Hardwrap(body, max(1, width-ansi.StringWidth(row.gutter)), true), "\n") {
+			prefix := row.gutter
+			if i > 0 {
+				prefix = strings.Repeat(" ", ansi.StringWidth(row.gutter))
+			}
+			cell := prefix + part
+			rows = append(rows, row.bg+cell+strings.Repeat(" ", max(0, width-ansi.StringWidth(cell)))+ansiReset)
 		}
 	}
 	return strings.Join(rows, "\n")
+}
+
+// lexersByName holds the lexer chroma matched to each file name: matching tries
+// every lexer's patterns, and a transcript names the same files many times.
+var lexersByName sync.Map
+
+func lexerFor(path string) chroma.Lexer {
+	name := filepath.Base(path)
+	if cached, ok := lexersByName.Load(name); ok {
+		lexer, _ := cached.(chroma.Lexer) // nil when no lexer claims the name
+		return lexer
+	}
+	lexer := lexers.Match(name)
+	lexersByName.Store(name, lexer)
+	return lexer
 }
 
 func lineUnit(n int) string {

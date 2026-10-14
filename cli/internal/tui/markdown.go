@@ -16,24 +16,44 @@ import (
 	chromastyles "github.com/alecthomas/chroma/v2/styles"
 )
 
-// HighlightCode colors one line of code the way a reply's code blocks are
+// HighlightLines colors lines of code the way a reply's code blocks are
 // colored: the lexer chroma matched to the file, in the theme built from the
-// terminal's palette. A line no lexer claims stays as it is.
-func HighlightCode(line string, lexer chroma.Lexer) string {
-	if lexer == nil {
-		return line
+// terminal's palette. Each line is lexed alone; lines no lexer claims stay as
+// they are.
+func HighlightLines(lines []string, lexer chroma.Lexer) []string {
+	if lexer == nil || len(lines) == 0 {
+		return lines
 	}
-	tokens, err := chroma.Coalesce(lexer).Tokenise(nil, line)
-	if err != nil {
-		return line
+	var tokens []chroma.Token
+	for _, line := range lines {
+		lexed, err := chroma.Coalesce(lexer).Tokenise(nil, line)
+		if err != nil {
+			return lines
+		}
+		for token := lexed(); token != chroma.EOF; token = lexed() {
+			// some lexers end every input with a newline, which would wrap a row
+			token.Value = strings.ReplaceAll(token.Value, "\n", "")
+			tokens = append(tokens, token)
+		}
+		tokens = append(tokens, chroma.Token{Type: chroma.Text, Value: "\n"})
 	}
 	var b strings.Builder
-	if formatters.TTY256.Format(&b, chromastyles.Get(codeTheme(transcriptInk)), tokens) != nil {
-		return line
+	if formatters.TTY256.Format(&b, chromastyles.Get(codeTheme(transcriptInk)), chroma.Literator(tokens...)) != nil {
+		return lines
 	}
-	// some lexers end every input with a newline, which would wrap a row
-	return strings.ReplaceAll(b.String(), "\n", "")
+	highlighted := strings.Split(b.String(), "\n")
+	if len(highlighted) != len(lines)+1 {
+		return lines
+	}
+	highlighted = highlighted[:len(lines)]
+	for i, line := range highlighted {
+		// the separator leaves an empty styled run on each line
+		highlighted[i] = emptyRuns.ReplaceAllString(line, "")
+	}
+	return highlighted
 }
+
+var emptyRuns = regexp.MustCompile("(\x1b\\[[0-9;]*m\x1b\\[0m)+$")
 
 var markdownThemes sync.Mutex
 
