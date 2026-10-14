@@ -142,8 +142,8 @@ pub fn headers(client: Client, model: String) -> List(#(String, String)) {
 /// One streaming POST whose SSE payloads a reducer turns into events and a
 /// turn. A provider with its own wire format drives this directly.
 ///
-/// `timeout_ms` bounds connecting and the wait for response headers; after
-/// them a silent body is awaited while TCP keepalive finds the peer alive.
+/// `timeout_ms` bounds connecting and each wait up to the first event; after
+/// it a silent body is awaited while TCP keepalive finds the peer alive.
 /// With `first_event_timeout_ms`, the headers and the first event share that
 /// budget instead, counted from when the request went out: a model that
 /// thinks silently before it streams anything gets its own allowance.
@@ -413,8 +413,8 @@ fn elapsed(thinking: Thinking, now: Int) -> Int {
 }
 
 /// The next message, within what is left of the first-event deadline while
-/// one runs. Otherwise headers wait the idle budget and a body chunk waits
-/// while the connection is alive.
+/// one runs, else within the idle budget until the first event. Once events
+/// flow, a body chunk waits while the connection is alive.
 fn receive(
   connection: transport.Connection,
   wait: Wait,
@@ -429,8 +429,11 @@ fn receive(
         int.max(1, deadline - clock.monotonic_ms()),
       )
       |> result.map_error(transport_error(_, phase, total))
-    _, _ ->
+    _, types.Streaming ->
       transport.receive(connection)
+      |> result.map_error(transport_error(_, phase, wait.idle_ms))
+    _, _ ->
+      transport.receive_within(connection, wait.idle_ms)
       |> result.map_error(transport_error(_, phase, wait.idle_ms))
   }
 }
