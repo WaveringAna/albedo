@@ -6,6 +6,7 @@ import albedo/daemon/store
 import albedo/harness/client_api
 import albedo/harness/command
 import albedo/harness/compaction
+import albedo/harness/context_limits
 import albedo/harness/extensions/python/kernel as python
 import albedo/harness/host
 import albedo/harness/oauth
@@ -797,7 +798,8 @@ fn gather(
   }
 }
 
-/// The first enabled catalog that knows this model answers.
+/// The first enabled catalog that knows this model answers, with any matching
+/// `context-limits.json` cap applied as its default window.
 pub fn model_info(
   installed: List(Extension),
   model: String,
@@ -806,10 +808,37 @@ pub fn model_info(
   catalogs(installed)
   |> list.fold_until(None, fn(_, catalog) {
     case catalog.lookup(model, endpoint) {
-      Some(info) -> list.Stop(Some(info))
+      Some(info) -> list.Stop(Some(with_context_limit(info, endpoint)))
       None -> list.Continue(None)
     }
   })
+}
+
+fn with_context_limit(info: ModelInfo, endpoint: Option(String)) -> ModelInfo {
+  let target_endpoint = option.or(info.endpoint, endpoint)
+  case
+    context_limits.lookup_endpoint(info.provider, target_endpoint, info.model)
+  {
+    None -> info
+    Some(entry) -> {
+      let ceiling = case info.max_context_tokens, info.context_tokens {
+        Some(max), Some(ctx) -> Some(int.max(max, ctx))
+        Some(max), None -> Some(max)
+        None, Some(ctx) -> Some(ctx)
+        None, None -> None
+      }
+      let max_context = case ceiling {
+        Some(max) if max > entry.context_tokens -> Some(max)
+        _ -> None
+      }
+      ModelInfo(
+        ..info,
+        context_tokens: Some(entry.context_tokens),
+        max_context_tokens: max_context,
+        source: info.source <> "; context-limits (" <> entry.id <> ")",
+      )
+    }
+  }
 }
 
 /// The first enabled catalog that lists this provider or endpoint answers.

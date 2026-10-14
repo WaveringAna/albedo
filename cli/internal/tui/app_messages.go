@@ -45,6 +45,7 @@ type modelChangedMsg struct {
 
 type commandExecutedMsg struct {
 	Page             *daemon.PageDocument
+	ContextWindow    *int64
 	ETag, ModelsETag string
 	Err              error
 	Name             string
@@ -54,6 +55,7 @@ type commandExecutedMsg struct {
 	Available        []string
 	Gen              int
 	EffortChanged    bool
+	WindowChanged    bool
 }
 
 type profilesLoadedMsg struct {

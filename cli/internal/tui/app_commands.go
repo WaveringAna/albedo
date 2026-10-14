@@ -96,6 +96,23 @@ func (m *AppModel) handleCommandResults(msg tea.Msg) (tea.Cmd, bool) {
 			m.Chat.Effort = msg.Effort
 			m.updateSession(*m.ActiveSession)
 		}
+		if msg.WindowChanged && m.ActiveSession != nil {
+			m.ActiveSession.ContextWindow = msg.ContextWindow
+			if msg.ETag != "" {
+				m.ActiveSession.ETag = msg.ETag
+			}
+			m.updateSession(*m.ActiveSession)
+			if msg.ContextWindow != nil {
+				tokens := int(*msg.ContextWindow)
+				m.Chat.window = &tokens
+				if m.ActiveSession.Model != "" {
+					model := m.ActiveSession.Model
+					m.Chat.windowModel = &model
+				}
+			} else {
+				m.Chat.window, m.Chat.windowModel = nil, nil
+			}
+		}
 		return nil, true
 	case profilesLoadedMsg:
 		if msg.Gen != m.ProfileGen {
@@ -234,6 +251,15 @@ func (m *AppModel) executeCommandCmd(name, args string, gen int) tea.Cmd {
 				effort, err = daemon.SelectEffort(context.Background(), conn, snapshot, args)
 			}
 			res.Effort = &effort
+		case "/compact-at":
+			var compactAt daemon.CompactAtResult
+			if strings.TrimSpace(args) == "" {
+				compactAt, err = daemon.ReadCompactAt(context.Background(), conn, snapshot)
+			} else {
+				compactAt, err = daemon.SelectCompactAt(context.Background(), conn, snapshot, args)
+			}
+			res.CompactAt = &compactAt
+			res.Message = compactAt.Message
 		case "/raise-cap":
 			enabled := true
 			switch strings.TrimSpace(args) {
@@ -316,12 +342,20 @@ func (m *AppModel) executeCommandCmd(name, args string, gen int) tea.Cmd {
 			msg = res.Message
 		}
 
-		return commandExecutedMsg{Name: name, Message: msg, Page: res.Page, Effort: newEffort, ModelsETag: acknowledgedModelsETag, ETag: func() string {
+		return commandExecutedMsg{Name: name, Message: msg, Page: res.Page, Effort: newEffort, ContextWindow: func() *int64 {
+			if res.CompactAt != nil {
+				return res.CompactAt.ContextWindow
+			}
+			return nil
+		}(), ModelsETag: acknowledgedModelsETag, ETag: func() string {
 			if res.Effort != nil {
 				return res.Effort.ETag
 			}
+			if res.CompactAt != nil {
+				return res.CompactAt.ETag
+			}
 			return ""
-		}(), EffortChanged: res.Effort != nil, SessionID: sessionID, Gen: gen}
+		}(), EffortChanged: res.Effort != nil, WindowChanged: res.CompactAt != nil && strings.TrimSpace(args) != "", SessionID: sessionID, Gen: gen}
 	}
 }
 

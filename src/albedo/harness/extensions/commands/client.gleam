@@ -120,6 +120,23 @@ pub fn commands() -> List(client.Command) {
       ],
       [#("/effort", client.Form("/effort"))],
     ),
+    configuration_read("/compact-at"),
+    configuration_edit(
+      "/compact-at",
+      [
+        client.Field(
+          "context_window",
+          "Context window",
+          "integer",
+          False,
+          json.null(),
+          [],
+          "Tokens this session compacts against; omit to restore the model's window.",
+          None,
+        ),
+      ],
+      [#("/context_window", client.Form("/context_window"))],
+    ),
     client.Command(
       "/context",
       client.Read,

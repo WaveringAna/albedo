@@ -11,6 +11,7 @@ import (
 
 type CommandResult struct {
 	Effort    *EffortResult
+	CompactAt *CompactAtResult
 	Page      *PageDocument
 	Message   string
 	Result    json.RawMessage

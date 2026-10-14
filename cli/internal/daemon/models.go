@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"albedo/cli/internal/config"
@@ -12,14 +13,19 @@ import (
 )
 
 type Model struct {
-	ID, Label, CapKey           string
-	Efforts, Input              []string
-	Context, MaxContext, Output int
-	Raised                      bool
+	ID, Label, CapKey                             string
+	Efforts, Input                                []string
+	Context, EffectiveContext, MaxContext, Output int
+	Raised                                        bool
 }
 type EffortResult struct {
 	Effort, Message, ETag string
 	Available             []string
+}
+type CompactAtResult struct {
+	ContextWindow    *int64
+	EffectiveContext int
+	Message, ETag    string
 }
 type ModelSelection struct{ Provider, Model, Protocol, Effort, ETag, DefaultETag, ModelsETag string }
 type ModelSelectionRequest struct{ Model, Provider, Effort, ETag string }
@@ -63,7 +69,7 @@ func listModels(ctx context.Context, conn *Connection, params protocol.ListModel
 			if row.ID == "" || row.CapKey == "" || row.Efforts == nil {
 				return fieldError("model")
 			}
-			model := Model{ID: row.ID, Label: row.Label, CapKey: row.CapKey, Input: row.InputModalities, Context: int(value(row.DefaultContextTokens)), MaxContext: int(value(row.MaxContextTokens)), Output: int(value(row.MaxOutputTokens)), Raised: row.Raised}
+			model := Model{ID: row.ID, Label: row.Label, CapKey: row.CapKey, Input: row.InputModalities, Context: int(value(row.DefaultContextTokens)), EffectiveContext: int(value(row.EffectiveContextTokens)), MaxContext: int(value(row.MaxContextTokens)), Output: int(value(row.MaxOutputTokens)), Raised: row.Raised}
 			for _, effort := range row.Efforts {
 				model.Efforts = append(model.Efforts, effort.ID)
 			}
@@ -135,6 +141,120 @@ func ReadEffort(ctx context.Context, conn *Connection, session Session) (EffortR
 func SelectEffort(ctx context.Context, conn *Connection, session Session, effort string) (EffortResult, error) {
 	result, err := patchSession(ctx, conn, session.ID, session.ETag, map[string]any{"effort": optionalText(effort)})
 	return EffortResult{Effort: result.Effort, Message: "Effort saved.", ETag: result.ETag}, err
+}
+
+// ParseTokenWindow parses a positive token count such as 100k, 1.5m, or 250000.
+func ParseTokenWindow(raw string) (int64, error) {
+	cleaned := strings.ToLower(strings.TrimSpace(raw))
+	cleaned = strings.ReplaceAll(strings.ReplaceAll(cleaned, "_", ""), ",", "")
+	multiplier := int64(1)
+	switch {
+	case strings.HasSuffix(cleaned, "k"):
+		cleaned = strings.TrimSuffix(cleaned, "k")
+		multiplier = 1000
+	case strings.HasSuffix(cleaned, "m"):
+		cleaned = strings.TrimSuffix(cleaned, "m")
+		multiplier = 1_000_000
+	}
+	var tokens int64
+	if wholeStr, fracStr, hasDot := strings.Cut(cleaned, "."); hasDot {
+		if multiplier == 1 || wholeStr == "" || fracStr == "" {
+			return 0, fmt.Errorf("expected a positive token count such as 100k, 250000, or 1m, not %s", raw)
+		}
+		whole, err := strconv.ParseInt(wholeStr, 10, 64)
+		if err != nil || whole < 0 {
+			return 0, fmt.Errorf("expected a positive token count such as 100k, 250000, or 1m, not %s", raw)
+		}
+		frac, err := strconv.ParseInt(fracStr, 10, 64)
+		if err != nil || frac < 0 {
+			return 0, fmt.Errorf("expected a positive token count such as 100k, 250000, or 1m, not %s", raw)
+		}
+		scale := int64(1)
+		for range len(fracStr) {
+			scale *= 10
+		}
+		if scale > multiplier {
+			return 0, fmt.Errorf("expected a positive token count such as 100k, 250000, or 1m, not %s", raw)
+		}
+		tokens = whole*multiplier + frac*(multiplier/scale)
+	} else {
+		whole, err := strconv.ParseInt(cleaned, 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("expected a positive token count such as 100k, 250000, or 1m, not %s", raw)
+		}
+		tokens = whole * multiplier
+	}
+	if tokens <= 0 || tokens > 100_000_000 {
+		return 0, fmt.Errorf("expected a positive token count such as 100k, 250000, or 1m, not %s", raw)
+	}
+	return tokens, nil
+}
+
+func ReadCompactAt(ctx context.Context, conn *Connection, session Session) (CompactAtResult, error) {
+	configuration, err := GetSessionConfiguration(ctx, conn, session.ID)
+	if err != nil {
+		return CompactAtResult{}, err
+	}
+	var modelWindow int
+	if session.Model != "" {
+		params := protocol.ListModelsParams{Model: &session.Model}
+		if session.Provider != "" {
+			params.ProviderProfile = &session.Provider
+		}
+		if models, listErr := listModels(ctx, conn, params); listErr == nil {
+			for _, model := range models {
+				if model.ID == session.Model {
+					modelWindow = model.EffectiveContext
+					break
+				}
+			}
+		}
+	}
+	window := configuration.Value.ContextWindow
+	effective := modelWindow
+	var message string
+	switch {
+	case window != nil && modelWindow > 0:
+		effective = int(*window)
+		message = fmt.Sprintf("This session compacts against a %d-token window (model default: %d); /compact-at default restores the model's window.", *window, modelWindow)
+	case window != nil:
+		effective = int(*window)
+		message = fmt.Sprintf("This session compacts against a %d-token window.", *window)
+	case modelWindow > 0:
+		message = fmt.Sprintf("This session uses %s's %d-token window; /compact-at <tokens> overrides it for this session.", session.Model, modelWindow)
+	default:
+		message = fmt.Sprintf("No context window is configured or catalogued for %s; /compact-at <tokens> sets one for this session.", session.Model)
+	}
+	return CompactAtResult{ContextWindow: window, EffectiveContext: effective, Message: message, ETag: configuration.ETag}, nil
+}
+
+// SelectCompactAt sets or clears the session's context window override.
+func SelectCompactAt(ctx context.Context, conn *Connection, session Session, raw string) (CompactAtResult, error) {
+	trimmed := strings.ToLower(strings.TrimSpace(raw))
+	var window *int64
+	if trimmed != "default" && trimmed != "reset" && trimmed != "off" {
+		parsed, err := ParseTokenWindow(raw)
+		if err != nil {
+			return CompactAtResult{}, err
+		}
+		window = &parsed
+	}
+	etag := session.ETag
+	if etag == "" {
+		configuration, err := GetSessionConfiguration(ctx, conn, session.ID)
+		if err != nil {
+			return CompactAtResult{}, err
+		}
+		etag = configuration.ETag
+	}
+	result, err := patchSession(ctx, conn, session.ID, etag, map[string]any{"context_window": window})
+	if err != nil {
+		return CompactAtResult{}, err
+	}
+	if window != nil {
+		return CompactAtResult{ContextWindow: result.ContextWindow, EffectiveContext: int(*window), Message: fmt.Sprintf("Context window for this session set to %d tokens.", *window), ETag: result.ETag}, nil
+	}
+	return CompactAtResult{ContextWindow: nil, Message: "Restored the model's default context window for this session.", ETag: result.ETag}, nil
 }
 
 // ResolveSessionModel keeps a manual ID in the observed session profile, or

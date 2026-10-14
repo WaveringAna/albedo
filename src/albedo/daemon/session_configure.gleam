@@ -28,6 +28,7 @@ pub type Request {
     remember: Bool,
   )
   SelectEffort(level: String)
+  SelectContextWindow(tokens: option.Option(Int))
 }
 
 pub fn change(
@@ -58,6 +59,7 @@ pub fn change(
       candidate.provider_profile != current.provider_profile
       || candidate.model != current.model
       || candidate.effort != current.effort
+    let window_changed = candidate.context_window != current.context_window
     let selection_changed = candidate.selection != current.selection
     use _ <- result.try(
       case
@@ -69,7 +71,7 @@ pub fn change(
       },
     )
     let validate = case request {
-      Conditional(..) -> model_changed
+      Conditional(..) | SelectContextWindow(..) -> model_changed
       SelectModel(..) | SelectEffort(..) -> True
     }
     use #(state, observed_provider, candidate) <- result.try(case validate {
@@ -122,11 +124,11 @@ pub fn change(
         fn() { Error("settings_unavailable") },
       ),
     )
-    Ok(#(state, protocol, saved, model_changed))
+    Ok(#(state, protocol, saved, model_changed, window_changed))
   }
   case prepared {
     Error(error) -> #(state, Error(error))
-    Ok(#(state, protocol, saved, model_changed)) -> {
+    Ok(#(state, protocol, saved, model_changed, window_changed)) -> {
       let history = case model_changed {
         True ->
           option.map(state.history, session_history.tag_unknown_provider(
@@ -147,7 +149,7 @@ pub fn change(
             effort: saved.effort,
           ),
           history: history,
-          context: case model_changed {
+          context: case model_changed || window_changed {
             True -> session_state.unprepared()
             False -> state.context
           },
@@ -155,7 +157,7 @@ pub fn change(
       let base = "/sessions/" <> state.info.id
       bus.invalidate(["/sessions", base], [state.info.id], False)
       let state = state |> session_state.invalidate("session", base)
-      let state = case model_changed {
+      let state = case model_changed || window_changed {
         True -> state |> session_state.invalidate("context", base <> "/context")
         False -> state
       }
@@ -222,6 +224,18 @@ fn request_patch(
           effort: Some(Some(string.trim(string.lowercase(level)))),
         ),
       ))
+    }
+    SelectContextWindow(tokens) -> {
+      use _ <- result.try(case busy {
+        True -> Error("changing the context window requires an idle session")
+        False -> Ok(Nil)
+      })
+      use _ <- result.try(case tokens {
+        Some(value) if value <= 0 || value > 100_000_000 ->
+          Error("context window must be a positive token count")
+        _ -> Ok(Nil)
+      })
+      Ok(#(expected, config.Patch(..empty, context_window: Some(tokens))))
     }
   }
 }

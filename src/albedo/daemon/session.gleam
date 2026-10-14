@@ -45,6 +45,7 @@ import albedo/harness/runtime
 import albedo/harness/ssh
 import albedo/openai_api/types
 import gleam/erlang/process.{type Subject}
+import gleam/int
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -212,6 +213,8 @@ pub type Message {
   )
   ReadEffort(Subject(Result(json.Json, String)))
   ChangeEffort(String, Subject(Result(json.Json, String)))
+  ReadCompactAt(Subject(Result(json.Json, String)))
+  ChangeCompactAt(Option(Int), Subject(Result(json.Json, String)))
   StopJob(String, Subject(Result(Nil, String)))
   /// Report on the kernel's staleness, or (True) force its swap now.
   UpgradeKernel(Subject(Result(runtime.KernelUpgrade, String)))
@@ -1315,6 +1318,33 @@ fn handle(
         }),
       )
     }
+    ReadCompactAt(reply) ->
+      answer(state, reply, session_provider.read_compact_at(state))
+    ChangeCompactAt(tokens, reply) -> {
+      let #(state, changed) =
+        session_configure.change(
+          stirred(state),
+          session_configure.SelectContextWindow(tokens),
+        )
+      answer(
+        state,
+        reply,
+        result.map(changed, fn(saved) {
+          let message = case saved.context_window {
+            Some(window) ->
+              "context window for this session set to "
+              <> int.to_string(window)
+              <> " tokens"
+            None ->
+              "restored the model's default context window for this session"
+          }
+          json.object([
+            #("context_window", json.nullable(saved.context_window, json.int)),
+            #("message", json.string(message)),
+          ])
+        }),
+      )
+    }
 
     ReloadData(reply) ->
       transition(
@@ -1923,6 +1953,9 @@ fn command_op(
     command.EffortGet -> actor.call(session, 5000, ReadEffort)
     command.EffortSelect(level) ->
       actor.call(session, 5000, ChangeEffort(level, _))
+    command.CompactAtGet -> actor.call(session, 5000, ReadCompactAt)
+    command.CompactAtSet(tokens) ->
+      actor.call(session, 5000, ChangeCompactAt(tokens, _))
     command.ContextSummary -> Ok(context(session))
     // Switching strategy reloads the session's extensions first.
     command.Compact(strategy) ->

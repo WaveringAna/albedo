@@ -5,7 +5,7 @@ import unittest
 import urllib.error
 from urllib.parse import urlencode
 
-from harness import Albedo, Provider, exclusive, operation_id, Reply, text
+from harness import Albedo, Provider, exclusive, operation_id, python, Reply, text
 
 
 SECRET = "credential-must-never-appear-in-inspector"
@@ -31,6 +31,21 @@ CATALOG = {
 class ContextTest(unittest.TestCase):
     def setUp(self):
         def reply(request):
+            messages = request.get("input", [])
+            if messages and messages[-1].get("type") == "function_call_output":
+                return text("done", usage={"input_tokens": 20, "output_tokens": 1})
+            if "probe compact-at via python" in json.dumps(request):
+                return python(
+                    "state = await commands.compact_at()\n"
+                    "assert state['context_window'] == 50000, state\n"
+                    "assert state['effective_context_tokens'] == 50000, state\n"
+                    "try:\n"
+                    "    await commands.compact_at('100k')\n"
+                    "    assert False, 'compact_at mutation must refuse from the model'\n"
+                    "except CommandsError as error:\n"
+                    "    assert 'user action' in str(error), error\n"
+                    "print('COMPACT_AT_PROBE_OK')"
+                )
             if "without provider usage" in json.dumps(request):
                 return Reply("text", "done", usage=None)
             return text("done", usage={"input_tokens": 20, "output_tokens": 1})
@@ -171,7 +186,7 @@ class ContextTest(unittest.TestCase):
         with self.app.api(configuration) as response:
             self.assertEqual(json.load(response)["context_window"], 50000)
             etag = response.headers["ETag"]
-        self.app.prompt(session, "compact against the session window").close()
+        self.app.prompt(session, "probe compact-at via python").close()
         self.app.idle(session)
         snapshot = self.read(f"/sessions/{session}/context")
         self.assertEqual(snapshot["context_window_tokens"], 50000)
@@ -187,10 +202,45 @@ class ContextTest(unittest.TestCase):
             json.load(response)
         with self.app.api(configuration) as response:
             self.assertIsNone(json.load(response)["context_window"])
+        # Clearing the session window invalidates the prepared context snapshot.
+        self.assertEqual(self.read(f"/sessions/{session}/context")["state"], "pending")
         self.app.prompt(session, "back to the catalog window").close()
         self.app.idle(session)
         compaction = self.read(f"/sessions/{session}/context")["compaction"]
         self.assertEqual(compaction["input_limit_tokens"], 200000)
+
+        # A local context-limits.json entry caps the default window while keeping
+        # the catalog ceiling as max_context_tokens so /raise-cap can restore it.
+        limits_file = self.app.home / "context-limits.json"
+        limits_file.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "entries": [
+                        {
+                            "id": "fixture-cap",
+                            "match": {"model": "fixture"},
+                            "contextTokens": 100000,
+                            "note": "custom default window",
+                        }
+                    ],
+                }
+            )
+        )
+        self.addCleanup(limits_file.unlink, missing_ok=True)
+        models = self.read(f"/models?provider_profile={self.app.profile}")["items"]
+        fixture_model = next(item for item in models if item["id"] == "fixture")
+        self.assertEqual(fixture_model["default_context_tokens"], 100000)
+        self.assertEqual(fixture_model["effective_context_tokens"], 100000)
+        self.assertEqual(fixture_model["max_context_tokens"], 200000)
+        self.assertFalse(fixture_model["raised"])
+
+        self.app.prompt(session, "compact against context-limits.json").close()
+        self.app.idle(session)
+        limited = self.read(f"/sessions/{session}/context")
+        self.assertEqual(limited["context_window_tokens"], 100000)
+        self.assertEqual(limited["compaction"]["input_limit_tokens"], 100000)
+        self.assertIn("context-limits (fixture-cap)", limited["compaction"]["source"])
 
     def test_combining_marks_cannot_make_context_pages_unbounded(self):
         message = "a" + "\u0301" * 20000

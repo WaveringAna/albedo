@@ -29,6 +29,7 @@ var AppCommands = []ChatCommand{
 	{Name: "/raise-cap", Description: "raise or restore the model context cap"},
 	{Name: "/effort", Description: "choose reasoning effort"},
 	{Name: "/reload", Description: "apply selected configuration and refresh models"},
+	{Name: "/compact-at", Description: "show or set this session's compaction window"},
 	{Name: "/compact", Description: "compact durable context"},
 	{Name: "/kernel", Description: "upgrade the session kernel"},
 	{Name: "/model", Description: "choose a model"},

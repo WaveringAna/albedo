@@ -268,3 +268,45 @@ func TestPreviewCallbackKeepsConnectionAcrossAppChanges(t *testing.T) {
 		t.Fatalf("preview followed changed app state %+v", msg)
 	}
 }
+func TestCompactAtCommandUpdatesSessionAndChatWindow(t *testing.T) {
+	var patched map[string]any
+	conn := commandTestConnection(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "PATCH" || r.URL.String() != "/sessions/original?view=configuration" || r.Header.Get("If-Match") != `"session-a"` {
+			t.Errorf("unexpected compact-at request %s %s %s", r.Method, r.URL, r.Header.Get("If-Match"))
+		}
+		_ = json.NewDecoder(r.Body).Decode(&patched)
+		session := protocolSession("original", generationA, 0)
+		config := session["configuration_resource"].(map[string]any)
+		value := config["value"].(map[string]any)
+		value["context_window"] = patched["context_window"]
+		config["etag"] = `"session-b"`
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"resource": map[string]any{"url": "/sessions/original?view=configuration", "etag": `"session-b"`, "value": value},
+			"session":  session,
+			"move":     nil,
+		})
+	})
+	session := &daemon.Session{ID: "original", Model: "current", ETag: `"session-a"`}
+	app := &AppModel{Conn: conn, ActiveSession: session, Chat: ChatModel{SessionID: "original", Model: "current"}}
+	app.CommandGen = 3
+	msg := app.executeCommandCmd("/compact-at", "100k", 3)().(commandExecutedMsg)
+	if msg.Err != nil || !msg.WindowChanged || msg.ContextWindow == nil || *msg.ContextWindow != 100000 {
+		t.Fatalf("compact-at 100k failed: %+v", msg)
+	}
+	updated, _ := app.Update(msg)
+	app = updated.(*AppModel)
+	if app.ActiveSession.ContextWindow == nil || *app.ActiveSession.ContextWindow != 100000 || app.Chat.window == nil || *app.Chat.window != 100000 || app.ActiveSession.ETag != `"session-b"` {
+		t.Fatalf("chat or session window not updated: session=%+v chat=%v", app.ActiveSession, app.Chat.window)
+	}
+	app.ActiveSession.ETag = `"session-a"`
+	app.CommandGen = 4
+	resetMsg := app.executeCommandCmd("/compact-at", "default", 4)().(commandExecutedMsg)
+	if resetMsg.Err != nil || !resetMsg.WindowChanged || resetMsg.ContextWindow != nil {
+		t.Fatalf("compact-at default failed: %+v", resetMsg)
+	}
+	updated, _ = app.Update(resetMsg)
+	app = updated.(*AppModel)
+	if app.ActiveSession.ContextWindow != nil || app.Chat.window != nil {
+		t.Fatalf("chat or session window not cleared: session=%+v chat=%v", app.ActiveSession, app.Chat.window)
+	}
+}

@@ -46,6 +46,7 @@ type Session struct {
 	Cursor           *Cursor   `json:"-"`
 	Model            string    `json:"model"`
 	Effort           string    `json:"effort"`
+	ContextWindow    *int64    `json:"context_window,omitempty"`
 	Protocol         string    `json:"-"`
 	Provider         string    `json:"provider_profile"`
 	ETag             string    `json:"-"`
@@ -80,7 +81,7 @@ func SplitLocation(workspace string) (host, path string) {
 
 func sessionValue(wire protocol.Session) Session {
 	location := &Location{Host: wire.Location.Host, User: wire.Location.User, Path: wire.Location.Path, Label: wire.Location.Label}
-	session := Session{ID: wire.ID, Title: wire.Name, Cursor: wire.Cursor, LastAssistantAt: timestampSeconds(value(wire.ActivityAt)), TranscriptCount: int(wire.Preview.TranscriptCount), Workspace: wire.Workspace, Location: location, Model: value(wire.Model), Effort: value(wire.Effort), Provider: value(wire.ProviderProfile), ETag: wire.ConfigurationResource.ETag, FamilyRevision: wire.FamilyRevision, ParentID: wire.ParentID, RootID: wire.RootID, Depth: int(wire.Depth), Closed: wire.Closed, Pinned: wire.Preferences.Pinned, Archived: wire.Preferences.Archived, Opens: int(wire.Preferences.Opens), Status: capturedStatus(wire), wire: wire}
+	session := Session{ID: wire.ID, Title: wire.Name, Cursor: wire.Cursor, LastAssistantAt: timestampSeconds(value(wire.ActivityAt)), TranscriptCount: int(wire.Preview.TranscriptCount), Workspace: wire.Workspace, Location: location, Model: value(wire.Model), Effort: value(wire.Effort), ContextWindow: wire.ConfigurationResource.Value.ContextWindow, Provider: value(wire.ProviderProfile), ETag: wire.ConfigurationResource.ETag, FamilyRevision: wire.FamilyRevision, ParentID: wire.ParentID, RootID: wire.RootID, Depth: int(wire.Depth), Closed: wire.Closed, Pinned: wire.Preferences.Pinned, Archived: wire.Preferences.Archived, Opens: int(wire.Preferences.Opens), Status: capturedStatus(wire), wire: wire}
 	for _, glance := range wire.Glances {
 		session.Glances = append(session.Glances, *glanceValue(glance))
 	}

@@ -2,11 +2,14 @@
 
 import albedo/daemon/configuration
 import albedo/daemon/conversation
+import albedo/daemon/session_configuration
 import albedo/daemon/session_history
 import albedo/daemon/session_state
 import albedo/harness/extension
+import albedo/harness/extension/selection
 import albedo/harness/runtime
 import gleam/dynamic/decode
+import gleam/int
 import gleam/json
 import gleam/list
 import gleam/option
@@ -106,6 +109,61 @@ pub fn read_effort(
       )
     }
   }
+}
+
+pub fn read_compact_at(
+  state: session_state.State(message),
+) -> Result(json.Json, String) {
+  use session_window <- result.try(session_configuration.context_window(
+    runtime.ledger(state.host),
+    state.info.id,
+  ))
+  let endpoint = profile_endpoint(state.home, state.info.provider)
+  let info =
+    runtime.global(state.host)
+    |> result.unwrap([])
+    |> extension.model_info(state.info.model, endpoint)
+  let model_window = option.then(info, selection.window)
+  let effective = option.or(session_window, model_window)
+  let #(source, message) = case session_window, model_window {
+    option.Some(tokens), option.Some(default_tokens) -> #(
+      "session",
+      "this session compacts against a "
+        <> int.to_string(tokens)
+        <> "-token window (model default: "
+        <> int.to_string(default_tokens)
+        <> "); /compact-at default restores the model's window",
+    )
+    option.Some(tokens), option.None -> #(
+      "session",
+      "this session compacts against a "
+        <> int.to_string(tokens)
+        <> "-token window",
+    )
+    option.None, option.Some(tokens) -> #(
+      "model",
+      "this session uses "
+        <> state.info.model
+        <> "'s "
+        <> int.to_string(tokens)
+        <> "-token window; /compact-at <tokens> overrides it for this session",
+    )
+    option.None, option.None -> #(
+      "unknown",
+      "no context window is configured or catalogued for "
+        <> state.info.model
+        <> "; /compact-at <tokens> sets one for this session",
+    )
+  }
+  Ok(
+    json.object([
+      #("context_window", json.nullable(session_window, json.int)),
+      #("effective_context_tokens", json.nullable(effective, json.int)),
+      #("model_context_tokens", json.nullable(model_window, json.int)),
+      #("source", json.string(source)),
+      #("message", json.string(message)),
+    ]),
+  )
 }
 
 /// Keep a supported current level, then a supported profile default, then the

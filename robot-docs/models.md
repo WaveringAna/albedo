@@ -59,6 +59,26 @@ A provider can report a larger window than a session uses by default; Codex repo
 
 Compaction, `/context`, and every session on that model then use the maximum from their next request. A catalog reports the maximum as `ModelInfo.max_context_tokens`; a model without one has nothing to raise.
 
+## context limits (`context-limits.json`)
+
+`priv/context-limits.json` and `$ALBEDO_HOME/context-limits.json` merge by entry `id` (with local overriding default, and new local ids placed first) using the same `{extension?, host?, model?}` glob matcher as `cache-ttl.json`:
+
+```json
+{
+  "version": 1,
+  "entries": [
+    {
+      "id": "haiku-100k",
+      "match": { "model": "*haiku*" },
+      "contextTokens": 100000,
+      "note": "keep prompts under the 100k pricing and quality cliff"
+    }
+  ]
+}
+```
+
+When an entry matches a catalogued model, `ModelInfo.context_tokens` becomes `contextTokens` and, if the catalog reported a larger window, `ModelInfo.max_context_tokens` preserves that ceiling so `/raise-cap` and `tab` in `/model` can still raise the model to its full window.
+
 ## antigravity models
 
 Antigravity is not on models.dev, and its model ids and required `model_enum` labels change server-side. The `antigravity` extension therefore contributes its own catalog. It asks Cloud Code Assist `fetchAvailableModels` which models the account can use, keeps the ids that the real client's agent picker shows, and caches them with their limits, labels, and the renames of retired ids in `$ALBEDO_HOME/antigravity.json`. The cache refreshes in the background after 6 hours, and the first `/login` listing waits for discovery. A built-in table supplies each model's thinking control and serves as the list before the first discovery. A saved profile that names a retired id follows the backend's rename. The catalog answers lookups only for the Antigravity endpoint, so models.dev keeps answering for the same ids at other providers.

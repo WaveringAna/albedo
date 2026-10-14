@@ -2,10 +2,11 @@
 
 import albedo/harness/cache_ttl
 import albedo/harness/command.{
-  type Command, type Context, Argument, Command, Compact, ContextPage,
-  ContextSummary, Data, EffortGet, EffortSelect, ModelCall, ModelGet,
-  ModelSelect, Refresh, ReloadCatalogs, UserCall,
+  type Command, type Context, Argument, Command, Compact, CompactAtGet,
+  CompactAtSet, ContextPage, ContextSummary, Data, EffortGet, EffortSelect,
+  ModelCall, ModelGet, ModelSelect, Refresh, ReloadCatalogs, UserCall,
 }
+import albedo/harness/context_limits
 import albedo/harness/extension
 import albedo/harness/extension/selection
 import albedo/harness/extensions/commands/client
@@ -29,6 +30,7 @@ pub fn extension() -> extension.Extension {
         reload(),
         context_inspect(),
         compact(),
+        compact_at(),
         raise_cap(),
         effort(),
       ]),
@@ -219,6 +221,40 @@ fn catalogs_reload(ctx: Context) -> Result(#(String, json.Json), String) {
       <> "."
   }
   #(notice, value)
+}
+
+fn compact_at() -> Command {
+  Command(
+    "/compact-at",
+    "Show this session's effective context window, or set the token window this session compacts against (user only; e.g. 100k, 250000, or default).",
+    [
+      Argument(
+        "window",
+        "token window for this session (e.g. 100k, 250000, 1m), or default to restore the model's window; omit to show the current setting",
+        False,
+        ["default"],
+      ),
+    ],
+    True,
+    False,
+    False,
+    None,
+    fn(ctx: Context, caller, args) {
+      use value <- result.try(case caller, dict.get(args, "window") {
+        ModelCall, Ok(_) ->
+          Error(user_action("changing the context window", "/compact-at"))
+        _, Error(_) -> ctx.state(CompactAtGet)
+        UserCall, Ok(raw) -> {
+          use tokens <- result.try(case string.lowercase(string.trim(raw)) {
+            "default" | "reset" | "off" -> Ok(None)
+            _ -> context_limits.parse_tokens(raw) |> result.map(Some)
+          })
+          ctx.state(CompactAtSet(tokens))
+        }
+      })
+      Ok(Data(value))
+    },
+  )
 }
 
 fn compact() -> Command {

@@ -49,6 +49,8 @@ pub type StateOp {
   ModelSelect(model: String, provider: Option(String), effort: Option(String))
   EffortGet
   EffortSelect(effort: String)
+  CompactAtGet
+  CompactAtSet(tokens: Option(Int))
   ContextSummary
   /// Compact now; a named strategy first becomes the session's own.
   Compact(strategy: Option(String))
@@ -316,6 +318,7 @@ pub fn prepare_input(
       case operation {
         ModelGet
         | EffortGet
+        | CompactAtGet
         | ContextSummary
         | ContextPage(_, _)
         | KernelReport -> context.state(operation)

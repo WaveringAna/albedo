@@ -124,7 +124,7 @@ When the catalog reports that the current model reads no image input, `snapcompa
 { "rolling": { "contextWindowTokens": 200000, "triggerPercent": 80, "tailPercent": 25 } }
 ```
 
-Put this in `$ALBEDO_HOME/extensions.json`. A session's own `context_window`, set when the session is created or by a configuration edit (`albedo -p … -c 150000`), outranks every strategy's `contextWindowTokens` and the catalog. `contextWindowTokens` is optional. Without it, `rolling` reads the current model's context window from the enabled [models catalog](models.md). An explicit setting takes precedence. Without either source, `rolling` does not compact automatically and `/context` reports an unknown window.
+Put this in `$ALBEDO_HOME/extensions.json`. A session's own `context_window`, set by `/compact-at <tokens>`, when the session is created, or by a configuration edit (`albedo -p … -c 100k`), outranks every strategy's `contextWindowTokens`, `$ALBEDO_HOME/context-limits.json`, and the catalog. `contextWindowTokens` is optional. Without it, `rolling` reads the current model's context window from the enabled [models catalog](models.md). An explicit setting takes precedence. Without either source, `rolling` does not compact automatically and `/context` reports an unknown window.
 
 Estimates are local byte-based approximations, never provider token accounting. Image payloads are sized by their dimensions, not by base64 length, so an attached image cannot fake a million-token conversation.
 
