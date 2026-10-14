@@ -19,14 +19,30 @@ import (
 // HighlightLines colors lines of code the way a reply's code blocks are
 // colored: the lexer chroma matched to the file, in the theme built from the
 // terminal's palette. Each line is lexed alone; lines no lexer claims stay as
-// they are.
+// they are. Lines already colored come from highlights.
 func HighlightLines(lines []string, lexer chroma.Lexer) []string {
 	if lexer == nil || len(lines) == 0 {
 		return lines
 	}
+	theme := codeTheme(transcriptInk)
+	key := func(line string) highlightKey {
+		return highlightKey{lexer.Config().Name, theme, line}
+	}
+	out := make([]string, len(lines))
+	var missing []int
+	for i, line := range lines {
+		if colored, ok := highlights.get(key(line)); ok {
+			out[i] = colored
+		} else {
+			missing = append(missing, i)
+		}
+	}
+	if len(missing) == 0 {
+		return out
+	}
 	var tokens []chroma.Token
-	for _, line := range lines {
-		lexed, err := chroma.Coalesce(lexer).Tokenise(nil, line)
+	for _, i := range missing {
+		lexed, err := chroma.Coalesce(lexer).Tokenise(nil, lines[i])
 		if err != nil {
 			return lines
 		}
@@ -38,19 +54,52 @@ func HighlightLines(lines []string, lexer chroma.Lexer) []string {
 		tokens = append(tokens, chroma.Token{Type: chroma.Text, Value: "\n"})
 	}
 	var b strings.Builder
-	if formatters.TTY256.Format(&b, chromastyles.Get(codeTheme(transcriptInk)), chroma.Literator(tokens...)) != nil {
+	if formatters.TTY256.Format(&b, chromastyles.Get(theme), chroma.Literator(tokens...)) != nil {
 		return lines
 	}
-	highlighted := strings.Split(b.String(), "\n")
-	if len(highlighted) != len(lines)+1 {
+	colored := strings.Split(b.String(), "\n")
+	if len(colored) != len(missing)+1 {
 		return lines
 	}
-	highlighted = highlighted[:len(lines)]
-	for i, line := range highlighted {
+	for n, i := range missing {
 		// the separator leaves an empty styled run on each line
-		highlighted[i] = emptyRuns.ReplaceAllString(line, "")
+		out[i] = emptyRuns.ReplaceAllString(colored[n], "")
+		highlights.put(key(lines[i]), out[i])
 	}
-	return highlighted
+	return out
+}
+
+type highlightKey struct{ lexer, theme, line string }
+
+// highlightCache keeps colored lines up to a byte budget, then starts over:
+// toggling diffs re-renders every diff in the transcript, and lexing is most
+// of that work.
+type highlightCache struct {
+	mu    sync.Mutex
+	lines map[highlightKey]string
+	bytes int
+}
+
+const highlightBudget = 4 << 20
+
+var highlights highlightCache
+
+func (c *highlightCache) get(key highlightKey) (string, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	colored, ok := c.lines[key]
+	return colored, ok
+}
+
+func (c *highlightCache) put(key highlightKey, colored string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	size := len(key.line) + len(colored)
+	if c.lines == nil || c.bytes+size > highlightBudget {
+		c.lines, c.bytes = map[highlightKey]string{}, 0
+	}
+	c.lines[key] = colored
+	c.bytes += size
 }
 
 var emptyRuns = regexp.MustCompile("(\x1b\\[[0-9;]*m\x1b\\[0m)+$")

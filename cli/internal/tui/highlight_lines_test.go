@@ -3,6 +3,7 @@
 package tui
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -16,6 +17,9 @@ func TestHighlightLinesMatchesOneLineAtATime(t *testing.T) {
 	for _, name := range []string{"x.go", "x.py", "x.gleam", "x.md", "noext"} {
 		lexer := lexerFor(name)
 		got := HighlightLines(lines, lexer)
+		if again := HighlightLines(lines, lexer); !slices.Equal(again, got) {
+			t.Errorf("%s: cached lines differ: %q", name, again)
+		}
 		for i, line := range lines {
 			want := line
 			if lexer != nil {
