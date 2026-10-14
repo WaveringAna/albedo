@@ -319,6 +319,7 @@ pub fn the_trigger_reads_the_tokens_the_provider_reported_test() -> Nil {
       False,
       types.any_images,
       reported,
+      fn() { Nil },
     )
   }
   // Under the 90% trigger by albedo's own count, over it by the provider's.

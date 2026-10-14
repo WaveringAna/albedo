@@ -45,6 +45,7 @@ fn messages() -> session_run.Messages(Owner) {
     drain: fn(_, _) { Unused },
     pin: fn(_, _, _) { Unused },
     sent: fn(_, _, _) { Unused },
+    compacting: fn(_, _) { Unused },
     finished: fn(_, _) { Unused },
     collect: Unused,
   )
@@ -99,7 +100,7 @@ pub fn publish_fails_closed_on_a_stall_once_cancelled_test() -> Nil {
       process.monitor(pid),
       False,
       turn.latch(),
-      turn.Turn(None),
+      turn.Turn(None, False),
     ))
     |> turn.cancel
   server(fn(_) { actor.continue(Nil) })
@@ -165,7 +166,14 @@ fn cancel(stop: turn.Latch) -> Nil {
   let monitor = process.monitor(pid)
   let _ =
     turn.cancel(
-      turn.Running(turn.Run("run", pid, monitor, False, stop, turn.Turn(None))),
+      turn.Running(turn.Run(
+        "run",
+        pid,
+        monitor,
+        False,
+        stop,
+        turn.Turn(None, False),
+      )),
     )
   process.demonitor_process(monitor)
 }

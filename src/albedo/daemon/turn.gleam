@@ -69,8 +69,9 @@ pub type Work {
   /// An extension's background call: commits nothing and publishes
   /// nothing; its outcome goes back to `reply`.
   Background(reply: process.Subject(Result(Option(types.Usage), String)))
-  /// `stage` is None until the turn's first commit.
-  Turn(stage: Option(conversation.Stage))
+  /// `stage` is None until the turn's first commit; `compacting` holds while
+  /// the worker compacts history ahead of a request.
+  Turn(stage: Option(conversation.Stage), compacting: Bool)
 }
 
 pub type Run {
@@ -262,8 +263,21 @@ pub fn committed(
   stage: conversation.Stage,
 ) -> Activity {
   case owner(activity, id) {
-    Some(Run(work: Turn(_), ..) as run) ->
-      Running(Run(..run, work: Turn(Some(stage))))
+    Some(Run(work: Turn(..), ..) as run) ->
+      Running(Run(..run, work: Turn(Some(stage), False)))
+    _ -> activity
+  }
+}
+
+/// Record whether a run's worker is compacting history before its request.
+pub fn compacting(
+  activity: Activity,
+  id: String,
+  compacting: Bool,
+) -> Activity {
+  case owner(activity, id) {
+    Some(Run(work: Turn(stage, _), ..) as run) ->
+      Running(Run(..run, work: Turn(stage, compacting)))
     _ -> activity
   }
 }

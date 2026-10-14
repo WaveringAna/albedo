@@ -68,6 +68,9 @@ pub type Loop {
     /// The input and output tokens the provider reported for this run's
     /// previous request; `None` before its first.
     reported: Option(Int),
+    /// Tells the session a compaction started ahead of a request; the
+    /// request's recorded context ends it.
+    report_compacting: fn() -> Nil,
   )
 }
 
@@ -496,6 +499,7 @@ fn prepare(
     force,
     state.upstream.images,
     state.reported,
+    state.report_compacting,
   )
 }
 

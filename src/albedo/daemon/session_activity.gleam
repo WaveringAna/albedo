@@ -71,12 +71,13 @@ pub fn status(
           True, _ -> "interrupting"
           _, turn.Compaction(..) -> "compacting"
           _, turn.Background(_) -> "generating"
-          _, turn.Turn(Some(stage)) ->
+          _, turn.Turn(_, True) -> "compacting"
+          _, turn.Turn(Some(stage), _) ->
             case stage {
               conversation.Tool -> "running"
               _ -> "generating"
             }
-          _, turn.Turn(None) -> "preparing"
+          _, turn.Turn(None, _) -> "preparing"
         },
         Some(run.id),
         run.cancelled,

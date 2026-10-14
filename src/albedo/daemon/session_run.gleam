@@ -55,6 +55,7 @@ pub type Messages(message) {
     drain: fn(String, Subject(Result(List(types.Input), String))) -> message,
     pin: fn(String, Option(Int), Subject(Nil)) -> message,
     sent: fn(String, extension.SentCall, Subject(Nil)) -> message,
+    compacting: fn(String, Subject(Nil)) -> message,
     finished: fn(String, Result(Nil, String)) -> message,
     collect: message,
   )
@@ -340,7 +341,7 @@ pub fn start(
   messages: Messages(message),
 ) -> session_state.State(message) {
   let state = case work {
-    turn.Turn(_) -> session_submission.membership(state, run_id)
+    turn.Turn(..) -> session_submission.membership(state, run_id)
     _ -> state
   }
   let owner = state.self
@@ -391,6 +392,7 @@ pub fn start(
       run_id,
       // Saved usage may describe a request a compaction since replaced.
       None,
+      fn() { report(owner, messages.compacting(run_id, _)) },
     )
   let pid =
     process.spawn_unlinked(fn() {
@@ -399,7 +401,7 @@ pub fn start(
         owner,
         messages.finished(run_id, case work {
           turn.Compaction(..) -> loop.compact(worker, model_history)
-          turn.Turn(_) -> loop.run(worker, run_id, model_history, 0)
+          turn.Turn(..) -> loop.run(worker, run_id, model_history, 0)
           // A background call never starts here; start_background owns it.
           turn.Background(_) ->
             Error("background calls run through start_background")
@@ -416,7 +418,7 @@ pub fn start(
     activity: turn.Running(run),
     context: case work {
       turn.Compaction(..) | turn.Background(_) -> state.context
-      turn.Turn(_) -> session_state.unprepared()
+      turn.Turn(..) -> session_state.unprepared()
     },
   )
 }

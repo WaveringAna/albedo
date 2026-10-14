@@ -61,6 +61,9 @@ pub type Context {
     /// The input and output tokens the provider reported for this run's
     /// previous request, which the next request carries forward.
     reported: Option(Int),
+    /// Called once a compaction is about to start, so whoever waits on the
+    /// request can say why it takes longer.
+    compacting: fn() -> Nil,
   )
 }
 
@@ -442,6 +445,7 @@ pub fn prepare(
 ) -> Result(Prepared, String) {
   let viewing = Context(..context, force: False)
   let compacted = fn() {
+    context.compacting()
     use changed <- result.try(strategy.compact(context, history))
     // The provider has not seen the compacted request yet.
     use view <- result.try(strategy.project(

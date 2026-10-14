@@ -248,6 +248,9 @@ pub type Message {
   /// The worker's turn call succeeded; the session's extensions hear it.
   /// Fire-and-forget, like the pin report.
   ReportSent(String, extension.SentCall, Subject(Nil))
+  /// The worker started compacting ahead of a request; fire-and-forget. The
+  /// request's recorded context ends it.
+  ReportCompacting(String, Subject(Nil))
   /// An extension asks for a background call; see `extension.Session`.
   CallInBackground(
     types.Request,
@@ -1631,6 +1634,16 @@ fn handle(
       }
       actor.continue(state)
     }
+    ReportCompacting(id, reply) -> {
+      process.send(reply, Nil)
+      actor.continue(
+        session_state.State(
+          ..state,
+          activity: turn.compacting(state.activity, id, True),
+        )
+        |> session_state.announce,
+      )
+    }
     CallInBackground(request, prefix, reply) ->
       actor.continue(start_background(state, request, prefix, reply))
     BackgroundFinished(id, started, outcome) ->
@@ -1648,7 +1661,14 @@ fn handle(
       answer(
         case turn.live(state.activity, id) {
           True -> {
-            let state = session_state.State(..state, context: snapshot)
+            let was = turn.running(state.activity)
+            let activity = turn.compacting(state.activity, id, False)
+            let state =
+              session_state.State(..state, context: snapshot, activity:)
+            let state = case was == turn.running(activity) {
+              True -> state
+              False -> session_state.announce(state)
+            }
             case compacted {
               True -> elide_compacted_images(state)
               False -> state
@@ -2556,7 +2576,14 @@ fn resume(state: State) -> State {
         submission_error(err),
       )
     Ok(#(state, kernel, client, history, run_id)) ->
-      start_worker(state, kernel, client, history, turn.Turn(None), run_id)
+      start_worker(
+        state,
+        kernel,
+        client,
+        history,
+        turn.Turn(None, False),
+        run_id,
+      )
   }
 }
 
@@ -2804,7 +2831,14 @@ fn start_now(
     Error(#(state, err)) -> answer(state, reply, Error(err))
     Ok(#(state, kernel, client, history, run_id)) ->
       answer(
-        start_worker(state, kernel, client, history, turn.Turn(None), run_id),
+        start_worker(
+          state,
+          kernel,
+          client,
+          history,
+          turn.Turn(None, False),
+          run_id,
+        ),
         reply,
         Ok(False),
       )
@@ -2918,11 +2952,11 @@ fn finish_turn(
     _ -> Nil
   }
   let state = case run.work, run.cancelled, persisted {
-    turn.Turn(_), False, Ok(_) -> answer_parent(state, outcome)
+    turn.Turn(..), False, Ok(_) -> answer_parent(state, outcome)
     _, _, _ -> state
   }
   let state = case run.work, persisted {
-    turn.Turn(_), Ok(_) -> {
+    turn.Turn(..), Ok(_) -> {
       let ids = turn.operations(state.active_submissions)
       state
       |> session_submission.refresh_ids(ids)
@@ -3032,7 +3066,7 @@ fn rewarmed(state: State, started: Int) -> State {
 /// ended, or that a compaction rewrote the history.
 fn report_end(state: State, run: turn.Run) -> Nil {
   case run.work {
-    turn.Turn(_) -> observe(state, extension.TurnEnded(run.cancelled))
+    turn.Turn(..) -> observe(state, extension.TurnEnded(run.cancelled))
     turn.Compaction(_, turn.CompactionReport(observation: Some(_), ..)) ->
       observe(state, extension.Compacted)
     turn.Compaction(..) -> Nil
@@ -3187,7 +3221,7 @@ fn start_waiting_in_workspace(state: State) -> State {
                 kernel,
                 client,
                 history,
-                turn.Turn(None),
+                turn.Turn(None, False),
                 run_id,
               )
           }
@@ -3244,6 +3278,7 @@ fn start_worker(
       DrainSteering,
       ReportPin,
       ReportSent,
+      ReportCompacting,
       Finished,
       Collect,
     ),
