@@ -11,6 +11,7 @@ class Hook(Record):
     name: str
     enabled: bool
     url: str
+    intakeUrl: str | None
     signatureHeader: str
     signaturePrefix: str
     revision: int
@@ -21,7 +22,8 @@ host: Host
 
 class Webhooks:
     async def list(self) -> builtins.list[Hook]:
-        """Hooks targeting this session. Agent management requires human opt-in."""
+        """Hooks targeting this session; a sender posts to `intakeUrl`. Agent
+        management requires human opt-in."""
         return [
             Hook(item)
             for item in cast(builtins.list[dict], await host("webhooks.list", {}))

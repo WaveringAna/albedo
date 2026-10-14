@@ -429,9 +429,12 @@ func (m WebhooksPageModel) browseKey(msg tea.KeyPressMsg) (WebhooksPageModel, te
 	case "ctrl+t":
 		return m.toggleAgent()
 	case "ctrl+l":
-		if selected {
+		address := cmp.Or(hook.Address, hook.URL)
+		if selected && address == "" {
+			m.Error, m.Notice = "No URL to copy: the webhook intake stopped.", ""
+		} else if selected {
 			m.Error, m.Notice = "", "URL copied."
-			return m, CopyText(cmp.Or(hook.Address, hook.URL))
+			return m, CopyText(address)
 		}
 	default:
 		cmd := m.listView.update(msg)

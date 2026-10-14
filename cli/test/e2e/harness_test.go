@@ -296,6 +296,8 @@ func hermeticEnv(root, home, userHome, scratch, daemonExe, sshBin string) []stri
 		"ALBEDO_ROOT="+root,
 		"ALBEDO_DAEMON="+daemonExe,
 		"ALBEDO_NO_BROWSER=1",
+		// An OS-picked intake port leaves 8088 to the developer's daemon.
+		"ALBEDO_WEBHOOK_PORT=0",
 		// Two schedulers keep a booting test VM from pinning every core.
 		"ERL_FLAGS=+S 2:2 +SDcpu 2:2 +sbwt none +sbwtdcpu none +sbwtdio none",
 	)

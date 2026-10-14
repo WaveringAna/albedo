@@ -22,18 +22,26 @@ from harness import Albedo, Provider, Reply, exclusive, operation_id, python, te
 CONNECTIONS = 300
 
 
-def kill_listener_supervisor(app):
-    """Kill the daemon's listener supervisor over Erlang distribution and
-    return its pid: the keeper labels itself `albedo_listener`, and the
-    supervisor is its one proc_lib-started link."""
+def kill_listener_supervisor(app, port, *, hold=False):
+    """Kill the supervisor of the daemon's listener on `port` over Erlang
+    distribution and return its pid: the keeper labels itself
+    `albedo_listener` with the port, and the supervisor is its one
+    proc_lib-started link. With `hold`, a process in the daemon takes the port
+    as soon as it is free, so every restart finds it in use."""
     expression = (
+        f"Port = {int(port)}, "
+        f'Label = {{albedo_listener, <<"{int(port)}">>}}, '
         "[Keeper] = Call(lists, filter, [fun(P) -> "
-        "case catch proc_lib:get_label(P) of {albedo_listener, _} -> true; _ -> false end "
+        "(catch proc_lib:get_label(P)) =:= Label "
         "end, Call(erlang, processes, [])]), "
         "{links, Links} = Call(erlang, process_info, [Keeper, links]), "
         "[Listener] = Call(lists, filter, "
         "[fun(P) -> proc_lib:initial_call(P) =/= false end, Links]), "
-        "true = Call(erlang, exit, [Listener, kill]), "
+        "Hold = fun Hold() -> case gen_tcp:listen(Port, [{ip, loopback}]) of "
+        "{ok, _} -> receive after infinity -> ok end; "
+        "{error, eaddrinuse} -> timer:sleep(5), Hold() end end, "
+        "_ = Call(erlang, spawn, [fun() -> exit(Listener, kill), "
+        f"{'Hold()' if hold else 'ok'} end]), "
         'io:format("~w", [Listener])'
     )
     return Inspection(app).evaluate(expression).strip()
@@ -598,7 +606,7 @@ class DaemonTest(unittest.TestCase):
             prepare=lambda app: app.daemon.env.update(ALBEDO_INSPECT="1")
         ) as app:
             pid, port = app.connection["pid"], app.connection["port"]
-            killed = kill_listener_supervisor(app)
+            killed = kill_listener_supervisor(app, port)
             self.assertTrue(killed.startswith("<"), killed)
             deadline = time.monotonic() + 15
             while True:

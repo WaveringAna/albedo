@@ -13,6 +13,7 @@ import albedo/daemon/listener
 import albedo/daemon/quota
 import albedo/daemon/registry.{type Config, type Message, Config, List, Shutdown}
 import albedo/daemon/settings
+import albedo/daemon/webhook_intake
 import albedo/harness/credentials
 import albedo/harness/extension
 import albedo/harness/runtime
@@ -25,6 +26,7 @@ import gleam/http.{Delete, Get, Options, Patch, Post, Put}
 import gleam/http/request
 import gleam/http/response
 import gleam/int
+import gleam/io
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -46,7 +48,12 @@ type HttpBoundary {
   )
 }
 
-pub fn start(config: Config, port: Int) -> Result(Int, String) {
+/// Returns the daemon's port and the webhook intake's port.
+pub fn start(
+  config: Config,
+  port: Int,
+  webhook_port: Int,
+) -> Result(#(Int, Int), String) {
   // Storage is the one thing this daemon cannot run without, so the runtime
   // that owns it stays linked to the daemon; everything above it is supervised.
   use host <- result.try(
@@ -90,14 +97,129 @@ pub fn start(config: Config, port: Int) -> Result(Int, String) {
       configured_list("ALBEDO_HTTP_HOSTS"),
     )
   use _ <- result.try(
-    listener.keep(port, fn() {
-      mist.new(route(config, registry, boundary, _))
-      |> mist.bind("127.0.0.1")
-      |> mist.port(port)
-      |> mist.start
+    listener.keep(
+      port,
+      fn() {
+        mist.new(route(config, registry, boundary, _))
+        |> mist.bind("127.0.0.1")
+        |> mist.port(port)
+        |> mist.start
+      },
+      listener_wait,
+      listener.Always,
+    )
+    |> result.map_error(fn(failure) {
+      "daemon listener on port "
+      <> int.to_string(port)
+      <> ": "
+      <> listener.describe(failure)
     }),
   )
-  Ok(port)
+  // 0 asks the OS, once, as for the daemon's port above.
+  let webhook_port = case webhook_port {
+    0 -> free_port()
+    _ -> webhook_port
+  }
+  use intake_port <- result.try(bind_intake(
+    config,
+    registry,
+    instance_id,
+    webhook_port,
+    intake_attempts,
+  ))
+  webhook_intake.publish(intake_port)
+  Ok(#(port, intake_port))
+}
+
+const listener_wait = 5000
+
+const intake_attempts = 32
+
+/// A restarted intake that fails this many starts in a row stops for good.
+const intake_restarts = 5
+
+/// The webhook intake gets its own port, so a sender's url outlives the
+/// daemon's port. Only a port in use is skipped upward, never past 65535;
+/// any other failure ends the walk.
+fn bind_intake(
+  config: Config,
+  registry: Subject(Message),
+  instance_id: String,
+  port: Int,
+  attempts_left: Int,
+) -> Result(Int, String) {
+  let boundary =
+    HttpBoundary(
+      instance_id,
+      port,
+      configured_list("ALBEDO_HTTP_ORIGINS"),
+      configured_list("ALBEDO_HTTP_HOSTS"),
+    )
+  let address = "webhook intake on 127.0.0.1:" <> int.to_string(port)
+  let started =
+    listener.keep(
+      port,
+      fn() {
+        mist.new(intake_route(config, registry, boundary, _))
+        |> mist.bind("127.0.0.1")
+        |> mist.port(port)
+        |> mist.start
+      },
+      listener_wait,
+      listener.Bounded(intake_restarts, fn() { stop_intake(config.home) }),
+    )
+  case started {
+    Ok(Nil) -> Ok(port)
+    Error(listener.TimedOut as failure) ->
+      Error(address <> ": " <> listener.describe(failure))
+    // The listener's tree does not say why it failed; binding the port here
+    // does, and a port in use is the one reason to try the next.
+    Error(listener.Failed(reason)) ->
+      case bind_failure(port) {
+        Error(AddressInUse) if attempts_left > 1 && port < 65_535 ->
+          bind_intake(
+            config,
+            registry,
+            instance_id,
+            port + 1,
+            attempts_left - 1,
+          )
+        Error(AddressInUse) -> Error(address <> ": address in use")
+        Error(Unbindable(why)) -> Error(address <> ": " <> why)
+        Ok(Nil) -> Error(address <> ": " <> reason)
+      }
+  }
+}
+
+/// A port that will not bind, and why.
+type BindFailure {
+  AddressInUse
+  Unbindable(reason: String)
+}
+
+/// After the intake gives up, nothing names a port no listener holds.
+fn stop_intake(home: String) -> Nil {
+  webhook_intake.clear()
+  forget_webhook_port(home)
+  io.println_error(
+    "webhook intake stopped; restart the daemon to bring it back",
+  )
+}
+
+/// The intake answers only the signed delivery POST; every other request is
+/// refused before the daemon's routes see it.
+fn intake_route(
+  config: Config,
+  registry: Subject(Message),
+  boundary: HttpBoundary,
+  req: request.Request(mist.Connection),
+) -> response.Response(mist.ResponseData) {
+  case req.method, request.path_segments(req) {
+    Post, ["extensions", "webhooks", "hooks", _, "deliveries"] ->
+      route(config, registry, boundary, req)
+    _, _ ->
+      ingress_error(404, "not_found", "route is not on the webhook intake")
+  }
 }
 
 /// The daemon's own top-level routes; a service never shadows them.
@@ -608,10 +730,19 @@ pub fn main() -> Nil {
     Error(error) -> panic as error.message
   }
   // A fixed port gives services such as the proxy a stable base url.
-  let assert Ok(port) = start(config, setting("ALBEDO_PORT", 0, 0, 65_535))
+  let #(port, webhook_port) = case
+    start(
+      config,
+      setting("ALBEDO_PORT", 0, 0, 65_535),
+      setting("ALBEDO_WEBHOOK_PORT", 8088, 0, 65_535),
+    )
+  {
+    Ok(ports) -> ports
+    Error(message) -> panic as message
+  }
   // Before readiness, so a client that sees the daemon can already inspect it.
   inspect(home)
-  let assert Ok(_) = ready(home, port, token)
+  let assert Ok(_) = ready(home, port, webhook_port, token)
   watch_parent(env("ALBEDO_PARENT_PID"))
   process.sleep_forever()
 }
@@ -626,6 +757,12 @@ fn setting(name: String, fallback: Int, low: Int, high: Int) -> Int {
 
 @external(erlang, "albedo_daemon", "free_port")
 fn free_port() -> Int
+
+@external(erlang, "albedo_daemon", "bind_failure")
+fn bind_failure(port: Int) -> Result(Nil, BindFailure)
+
+@external(erlang, "albedo_daemon", "forget_webhook_port")
+fn forget_webhook_port(home: String) -> Nil
 
 @external(erlang, "albedo_daemon", "env")
 fn env(name: String) -> String
@@ -662,7 +799,12 @@ fn hold(connection: sqlight.Connection) -> Nil
 fn build_digest() -> String
 
 @external(erlang, "albedo_daemon", "ready")
-fn ready(home: String, port: Int, token: String) -> Result(Nil, String)
+fn ready(
+  home: String,
+  port: Int,
+  webhook_port: Int,
+  token: String,
+) -> Result(Nil, String)
 
 @external(erlang, "albedo_inspect", "start")
 fn inspect(home: String) -> Nil

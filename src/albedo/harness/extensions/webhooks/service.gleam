@@ -3,6 +3,7 @@
 import albedo/daemon/bus
 import albedo/daemon/http_api as api
 import albedo/daemon/mail
+import albedo/daemon/webhook_intake
 import albedo/harness/extension
 import albedo/harness/extensions/webhooks/ledger as hooks
 import gleam/bit_array
@@ -16,7 +17,6 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
-import gleam/uri
 import mist
 
 pub fn admission(path: List(String), method: Method) -> extension.Admission {
@@ -115,7 +115,7 @@ fn dispatch(
           list.take(found, limit),
           api.response_limit - 1025,
           1,
-          hook_view(req, _),
+          hook_view,
         )
       let items = list.map(encoded, fn(item) { item.0 })
       let next =
@@ -220,7 +220,7 @@ fn dispatch(
             hooks.last_failure(daemon.ledger, hook.session, id)
             |> result.map_error(failure),
           )
-          Ok(hook_view(req, hooks.Overview(hook, pending, deferred)))
+          Ok(hook_view(hooks.Overview(hook, pending, deferred)))
         }
       })
       Ok(api.reply(200, value) |> response.set_header("etag", hook_etag(hook)))
@@ -541,23 +541,15 @@ fn resource(hook: hooks.Hook) -> json.Json {
   ])
 }
 
-fn hook_view(
-  req: request.Request(BitArray),
-  overview: hooks.Overview,
-) -> json.Json {
-  let base = request.to_uri(req)
-  let delivery_url =
-    uri.to_string(
-      uri.Uri(
-        ..base,
-        path: "/extensions/webhooks/hooks/" <> overview.hook.id <> "/deliveries",
-        query: None,
-        fragment: None,
-      ),
-    )
+fn hook_view(overview: hooks.Overview) -> json.Json {
   json.object([
     #("configuration_resource", resource(overview.hook)),
-    #("delivery_url", json.string(delivery_url)),
+    #(
+      "delivery_url",
+      json.nullable(webhook_intake.port() |> option.from_result, fn(port) {
+        json.string(webhook_intake.delivery_url(port, overview.hook.id))
+      }),
+    ),
     #("pending_count", json.int(overview.pending)),
     #(
       "deferral_reason",

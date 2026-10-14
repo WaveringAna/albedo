@@ -1,3 +1,4 @@
+import albedo/daemon/webhook_intake
 import albedo/harness/command.{
   type Command, Argument, Command, Data, ModelCall, UserCall,
 }
@@ -157,9 +158,7 @@ fn receipt(provisioned: hooks.Provisioned, generated: Bool) -> command.Outcome {
     #(
       "message",
       json.string(
-        "/extensions/webhooks/hooks/"
-        <> provisioned.hook.id
-        <> "/deliveries"
+        webhook_intake.address(provisioned.hook.id)
         <> case generated {
           True -> " · secret (copy now): " <> provisioned.secret
           False -> " · secret saved"

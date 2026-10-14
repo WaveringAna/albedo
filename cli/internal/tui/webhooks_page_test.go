@@ -208,3 +208,38 @@ func TestWebhookDeleteAsksWithItsConsequence(t *testing.T) {
 		t.Fatal("esc did not cancel the deletion")
 	}
 }
+
+// The list and ctrl+l carry the intake address the daemon reported, port
+// included, rather than the bare path.
+func TestWebhookListAndCopyUseTheIntakeAddress(t *testing.T) {
+	address := "http://127.0.0.1:8089/extensions/webhooks/hooks/wh1/deliveries"
+	m := NewWebhooksPageModel(nil, "s")
+	m.SetSize(120, 30)
+	m, _ = m.Update(webhooksLoadedMsg{Gen: m.Generation, Mounted: true, Sessions: webhookSessions, Hooks: []webhookEntry{
+		{ID: "wh1", Session: "s", Name: "deploy", Enabled: true, URL: address, Address: address, Header: "x-albedo-signature", Prefix: "sha256="},
+	}})
+	if plain := ansi.Strip(m.View()); !strings.Contains(plain, address) {
+		t.Fatalf("list did not show the intake address:\n%s", plain)
+	}
+	m, cmd := m.Update(tea.KeyPressMsg{Code: 'l', Mod: tea.ModCtrl})
+	if cmd == nil || m.Notice != "URL copied." {
+		t.Fatalf("ctrl+l did not copy: notice %q", m.Notice)
+	}
+}
+
+// A daemon whose intake gave up reports no URL; the screen says so instead of
+// offering a path nothing listens on.
+func TestWebhookWithoutIntakeSaysItStopped(t *testing.T) {
+	m := NewWebhooksPageModel(nil, "s")
+	m.SetSize(120, 30)
+	m, _ = m.Update(webhooksLoadedMsg{Gen: m.Generation, Mounted: true, Sessions: webhookSessions, Hooks: []webhookEntry{
+		{ID: "wh1", Session: "s", Name: "deploy", Enabled: true, Header: "x-albedo-signature", Prefix: "sha256="},
+	}})
+	if plain := ansi.Strip(m.View()); !strings.Contains(plain, intakeStopped) {
+		t.Fatalf("list did not say the intake stopped:\n%s", plain)
+	}
+	m, cmd := m.Update(tea.KeyPressMsg{Code: 'l', Mod: tea.ModCtrl})
+	if cmd != nil || m.Error == "" {
+		t.Fatalf("ctrl+l copied without a URL: error %q", m.Error)
+	}
+}

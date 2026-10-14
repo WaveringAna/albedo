@@ -1,6 +1,6 @@
 -module(albedo_daemon).
 -include_lib("kernel/include/file.hrl").
--export([defaults/0,refuse_home/1,env/1,free_port/0,ready/3,read_config/1,directory/1,shutdown/0,rss/1,collect_idle/0,watch_parent/1,hold/1,http_request/1,build_digest/0,tree_digest/1]).
+-export([defaults/0,refuse_home/1,env/1,free_port/0,bind_failure/1,forget_webhook_port/1,ready/4,read_config/1,directory/1,shutdown/0,rss/1,collect_idle/0,watch_parent/1,hold/1,http_request/1,build_digest/0,tree_digest/1]).
 env(Name) -> case os:getenv(binary_to_list(Name)) of false -> <<>>; Value -> unicode:characters_to_binary(Value) end.
 %% Home and authentication belong to the daemon, including direct starts.
 defaults() ->
@@ -32,6 +32,15 @@ free_port() ->
     {ok, Port} = inet:port(Socket),
     ok = gen_tcp:close(Socket),
     Port.
+
+%% Why a loopback port will not take a listener, binding it the way the
+%% listener does.
+bind_failure(Port) ->
+    case gen_tcp:listen(Port, [{ip, loopback}, {reuseaddr, true}]) of
+        {ok, Socket} -> ok = gen_tcp:close(Socket), {ok, nil};
+        {error, eaddrinuse} -> {error, address_in_use};
+        {error, Reason} -> {error, {unbindable, unicode:characters_to_binary(inet:format_error(Reason))}}
+    end.
 %% config.json with each profile's saved apiKey filled in from creds.json.
 %% Returns {error, invalid} when config.json is not a valid JSON object,
 %% and {error, missing} when it is absent or unreadable.
@@ -120,18 +129,27 @@ hash_build_files([{Rel, Path} | Rest], Ctx) ->
         {error, _} -> <<>>
     end.
 
-ready(Home,Port,Token) ->
-    File=filename:join(Home,<<"daemon.json">>), Temp= <<File/binary,".tmp">>,
-    Record=#{pid=>list_to_integer(os:getpid()),port=>Port,token=>Token,version=>3},
+ready(Home,Port,WebhookPort,Token) ->
+    Record=#{pid=>list_to_integer(os:getpid()),port=>Port,webhook_port=>WebhookPort,token=>Token,version=>3},
     Labelled=case os:getenv("ALBEDO_BUILD") of
         false -> Record;
         Build -> Record#{build=>unicode:characters_to_binary(Build)}
     end,
-    Data=json:encode(case build_digest() of
+    write_record(Home, case build_digest() of
         <<>> -> Labelled;
         Digest -> Labelled#{digest=>Digest}
-    end),
-    case file:write_file(Temp,Data,[write,sync]) of
+    end).
+
+%% daemon.json without the intake port, once no listener holds it.
+forget_webhook_port(Home) ->
+    case file:read_file(filename:join(Home,<<"daemon.json">>)) of
+        {ok,Data} -> _ = write_record(Home, maps:remove(<<"webhook_port">>, json:decode(Data))), nil;
+        {error,_} -> nil
+    end.
+
+write_record(Home,Record) ->
+    File=filename:join(Home,<<"daemon.json">>), Temp= <<File/binary,".tmp">>,
+    case file:write_file(Temp,json:encode(Record),[write,sync]) of
       ok ->
         case file:change_mode(Temp,8#600) of
           ok -> case file:rename(Temp,File) of

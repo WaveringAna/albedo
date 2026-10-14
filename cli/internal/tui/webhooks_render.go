@@ -107,6 +107,10 @@ func (m WebhooksPageModel) revealRows(_, _ int) []string {
 	}
 }
 
+// intakeStopped stands in for a hook's URL once the daemon's webhook intake
+// listener gave up; senders reach nothing until the daemon restarts.
+const intakeStopped = "intake stopped · restart the daemon"
+
 // entry is how a hook reads in the list: its state in front, its URL under
 // its name, and the deliveries waiting for its session at the edge.
 func (m WebhooksPageModel) entry(hook webhookEntry) listEntry {
@@ -123,7 +127,7 @@ func (m WebhooksPageModel) entry(hook webhookEntry) listEntry {
 		section: section,
 		lead:    lead,
 		name:    hook.Name,
-		desc:    hook.URL,
+		desc:    cmp.Or(hook.URL, intakeStopped),
 		tag:     tag,
 		search:  []string{section},
 		detail:  func(width int) []string { return m.details(hook, width) },
@@ -139,7 +143,11 @@ func (m WebhooksPageModel) details(hook webhookEntry, width int) []string {
 	}
 	lines := paneTitle(hook.Name, state, width)
 	lines = append(lines, factRows("wakes", sessionLabel(m.Sessions, hook.Session, m.SessionID), width)...)
-	lines = append(lines, factRows("url", "POST "+cmp.Or(hook.Address, hook.URL), width)...)
+	url := intakeStopped
+	if address := cmp.Or(hook.Address, hook.URL); address != "" {
+		url = "POST " + address
+	}
+	lines = append(lines, factRows("url", url, width)...)
 	lines = append(lines, factRows("signature", hook.Header+": "+hook.Prefix+"<hex HMAC-SHA256 of the body>", width)...)
 	lines = append(lines, factRows("secret", "stored · ctrl+g makes a new one", width)...)
 	inbox := "empty"

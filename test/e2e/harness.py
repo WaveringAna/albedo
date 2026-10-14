@@ -371,6 +371,9 @@ class Daemon:
             # Kernels outlive a stopped daemon only this long; one whose home
             # is removed leaves at once.
             ALBEDO_KERNEL_GRACE_SECONDS="30",
+            # An OS-picked intake port, so test daemons never take 8088 from
+            # the developer's daemon.
+            ALBEDO_WEBHOOK_PORT="0",
             ALBEDO_MCP_SECRET="configured-secret",
             ALBEDO_MCP_CLOSED=str(self.root / "closed"),
             ALBEDO_MCP_AMBIENT="must-not-reach-the-server",

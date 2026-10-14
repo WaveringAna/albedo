@@ -832,8 +832,10 @@ type HistoryRead = json.RawMessage
 type Hook struct {
 	ConfigurationResource HookConfigurationResource `json:"configuration_resource"`
 	DeferralReason        *SafeReason               `json:"deferral_reason" nullable:"true"`
-	DeliveryURL           string                    `json:"delivery_url"`
-	PendingCount          Counter                   `json:"pending_count"`
+
+	// DeliveryURL Where a sender posts this hook's deliveries; null while no webhook intake listener runs.
+	DeliveryURL  *string `json:"delivery_url" nullable:"true"`
+	PendingCount Counter `json:"pending_count"`
 }
 
 // HookChange Secret appears only on creation and explicit rotation, including a generated secret. Never present on PATCH or reads.

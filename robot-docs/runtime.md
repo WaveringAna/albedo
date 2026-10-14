@@ -34,6 +34,21 @@ a runtime copied into an HTTP request or a turn's worker costs a few words;
 the installed list carries a copy. A literal references module code, so the
 daemon does not hot-load a module while a shared value from it exists.
 
+A daemon-wide fact found once at boot, with no owner to hand a handle to, is
+a persistent term under a module's own key instead: `albedo/daemon/webhook_intake`
+holds the bound intake port (`publish` at boot, `clear` when the intake stops,
+`port` for readers). An integer copies nothing, and the one erase happens only
+when the intake gives up.
+
+## listeners
+
+`albedo/daemon/listener.keep` runs a listener under a keeper and reports its
+first start within a wait. A start that outlasts the wait returns `TimedOut`
+after the keeper is killed, so it never comes up behind the caller. Later
+exits restart it after a doubling pause: `Always` for the daemon's own port,
+`Bounded(attempts, stopped)` for the webhook intake, which stops and runs
+`stopped` after that many failed starts in a row.
+
 ## native boundaries
 
 Keep process state, ports, monitors, ETF, and native binary matching in their

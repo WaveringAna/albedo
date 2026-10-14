@@ -81,7 +81,7 @@ func ListWebhooks(ctx context.Context, conn *Connection, sessionID string) ([]We
 			if row.DeferralReason != nil {
 				deferred = &row.DeferralReason.Detail
 			}
-			r = append(r, WebhookEntry{Hook: hookValue(row.ConfigurationResource, row.DeliveryURL), Queued: int(row.PendingCount), Deferred: deferred})
+			r = append(r, WebhookEntry{Hook: hookValue(row.ConfigurationResource, value(row.DeliveryURL)), Queued: int(row.PendingCount), Deferred: deferred})
 		}
 		return nil
 	}, "hook page cursor")

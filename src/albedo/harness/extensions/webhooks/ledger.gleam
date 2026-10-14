@@ -3,6 +3,7 @@
 import albedo/daemon/mail
 import albedo/daemon/store
 import albedo/daemon/usage
+import albedo/daemon/webhook_intake
 import gleam/bit_array
 import gleam/dynamic/decode
 import gleam/json
@@ -379,9 +380,12 @@ pub fn to_json(hook: Hook) -> json.Json {
     #("session", json.string(hook.session)),
     #("name", json.string(hook.name)),
     #("enabled", json.bool(hook.enabled)),
+    #("url", json.string(webhook_intake.delivery_path(hook.id))),
     #(
-      "url",
-      json.string("/extensions/webhooks/hooks/" <> hook.id <> "/deliveries"),
+      "intakeUrl",
+      json.nullable(webhook_intake.port() |> option.from_result, fn(port) {
+        json.string(webhook_intake.delivery_url(port, hook.id))
+      }),
     ),
     #("signatureHeader", json.string(hook.signature_header)),
     #("signaturePrefix", json.string(hook.signature_prefix)),

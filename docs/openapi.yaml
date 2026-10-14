@@ -10107,9 +10107,12 @@ components:
         configuration_resource:
           $ref: '#/components/schemas/HookConfigurationResource'
         delivery_url:
-          type: string
-          format: uri
-          maxLength: 4096
+          description: Where a sender posts this hook's deliveries; null while no webhook intake listener runs.
+          anyOf:
+          - type: string
+            format: uri
+            maxLength: 4096
+          - type: 'null'
         pending_count:
           $ref: '#/components/schemas/Counter'
         deferral_reason:
