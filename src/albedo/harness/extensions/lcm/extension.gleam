@@ -235,7 +235,15 @@ fn compact(
     )
     |> result.map(list.reverse),
   )
-  let eligible = before_tail(uncovered, capacity * config.tail_percent / 100)
+  // A forced compaction folds even a history the tail would hold whole,
+  // keeping only the newest turn.
+  let eligible = case
+    before_tail(uncovered, capacity * config.tail_percent / 100),
+    context.force
+  {
+    [], True -> before_tail(uncovered, 0)
+    eligible, _ -> eligible
+  }
   use _ <- result.try(compaction.require(
     eligible != [] || frontier != [],
     "cannot compact without an older complete conversation unit",
@@ -245,15 +253,13 @@ fn compact(
     _ -> summarize_leaf(context, eligible)
   })
   use Saved(frontier:, stats:, ..) <- result.try(saved(context))
-  let landing = capacity * trigger_percent(config, capacity) / 200
-  use frontier <- result.try(relieve(
-    context,
-    frontier,
-    history,
-    stats,
-    landing,
-    pressure_passes,
-  ))
+  use frontier <- result.try(
+    case landing(frontier, history, stats, context, capacity, config) {
+      Some(landing) ->
+        relieve(context, frontier, history, stats, landing, pressure_passes)
+      None -> Ok(frontier)
+    },
+  )
   let next = projection(frontier, history, stats, 1)
   use _ <- result.try(compaction.require(
     context.pinned_tokens + compaction.estimate_inputs(next) < capacity
@@ -282,6 +288,29 @@ fn before_tail(
   turns
   |> list.take(list.length(turns) - list.length(kept))
   |> list.flatten
+}
+
+/// Where relief aims: half the trigger, or the trigger itself when the
+/// request without its summaries already reaches half. Merging cannot get
+/// below that floor, so with the floor at the trigger there is no relief.
+fn landing(
+  frontier: List(graph.Node),
+  history: List(types.Input),
+  stats: conversation.SourceStats,
+  context: compaction.Context,
+  capacity: Int,
+  config: Config,
+) -> Option(Int) {
+  let trigger = capacity * trigger_percent(config, capacity) / 100
+  let floor =
+    context.pinned_tokens
+    + compaction.estimate_inputs(projection(frontier, history, stats, 1))
+    - compaction.estimate_inputs(list.map(frontier, node_input))
+  case floor < trigger / 2, floor < trigger {
+    True, _ -> Some(trigger / 2)
+    False, True -> Some(trigger)
+    False, False -> None
+  }
 }
 
 /// Merges the oldest frontier nodes into one parent until the request is at
