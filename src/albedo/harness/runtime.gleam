@@ -1084,6 +1084,22 @@ pub fn prepare_history_with(
   |> result.map(fn(prepared) { prepared.inputs })
 }
 
+/// Whether the provider's catalog, or models.dev behind it, says the model
+/// takes no images. A model no catalog describes is given the benefit of the
+/// doubt, as it was before any catalog knew of it.
+fn reads_text_only(
+  enabled: List(extension.Extension),
+  model: String,
+  endpoint: Option(String),
+) -> Bool {
+  case extension.model_info(enabled, model, endpoint) {
+    Some(info) ->
+      info.input_modalities != []
+      && !list.contains(info.input_modalities, "image")
+    None -> False
+  }
+}
+
 /// Only a catalog answer becomes a capacity; an unknown model stays unknown.
 fn model_info(
   session: Session,
@@ -1225,6 +1241,20 @@ pub fn upstream(
       effort,
     ),
   ))
+  let upstream = case
+    reads_text_only(
+      selected,
+      model,
+      extension.clean_endpoint(upstream.endpoint),
+    )
+  {
+    True ->
+      extension.Upstream(
+        ..upstream,
+        images: types.ImageLimits(..upstream.images, max_images: Some(0)),
+      )
+    False -> upstream
+  }
   case edge {
     None -> upstream
     Some(edge) ->

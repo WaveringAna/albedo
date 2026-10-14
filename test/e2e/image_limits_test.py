@@ -367,3 +367,76 @@ finally:
                 self.assertEqual(widths(request), [10])
         finally:
             provider.close()
+
+
+TEXT_ONLY = {
+    "fixture-cloud": {
+        "id": "fixture-cloud",
+        "name": "Fixture Cloud",
+        "env": ["FIXTURE_API_KEY"],
+        "api": "http://127.0.0.1/v1",
+        "models": {
+            "fixture": {
+                "id": "fixture",
+                "limit": {"context": 200000, "output": 8000},
+                "modalities": {"input": ["text"]},
+            }
+        },
+    }
+}
+
+
+@exclusive
+class TextOnlyModelTest(unittest.TestCase):
+    def test_a_model_the_catalog_lists_as_text_only_is_sent_notes_not_images(self):
+        def reply(request):
+            if request["input"][-1].get("type") == "function_call_output":
+                return text("done")
+            if "show" in json.dumps(request["input"][-1]):
+                return python(
+                    "import base64\nshow_image(base64.b64decode('" + WIDE_DATA + "'))"
+                )
+            return text("ok")
+
+        provider = Provider(reply, catalog=TEXT_ONLY)
+        self.addCleanup(provider.close)
+
+        def prepare(app):
+            (app.home / "models.json").unlink(missing_ok=True)
+            app.write_extensions(
+                {"models": {"url": provider.url + "/models.json", "refreshHours": 24}}
+            )
+
+        with Albedo(
+            provider,
+            protocol="responses",
+            prepare=prepare,
+            providers={
+                "fixture": {
+                    "baseUrl": provider.url + "/v1",
+                    "apiKey": "fixture-key",
+                    "model": "fixture",
+                    "protocol": "responses",
+                }
+            },
+        ) as app:
+            session = app.session()
+            app.api(
+                f"/sessions/{session}/inputs/{operation_id()}",
+                {
+                    "kind": "message",
+                    "text": "look",
+                    "images": [{"mime_type": "image/png", "data": WIDE_DATA}],
+                },
+                method="PUT",
+            ).close()
+            app.idle(session)
+            app.prompt(session, "show").close()
+            app.idle(session)
+            for entry in provider.requests:
+                sent = json.dumps(entry["request"])
+                self.assertEqual(widths(entry["request"]), [], sent[:2000])
+            last = json.dumps(provider.requests[-1]["request"])
+            self.assertEqual(
+                last.count("image(s) omitted: this model reads text only"), 2
+            )

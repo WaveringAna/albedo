@@ -790,7 +790,42 @@ fn request(
   instructions: String,
   history: List(types.Input),
 ) -> types.Request {
-  request_for(state.model, state.effort, state.kernel, instructions, history)
+  request_for(
+    state.model,
+    state.effort,
+    state.kernel,
+    instructions,
+    readable(state.upstream.images, history),
+  )
+}
+
+/// `history` as a model that takes no images can read it: each image becomes
+/// a note in its message. Only the request changes; the transcript keeps the
+/// images for a model that reads them.
+fn readable(
+  images: types.ImageLimits,
+  history: List(types.Input),
+) -> List(types.Input) {
+  case images.max_images {
+    Some(0) -> list.map(history, without_images)
+    _ -> history
+  }
+}
+
+fn without_images(input: types.Input) -> types.Input {
+  case input {
+    types.UserImage(text, [_, ..] as images) ->
+      types.User(text <> omitted_images(images))
+    types.ToolOutput(id, output, [_, ..] as images) ->
+      types.ToolOutput(id, output <> omitted_images(images), [])
+    _ -> input
+  }
+}
+
+fn omitted_images(images: List(types.Image)) -> String {
+  "\n["
+  <> int.to_string(list.length(images))
+  <> " image(s) omitted: this model reads text only]"
 }
 
 fn request_for(
