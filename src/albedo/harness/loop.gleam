@@ -517,10 +517,6 @@ fn display_text(items: List(types.Input)) -> String {
   |> bounded(20_000, "\n[remainder omitted]")
 }
 
-fn bounded_summary_text(text: String) -> String {
-  bounded(text, 16_000, "\n[remainder omitted from compaction summary input]")
-}
-
 /// Truncated views of oversized text: `limit` graphemes, then why it ends.
 fn bounded(text: String, limit: Int, note: String) -> String {
   case string.length(text) > limit {
@@ -970,7 +966,7 @@ fn summarize(
   let transcript =
     evicted
     |> compaction.without_superseded
-    |> list.map(render_summary_input)
+    |> list.map(compaction.render_summary_input)
     |> list.filter(fn(line) { line != "" })
     |> string.join("\n")
   let prompt =
@@ -1014,72 +1010,9 @@ fn summarize(
     |> string.join("")
     |> string.trim
   case text {
-    "" -> Error("summarizer provider returned no text")
+    "" -> Error(compaction.empty_summary)
     value -> Ok(value)
   }
-}
-
-/// One evicted item as the summarizer reads it: image payloads never reach it.
-fn render_summary_input(input: types.Input) -> String {
-  case input {
-    types.User(text) -> "[user]\n" <> bounded_summary_text(text)
-    types.UserImage(text, images) ->
-      "[user with "
-      <> string.join(list.map(images, describe_image), ", ")
-      <> "; binary omitted]\n"
-      <> bounded_summary_text(text)
-    types.Assistant(text) -> "[assistant]\n" <> bounded_summary_text(text)
-    types.ToolOutput(id, output, images) ->
-      "[tool output "
-      <> id
-      <> "]\n"
-      <> bounded_summary_text(output)
-      <> string.concat(
-        list.map(images, fn(image) {
-          "\n[" <> describe_image(image) <> "; binary omitted]"
-        }),
-      )
-    types.Replay(item) -> render_replay(item)
-  }
-}
-
-/// A provider item as the text it said and the calls it made. An item with
-/// neither, such as encrypted reasoning, contributes nothing; a shape this
-/// does not read is shown as its JSON, so no call is lost.
-fn render_replay(item: types.ReplayItem) -> String {
-  case compaction.assistant_parts(item) {
-    Ok(#(text, calls)) ->
-      [
-        case text {
-          "" -> []
-          _ -> ["[assistant]\n" <> bounded_summary_text(text)]
-        },
-        list.map(calls, fn(call) {
-          "[assistant call "
-          <> call.name
-          <> "]\n"
-          <> bounded_summary_text(call.arguments)
-        }),
-      ]
-      |> list.flatten
-      |> string.join("\n")
-    Error(_) ->
-      "[assistant provider item]\n"
-      <> bounded_summary_text(json.to_string(types.replay_json(item)))
-  }
-}
-
-fn describe_image(image: types.Image) -> String {
-  let #(mime, width, height, bytes) = types.image_meta(image)
-  "image "
-  <> mime
-  <> " "
-  <> int.to_string(width)
-  <> "x"
-  <> int.to_string(height)
-  <> ", "
-  <> int.to_string(bytes)
-  <> " bytes"
 }
 
 fn request_source(upstream: extension.Upstream, model: String) -> String {

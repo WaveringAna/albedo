@@ -1256,6 +1256,51 @@ pub fn source_stats(
   })
 }
 
+/// The seq of the `nth` user row counting back from the boundary, 1 being
+/// the newest; `None` when the transcript holds fewer user rows. User rows
+/// are counted as `source_stats` counts them.
+pub fn latest_user_seq(
+  ledger: store.Store,
+  snapshot: Snapshot,
+  nth: Int,
+) -> Result(Option(Int), String) {
+  store.read(
+    ledger,
+    "SELECT seq FROM transcript WHERE session=? AND seq<=? AND row_class IN ('user','image_fit') ORDER BY seq DESC LIMIT 1 OFFSET ?",
+    [
+      sqlight.text(snapshot.session),
+      sqlight.int(snapshot.upper),
+      sqlight.int(nth - 1),
+    ],
+    decode.field(0, decode.int, decode.success),
+  )
+  |> result.map(fn(rows) { list.first(rows) |> option.from_result })
+}
+
+/// The first and last seq of the rows before `seq`, when there are any.
+pub fn rows_before(
+  ledger: store.Store,
+  snapshot: Snapshot,
+  seq: Int,
+) -> Result(Option(#(Int, Int)), String) {
+  store.read(
+    ledger,
+    "SELECT MIN(seq),MAX(seq) FROM transcript WHERE session=? AND seq<?",
+    [sqlight.text(snapshot.session), sqlight.int(seq)],
+    {
+      use first <- decode.field(0, decode.optional(decode.int))
+      use last <- decode.field(1, decode.optional(decode.int))
+      decode.success(case first, last {
+        Some(first), Some(last) -> Some(#(first, last))
+        _, _ -> None
+      })
+    },
+  )
+  |> result.map(fn(rows) {
+    list.first(rows) |> option.from_result |> option.flatten
+  })
+}
+
 pub type FoldStep(a) {
   Continue(a)
   Stop(a)

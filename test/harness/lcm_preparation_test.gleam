@@ -22,7 +22,7 @@ fn count_decodes(owner: process.Pid, run: fn() -> a) -> #(a, Int)
 pub fn below_trigger_and_stored_prior_do_not_decode_archived_payloads_test() -> Nil {
   let installed = [
     memory.extension(),
-    lcm.configured_extension(lcm.Config(Some(2000), 90, 1, 4)),
+    lcm.configured_extension(lcm.Config(Some(2000), Some(90), 1)),
   ]
   let assert Ok(host) =
     runtime.start_with_config(
@@ -123,7 +123,8 @@ pub fn below_trigger_and_stored_prior_do_not_decode_archived_payloads_test() -> 
       )
     })
   failed |> should.equal(Error("compaction lcm: summary unavailable"))
-  decodes |> should.equal(2)
+  // Only the uncovered rows, the newest turn included to size the tail.
+  decodes |> should.equal(3)
   graph.last_seq(ledger, "preparation") |> should.equal(Ok(last.source.seq))
   let #(compacted, decodes) =
     count_decodes(store.owner(ledger), fn() {
@@ -139,7 +140,7 @@ pub fn below_trigger_and_stored_prior_do_not_decode_archived_payloads_test() -> 
       )
     })
   let assert Ok(_) = compacted
-  decodes |> should.equal(2)
+  decodes |> should.equal(3)
   graph.last_seq(ledger, "preparation") |> should.equal(Ok(last.source.seq + 2))
   runtime.stop(host)
 }
