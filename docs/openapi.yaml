@@ -6301,6 +6301,10 @@ components:
           anyOf:
           - $ref: '#/components/schemas/Counter'
           - type: 'null'
+        cache_drift_tokens:
+          anyOf:
+          - $ref: '#/components/schemas/Counter'
+          - type: 'null'
         cache_fade:
           type: array
           items:
@@ -7423,6 +7427,11 @@ components:
           anyOf:
           - $ref: '#/components/schemas/ID'
           - type: 'null'
+        effort:
+          anyOf:
+          - type: string
+            maxLength: 256
+          - type: 'null'
         outcome:
           type: string
           enum: [completed, failed]
@@ -7525,7 +7534,7 @@ components:
             $ref: '#/components/schemas/Counter'
           maxItems: 200
       required: [sequence, provider, model, run_id, started_at, ended_at, prompt_tokens, completion_tokens,
-        cached_tokens, failure, transcript_positions, kind, provider_profile, account_id, outcome,
+        cached_tokens, failure, transcript_positions, kind, provider_profile, account_id, effort, outcome,
         http_status, cache_creation_tokens, cache_write_5m_tokens, cache_write_1h_tokens, reasoning_tokens,
         head_hash, input_count, replaced_input_count, projection_hash, strategy, cache_marks, input_chain,
         stream, first_byte_ms, total_tokens, response_id, model_version, trace_id]

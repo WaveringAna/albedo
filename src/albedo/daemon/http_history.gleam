@@ -5,6 +5,7 @@ import albedo/daemon/http_api
 import albedo/daemon/mail
 import albedo/daemon/message_content as events
 import albedo/daemon/note
+import albedo/daemon/notice
 import albedo/daemon/transcript
 import albedo/openai_api/types
 import gleam/dynamic/decode
@@ -128,48 +129,28 @@ fn project_row(
     ]
     None ->
       case item.input {
-        types.User(text) -> {
-          let #(kind, text, origin) = case ownership.display {
-            Some(display) ->
-              case display.source {
-                "chat" | "mail" | "webhook" | "continue" -> #(
-                  "user",
-                  case ownership.letter {
-                    Some(letter) if letter.kind != mail.Webhook -> letter.body
-                    _ -> display.text
+        types.User(text) ->
+          case user_view(text, ownership) {
+            None -> []
+            Some(#(kind, text, origin)) -> {
+              let metadata = case origin {
+                Some(origin) -> [Value("origin", json.string(origin))]
+                None -> []
+              }
+              [
+                entry(
+                  "",
+                  kind,
+                  [Text("text", text), ..metadata],
+                  case kind {
+                    "user" -> Some(id)
+                    _ -> None
                   },
                   None,
-                )
-                _ -> #("note", display.text, Some(display.source))
-              }
-            None ->
-              case note.parse(text) {
-                Some(#("compaction", body)) -> #(
-                  "compaction",
-                  body,
-                  Some("compaction"),
-                )
-                Some(#(origin, body)) -> #("note", body, Some(origin))
-                None -> #("user", text, None)
-              }
+                ),
+              ]
+            }
           }
-          let metadata = case origin {
-            Some(origin) -> [Value("origin", json.string(origin))]
-            None -> []
-          }
-          [
-            entry(
-              "",
-              kind,
-              [Text("text", text), ..metadata],
-              case kind {
-                "user" -> Some(id)
-                _ -> None
-              },
-              None,
-            ),
-          ]
-        }
         types.UserImage(text, images) -> [
           entry(
             "",
@@ -279,6 +260,38 @@ fn project_row(
             _ -> shown
           }
         }
+      }
+  }
+}
+
+/// How a user row reads in the history: its kind, text, and origin. A system
+/// notice steers the model and reads as nothing; a continuation's marker
+/// stands in for its prompt.
+fn user_view(
+  text: String,
+  ownership: conversation.TranscriptOwnership,
+) -> Option(#(String, String, Option(String))) {
+  case ownership.display {
+    Some(display) ->
+      case display.source {
+        "chat" | "mail" | "webhook" | "continue" ->
+          Some(#(
+            "user",
+            case ownership.letter {
+              Some(letter) if letter.kind != mail.Webhook -> letter.body
+              _ -> display.text
+            },
+            None,
+          ))
+        _ -> Some(#("note", display.text, Some(display.source)))
+      }
+    None ->
+      case notice.is_notice(text), note.parse(text) {
+        True, _ -> None
+        False, Some(#("compaction", body)) ->
+          Some(#("compaction", body, Some("compaction")))
+        False, Some(#(origin, body)) -> Some(#("note", body, Some(origin)))
+        False, None -> Some(#("user", note.without_trailing(text), None))
       }
   }
 }

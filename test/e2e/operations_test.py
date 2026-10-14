@@ -306,6 +306,29 @@ class OperationsTests(InputScenario):
         self.assertEqual(len(self.provider.requests), 2)
         self.assertIsNotNone(self.receipt(session, input_id)["transcript_position"])
 
+    def test_the_turn_after_a_continue_repeats_what_the_continue_sent(self):
+        # The continue prompt is history the model read: dropping it from the
+        # next request changed that request's prefix, and the provider read
+        # the whole conversation again uncached.
+        session = self.app.session()
+        self.app.prompt(session, "start").close()
+        self.app.idle(session)
+        input_id = operation_id()
+        self.put_input(session, input_id, {"kind": "continue"})
+        self.committed(session, input_id)
+        self.app.idle(session)
+        self.app.prompt(session, "after").close()
+        self.app.idle(session)
+        continued, after = (
+            record["request"]["input"] for record in self.provider.requests[-2:]
+        )
+        self.assertIn("continue your unfinished task", json.dumps(continued[-1]))
+        self.assertEqual(after[: len(continued)], continued)
+        self.assertEqual(
+            [entry["content"][0]["text"] for entry in self.users(session)],
+            ["start", "after"],
+        )
+
     def test_skill_admission_uses_resolved_content_once(self):
         skill = self.write_skill()
         session = self.app.session()

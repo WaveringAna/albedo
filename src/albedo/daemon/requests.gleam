@@ -270,6 +270,8 @@ pub type Call {
     /// Non-secret label of the account that served; None without a pool.
     account: Option(String),
     model: String,
+    /// The reasoning effort the request asked for, when it set one.
+    effort: Option(String),
     started_ms: Int,
     finished_ms: Int,
     outcome: Outcome,
@@ -304,7 +306,7 @@ pub fn record(database: store.Store, call: Call) -> Result(Int, String) {
 
 // `seq` starts null and is attached after the call's transcript row commits.
 const insert =
-  "INSERT INTO provider_requests(session,seq,kind,profile,provider,account,model,started_ms,finished_ms,outcome,status,error,input_tokens,cached_input_tokens,cache_creation_tokens,cache_write_5m_tokens,cache_write_1h_tokens,output_tokens,reasoning_tokens,head_hash,inputs,replaced,projection_hash,strategy,cache_marks,run_id,input_chain,first_event_ms,streamed_events,streamed_thinking_bytes,streamed_output_bytes,first_byte_ms,total_tokens,response_id,model_version,trace_id) VALUES(?,NULL,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+  "INSERT INTO provider_requests(session,seq,kind,profile,provider,account,model,started_ms,finished_ms,outcome,status,error,input_tokens,cached_input_tokens,cache_creation_tokens,cache_write_5m_tokens,cache_write_1h_tokens,output_tokens,reasoning_tokens,head_hash,inputs,replaced,projection_hash,strategy,cache_marks,run_id,input_chain,first_event_ms,streamed_events,streamed_thinking_bytes,streamed_output_bytes,first_byte_ms,total_tokens,response_id,model_version,trace_id,effort) VALUES(?,NULL,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
 
 fn values(call: Call) -> List(sqlight.Value) {
   let Call(
@@ -314,6 +316,7 @@ fn values(call: Call) -> List(sqlight.Value) {
     provider,
     account,
     model,
+    effort,
     started_ms,
     finished_ms,
     outcome,
@@ -391,6 +394,7 @@ fn values(call: Call) -> List(sqlight.Value) {
     sqlight.nullable(sqlight.text, reported.response_id),
     sqlight.nullable(sqlight.text, reported.model_version),
     sqlight.nullable(sqlight.text, reported.trace_id),
+    sqlight.nullable(sqlight.text, effort),
   ]
 }
 
@@ -419,6 +423,9 @@ pub type Row {
     provider: String,
     account: Option(String),
     model: String,
+    /// None when the request set no effort, or for a row written before
+    /// effort was recorded.
+    effort: Option(String),
     started_ms: Int,
     finished_ms: Int,
     outcome: String,
@@ -578,16 +585,26 @@ const miss_floor = 8192
 /// a little off is not one.
 const miss_share = 20
 
+/// What a call read uncached that the call before it left cached.
+pub type Loss {
+  /// The provider let go of the prefix the call repeated.
+  Missed(tokens: Int)
+  /// The call did not repeat it: its history changed before its new inputs,
+  /// so albedo sent something the provider had not cached.
+  Drifted(tokens: Int)
+}
+
 /// How many tokens the call at `row_id` read uncached that the call before it
-/// left cached, when nothing explains it: the same head and projection, a
-/// longer history, and a gap shorter than `whole_for_ms`, how long the
-/// provider's cache is expected to keep. `None` when it read what it should.
-pub fn cache_miss(
+/// left cached, when nothing explains it: the same model, effort, head and
+/// projection, a longer history, and a gap shorter than `whole_for_ms`, how
+/// long the provider's cache is expected to keep. `None` when it read what it
+/// should.
+pub fn cache_loss(
   database: store.Store,
   session: String,
   row_id: Int,
   whole_for_ms: Option(Int),
-) -> Option(Int) {
+) -> Option(Loss) {
   store.query(database, fn(db) {
     store.rows(
       db,
@@ -602,20 +619,21 @@ pub fn cache_miss(
   |> fn(rows) {
     case rows, whole_for_ms {
       [current, previous], Some(whole) if current.id == row_id ->
-        miss_between(previous, current, whole)
+        loss_between(previous, current, whole)
       _, _ -> None
     }
   }
 }
 
-/// `cache_miss` for two calls already read.
-pub fn miss_between(
+/// `cache_loss` for two calls already read.
+pub fn loss_between(
   previous: Row,
   current: Row,
   whole_for_ms: Int,
-) -> Option(Int) {
+) -> Option(Loss) {
   let same_prefix =
     previous.model == current.model
+    && previous.effort == current.effort
     && previous.head_hash == current.head_hash
     && previous.replaced == current.replaced
     && previous.projection_hash == current.projection_hash
@@ -632,17 +650,49 @@ pub fn miss_between(
       }
       let lost = left - option.unwrap(current.cached_input_tokens, 0)
       case lost >= miss_floor && lost * miss_share > input {
-        True -> Some(lost)
         False -> None
+        True ->
+          case drifted(previous, current) {
+            True -> Some(Drifted(lost))
+            False -> Some(Missed(lost))
+          }
       }
     }
     _, _, _ -> None
   }
 }
 
+/// Whether two rows' input chains disagree at a position both kept: the later
+/// request did not repeat the earlier one's history. Rows without a chain
+/// cannot say, and neither can a later row that kept none of the earlier
+/// one's positions.
+fn drifted(previous: Row, current: Row) -> Bool {
+  case previous.input_chain, current.input_chain {
+    Some(earlier), Some(later) -> {
+      let later = chain_marks(later)
+      list.any(chain_marks(earlier), fn(mark) {
+        case list.key_find(later, mark.0) {
+          Ok(hash) -> hash != mark.1
+          Error(_) -> False
+        }
+      })
+    }
+    _, _ -> False
+  }
+}
+
+/// The `position:hash` pairs of an `input_chain`.
+fn chain_marks(chain: String) -> List(#(Int, String)) {
+  string.split(chain, ",")
+  |> list.filter_map(fn(mark) {
+    use #(position, hash) <- result.try(string.split_once(mark, ":"))
+    int.parse(position) |> result.map(fn(position) { #(position, hash) })
+  })
+}
+
 // Named, in decoder order, so a column added later cannot shift a read.
 const columns =
-  "id,session,seq,kind,profile,provider,account,model,started_ms,finished_ms,outcome,status,error,input_tokens,cached_input_tokens,cache_creation_tokens,cache_write_5m_tokens,cache_write_1h_tokens,output_tokens,reasoning_tokens,head_hash,inputs,replaced,projection_hash,strategy,cache_marks,run_id,input_chain,first_event_ms,streamed_events,streamed_thinking_bytes,streamed_output_bytes,first_byte_ms,total_tokens,response_id,model_version,trace_id"
+  "id,session,seq,kind,profile,provider,account,model,started_ms,finished_ms,outcome,status,error,input_tokens,cached_input_tokens,cache_creation_tokens,cache_write_5m_tokens,cache_write_1h_tokens,output_tokens,reasoning_tokens,head_hash,inputs,replaced,projection_hash,strategy,cache_marks,run_id,input_chain,first_event_ms,streamed_events,streamed_thinking_bytes,streamed_output_bytes,first_byte_ms,total_tokens,response_id,model_version,trace_id,effort"
 
 fn row_decoder() -> decode.Decoder(Row) {
   use id <- decode.field(0, decode.int)
@@ -682,6 +732,7 @@ fn row_decoder() -> decode.Decoder(Row) {
   use response_id <- decode.field(34, decode.optional(decode.string))
   use model_version <- decode.field(35, decode.optional(decode.string))
   use trace_id <- decode.field(36, decode.optional(decode.string))
+  use effort <- decode.field(37, decode.optional(decode.string))
   let streamed =
     option.map(events, fn(events) {
       stream_trace.Streamed(
@@ -700,6 +751,7 @@ fn row_decoder() -> decode.Decoder(Row) {
     provider,
     account,
     model,
+    effort,
     started,
     finished,
     outcome,

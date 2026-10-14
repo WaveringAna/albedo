@@ -207,9 +207,9 @@ pub fn run(
     }
   })
   let cache = fading(state, sent)
-  let cache_miss = case row {
+  let cache_loss = case row {
     Some(id) ->
-      requests.cache_miss(
+      requests.cache_loss(
         runtime.ledger(state.host),
         state.session,
         id,
@@ -226,7 +226,7 @@ pub fn run(
       usage.now(),
       cache,
       Some(int.max(0, sent.finished_ms - sent.started_ms)),
-      cache_miss,
+      cache_loss,
     )
   let replay = list.map(turn.output, types.Replay)
   use #(_timestamp, seq) <- result.try(state.commit(
@@ -629,6 +629,7 @@ fn call(
               <> state.upstream.endpoint,
             state.upstream.account(),
             request.model,
+            request.options.effort,
             started,
             finished,
             requests.outcome(outcome),

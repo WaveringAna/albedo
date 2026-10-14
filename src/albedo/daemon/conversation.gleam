@@ -1168,11 +1168,13 @@ fn is_assistant_row(input: types.Input) -> Bool {
 pub fn latest_user(inputs: List(types.Input)) -> Option(String) {
   list.fold(inputs, None, fn(latest, input) {
     case input {
-      types.User(text) | types.UserImage(text, _) ->
+      types.User(text) | types.UserImage(text, _) -> {
+        let text = note.without_trailing(text)
         case notice.is_notice(text), note.parse(text), mail.is_mail(text) {
           False, None, False -> Some(text)
           _, _, _ -> latest
         }
+      }
       _ -> latest
     }
   })
@@ -2438,7 +2440,9 @@ fn usage_decoder() -> decode.Decoder(Option(usage.Metadata)) {
   use write_1h <- decode.field(7, decode.optional(decode.int))
   use reasoning <- decode.field(8, decode.optional(decode.int))
   use cache <- decode.field(9, decode.optional(decode.string))
-  use cache_miss <- decode.field(10, decode.optional(decode.int))
+  use missed <- decode.field(10, decode.optional(decode.int))
+  use drifted <- decode.field(11, decode.optional(decode.int))
+  let cache_loss = usage.loss_from(missed, drifted)
   // A fading that no longer parses only loses the footer's countdown.
   let cache =
     option.then(cache, fn(stored) {
@@ -2448,7 +2452,7 @@ fn usage_decoder() -> decode.Decoder(Option(usage.Metadata)) {
     None, None, None, None -> decode.success(None)
     Some(model), Some(recorded_at), None, None ->
       decode.success(
-        Some(usage.Metadata(model, recorded_at, None, cache, None, cache_miss)),
+        Some(usage.Metadata(model, recorded_at, None, cache, None, cache_loss)),
       )
     Some(model), Some(recorded_at), Some(prompt), Some(completion) ->
       decode.success(
@@ -2466,7 +2470,7 @@ fn usage_decoder() -> decode.Decoder(Option(usage.Metadata)) {
           )),
           cache,
           None,
-          cache_miss,
+          cache_loss,
         )),
       )
     _, _, _, _ -> decode.failure(None, "consistent saved usage metadata")
@@ -2480,7 +2484,7 @@ pub fn load_usage(
   store.query(store, fn(db) {
     store.one(
       db,
-      "SELECT usage_model,usage_recorded_at,usage_prompt_tokens,usage_completion_tokens,usage_cached_prompt_tokens,usage_cache_creation_tokens,usage_cache_write_5m_tokens,usage_cache_write_1h_tokens,usage_reasoning_tokens,usage_cache,usage_cache_miss_tokens FROM sessions WHERE id=?",
+      "SELECT usage_model,usage_recorded_at,usage_prompt_tokens,usage_completion_tokens,usage_cached_prompt_tokens,usage_cache_creation_tokens,usage_cache_write_5m_tokens,usage_cache_write_1h_tokens,usage_reasoning_tokens,usage_cache,usage_cache_miss_tokens,usage_cache_drift_tokens FROM sessions WHERE id=?",
       [sqlight.text(id)],
       usage_decoder(),
       "session not found",
@@ -2491,7 +2495,7 @@ pub fn load_usage(
 pub fn clear_usage(store: store.Store, id: String) -> Result(Nil, String) {
   store.write(
     store,
-    "UPDATE sessions SET usage_model=NULL,usage_recorded_at=NULL,usage_prompt_tokens=NULL,usage_completion_tokens=NULL,usage_cached_prompt_tokens=NULL,usage_cache_creation_tokens=NULL,usage_cache_write_5m_tokens=NULL,usage_cache_write_1h_tokens=NULL,usage_reasoning_tokens=NULL,usage_cache=NULL,usage_cache_miss_tokens=NULL WHERE id=?",
+    "UPDATE sessions SET usage_model=NULL,usage_recorded_at=NULL,usage_prompt_tokens=NULL,usage_completion_tokens=NULL,usage_cached_prompt_tokens=NULL,usage_cache_creation_tokens=NULL,usage_cache_write_5m_tokens=NULL,usage_cache_write_1h_tokens=NULL,usage_reasoning_tokens=NULL,usage_cache=NULL,usage_cache_miss_tokens=NULL,usage_cache_drift_tokens=NULL WHERE id=?",
     [sqlight.text(id)],
   )
 }
@@ -2501,8 +2505,9 @@ pub fn record_usage(
   id: String,
   metadata: usage.Metadata,
 ) -> Result(Nil, String) {
-  let usage.Metadata(model, recorded_at, tokens, cache, _, cache_miss) =
+  let usage.Metadata(model, recorded_at, tokens, cache, _, cache_loss) =
     metadata
+  let #(missed, drifted) = usage.loss_tokens(cache_loss)
   let #(prompt, completion, cached, creation, write_5m, write_1h, reasoning) = case
     tokens
   {
@@ -2529,7 +2534,7 @@ pub fn record_usage(
     option.map(cache, fn(fade) { json.to_string(cache_fade.to_json(fade)) })
   store.write(
     store,
-    "UPDATE sessions SET usage_model=?,usage_recorded_at=?,usage_prompt_tokens=?,usage_completion_tokens=?,usage_cached_prompt_tokens=?,usage_cache_creation_tokens=?,usage_cache_write_5m_tokens=?,usage_cache_write_1h_tokens=?,usage_reasoning_tokens=?,usage_cache=?,usage_cache_miss_tokens=? WHERE id=?",
+    "UPDATE sessions SET usage_model=?,usage_recorded_at=?,usage_prompt_tokens=?,usage_completion_tokens=?,usage_cached_prompt_tokens=?,usage_cache_creation_tokens=?,usage_cache_write_5m_tokens=?,usage_cache_write_1h_tokens=?,usage_reasoning_tokens=?,usage_cache=?,usage_cache_miss_tokens=?,usage_cache_drift_tokens=? WHERE id=?",
     [
       sqlight.text(model),
       sqlight.int(recorded_at),
@@ -2541,7 +2546,8 @@ pub fn record_usage(
       sqlight.nullable(sqlight.int, write_1h),
       sqlight.nullable(sqlight.int, reasoning),
       sqlight.nullable(sqlight.text, cache),
-      sqlight.nullable(sqlight.int, cache_miss),
+      sqlight.nullable(sqlight.int, missed),
+      sqlight.nullable(sqlight.int, drifted),
       sqlight.text(id),
     ],
   )

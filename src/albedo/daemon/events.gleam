@@ -439,6 +439,8 @@ pub fn input(value: operations.InputOutcome) -> json.Json {
 pub fn usage(metadata: Option(usage.Metadata)) -> json.Json {
   let tokens = option.then(metadata, fn(value) { value.tokens })
   let counter = fn(read) { json.nullable(option.map(tokens, read), json.int) }
+  let #(missed, drifted) =
+    usage.loss_tokens(option.then(metadata, fn(value) { value.cache_loss }))
   json.object([
     #(
       "model",
@@ -485,13 +487,8 @@ pub fn usage(metadata: Option(usage.Metadata)) -> json.Json {
       "tokens_per_second",
       json.nullable(option.then(metadata, usage.tokens_per_second), json.float),
     ),
-    #(
-      "cache_miss_tokens",
-      json.nullable(
-        option.then(metadata, fn(value) { value.cache_miss }),
-        json.int,
-      ),
-    ),
+    #("cache_miss_tokens", json.nullable(missed, json.int)),
+    #("cache_drift_tokens", json.nullable(drifted, json.int)),
     #("context_window_tokens", json.null()),
     #("cache_ttl_seconds", json.null()),
     #("cache_fade", case option.then(metadata, fn(value) { value.cache }) {

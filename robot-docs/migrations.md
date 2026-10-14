@@ -223,7 +223,8 @@ commit or cancellation for submissions. Pending receipts do not expire. Cleanup
 removes at most 128 expired receipts per call. Durable display metadata in
 `submission_events` remains until session deletion, including operation IDs,
 display text, and echo identity. Continuations commit a `continuation_markers`
-row in the same transaction without adding a user-text transcript row. These
+row in the same transaction beside their prompt, a system-notice transcript row
+the history view leaves out. These
 markers also remain until session deletion and survive receipt cleanup.
 Forks copy this historical metadata with its original input IDs, timestamps,
 and turn IDs at the branch's remapped transcript positions. A continuation

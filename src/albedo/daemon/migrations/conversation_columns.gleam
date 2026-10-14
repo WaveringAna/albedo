@@ -22,6 +22,7 @@ pub fn apply(db: sqlight.Connection) -> Result(Nil, String) {
       #("usage_reasoning_tokens", "INTEGER"),
       #("usage_cache", "TEXT"),
       #("usage_cache_miss_tokens", "INTEGER"),
+      #("usage_cache_drift_tokens", "INTEGER"),
       #("effort", "TEXT"),
       #("pinned_instructions", "TEXT"),
       #("pinned_context", "BLOB"),
@@ -53,6 +54,7 @@ pub fn apply(db: sqlight.Connection) -> Result(Nil, String) {
       #("response_id", "TEXT"),
       #("model_version", "TEXT"),
       #("trace_id", "TEXT"),
+      #("effort", "TEXT"),
     ]),
   )
   store.add_columns(db, "transcript", [

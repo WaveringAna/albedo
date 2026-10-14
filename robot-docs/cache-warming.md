@@ -43,7 +43,7 @@ a restart ends every warmer with the daemon, while the session's jobs, children 
 
 the warmer hears it as `Restored(call, pings)`: the usage is the turn's, the timing that of the latest send of the prefix (the turn, or a ping that repeated it since), and `pings` those pings, which count against this stretch's budget. a warmer that already holds a call ignores it. the first ping is scheduled from that timing like any other, so a restart that outlasted the cache sends nothing; whether work still waits is asked when the ping would go out, since a child the restart resumes may not be running yet when its parent comes back.
 
-a rebuilt request is what the next turn would send, which can differ from what the turn sent where the turn added something the transcript does not keep (a kernel notice on its newest message). it extends the same cached prefix, which is what a ping keeps warm.
+a rebuilt request is what the turn sent: whatever a turn shows the model (a kernel notice on its newest message, a continuation's prompt) is committed with it, so the transcript repeats the same prefix.
 
 ## the stop rule and its arithmetic
 

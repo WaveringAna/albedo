@@ -307,10 +307,14 @@ type openTurn struct {
 	// tokensPerSecond is the rate of the latest call that reported its timing.
 	// A usage record can arrive again, so it replaces the rate, never adds to it.
 	tokensPerSecond float64
-	// cacheMisses is what each call of the turn lost from its cache, by the
+	// cacheLosses is what each call of the turn lost from its cache, by the
 	// call's record time, so a usage record that arrives again counts once.
-	cacheMisses map[int64]int
+	cacheLosses map[int64]cacheLoss
 }
+
+// cacheLoss is what a call read uncached that the call before it left cached:
+// Miss when the provider let it go, Drift when albedo's own prefix changed.
+type cacheLoss struct{ Miss, Drift int }
 
 func newOpenTurn(ts int64) *openTurn {
 	if ts == 0 {
@@ -333,20 +337,30 @@ func (t *openTurn) measure(usage *daemon.Usage) {
 	if usage.TokensPerSecond != nil && *usage.TokensPerSecond > 0 {
 		t.tokensPerSecond = *usage.TokensPerSecond
 	}
-	if usage.CacheMissTokens != nil && *usage.CacheMissTokens > 0 && usage.RecordedAt != nil {
-		if t.cacheMisses == nil {
-			t.cacheMisses = map[int64]int{}
+	loss := cacheLoss{reportedTokens(usage.CacheMissTokens), reportedTokens(usage.CacheDriftTokens)}
+	if loss != (cacheLoss{}) && usage.RecordedAt != nil {
+		if t.cacheLosses == nil {
+			t.cacheLosses = map[int64]cacheLoss{}
 		}
-		t.cacheMisses[*usage.RecordedAt] = *usage.CacheMissTokens
+		t.cacheLosses[*usage.RecordedAt] = loss
 	}
 }
 
-func (t *openTurn) cacheMissTokens() int {
-	total := 0
-	for _, tokens := range t.cacheMisses {
-		total += tokens
+func (t *openTurn) cacheLoss() cacheLoss {
+	var total cacheLoss
+	for _, loss := range t.cacheLosses {
+		total.Miss += loss.Miss
+		total.Drift += loss.Drift
 	}
 	return total
+}
+
+// reportedTokens is a usage count, 0 when the record has none.
+func reportedTokens(count *int) int {
+	if count == nil || *count < 0 {
+		return 0
+	}
+	return *count
 }
 
 // An idle status racing the first event must not sign a turn off early.
@@ -375,10 +389,11 @@ func (t *transcriptState) closeTurn(stopped bool) []HistoryEntry {
 		end = max(end, time.Now().UnixMilli())
 	}
 	elapsed := end - turn.start
+	loss := turn.cacheLoss()
 	return []HistoryEntry{{
 		Kind: EntryTurnEnd, Mood: outcome(turn.failed, stopped, elapsed),
 		ElapsedMs: elapsed, Tools: turn.tools, Timestamp: end,
-		TokensPerSecond: turn.tokensPerSecond, CacheMissTokens: turn.cacheMissTokens(),
+		TokensPerSecond: turn.tokensPerSecond, CacheMissTokens: loss.Miss, CacheDriftTokens: loss.Drift,
 	}}
 }
 

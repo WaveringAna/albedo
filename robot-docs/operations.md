@@ -21,8 +21,9 @@ failed consumption leaves the input pending and writes no transcript input.
 
 Display metadata retains text, source, echo identity, input identity, and
 original image dimensions without duplicating image content. Transcript and
-image storage own payloads. Continuation markers retain consumed continuations
-at their transcript boundary without adding user-text rows. Forks preserve
+image storage own payloads. A continuation commits its prompt as a transcript
+row, a system notice the history view leaves out, since the model read it and
+later requests must repeat it; its marker keeps where the user asked. Forks preserve
 copied display facts, continuation markers, and recorded traces independently
 of the original session.
 

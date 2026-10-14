@@ -159,6 +159,9 @@ func (r TranscriptRenderer) signoff(entry HistoryEntry) string {
 	if entry.CacheMissTokens > 0 {
 		meta = append(meta, formatCount(entry.CacheMissTokens)+" miss")
 	}
+	if entry.CacheDriftTokens > 0 {
+		meta = append(meta, formatCount(entry.CacheDriftTokens)+" drift")
+	}
 	row := markChrome + rowAction{verbCopy, entryKey(entry)}.mark() + style.Render(entry.Mood.face(entry.Timestamp))
 	if len(meta) > 0 {
 		row += " " + DefaultStyles.Faint.Render(strings.Join(meta, " · "))

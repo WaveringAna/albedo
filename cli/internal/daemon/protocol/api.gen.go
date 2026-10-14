@@ -1665,6 +1665,7 @@ type ProviderRequestRecord struct {
 	CacheWrite5MTokens TokenObservation `json:"cache_write_5m_tokens"`
 	CachedTokens       TokenObservation `json:"cached_tokens"`
 	CompletionTokens   TokenObservation `json:"completion_tokens"`
+	Effort             *string          `json:"effort" nullable:"true"`
 	EndedAt            *Timestamp       `json:"ended_at" nullable:"true"`
 	Failure            *SafeReason      `json:"failure" nullable:"true"`
 	FirstByteMs        *Counter         `json:"first_byte_ms" nullable:"true"`
@@ -2855,7 +2856,8 @@ type UUIDv7 = string
 
 // Usage defines model for Usage.
 type Usage struct {
-	CacheFade []struct {
+	CacheDriftTokens *Counter `json:"cache_drift_tokens,omitempty" nullable:"true"`
+	CacheFade        []struct {
 		// At UTC RFC 3339.
 		At           Timestamp `json:"at"`
 		CachedTokens *Counter  `json:"cached_tokens" nullable:"true"`

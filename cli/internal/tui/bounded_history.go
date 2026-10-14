@@ -53,6 +53,9 @@ type HistoryEntry struct {
 	// CacheMissTokens is what the turn's calls read uncached that the call
 	// before each had left cached, summed; 0 when none lost enough to mention.
 	CacheMissTokens int
+	// CacheDriftTokens is the same loss where albedo caused it, a call that
+	// did not repeat the history the call before it sent.
+	CacheDriftTokens int
 	// Seq is the newest transcript row this entry came from; 0 until a
 	// `committed` event says which rows cover it.
 	Seq int64

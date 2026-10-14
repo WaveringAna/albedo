@@ -83,15 +83,13 @@ pub fn commits(
 ) -> List(operations.Commit) {
   let #(_, reversed_commits) =
     list.fold(submissions, #(offset, []), fn(acc, submission) {
+      // A continuation's row is its prompt; its marker, not a submission
+      // event, says where the user asked for it.
       let position = case submission.source {
         turn.Continue -> None
         _ -> Some(acc.0)
       }
-      let next = case position {
-        None -> acc.0
-        Some(_) -> acc.0 + 1
-      }
-      #(next, case submission.operation_id {
+      #(acc.0 + 1, case submission.operation_id {
         None ->
           case submission.source, submission.submission_id {
             turn.Mail(id, _), _ | turn.JobWake, Some(id) -> [
@@ -109,9 +107,10 @@ pub fn commits(
   list.reverse(reversed_commits)
 }
 
+/// What `submissions` commit, one row each. A continuation commits its prompt
+/// too: the model read it, so every later request must carry it in place.
 pub fn inputs(submissions: List(Submission)) -> List(types.Input) {
-  list.filter(submissions, fn(submission) { submission.source != turn.Continue })
-  |> list.map(input)
+  list.map(submissions, input)
 }
 
 pub fn membership(

@@ -1582,7 +1582,7 @@ fn handle(
                 )
                   |> session_submission.membership(id),
                 reply,
-                Ok(list.map(queued, session_submission.input)),
+                Ok(inputs),
               )
             }
           }
@@ -2176,24 +2176,20 @@ fn kernel_or_park(state: State, work: Message) -> Result(State, State) {
   }
 }
 
-/// The kernel's notice (variables restored or lost) rides on the newest user
-/// message, where the model reads it; the transcript keeps the message as sent.
-/// The kernel notice reaches the model but not the ledger, as it does for a
-/// chat message. Projection is newest-first: the head is this submission.
+/// The kernel's notice (variables restored or lost) rides on the newest
+/// input this turn commits, where the model reads it. It is committed with it,
+/// so later requests repeat the prefix this one sent; a chat bubble shows the
+/// submission's own display text.
 fn with_notice(
-  history: List(types.Input),
+  accepted: List(types.Input),
   notice: Option(String),
 ) -> List(types.Input) {
-  case notice, history {
-    Some(notice), [types.User(text), ..rest] -> [
-      types.User(text <> notice),
-      ..rest
-    ]
-    Some(notice), [types.UserImage(text, image), ..rest] -> [
-      types.UserImage(text <> notice, image),
-      ..rest
-    ]
-    _, _ -> history
+  case notice, list.reverse(accepted) {
+    Some(notice), [types.User(text), ..rest] ->
+      list.reverse([types.User(text <> notice), ..rest])
+    Some(notice), [types.UserImage(text, image), ..rest] ->
+      list.reverse([types.UserImage(text <> notice, image), ..rest])
+    _, _ -> accepted
   }
 }
 
@@ -2766,16 +2762,16 @@ fn prepare_turn_pipeline(
   use #(state, kernel, client) <- result.try(
     prepare_submission(state) |> result.map_error(fn(err) { #(state, err) }),
   )
-  let accepted =
-    list.append(
-      session_history.recover_pending(
-        state.host,
-        state.history,
-        kernel,
-        client.images,
-      ),
-      session_submission.inputs(submissions),
+  let recovered =
+    session_history.recover_pending(
+      state.host,
+      state.history,
+      kernel,
+      client.images,
     )
+  let accepted =
+    list.append(recovered, session_submission.inputs(submissions))
+    |> with_notice(state.notice)
   use history <- result.try(
     projected_inputs(session_history.remember(state, accepted, 0))
     |> result.map_error(fn(err) { #(state, Rejected(err)) }),
@@ -2789,23 +2785,12 @@ fn prepare_turn_pipeline(
       conversation.Model,
       Some(state.info.provider),
       turn.letters(submissions),
-      session_submission.commits(
-        submissions,
-        list.length(accepted)
-          - list.length(session_submission.inputs(submissions)),
-      ),
+      session_submission.commits(submissions, list.length(recovered)),
       run_id,
       state.info.cwd,
     )
     |> result.map_error(fn(err) { #(state, Rejected(err)) }),
   )
-  let continuations =
-    list.filter(submissions, fn(submission) {
-      submission.source == turn.Continue
-    })
-    |> list.map(session_submission.input)
-  let history =
-    with_notice(list.append(list.reverse(continuations), history), state.notice)
   let state =
     session_history.remember(state, accepted, timestamp)
     |> session_submission.emit(submissions, timestamp)

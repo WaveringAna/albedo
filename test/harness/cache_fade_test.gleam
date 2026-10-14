@@ -99,6 +99,7 @@ pub fn the_ledger_measures_a_head_across_sessions_test() -> Nil {
           "claude",
           None,
           model,
+          None,
           0,
           1,
           requests.Completed,

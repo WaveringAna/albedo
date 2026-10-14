@@ -173,7 +173,8 @@ func TestTurnRateIsItsLatestTimedCall(t *testing.T) {
 }
 
 // A turn's cache miss is what its calls lost, summed: a call's usage record
-// that arrives again counts once, and a call that lost nothing adds nothing.
+// that arrives again counts once, a call that lost nothing adds nothing, and
+// what albedo's own drift lost is counted apart.
 func TestTurnCacheMissSumsItsCallsOnce(t *testing.T) {
 	call := func(recordedAt int64, miss *int) *daemon.Usage {
 		return &daemon.Usage{RecordedAt: &recordedAt, CacheMissTokens: miss}
@@ -186,9 +187,11 @@ func TestTurnCacheMissSumsItsCallsOnce(t *testing.T) {
 	state.apply(daemon.StreamEvent{Type: daemon.EventUsage, Usage: call(1, lost(30_000))}, "agent")
 	state.apply(daemon.StreamEvent{Type: daemon.EventUsage, Usage: call(2, nil)}, "agent")
 	state.apply(daemon.StreamEvent{Type: daemon.EventUsage, Usage: call(3, lost(12_000))}, "agent")
+	drifted := int64(4)
+	state.apply(daemon.StreamEvent{Type: daemon.EventUsage, Usage: &daemon.Usage{RecordedAt: &drifted, CacheDriftTokens: lost(110_000)}}, "agent")
 	entries := state.apply(daemon.StreamEvent{Type: daemon.EventTurnCompleted}, "agent")
-	if len(entries) != 1 || entries[0].CacheMissTokens != 42_000 {
-		t.Fatalf("turn ended with entries %+v, want a signoff with 42000 tokens missed", entries)
+	if len(entries) != 1 || entries[0].CacheMissTokens != 42_000 || entries[0].CacheDriftTokens != 110_000 {
+		t.Fatalf("turn ended with entries %+v, want a signoff with 42000 tokens missed and 110000 drifted", entries)
 	}
 }
 

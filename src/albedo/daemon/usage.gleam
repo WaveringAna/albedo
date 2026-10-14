@@ -1,4 +1,5 @@
 import albedo/clock
+import albedo/daemon/requests
 import albedo/harness/cache_fade
 import albedo/openai_api/types
 import gleam/int
@@ -10,9 +11,10 @@ import gleam/option.{type Option, None, Some}
 /// as a real completion so clients can clear measurements from an older turn.
 /// `cache` says how its cached count fades once the session goes quiet.
 /// `elapsed_ms` is the span of the call that produced the record, None when no
-/// call did; a re-emitted record keeps its call's span. `cache_miss` is how many
-/// tokens the call read uncached that the previous call had left cached, when
-/// that is more than a miss the provider's own rounding explains.
+/// call did; a re-emitted record keeps its call's span. `cache_loss` is how many
+/// tokens the call read uncached that the previous call had left cached, and
+/// whether the provider dropped them or albedo's own prefix changed, when that
+/// is more than the provider's own rounding explains.
 pub type Metadata {
   Metadata(
     model: String,
@@ -20,7 +22,7 @@ pub type Metadata {
     tokens: Option(Tokens),
     cache: Option(cache_fade.Fade),
     elapsed_ms: Option(Int),
-    cache_miss: Option(Int),
+    cache_loss: Option(requests.Loss),
   )
 }
 
@@ -42,7 +44,7 @@ pub fn from_completion(
   recorded_at: Int,
   cache: Option(cache_fade.Fade),
   elapsed_ms: Option(Int),
-  cache_miss: Option(Int),
+  cache_loss: Option(requests.Loss),
 ) -> Metadata {
   let tokens = case provider_usage {
     Some(types.Usage(
@@ -65,7 +67,29 @@ pub fn from_completion(
       ))
     None -> None
   }
-  Metadata(model, recorded_at, tokens, cache, elapsed_ms, cache_miss)
+  Metadata(model, recorded_at, tokens, cache, elapsed_ms, cache_loss)
+}
+
+/// A cache loss's tokens by cause: what the provider dropped, and what
+/// albedo's own changed prefix sent again.
+pub fn loss_tokens(loss: Option(requests.Loss)) -> #(Option(Int), Option(Int)) {
+  case loss {
+    Some(requests.Missed(tokens)) -> #(Some(tokens), None)
+    Some(requests.Drifted(tokens)) -> #(None, Some(tokens))
+    None -> #(None, None)
+  }
+}
+
+/// The loss `loss_tokens` split.
+pub fn loss_from(
+  missed: Option(Int),
+  drifted: Option(Int),
+) -> Option(requests.Loss) {
+  case missed, drifted {
+    Some(tokens), _ -> Some(requests.Missed(tokens))
+    None, Some(tokens) -> Some(requests.Drifted(tokens))
+    None, None -> None
+  }
 }
 
 /// Output tokens per second over the call's span, or None when the call has no

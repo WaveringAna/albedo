@@ -2,8 +2,11 @@
 //// in the tag, so a reloaded transcript can label a note the way the live
 //// stream did.
 
+import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
+
+const open = "<system-note"
 
 const close = "</system-note>"
 
@@ -17,6 +20,19 @@ pub fn wrap(origin: String, text: String) -> String {
       <> "\">"
       <> text
       <> close
+  }
+}
+
+/// `text` without the note a kernel notice appended to it. Text that is only
+/// a note comes back whole.
+pub fn without_trailing(text: String) -> String {
+  case string.ends_with(text, close), string.split(text, open) {
+    True, [_, _, ..] as parts ->
+      case list.take(parts, list.length(parts) - 1) |> string.join(open) {
+        "" -> text
+        body -> body
+      }
+    _, _ -> text
   }
 }
 

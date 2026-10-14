@@ -303,6 +303,7 @@ pub fn request(row: requests.Row) -> json.Json {
     #("kind", json.string(row.kind)),
     #("provider_profile", json.string(row.profile)),
     #("account_id", json.nullable(row.account, json.string)),
+    #("effort", json.nullable(row.effort, json.string)),
     #(
       "outcome",
       json.string(case row.outcome {
