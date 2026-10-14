@@ -569,6 +569,19 @@ pub fn an_effort_switch_keeps_the_gemini_variant_test() -> Nil {
     == "HIGH"
 }
 
+/// A session keeps the variant its newest turn ran on, so one that switched
+/// effort before variants stopped following it keeps its cached prefix.
+pub fn a_session_stays_on_the_variant_its_last_turn_ran_on_test() -> Nil {
+  let #(outcome, _) = reduce(gemini, signed_turn_payloads())
+  let assert Ok(turn) = outcome
+  let assert [item] = turn.output
+  let history =
+    openai_api.request(gemini, [types.User("hi"), types.Replay(item)])
+  assert wire.last_variant(model("gemini-3.1-pro-high"), history)
+    == Some(gemini)
+  assert wire.last_variant(model("gemini-3.8-flash-medium"), history) == None
+}
+
 /// Gemini signs what follows its thoughts, never the summaries, so an
 /// unsigned summary is kept as reasoning text but not replayed.
 pub fn unsigned_gemini_thoughts_are_not_replayed_test() -> Nil {

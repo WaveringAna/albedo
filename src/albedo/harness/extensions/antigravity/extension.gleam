@@ -189,7 +189,9 @@ fn upstream(
       Some(meter),
       fn(access, request, on_event) {
         let resolved_model =
-          catalog.resolve_variant(home, model.id, request.options.effort)
+          wire.last_variant(model, request)
+          |> option.unwrap(model.id)
+          |> catalog.resolve_variant(home, _, request.options.effort)
         let context =
           wire.Context(
             access.token,

@@ -82,6 +82,28 @@ pub fn crosses_efforts(context: Context, request: Request) -> Bool {
   })
 }
 
+/// The variant that wrote the newest replayed turn of `model`'s base model.
+/// Cloud Code caches each variant apart, so a session stays on the one that
+/// holds its prefix.
+pub fn last_variant(model: Model, request: Request) -> Option(String) {
+  list.reverse(request.input)
+  |> list.find_map(fn(input) {
+    case input {
+      Replay(item) ->
+        case types.inspect_item(item, message_decoder()) {
+          Ok(Message(parts: Some(#(from, _)), ..)) ->
+            case catalog.base_id(from) == catalog.base_id(model.id) {
+              True -> Ok(from)
+              False -> Error(Nil)
+            }
+          _ -> Error(Nil)
+        }
+      _ -> Error(Nil)
+    }
+  })
+  |> option.from_result
+}
+
 /// Whether a 400 body is Gemini refusing a thought signature.
 pub fn signature_refusal(body: String) -> Bool {
   string.contains(string.lowercase(body), "signature")

@@ -4,7 +4,7 @@
 
 home_with_catalog(Json) ->
     Home = filename:join(os:getenv("TMPDIR", "/tmp"),
-                         "albedo-antigravity-catalog-" ++ integer_to_list(erlang:unique_integer([positive]))),
+                         "albedo-antigravity-catalog-" ++ binary_to_list(albedo_native:new_id())),
     ok = file:make_dir(Home),
     ok = file:write_file(filename:join(Home, "antigravity.json"), Json),
     unicode:characters_to_binary(Home).
