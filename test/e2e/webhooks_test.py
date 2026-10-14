@@ -149,10 +149,16 @@ class WebhookTests(unittest.TestCase):
             "sha256="
             + hmac.new(self.secret.encode(), self.payload, hashlib.sha256).hexdigest()
         )
+        # Sent the way a proxy forwards it, under the proxy's own Host: the
+        # signature admits a delivery, not the Host.
         request = urllib.request.Request(
             intake + self.delivery_path,
             data=self.payload,
-            headers={"X-Albedo-Signature": signature, "X-Albedo-Event-Id": "intake-1"},
+            headers={
+                "Host": "relay.tailnet.example:8089",
+                "X-Albedo-Signature": signature,
+                "X-Albedo-Event-Id": "intake-1",
+            },
         )
         with urllib.request.urlopen(request, timeout=25) as response:
             self.assertEqual(response.status, 202)

@@ -40,12 +40,7 @@ import mist
 import sqlight
 
 type HttpBoundary {
-  HttpBoundary(
-    instance_id: String,
-    port: Int,
-    origins: List(String),
-    hosts: List(String),
-  )
+  HttpBoundary(instance_id: String, origins: List(String))
 }
 
 /// Returns the daemon's port and the webhook intake's port.
@@ -90,12 +85,7 @@ pub fn start(
   }
   let instance_id = http_api.instance_id()
   let boundary =
-    HttpBoundary(
-      instance_id,
-      port,
-      configured_list("ALBEDO_HTTP_ORIGINS"),
-      configured_list("ALBEDO_HTTP_HOSTS"),
-    )
+    HttpBoundary(instance_id, configured_list("ALBEDO_HTTP_ORIGINS"))
   use _ <- result.try(
     listener.keep(
       port,
@@ -149,12 +139,7 @@ fn bind_intake(
   attempts_left: Int,
 ) -> Result(Int, String) {
   let boundary =
-    HttpBoundary(
-      instance_id,
-      port,
-      configured_list("ALBEDO_HTTP_ORIGINS"),
-      configured_list("ALBEDO_HTTP_HOSTS"),
-    )
+    HttpBoundary(instance_id, configured_list("ALBEDO_HTTP_ORIGINS"))
   let address = "webhook intake on 127.0.0.1:" <> int.to_string(port)
   let started =
     listener.keep(
@@ -254,29 +239,15 @@ fn handle_request(
   boundary: HttpBoundary,
   req: request.Request(mist.Connection),
 ) -> response.Response(mist.ResponseData) {
-  let hosts = [
-    "127.0.0.1:" <> int.to_string(boundary.port),
-    "localhost:" <> int.to_string(boundary.port),
-    ..list.map(boundary.hosts, string.lowercase)
-  ]
-  let host_headers =
-    list.filter(req.headers, fn(header) { string.lowercase(header.0) == "host" })
   let origin_headers =
     list.filter(req.headers, fn(header) {
       string.lowercase(header.0) == "origin"
     })
-  case host_headers, origin_headers {
-    [#(_, host)], [] ->
-      case list.contains(hosts, string.lowercase(host)) {
-        True -> route_trusted(config, registry, boundary.instance_id, req)
-        False -> ingress_error(403, "host_forbidden", "host is not allowed")
-      }
-    [#(_, host)], [#(_, origin)] ->
-      case
-        list.contains(hosts, string.lowercase(host)),
-        list.contains(boundary.origins, origin)
-      {
-        True, True -> {
+  case origin_headers {
+    [] -> route_trusted(config, registry, boundary.instance_id, req)
+    [#(_, origin)] ->
+      case list.contains(boundary.origins, origin) {
+        True -> {
           let reply = case req.method {
             Options -> preflight(req)
             _ -> route_trusted(config, registry, boundary.instance_id, req)
@@ -289,15 +260,13 @@ fn handle_request(
           )
           |> response.set_header("vary", "Origin, Accept")
         }
-        False, _ -> ingress_error(403, "host_forbidden", "host is not allowed")
-        _, False ->
-          ingress_error(403, "origin_forbidden", "origin is not allowed")
+        False -> ingress_error(403, "origin_forbidden", "origin is not allowed")
       }
-    _, _ ->
+    _ ->
       ingress_error(
         403,
         "request_authority_invalid",
-        "host and origin headers must be unambiguous",
+        "origin header must be unambiguous",
       )
   }
 }
