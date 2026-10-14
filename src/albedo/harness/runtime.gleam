@@ -1080,6 +1080,7 @@ pub fn prepare_history_with(
     history,
     False,
     types.any_images,
+    None,
   )
   |> result.map(fn(prepared) { prepared.inputs })
 }
@@ -1310,6 +1311,7 @@ pub fn compact_history_scoped(
     history,
     True,
     types.any_images,
+    None,
   )
   |> result.map(fn(prepared) { prepared.inputs })
 }
@@ -1326,6 +1328,7 @@ pub fn prepare_view_scoped(
   history: List(types.Input),
   force: Bool,
   images: types.ImageLimits,
+  reported: Option(Int),
 ) -> Result(compaction.Prepared, String) {
   view_scoped(
     runtime,
@@ -1338,6 +1341,7 @@ pub fn prepare_view_scoped(
     history,
     force,
     images,
+    reported,
     compaction.prepare,
   )
 }
@@ -1366,6 +1370,7 @@ pub fn project_view_scoped(
     history,
     False,
     images,
+    None,
     compaction.project,
   )
 }
@@ -1381,6 +1386,7 @@ fn view_scoped(
   history: List(types.Input),
   force: Bool,
   images: types.ImageLimits,
+  reported: Option(Int),
   view: fn(compaction.Strategy, compaction.Context, List(types.Input)) ->
     Result(compaction.Prepared, String),
 ) -> Result(compaction.Prepared, String) {
@@ -1417,6 +1423,7 @@ fn view_scoped(
           ),
           reader(info),
           images,
+          reported,
         )
       // A strategy that raises fails the turn the way one returning an error
       // does, naming itself, rather than killing the turn's process.

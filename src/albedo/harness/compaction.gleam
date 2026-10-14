@@ -58,6 +58,9 @@ pub type Context {
     /// The images the provider carrying the request accepts, so a strategy
     /// that renders any makes them fit rather than be refused.
     images: types.ImageLimits,
+    /// The input and output tokens the provider reported for this run's
+    /// previous request, which the next request carries forward.
+    reported: Option(Int),
   )
 }
 
@@ -440,7 +443,11 @@ pub fn prepare(
   let viewing = Context(..context, force: False)
   let compacted = fn() {
     use changed <- result.try(strategy.compact(context, history))
-    use view <- result.try(strategy.project(viewing, history))
+    // The provider has not seen the compacted request yet.
+    use view <- result.try(strategy.project(
+      Context(..viewing, reported: None),
+      history,
+    ))
     Ok(Prepared(view.inputs, view.observation, changed))
   }
   case context.force {

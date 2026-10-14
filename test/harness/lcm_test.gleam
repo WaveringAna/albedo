@@ -293,6 +293,42 @@ fn mentions(request: compaction.SummaryRequest, text: String) -> Bool {
   })
 }
 
+pub fn the_trigger_reads_the_tokens_the_provider_reported_test() -> Nil {
+  let #(host, session) = host(20_000)
+  let history = [
+    types.User("the task"),
+    ..list.flat_map([1, 2, 3, 4], fn(i) {
+      let n = int.to_string(i)
+      [
+        types.Assistant("look " <> n),
+        types.ToolOutput("call-" <> n, string.repeat("r", 4000), []),
+      ]
+    })
+  ]
+  save(host, history)
+  let prepare = fn(reported) {
+    runtime.prepare_view_scoped(
+      host,
+      session,
+      "model",
+      "model",
+      None,
+      "",
+      fn(_) { Ok("folded") },
+      history,
+      False,
+      types.any_images,
+      reported,
+    )
+  }
+  // Under the 90% trigger by albedo's own count, over it by the provider's.
+  let assert Ok(quiet) = prepare(None)
+  quiet.compacted |> should.be_false
+  let assert Ok(due) = prepare(Some(19_000))
+  due.compacted |> should.be_true
+  runtime.stop(host)
+}
+
 pub fn a_twice_empty_summary_keeps_the_source_verbatim_test() -> Nil {
   let #(host, session) = host(2000)
   let ledger = runtime.ledger(host)

@@ -65,6 +65,9 @@ pub type Loop {
     /// The saved profile those calls went through.
     profile: String,
     run_id: String,
+    /// The input and output tokens the provider reported for this run's
+    /// previous request; `None` before its first.
+    reported: Option(Int),
   )
 }
 
@@ -229,6 +232,13 @@ pub fn run(
   attach(state, row, seq)
   use _ <- result.try(state.record_usage(completed_usage))
   let speechless_turn = speechless(turn)
+  let state =
+    Loop(
+      ..state,
+      reported: option.map(turn.usage, fn(usage) {
+        usage.input_tokens + usage.output_tokens
+      }),
+    )
   case turn.tool_calls {
     [] ->
       case turn.finish {
@@ -485,6 +495,7 @@ fn prepare(
     original,
     force,
     state.upstream.images,
+    state.reported,
   )
 }
 

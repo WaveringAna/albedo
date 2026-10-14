@@ -389,6 +389,8 @@ pub fn start(
       state.info.id,
       state.info.provider,
       run_id,
+      // Saved usage may describe a request a compaction since replaced.
+      None,
     )
   let pid =
     process.spawn_unlinked(fn() {

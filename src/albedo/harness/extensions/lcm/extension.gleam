@@ -162,19 +162,30 @@ fn project(
       |> result.map(fn(prior) { list.append(prior.folds, prior.rest) })
     _ -> Ok(projection(frontier, history, stats))
   })
-  let estimated = context.pinned_tokens + compaction.estimate_inputs(current)
+  // The provider's count for the previous request, once this run has one.
+  let #(measured, measure) = case context.reported {
+    Some(tokens) -> #(
+      tokens,
+      "reported by the provider for the previous request",
+    )
+    None -> #(
+      context.pinned_tokens + compaction.estimate_inputs(current),
+      "estimated from current request projection",
+    )
+  }
   case window {
     None ->
       Ok(view(
         current,
         frontier,
         "unknown",
-        "estimated; no configured or catalogued context window",
+        measure <> "; no configured or catalogued context window",
         None,
-        estimated,
+        measured,
         option.unwrap(config.trigger_percent, small_window_trigger),
         history,
         False,
+        option.is_some(context.reported),
       ))
     Some(compaction.Capacity(tokens: capacity, source: capacity_source)) -> {
       use _ <- result.try(compaction.fits_pinned(context, capacity))
@@ -186,13 +197,13 @@ fn project(
           [] -> "not_needed"
           _ -> "compacted"
         },
-        "estimated from current request projection; window from "
-          <> capacity_source,
+        measure <> "; window from " <> capacity_source,
         Some(capacity),
-        estimated,
+        measured,
         trigger,
         history,
-        compaction.triggered(False, estimated, Some(capacity), trigger),
+        compaction.triggered(False, measured, Some(capacity), trigger),
+        option.is_some(context.reported),
       ))
     }
   }
@@ -495,10 +506,10 @@ fn view(
   trigger_percent: Int,
   original: List(types.Input),
   due: Bool,
+  reported: Bool,
 ) -> compaction.View {
-  compaction.View(
-    inputs,
-    Some(compaction.observation(
+  let observation =
+    compaction.observation(
       "lcm",
       status,
       source,
@@ -512,9 +523,18 @@ fn view(
       estimated,
       list.length(original),
       list.length(inputs),
-    )),
-    due,
-  )
+    )
+  let observation = case reported {
+    True ->
+      compaction.Observation(
+        ..observation,
+        estimate_method: Some(
+          "provider-reported tokens of the previous request",
+        ),
+      )
+    False -> observation
+  }
+  compaction.View(inputs, Some(observation), due)
 }
 
 fn projection(
