@@ -37,6 +37,7 @@ pub fn apply(db: sqlight.Connection) -> Result(Nil, String) {
       #("config_revision", "INTEGER NOT NULL DEFAULT 0"),
       #("family_revision", "INTEGER NOT NULL DEFAULT 0"),
       #("deletion_id", "TEXT"),
+      #("context_window", "INTEGER"),
     ]),
   )
   use _ <- result.try(

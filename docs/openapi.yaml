@@ -5755,6 +5755,14 @@ components:
           - type: string
             maxLength: 100
           - type: 'null'
+        context_window:
+          description: Tokens this session compacts against instead of the model's catalogued window. Null uses
+            the model's window.
+          anyOf:
+          - type: integer
+            minimum: 1
+            maximum: 100000000
+          - type: 'null'
         preferences:
           type: object
           properties:
@@ -5823,6 +5831,14 @@ components:
           - type: string
             maxLength: 100
           - type: 'null'
+        context_window:
+          description: Tokens this session compacts against instead of the model's catalogued window. Null uses
+            the model's window.
+          anyOf:
+          - type: integer
+            minimum: 1
+            maximum: 100000000
+          - type: 'null'
         preferences:
           $ref: '#/components/schemas/PreferencePatch'
         selection:
@@ -5880,6 +5896,14 @@ components:
           - type: string
             maxLength: 100
           - type: 'null'
+        context_window:
+          description: Tokens this session compacts against instead of the model's catalogued window. Null uses
+            the model's window.
+          anyOf:
+          - type: integer
+            minimum: 1
+            maximum: 100000000
+          - type: 'null'
       required: [kind, workspace]
       additionalProperties: false
       examples:
@@ -5909,6 +5933,14 @@ components:
           anyOf:
           - type: string
             maxLength: 100
+          - type: 'null'
+        context_window:
+          description: Tokens this session compacts against instead of the model's catalogued window. Null uses
+            the model's window.
+          anyOf:
+          - type: integer
+            minimum: 1
+            maximum: 100000000
           - type: 'null'
       required: [kind, workspace, name, provider_profile, model, effort]
       additionalProperties: false

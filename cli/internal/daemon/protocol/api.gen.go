@@ -1419,6 +1419,8 @@ type ModelSettingsResource struct {
 
 // NewSessionIntent defines model for NewSessionIntent.
 type NewSessionIntent struct {
+	// ContextWindow Tokens this session compacts against instead of the model's catalogued window. Null uses the model's window.
+	ContextWindow   *int64  `json:"context_window,omitempty" nullable:"true"`
 	Effort          *string `json:"effort" nullable:"true"`
 	Kind            string  `json:"kind"`
 	Model           *ID     `json:"model" nullable:"true"`
@@ -1431,6 +1433,8 @@ type NewSessionIntent struct {
 
 // NewSessionRequest Examples: {"kind":"new","workspace":"/workspace/project"}
 type NewSessionRequest struct {
+	// ContextWindow Tokens this session compacts against instead of the model's catalogued window. Null uses the model's window.
+	ContextWindow   *int64  `json:"context_window,omitempty" nullable:"true"`
 	Effort          *string `json:"effort,omitempty" nullable:"true"`
 	Kind            string  `json:"kind"`
 	Model           *ID     `json:"model,omitempty" nullable:"true"`
@@ -2243,7 +2247,9 @@ type SessionCompactedEvent struct {
 
 // SessionConfiguration Examples: {"effort":null,"family_revision":"family-1","id":"01a0fcea-2b00-7000-8000-000000000001","model":"example-model","name":null,"preferences":{"archived":false,"pin_order":null,"pinned":false},"provider_profile":"personal","revision":"config-1","selection":{"extensions":{},"instructions":{},"mcp":{},"skills":{}},"workspace":"/workspace/project"}
 type SessionConfiguration struct {
-	Effort *string `json:"effort" nullable:"true"`
+	// ContextWindow Tokens this session compacts against instead of the model's catalogued window. Null uses the model's window.
+	ContextWindow *int64  `json:"context_window,omitempty" nullable:"true"`
+	Effort        *string `json:"effort" nullable:"true"`
 
 	// FamilyRevision Opaque identity. Never infer a resource type or route from its contents.
 	FamilyRevision ID `json:"family_revision"`
@@ -2382,8 +2388,11 @@ type SessionPage struct {
 // Examples: {"catalog_revision":"discovery-1","selection":{"extensions":{"browser":null},"skills":{"candidate-1":false}}}
 type SessionPatch struct {
 	// CatalogRevision Opaque identity. Never infer a resource type or route from its contents.
-	CatalogRevision *ID     `json:"catalog_revision,omitempty"`
-	Effort          *string `json:"effort,omitempty" nullable:"true"`
+	CatalogRevision *ID `json:"catalog_revision,omitempty"`
+
+	// ContextWindow Tokens this session compacts against instead of the model's catalogued window. Null uses the model's window.
+	ContextWindow *int64  `json:"context_window,omitempty" nullable:"true"`
+	Effort        *string `json:"effort,omitempty" nullable:"true"`
 
 	// Model Opaque identity. Never infer a resource type or route from its contents.
 	Model       *ID              `json:"model,omitempty"`

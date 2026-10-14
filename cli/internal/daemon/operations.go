@@ -93,7 +93,11 @@ func NewCreation(fields CreateSessionRequest) (*OperationHandle, error) {
 	var body any
 	switch kind {
 	case "new":
-		body = protocol.NewSessionRequest{Kind: kind, Workspace: fields.Workspace, Name: optionalText(fields.Name), ProviderProfile: optionalText(fields.Provider), Model: optionalText(fields.Model), Effort: optionalText(fields.Effort)}
+		request := protocol.NewSessionRequest{Kind: kind, Workspace: fields.Workspace, Name: optionalText(fields.Name), ProviderProfile: optionalText(fields.Provider), Model: optionalText(fields.Model), Effort: optionalText(fields.Effort)}
+		if fields.ContextWindow > 0 {
+			request.ContextWindow = &fields.ContextWindow
+		}
+		body = request
 	case "fork":
 		body = protocol.ForkSessionRequest{Kind: kind, SourceSessionID: fields.SourceSessionID, CheckpointID: fields.CheckpointID, Name: optionalText(fields.Name)}
 	case "child":

@@ -6,7 +6,8 @@ import albedo/daemon/operations
 import albedo/daemon/store
 import albedo/harness/location
 import gleam/json
-import gleam/option.{type Option, None}
+import gleam/list
+import gleam/option.{type Option, None, Some}
 import gleam/string
 
 pub type Intent {
@@ -16,6 +17,8 @@ pub type Intent {
     provider_profile: Option(String),
     model: Option(String),
     effort: Option(String),
+    /// The window this session compacts against, instead of the model's.
+    context_window: Option(Int),
   )
   ForkSession(
     source_session_id: String,
@@ -38,14 +41,22 @@ pub type Intent {
 /// this representation affects retries of previously recorded decisions.
 pub fn encode(intent: Intent) -> json.Json {
   json.object(case intent {
-    NewSession(workspace, name, provider, model, effort) -> [
-      #("kind", json.string("new")),
-      #("workspace", json.string(workspace)),
-      #("name", json.nullable(name, json.string)),
-      #("provider_profile", json.nullable(provider, json.string)),
-      #("model", json.nullable(model, json.string)),
-      #("effort", json.nullable(effort, json.string)),
-    ]
+    NewSession(workspace, name, provider, model, effort, window) ->
+      list.flatten([
+        [
+          #("kind", json.string("new")),
+          #("workspace", json.string(workspace)),
+          #("name", json.nullable(name, json.string)),
+          #("provider_profile", json.nullable(provider, json.string)),
+          #("model", json.nullable(model, json.string)),
+          #("effort", json.nullable(effort, json.string)),
+        ],
+        // Absent unless set, so earlier requests keep their fingerprints.
+        case window {
+          Some(tokens) -> [#("context_window", json.int(tokens))]
+          None -> []
+        },
+      ])
     ForkSession(source, checkpoint, name) -> [
       #("kind", json.string("fork")),
       #("source_session_id", json.string(source)),

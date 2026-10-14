@@ -175,6 +175,7 @@ fn request_patch(
       provider_profile: None,
       model: None,
       effort: None,
+      context_window: None,
       pinned: None,
       archived: None,
       selection: config.SelectionPatch(None, None, None, None),

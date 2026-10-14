@@ -47,6 +47,8 @@ pub type Context {
     source: String,
     pinned_tokens: Int,
     capacity: Option(Capacity),
+    /// A window set on this session, which outranks every other source.
+    session_window: Option(Int),
     force: Bool,
     summarize: fn(SummaryRequest) -> Result(String, String),
     /// History with folds stored by other strategies applied; see `Prior`.
@@ -128,24 +130,36 @@ pub fn validate_window(
   }
 }
 
-/// The window a strategy compacts against. Configuration overrides a
-/// catalog; neither one is guessed from the model id. A forced compaction
-/// without either still compacts, against an estimate of the request.
+/// The window a strategy compacts against: the session's own window, else
+/// the strategy's configuration, else a catalog; none is guessed from the
+/// model id. A forced compaction without any still compacts, against an
+/// estimate of the request.
 pub fn effective_window(
   context_window_tokens: Option(Int),
   context: Context,
   history: List(types.Input),
 ) -> Option(Capacity) {
-  case context_window_tokens, context.capacity, context.force {
+  case context.session_window, context_window_tokens, context.capacity {
     Some(tokens), _, _ ->
+      Some(Capacity(tokens, "this session's context window"))
+    None, Some(tokens), _ ->
       Some(Capacity(tokens, "configured contextWindowTokens"))
-    None, Some(capacity), _ -> Some(capacity)
-    None, None, True ->
+    None, None, Some(capacity) -> Some(capacity)
+    None, None, None -> estimated_window(context, history)
+  }
+}
+
+fn estimated_window(
+  context: Context,
+  history: List(types.Input),
+) -> Option(Capacity) {
+  case context.force {
+    True ->
       Some(Capacity(
         context.pinned_tokens + estimate_inputs(history),
         "estimated for manual compaction",
       ))
-    None, None, False -> None
+    False -> None
   }
 }
 

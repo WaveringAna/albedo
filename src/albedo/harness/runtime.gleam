@@ -2,6 +2,7 @@
 
 import albedo/actor_call
 import albedo/daemon/configuration
+import albedo/daemon/session_configuration
 import albedo/daemon/store
 import albedo/harness/command
 import albedo/harness/compaction
@@ -1357,6 +1358,10 @@ fn view_scoped(
   let pinned_tokens = compaction.estimate_pinned(instructions, tools(session))
   let enabled = composition.extensions(session.composition)
   let info = model_info(session, model, endpoint)
+  use window <- result.try(session_configuration.context_window(
+    runtime.ledger,
+    session.id,
+  ))
   case extension.compaction(enabled) {
     None if force -> Error("no compaction strategy is enabled")
     None -> Ok(compaction.Prepared(history, None, False))
@@ -1370,6 +1375,7 @@ fn view_scoped(
           source,
           pinned_tokens,
           capacity(info),
+          window,
           force,
           summarize,
           compaction.compose_prior(

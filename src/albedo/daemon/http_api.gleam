@@ -504,6 +504,15 @@ fn negotiate(req: request.Request(a), live: Bool) -> Result(Bool, Failure) {
   }
 }
 
+/// A session's compaction window: a positive token count.
+pub fn context_window() -> decode.Decoder(Int) {
+  use tokens <- decode.then(decode.int)
+  case tokens > 0 && tokens <= 100_000_000 {
+    True -> decode.success(tokens)
+    False -> decode.failure(0, "a positive token count")
+  }
+}
+
 fn nullable_string(
   key: String,
   next: fn(Option(String)) -> decode.Decoder(a),
@@ -528,8 +537,8 @@ pub fn creation(
     req,
     [
       "kind", "workspace", "name", "provider_profile", "model", "effort",
-      "source_session_id", "checkpoint_id", "parent_id", "address",
-      "initial_input_id", "task",
+      "context_window", "source_session_id", "checkpoint_id", "parent_id",
+      "address", "initial_input_id", "task",
     ],
     decode.field("kind", decode.string, decode.success),
   ))
@@ -537,19 +546,28 @@ pub fn creation(
     "new" ->
       body(
         req,
-        ["kind", "workspace", "name", "provider_profile", "model", "effort"],
+        [
+          "kind", "workspace", "name", "provider_profile", "model", "effort",
+          "context_window",
+        ],
         {
           use workspace <- decode.field("workspace", bounded_string(4096, True))
           use name <- nullable_string("name")
           use provider <- nullable_string("provider_profile")
           use model <- nullable_string("model")
           use effort <- nullable_string("effort")
+          use window <- decode.optional_field(
+            "context_window",
+            None,
+            decode.optional(context_window()),
+          )
           decode.success(creation.NewSession(
             workspace,
             name,
             provider,
             model,
             effort,
+            window,
           ))
         },
       )

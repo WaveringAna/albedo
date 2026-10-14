@@ -29,7 +29,12 @@ type SessionPreview struct {
 	Items   []PreviewItem
 	Session *Session
 }
-type CreateSessionRequest struct{ Kind, Workspace, Provider, Model, Effort, Name, SourceSessionID, CheckpointID, ParentID, Address, Task string }
+type CreateSessionRequest struct {
+	Kind, Workspace, Provider, Model, Effort, Name, SourceSessionID, CheckpointID, ParentID, Address, Task string
+
+	// ContextWindow is the tokens a new session compacts against; zero keeps the model's window.
+	ContextWindow int64
+}
 type ForkRequest struct{ Checkpoint string }
 type Session struct {
 	ID               string    `json:"id"`
@@ -182,6 +187,15 @@ func patchSession(ctx context.Context, conn *Connection, id, etag string, body a
 }
 func RenameSession(ctx context.Context, conn *Connection, id, name, etag string) (Session, error) {
 	return patchSession(ctx, conn, id, etag, protocol.SessionPatch{Name: &name})
+}
+
+// SetContextWindow sets the tokens a session compacts against.
+func SetContextWindow(ctx context.Context, conn *Connection, id string, tokens int64) (Session, error) {
+	configuration, err := GetSessionConfiguration(ctx, conn, id)
+	if err != nil {
+		return Session{}, err
+	}
+	return patchSession(ctx, conn, id, configuration.ETag, protocol.SessionPatch{ContextWindow: &tokens})
 }
 func ForkSession(ctx context.Context, conn *Connection, id string, body ForkRequest) (Session, error) {
 	return CreateSession(ctx, conn, CreateSessionRequest{Kind: "fork", SourceSessionID: id, CheckpointID: body.Checkpoint})

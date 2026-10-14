@@ -39,6 +39,8 @@ pub type Configuration {
     provider_profile: String,
     model: String,
     effort: Option(String),
+    /// The window compaction measures against, instead of the model's.
+    context_window: Option(Int),
     revision: Int,
     family: family.Facts,
     preferences: Preferences,
@@ -65,6 +67,7 @@ pub type Patch {
     provider_profile: Option(String),
     model: Option(String),
     effort: Option(Option(String)),
+    context_window: Option(Option(Int)),
     pinned: Option(Bool),
     archived: Option(Bool),
     selection: SelectionPatch,
@@ -138,6 +141,7 @@ pub fn apply(current: Configuration, patch: Patch) -> Configuration {
     ),
     model: option.unwrap(patch.model, current.model),
     effort: option.unwrap(patch.effort, current.effort),
+    context_window: option.unwrap(patch.context_window, current.context_window),
     preferences: preferences,
     selection: Selection(
       apply_choices(current.selection.extensions, patch.selection.extensions),
@@ -230,13 +234,14 @@ pub fn commit_in(
         use _ <- result.try(
           store.run(
             db,
-            "UPDATE sessions SET name=?,provider=?,model=?,protocol=?,effort=?,pinned=?,pin_order=?,archived=?,config_revision=config_revision+1 WHERE id=?",
+            "UPDATE sessions SET name=?,provider=?,model=?,protocol=?,effort=?,context_window=?,pinned=?,pin_order=?,archived=?,config_revision=config_revision+1 WHERE id=?",
             [
               nullable_text(candidate.name),
               sqlight.text(candidate.provider_profile),
               sqlight.text(candidate.model),
               sqlight.text(types.protocol_name(edit.protocol)),
               nullable_text(candidate.effort),
+              sqlight.nullable(sqlight.int, candidate.context_window),
               sqlight.int(case pinned {
                 True -> 1
                 False -> 0
@@ -363,7 +368,7 @@ pub fn read_in(
   use selection <- result.try(selection_in(db, id))
   store.one(
     db,
-    "SELECT name,title,COALESCE(desired_workspace,cwd),COALESCE(provider,''),model,effort,config_revision,pinned,pin_order,archived,opens FROM sessions WHERE id=?",
+    "SELECT name,title,COALESCE(desired_workspace,cwd),COALESCE(provider,''),model,effort,config_revision,pinned,pin_order,archived,opens,context_window FROM sessions WHERE id=?",
     [sqlight.text(id)],
     {
       use name <- decode.field(0, decode.optional(decode.string))
@@ -377,6 +382,7 @@ pub fn read_in(
       use pin_order <- decode.field(8, decode.optional(decode.int))
       use archived <- decode.field(9, sqlight.decode_bool())
       use opens <- decode.field(10, decode.int)
+      use context_window <- decode.field(11, decode.optional(decode.int))
       decode.success(Configuration(
         id,
         option.then(name, clean_name),
@@ -385,6 +391,7 @@ pub fn read_in(
         provider,
         model,
         effort,
+        context_window,
         revision,
         family,
         Preferences(pinned, pin_order, archived, opens),
@@ -393,6 +400,38 @@ pub fn read_in(
     },
     "session not found",
   )
+}
+
+/// Records the window a new session compacts against.
+pub fn save_context_window_in(
+  db: sqlight.Connection,
+  id: String,
+  window: Option(Int),
+) -> Result(Nil, String) {
+  case window {
+    None -> Ok(Nil)
+    Some(tokens) ->
+      store.run(db, "UPDATE sessions SET context_window=? WHERE id=?", [
+        sqlight.int(tokens),
+        sqlight.text(id),
+      ])
+  }
+}
+
+/// The window this session compacts against, when one was set for it.
+pub fn context_window(
+  ledger: store.Store,
+  id: String,
+) -> Result(Option(Int), String) {
+  store.read(
+    ledger,
+    "SELECT context_window FROM sessions WHERE id=?",
+    [sqlight.text(id)],
+    decode.field(0, decode.optional(decode.int), decode.success),
+  )
+  |> result.map(fn(rows) {
+    list.first(rows) |> option.from_result |> option.flatten
+  })
 }
 
 /// A known visit returns its original count, even after subsequent visits or

@@ -1069,6 +1069,7 @@ fn create_identified(
           provider_name,
           model,
           effort,
+          _,
         ) -> {
           use workspace <- result.try(
             location.workspace(workspace)
@@ -1176,15 +1177,15 @@ fn create_identified(
         Ok(info) -> {
           let resolved = conversation.resolved_creation(info)
           let name = case intent {
-            session_creation.NewSession(_, name, _, _, _)
+            session_creation.NewSession(_, name, _, _, _, _)
             | session_creation.ForkSession(_, _, name) -> name
             session_creation.ChildSession(_, _, name, _, _, _, _) -> Some(name)
           }
           let creation =
             conversation.Creation(operation, submitted, resolved, name)
           let result = case intent {
-            session_creation.NewSession(..) ->
-              conversation.create_identified(db, info, creation)
+            session_creation.NewSession(context_window:, ..) ->
+              conversation.create_identified(db, info, creation, context_window)
             session_creation.ForkSession(source, checkpoint, _) -> {
               use checkpoint <- result.try(
                 int.parse(checkpoint)

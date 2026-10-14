@@ -56,6 +56,7 @@ pub fn change(
       "provider_profile",
       "model",
       "effort",
+      "context_window",
       "preferences",
       "selection",
       "catalog_revision",
@@ -86,6 +87,7 @@ pub fn change(
           "provider_profile",
           "model",
           "effort",
+          "context_window",
           "preferences",
           "selection",
           "catalog_revision",
@@ -106,6 +108,10 @@ pub fn change(
           use effort <- decode.then(optional_edit(
             "effort",
             decode.optional(http_api.bounded_string(100, False)),
+          ))
+          use context_window <- decode.then(optional_edit(
+            "context_window",
+            decode.optional(http_api.context_window()),
           ))
           use preferences <- decode.optional_field(
             "preferences",
@@ -131,6 +137,7 @@ pub fn change(
               provider,
               model,
               effort,
+              context_window,
               preferences.0,
               preferences.1,
               selection,
@@ -175,6 +182,7 @@ pub fn encode(value: session_configuration.Configuration) -> json.Json {
       model -> json.string(model)
     }),
     #("effort", json.nullable(value.effort, json.string)),
+    #("context_window", json.nullable(value.context_window, json.int)),
     #("preferences", preferences(value.preferences, False)),
     #("selection", selection(value.selection)),
     #("revision", json.string(revision(value))),

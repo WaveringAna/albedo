@@ -5,7 +5,7 @@ import unittest
 import urllib.error
 from urllib.parse import urlencode
 
-from harness import Albedo, Provider, exclusive, Reply, text
+from harness import Albedo, Provider, exclusive, operation_id, Reply, text
 
 
 SECRET = "credential-must-never-appear-in-inspector"
@@ -145,6 +145,52 @@ class ContextTest(unittest.TestCase):
         self.assertIn("inspect exact composition", pages["history"])
         self.assertNotIn(SECRET, json.dumps(pages))
         self.assertEqual(len(self.provider.requests), 1)
+
+    def test_a_session_window_outranks_the_catalog_and_can_be_cleared(self):
+        def create(window):
+            session = operation_id()
+            return session, self.app.api(
+                f"/sessions/{session}",
+                {
+                    "kind": "new",
+                    "workspace": str(self.app.workspace),
+                    "provider_profile": self.app.profile,
+                    "context_window": window,
+                },
+                method="PUT",
+                headers={"If-None-Match": "*"},
+            )
+
+        with self.assertRaises(urllib.error.HTTPError) as rejected:
+            create(0)[1].close()
+        self.assertEqual(rejected.exception.code, 400)
+
+        session, response = create(50000)
+        response.close()
+        configuration = f"/sessions/{session}?view=configuration"
+        with self.app.api(configuration) as response:
+            self.assertEqual(json.load(response)["context_window"], 50000)
+            etag = response.headers["ETag"]
+        self.app.prompt(session, "compact against the session window").close()
+        self.app.idle(session)
+        snapshot = self.read(f"/sessions/{session}/context")
+        self.assertEqual(snapshot["context_window_tokens"], 50000)
+        self.assertEqual(snapshot["compaction"]["input_limit_tokens"], 50000)
+        self.assertIn("this session's context window", snapshot["compaction"]["source"])
+
+        with self.app.api(
+            configuration,
+            {"context_window": None},
+            method="PATCH",
+            headers={"If-Match": etag},
+        ) as response:
+            json.load(response)
+        with self.app.api(configuration) as response:
+            self.assertIsNone(json.load(response)["context_window"])
+        self.app.prompt(session, "back to the catalog window").close()
+        self.app.idle(session)
+        compaction = self.read(f"/sessions/{session}/context")["compaction"]
+        self.assertEqual(compaction["input_limit_tokens"], 200000)
 
     def test_combining_marks_cannot_make_context_pages_unbounded(self):
         message = "a" + "\u0301" * 20000

@@ -396,9 +396,10 @@ fn survey(
       |> option.from_result
     })
   let shape = fit(shape(context.model), context.images)
-  let capacity = case context.capacity {
-    Some(compaction.Capacity(tokens, _)) -> Some(tokens)
-    None -> config.context_window_tokens
+  let capacity = case context.session_window, context.capacity {
+    Some(tokens), _ -> Some(tokens)
+    None, Some(compaction.Capacity(tokens, _)) -> Some(tokens)
+    None, None -> config.context_window_tokens
   }
   let limit =
     frame_budget(config, shape, context.reader, context.images, capacity)

@@ -13,6 +13,7 @@ import (
 type PromptOptions struct {
 	Prompt, SessionID, Workspace, Model string
 	Timeout                             time.Duration
+	ContextWindow                       int64 // tokens the session compacts against; zero keeps its window
 }
 type PromptResult struct{ SessionID, Answer string }
 
@@ -44,7 +45,7 @@ func (s *Service) RunPrompt(ctx context.Context, options PromptOptions) (PromptR
 		}
 	}
 	if sessionID == "" {
-		create := daemon.CreateSessionRequest{Workspace: cwd}
+		create := daemon.CreateSessionRequest{Workspace: cwd, ContextWindow: options.ContextWindow}
 		if model != "" {
 			create.Provider, create.Model = choice.provider, choice.model
 		}
@@ -53,9 +54,16 @@ func (s *Service) RunPrompt(ctx context.Context, options PromptOptions) (PromptR
 			return PromptResult{}, createErr
 		}
 		sessionID = session.ID
-	} else if model != "" {
-		if switchErr := switchModel(ctx, conn, sessionID, choice); switchErr != nil {
-			return PromptResult{}, switchErr
+	} else {
+		if model != "" {
+			if switchErr := switchModel(ctx, conn, sessionID, choice); switchErr != nil {
+				return PromptResult{}, switchErr
+			}
+		}
+		if options.ContextWindow > 0 {
+			if _, windowErr := daemon.SetContextWindow(ctx, conn, sessionID, options.ContextWindow); windowErr != nil {
+				return PromptResult{}, windowErr
+			}
 		}
 	}
 

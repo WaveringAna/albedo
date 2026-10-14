@@ -244,6 +244,7 @@ pub fn create_identified(
   ledger: store.Store,
   info: Info,
   creation: Creation,
+  context_window: Option(Int),
 ) -> Result(operations.Receipt, String) {
   store.query(ledger, fn(db) {
     store.transaction(db, fn() {
@@ -256,6 +257,11 @@ pub fn create_identified(
         None,
         fn(db) {
           use _ <- result.try(create_in(db, info))
+          use _ <- result.try(session_configuration.save_context_window_in(
+            db,
+            info.id,
+            context_window,
+          ))
           record_creation_in(db, info.id, creation)
         },
       )
