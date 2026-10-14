@@ -78,7 +78,8 @@ pub fn request(model: String, input: List(Input)) -> Request {
 /// Returns final replayable items and tool-call proposals. The caller must validate
 /// tool arguments and apply permissions before execution. Non-complete output is
 /// explicitly marked; stopping the callback returns Error(Cancelled), not success.
-/// Timeout applies to connection startup and each wait for transport data.
+/// Timeout applies to connection startup and the wait for response headers;
+/// after them a silent stream is awaited while its connection stays alive.
 pub fn stream(
   client: Client,
   request: Request,

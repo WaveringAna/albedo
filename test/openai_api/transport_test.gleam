@@ -26,6 +26,8 @@ type Mode {
   DropSecond
   SlowEnd
   KeepaliveComments
+  SilentHead
+  SilentBody
 }
 
 @external(erlang, "albedo_openai_transport_test_server", "start")
@@ -62,15 +64,26 @@ pub fn close_delimited_transport_releases_owned_sockets_test() -> Nil {
   await_closed(killed) |> should.be_true
   stop(killed)
 
-  let idle = start(CloseDelimited)
+  let idle = start(SilentHead)
   let assert Ok(connection) =
-    transport.open(url(idle), [], string_tree.new(), 2000)
-  let assert Ok(transport.Headers(200, _, False)) =
-    transport.receive(connection)
+    transport.open(url(idle), [], string_tree.new(), 100)
   transport.receive(connection) |> should.equal(Error(transport.TimedOut))
   transport.close(connection)
   await_closed(idle) |> should.be_true
   stop(idle)
+}
+
+/// A server that buffers a whole tool call sends nothing while it generates
+/// it; once the headers are in, the body is awaited past the open timeout.
+pub fn a_silent_body_is_awaited_past_the_timeout_test() -> Nil {
+  let fixture = start(SilentBody)
+  let assert Ok(connection) =
+    transport.open(url(fixture), [], string_tree.new(), 100)
+  let assert Ok(transport.Headers(200, _, False)) =
+    transport.receive(connection)
+  body(connection, <<>>) |> should.equal(Ok(<<"hello world, all">>))
+  transport.close(connection)
+  stop(fixture)
 }
 
 pub fn plain_http_bodies_end_where_their_framing_says_test() -> Nil {

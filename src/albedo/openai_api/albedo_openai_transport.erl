@@ -74,7 +74,8 @@ fresh(#{transport := Transport, host := Host, port := Port} = Request,
 
 connect(Transport, Host, Port, Timeout) ->
     Options = [binary, {active, false}, {packet, raw}, {nodelay, true},
-               {send_timeout, Timeout}, {send_timeout_close, true}],
+               {send_timeout, Timeout}, {send_timeout_close, true}
+               | keepalive(Timeout)],
     Address = case inet:parse_address(Host) of
         {ok, IP} -> IP;
         {error, _} -> Host
@@ -88,6 +89,24 @@ connect(Transport, Host, Port, Timeout) ->
                 {error, Reason} -> {error, {ssl_not_started, Reason}}
             end
     end.
+
+%% A response body may stay silent for as long as the server takes, so
+%% after its headers the client waits on the connection rather than on data:
+%% TCP keepalive probes the peer once the socket has been idle for Timeout,
+%% and a peer that stops answering closes the socket within another Timeout.
+%% The probe settings are raw options where the platform's numbers are known;
+%% elsewhere the OS defaults apply.
+keepalive(Timeout) ->
+    Idle = max(1, Timeout div 1000),
+    Interval = max(1, Idle div 4),
+    Probes = 4,
+    Raw = case os:type() of
+        {unix, darwin} -> [{6, 16#10, Idle}, {6, 16#101, Interval}, {6, 16#102, Probes}];
+        {unix, linux} -> [{6, 4, Idle}, {6, 5, Interval}, {6, 6, Probes}];
+        _ -> []
+    end,
+    [{keepalive, true} | [{raw, Protocol, Option, <<Value:32/native>>}
+                          || {Protocol, Option, Value} <- Raw]].
 
 %% Verified against the OTP system CAs with HTTPS hostname matching; SNI
 %% names the host unless it is an IP address.
@@ -319,7 +338,8 @@ next(#{phase := {head, Buffer}} = State) ->
         more when byte_size(Buffer) > ?MAX_HEAD ->
             {error, {transport_error, <<"response failed: head too large">>}, State};
         more ->
-            await(State, Buffer, fun(More) -> {head, More} end, closed_early);
+            await(State, Buffer, fun(More) -> {head, More} end, closed_early,
+                  maps:get(timeout, State));
         {error, Reason} ->
             {error, failure(<<"response failed">>, Reason), State}
     end;
@@ -333,15 +353,19 @@ next(#{phase := {body, Framing, Buffer}} = State) ->
                 close -> close;
                 _ -> closed_early
             end,
-            await(State, Rest, fun(More) -> {body, Next, More} end, OnClose);
+            %% Servers that buffer a whole tool call send nothing while
+            %% they generate it; keepalive, not a deadline, finds a dead peer.
+            await(State, Rest, fun(More) -> {body, Next, More} end, OnClose,
+                  infinity);
         {error, Reason} ->
             {error, {transport_error, <<"response failed: ", Reason/binary>>}, State}
     end.
 
-%% Waits for more bytes after Buffer, then reads on from Phase(Bytes). A close
-%% ends a close-delimited body and fails any other response.
-await(#{socket := Socket, transport := Transport, timeout := Timeout} = State,
-      Buffer, Phase, OnClose) ->
+%% Waits up to Wait for more bytes after Buffer, then reads on from
+%% Phase(Bytes). A close ends a close-delimited body and fails any other
+%% response.
+await(#{socket := Socket, transport := Transport} = State,
+      Buffer, Phase, OnClose, Wait) ->
     {Data, Passive, Closed, Error} = tags(Transport),
     receive
         {Data, Socket, Bytes} ->
@@ -352,7 +376,7 @@ await(#{socket := Socket, transport := Transport, timeout := Timeout} = State,
             next(State#{phase := Phase(More), retry := none});
         {Passive, Socket} ->
             case setopts(Transport, Socket, [{active, ?ACTIVE}]) of
-                ok -> await(State, Buffer, Phase, OnClose);
+                ok -> await(State, Buffer, Phase, OnClose, Wait);
                 {error, _} -> closed(State, OnClose)
             end;
         {Closed, Socket} -> closed(State, OnClose);
@@ -361,7 +385,7 @@ await(#{socket := Socket, transport := Transport, timeout := Timeout} = State,
                 #{retry := {_, _, _}} -> closed(State, OnClose);
                 #{} -> {error, failure(<<"response failed">>, Reason), State}
             end
-    after Timeout ->
+    after Wait ->
         {error, timed_out, State}
     end.
 

@@ -23,7 +23,9 @@ pub fn open(
   timeout_ms: Int,
 ) -> Result(Connection, Error)
 
-/// Wait for the next response headers or body chunk.
+/// Wait for the next response headers or body chunk. The open timeout bounds
+/// the wait for headers; a body chunk is awaited for as long as the
+/// connection is alive, which TCP keepalive checks on the same timeout.
 @external(erlang, "albedo_openai_transport", "receive_message")
 pub fn receive(connection: Connection) -> Result(Message, Error)
 

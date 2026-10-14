@@ -220,6 +220,13 @@ respond(Socket, keepalive_comments, Owner) ->
     ok = send(Socket, <<"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n"
         "transfer-encoding: chunked\r\n\r\n">>),
     ping(Socket, Owner);
+respond(Socket, silent_head, Owner) ->
+    wait_for_close(Socket, Owner);
+respond(Socket, silent_body, Owner) ->
+    ok = send(Socket, <<"HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n">>),
+    receive after 300 -> ok end,
+    ok = send(Socket, <<"10\r\nhello world, all\r\n0\r\n\r\n">>),
+    wait_for_close(Socket, Owner);
 respond(Socket, close_delimited, Owner) ->
     ok = send(Socket, [
         <<"HTTP/1.0 200 OK\r\n">>,
