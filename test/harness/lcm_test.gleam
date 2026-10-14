@@ -190,6 +190,29 @@ pub fn pressure_merges_the_oldest_nodes_and_keeps_the_newest_test() -> Nil {
   runtime.stop(host)
 }
 
+pub fn a_lone_node_is_recompressed_at_most_once_and_only_when_it_shrinks_test() -> Nil {
+  let #(host, session) = host(4000)
+  let ledger = runtime.ledger(host)
+  let history = leaves(host, 1, 6000)
+  let assert Ok([only]) = graph.frontier(ledger, "lcm-test")
+  // A rewrite of about the same length is no reduction: nothing is saved.
+  let assert Ok(_) =
+    compact(
+      host,
+      session,
+      fn(_) { Ok(string.repeat("r", string.byte_size(only.summary) - 20)) },
+      history,
+    )
+  graph.frontier(ledger, "lcm-test") |> should.equal(Ok([only]))
+  // A real reduction is kept once, even though the request stays over target.
+  let assert Ok(_) =
+    compact(host, session, fn(_) { Ok(string.repeat("s", 4000)) }, history)
+  let assert Ok([parent]) = graph.frontier(ledger, "lcm-test")
+  parent.depth |> should.equal(1)
+  graph.child_nodes(ledger, parent.id) |> should.equal(Ok([only]))
+  runtime.stop(host)
+}
+
 pub fn merged_parents_of_any_size_merge_one_depth_up_test() -> Nil {
   let #(host, session) = host(2000)
   let ledger = runtime.ledger(host)

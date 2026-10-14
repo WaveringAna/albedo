@@ -331,8 +331,9 @@ fn landing(
 
 /// Merges the oldest frontier nodes into one parent until the request is at
 /// most `landing` tokens. Older history grows coarser first, so the newest
-/// summaries keep their detail longest. A merge must shrink what it replaces;
-/// one that does not, or a frontier with nothing left to merge, ends it.
+/// summaries keep their detail longest. A merge must cut the summary text it
+/// replaces by a tenth; one that does not, a frontier with nothing left to
+/// merge, or a lone node already recompressed once, ends it.
 fn relieve(
   context: compaction.Context,
   frontier: List(graph.Node),
@@ -355,10 +356,14 @@ fn relieve(
         merge_instructions,
         node_text,
       ))
-      let shrinks =
-        compaction.estimate_inputs([types.User(merged)])
-        < compaction.estimate_inputs(inputs)
-      use <- bool.guard(!shrinks, Ok(frontier))
+      let replaced =
+        list.fold(batch, 0, fn(total, node) {
+          total + string.byte_size(node.summary)
+        })
+      use <- bool.guard(
+        string.byte_size(merged) * 10 > replaced * 9,
+        Ok(frontier),
+      )
       use _ <- result.try(graph.save_parent(
         context.store,
         context.session,
@@ -366,7 +371,10 @@ fn relieve(
         merged,
       ))
       use next <- result.try(graph.frontier(context.store, context.session))
-      relieve(context, next, history, stats, landing, passes - 1)
+      case batch {
+        [_] -> Ok(next)
+        _ -> relieve(context, next, history, stats, landing, passes - 1)
+      }
     }
   }
 }
