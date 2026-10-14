@@ -13,6 +13,7 @@ import albedo/harness/extensions
 import albedo/harness/extensions/python/cells as journal
 import albedo/harness/extensions/python/kernel as python
 import albedo/harness/extensions/python/link
+import albedo/harness/hook
 import albedo/harness/oauth
 import albedo/harness/protect
 import albedo/harness/runtime/boot
@@ -1041,6 +1042,11 @@ pub fn recover(
 
 pub fn instructions(session: Session) -> String {
   session.instructions
+}
+
+/// Asks every hook this session composed about one step of its turn.
+pub fn hook(session: Session, event: hook.Event) -> hook.Verdict {
+  hook.ask(composition.hooks(session.composition), event)
 }
 
 /// Tells every extension this session composed about one of its events.

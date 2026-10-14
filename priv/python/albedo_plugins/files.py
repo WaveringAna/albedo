@@ -24,6 +24,7 @@ from typing import Generic, Iterable, Sequence, TypeVar
 
 from albedo_api import PythonApi, ReadyList, Text
 import albedo_trace
+from albedo_plugins import hook
 from albedo_plugins import run as jobs
 
 READ_LIMIT = 16_000
@@ -529,6 +530,10 @@ class Files:
         found = [line for line in listed if matches(line)]
         return Rows(found[:max_results], truncated=len(found) > max_results)
 
+    @hook.reported(
+        "files.edit",
+        {"path": "file_path", "old_str": "old_string", "new_str": "new_string"},
+    )
     def edit(
         self, path: str, old_str: str, new_str: str, line_hint: int | None = None
     ) -> Text:
@@ -567,6 +572,7 @@ class Files:
         _replace(target, snapshot, replacement)
         return Text(f"Edited {target}")
 
+    @hook.reported("files.write", {"path": "file_path", "content": "content"})
     def write(self, path: str, content: str) -> Text:
         """Create or replace a whole file. Use `edit` to change part of one."""
         target = Path(path).expanduser()

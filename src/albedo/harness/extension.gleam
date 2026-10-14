@@ -8,6 +8,7 @@ import albedo/harness/command
 import albedo/harness/compaction
 import albedo/harness/context_limits
 import albedo/harness/extensions/python/kernel as python
+import albedo/harness/hook
 import albedo/harness/host
 import albedo/harness/oauth
 import albedo/harness/page
@@ -110,6 +111,8 @@ pub type Managed {
     warnings: List(String),
     /// Hears the session's events; see `SessionEvent`.
     observe: fn(Session, SessionEvent) -> Nil,
+    /// Asked as each turn goes, and may steer it; see `hook.Event`.
+    hook: Option(fn(hook.Event) -> hook.Verdict),
     close: fn() -> Nil,
   )
 }
@@ -633,7 +636,7 @@ pub fn plugin_values(
 
 /// A managed contribution with nothing in it, for record updates.
 pub fn empty() -> Managed {
-  Managed("", "", [], [], [], [], [], fn(_, _) { Nil }, fn() { Nil })
+  Managed("", "", [], [], [], [], [], fn(_, _) { Nil }, None, fn() { Nil })
 }
 
 /// A static plugin's contribution, known without loading or preparing it.

@@ -394,6 +394,7 @@ pub fn start(
       None,
       fn() { report(owner, messages.compacting(run_id, _)) },
       False,
+      0,
     )
   let pid =
     process.spawn_unlinked(fn() {

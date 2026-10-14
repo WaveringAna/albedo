@@ -11,6 +11,7 @@ import albedo/harness/extensions/commands/extension as commands
 import albedo/harness/extensions/cua/extension as cua
 import albedo/harness/extensions/exa/extension as exa
 import albedo/harness/extensions/files/extension as files
+import albedo/harness/extensions/hooks/extension as hooks
 import albedo/harness/extensions/instructions/extension as instructions
 import albedo/harness/extensions/lcm/extension as lcm
 import albedo/harness/extensions/lcm/memory as lcm_memory
@@ -89,6 +90,7 @@ fn installed() -> Config {
       view.extension(),
       proxy.extension(),
       webhooks.extension(),
+      hooks.extension(),
       warm.extension(),
       exa.extension(),
       web_search.extension(),

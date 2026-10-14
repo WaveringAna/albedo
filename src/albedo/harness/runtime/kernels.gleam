@@ -6,6 +6,7 @@ import albedo/harness/extension
 import albedo/harness/extension/composition
 import albedo/harness/extensions/python/kernel as python
 import albedo/harness/extensions/python/link
+import albedo/harness/hook
 import albedo/harness/host
 import albedo/harness/rpc
 import albedo/harness/runtime/state as runtime_state
@@ -71,7 +72,10 @@ pub fn kernel_routes(
 ) -> fn(String, Dynamic) -> String {
   // Partial application captures its expressions, not just their results.
   // Keep only this session's routes: the callback is copied for every RPC.
-  let routes = composition.routes(composed)
+  let routes = [
+    hook.route(composition.hooks(composed)),
+    ..composition.routes(composed)
+  ]
   let context =
     host.Context(
       owner,

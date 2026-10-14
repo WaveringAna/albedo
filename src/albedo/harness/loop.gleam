@@ -17,6 +17,7 @@ import albedo/harness/cache_ttl
 import albedo/harness/compaction
 import albedo/harness/extension
 import albedo/harness/extensions/python/cells as journal
+import albedo/harness/hook
 import albedo/harness/runtime
 import albedo/openai_api/types
 import gleam/dynamic/decode
@@ -75,6 +76,8 @@ pub type Loop {
     /// Whether this run already told the session its window is too small
     /// for compaction to make room.
     warned_small: Bool,
+    /// How often a `Stopping` hook already kept this turn going.
+    held: Int,
   )
 }
 
@@ -134,6 +137,19 @@ pub fn run(
   step: Int,
 ) -> Result(Nil, String) {
   use _ <- result.try(checkpoint(state))
+  use prompted <- result.try(prompted(state, inputs, step))
+  case prompted {
+    None -> Ok(Nil)
+    Some(inputs) -> converse(state, id, inputs, step)
+  }
+}
+
+fn converse(
+  state: Loop,
+  id: String,
+  inputs: List(types.Input),
+  step: Int,
+) -> Result(Nil, String) {
   use inputs <- result.try(fit_history(state, inputs))
   let original = list.reverse(inputs)
   use prepared <- result.try(prepare(state, original, False))
@@ -253,16 +269,28 @@ pub fn run(
         types.Complete if speechless_turn ->
           Error(speechless_message(state.model))
         types.Complete -> {
+          use held <- result.try(stopping(state, turn.output))
           use steering <- result.try(state.drain_steering())
-          case steering {
-            [] -> Ok(Nil)
-            _ -> run(state, id, unshift(inputs, [replay, steering]), step + 1)
+          case held, steering {
+            [], [] -> Ok(Nil)
+            _, _ -> {
+              let state = case held {
+                [] -> state
+                _ -> Loop(..state, held: state.held + 1)
+              }
+              run(
+                state,
+                id,
+                unshift(inputs, [replay, held, steering]),
+                step + 1,
+              )
+            }
           }
         }
         _ -> Error(stopped_message(turn.finish, turn.output))
       }
     calls -> {
-      use results <- result.try(
+      use ran <- result.try(
         list.try_map(calls, fn(call) {
           let output_index =
             list.find(turn.call_indices, fn(binding) { binding.0 == call.id })
@@ -273,9 +301,17 @@ pub fn run(
           }
         }),
       )
+      let results = list.map(ran, fn(item) { item.0 })
+      let added = list.flat_map(ran, fn(item) { item.1 })
+      use _ <- result.try(commit_hooked(state, added, conversation.Tool))
       use steering <- result.try(state.drain_steering())
       use _ <- result.try(state.commit([], conversation.Model, None))
-      run(state, id, unshift(inputs, [replay, results, steering]), step + 1)
+      run(
+        state,
+        id,
+        unshift(inputs, [replay, results, added, steering]),
+        step + 1,
+      )
     }
   }
 }
@@ -404,7 +440,9 @@ pub fn background(
 }
 
 /// Start a tool only after its running projection is acknowledged. Remove
-/// that projection before committing and publishing the tool result.
+/// that projection before committing and publishing the tool result. Hooks
+/// may refuse the call or rewrite its arguments; what they add for the model
+/// comes back beside the result.
 fn run_tool(
   state: Loop,
   run_id: String,
@@ -412,7 +450,7 @@ fn run_tool(
   attempt: Int,
   output_index: Int,
   call: types.ToolCall,
-) -> Result(types.Input, String) {
+) -> Result(#(types.Input, List(types.Input)), String) {
   let progress_id =
     tool_progress.progress_id(
       generation: state.generation,
@@ -424,61 +462,198 @@ fn run_tool(
   case state.progress_running(step, attempt, output_index, call.id, call.name) {
     False -> Error("cancelled before tool execution")
     True -> {
-      let invoked =
-        runtime.invoke(state.host, state.kernel, call, state.upstream.images)
+      let invoked = invoke(state, call)
       // Drop the running projection before committing the result. A reset
       // racing with that commit must not snapshot the just-finished call.
       state.progress_finish(progress_id)
-      case invoked {
-        Error(error) -> Error(error)
-        Ok(output) ->
-          case state.commit([output], conversation.Tool, None) {
-            Error(error) -> Error(error)
-            Ok(_) -> {
-              let _ = case output {
-                types.ToolOutput(_, body, _) -> {
-                  let trace =
-                    json.parse(
-                      body,
-                      decode.field("cell_id", decode.string, decode.success),
-                    )
-                    |> result.map(fn(cell) {
-                      journal.trace(runtime.ledger(state.host), cell)
-                    })
-                    |> result.unwrap(None)
-                  case
-                    conversation.tool_result_position(
-                      runtime.ledger(state.host),
-                      state.session,
-                      state.run_id,
-                      call.id,
-                    )
-                  {
-                    Ok(Some(position)) ->
-                      state.publish(view.Tool(
-                        call,
-                        body,
-                        trace,
-                        progress_id,
-                        position,
-                      ))
-                    _ ->
-                      state.publish(view.Failure(
-                        Some(state.run_id),
-                        "tool_publication_failed",
-                        "committed tool result identity could not be observed",
-                      ))
-                  }
-                }
-                _ -> True
-              }
-              Ok(output)
-            }
+      use Invoked(call, output, added, halt) <- result.try(invoked)
+      use _ <- result.try(state.commit([output], conversation.Tool, None))
+      let _ = case output {
+        types.ToolOutput(_, body, _) -> {
+          let trace =
+            json.parse(
+              body,
+              decode.field("cell_id", decode.string, decode.success),
+            )
+            |> result.map(fn(cell) {
+              journal.trace(runtime.ledger(state.host), cell)
+            })
+            |> result.unwrap(None)
+          case
+            conversation.tool_result_position(
+              runtime.ledger(state.host),
+              state.session,
+              state.run_id,
+              call.id,
+            )
+          {
+            Ok(Some(position)) ->
+              state.publish(view.Tool(call, body, trace, progress_id, position))
+            _ ->
+              state.publish(view.Failure(
+                Some(state.run_id),
+                "tool_publication_failed",
+                "committed tool result identity could not be observed",
+              ))
           }
+        }
+        _ -> True
+      }
+      case halt {
+        Some(reason) -> Error("stopped by a hook: " <> reason)
+        None -> Ok(#(output, added))
       }
     }
   }
 }
+
+/// A tool call as its hooks left it: the call that ran (or was refused), its
+/// output, what the hooks added for the model, and a hook's request to end
+/// the turn once the result is committed.
+type Invoked {
+  Invoked(
+    call: types.ToolCall,
+    output: types.Input,
+    added: List(types.Input),
+    halt: Option(String),
+  )
+}
+
+fn invoke(state: Loop, call: types.ToolCall) -> Result(Invoked, String) {
+  let asked = hook.Call(call.id, call.name, call.arguments, None)
+  let started = requests.now()
+  use calling <- result.try(hooked(state, hook.Calling(asked)))
+  let call =
+    types.ToolCall(
+      ..call,
+      arguments: option.unwrap(calling.arguments, call.arguments),
+    )
+  use output <- result.try(case calling.block {
+    Some(reason) ->
+      Ok(
+        types.ToolOutput(
+          call.id,
+          json.to_string(
+            json.object([
+              #("error", json.string("blocked by a hook: " <> reason)),
+            ]),
+          ),
+          [],
+        ),
+      )
+    None ->
+      runtime.invoke(state.host, state.kernel, call, state.upstream.images)
+  })
+  let body = case output {
+    types.ToolOutput(_, body, _) -> body
+    _ -> ""
+  }
+  let called =
+    runtime.hook(
+      state.kernel,
+      hook.Called(
+        hook.Call(..asked, arguments: call.arguments),
+        body,
+        started,
+        requests.now(),
+      ),
+    )
+  note(state, called)
+  // A block after the call cannot undo it: its reason is context.
+  let added =
+    list.flatten([
+      calling.context,
+      option.values([called.block]),
+      called.context,
+    ])
+  Ok(Invoked(call, output, list.map(added, types.User), called.halt))
+}
+
+/// Asks the session's hooks, shows the user their notes, and ends the turn
+/// if one of them asked to.
+fn hooked(state: Loop, event: hook.Event) -> Result(hook.Verdict, String) {
+  let verdict = runtime.hook(state.kernel, event)
+  note(state, verdict)
+  case verdict.halt {
+    Some(reason) -> Error("stopped by a hook: " <> reason)
+    None -> Ok(verdict)
+  }
+}
+
+fn note(state: Loop, verdict: hook.Verdict) -> Nil {
+  list.each(verdict.notes, fn(text) { state.publish(view.note("hook", text)) })
+}
+
+fn commit_hooked(
+  state: Loop,
+  inputs: List(types.Input),
+  stage: conversation.Stage,
+) -> Result(Nil, String) {
+  case inputs {
+    [] -> Ok(Nil)
+    _ -> state.commit(inputs, stage, None) |> result.replace(Nil)
+  }
+}
+
+/// Asks the hooks about a turn's newest user message before its first model
+/// call. Their context goes ahead of that call; a block (`None`) ends the
+/// turn after telling the user why. The message was committed before any
+/// hook saw it, so it stays in the transcript.
+fn prompted(
+  state: Loop,
+  inputs: List(types.Input),
+  step: Int,
+) -> Result(Option(List(types.Input)), String) {
+  case step, inputs {
+    0, [types.User(text), ..] | 0, [types.UserImage(text, _), ..] -> {
+      use verdict <- result.try(hooked(state, hook.Prompted(text)))
+      case verdict.block {
+        Some(reason) -> {
+          state.publish(view.note(
+            "hook",
+            "prompt blocked by a hook: " <> reason,
+          ))
+          Ok(None)
+        }
+        None -> {
+          let added = list.map(verdict.context, types.User)
+          use _ <- result.try(commit_hooked(state, added, conversation.Model))
+          Ok(Some(unshift(inputs, [added])))
+        }
+      }
+    }
+    _, _ -> Ok(Some(inputs))
+  }
+}
+
+/// Asks the hooks when the model ends its turn without a tool call. A block
+/// or context becomes the next input and the turn goes on, at most
+/// `max_held` times.
+fn stopping(
+  state: Loop,
+  output: List(types.ReplayItem),
+) -> Result(List(types.Input), String) {
+  case state.held >= max_held {
+    True -> Ok([])
+    False -> {
+      let reply =
+        output
+        |> list.map(message_content.output_text)
+        |> list.filter(fn(text) { text != "" })
+        |> string.join("\n\n")
+      use verdict <- result.try(hooked(state, hook.Stopping(reply, state.held)))
+      let held =
+        list.map(
+          list.append(option.values([verdict.block]), verdict.context),
+          types.User,
+        )
+      use _ <- result.try(commit_hooked(state, held, conversation.Model))
+      Ok(held)
+    }
+  }
+}
+
+const max_held = 8
 
 /// A checkpoint event a client may refuse; a refusal ends the turn cancelled.
 fn checkpoint(state: Loop) -> Result(Nil, String) {

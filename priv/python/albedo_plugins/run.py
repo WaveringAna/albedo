@@ -34,9 +34,11 @@ from albedo_api import (
 )
 import albedo_proc
 import albedo_shell
+from albedo_plugins import hook
 import albedo_shims
 import albedo_trace
 import asyncio
+import json
 import os
 import shlex
 import shutil
@@ -281,6 +283,7 @@ class Job(JobOutput):
         self.group: albedo_proc.Group | None = None
         self.exit_code: int | None = None
         self.timed_out: bool = False
+        self._hooked: hook.Call | None = None  # set by run()
         self.started: float = loop.time()
         self.duration: float | None = None  # seconds it ran, once it ended
         self.termination: albedo_proc.Termination | None = None
@@ -409,6 +412,12 @@ class Job(JobOutput):
                 )
             elif not ending.gone:
                 self.capture.write(f"\n[cleanup failed: {ending.report()}]\n")
+            if self._hooked is not None:
+                outcome = {"exit_code": self.exit_code, "timed_out": self.timed_out}
+                said = await asyncio.to_thread(
+                    self._hooked.finished, json.dumps(outcome)
+                )
+                self.capture.write("".join(f"{line}\n" for line in said))
             send(
                 {
                     "type": "job",
@@ -747,9 +756,16 @@ def run(
                     "a whole command line as the program", script=argv[0]
                 )
             raise FileNotFoundError(f"{argv[0]}: no such program on PATH")
-    return start(
+    line = shlex.join(argv)
+    hooked = hook.Call("run", {"command": line})
+    command = hooked.arguments.get("command")
+    if isinstance(command, str) and command != line:
+        argv = shlex.split(command)
+    job = start(
         argv, timeout, cwd=directory, env=environment, stdin=stdin, service=service
     )
+    job._hooked = hooked
+    return job
 
 
 def start(

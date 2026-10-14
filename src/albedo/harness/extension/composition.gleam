@@ -1,11 +1,12 @@
 //// One session's composed extensions: every selected extension's static
 //// contributions and prepared managed plugins, composed once and read as
-//// tools, context, instructions, commands, routes, and observers.
+//// tools, context, instructions, commands, routes, observers, and hooks.
 
 import albedo/daemon/store
 import albedo/harness/client_api
 import albedo/harness/command
 import albedo/harness/extension
+import albedo/harness/hook
 import albedo/harness/protect
 import gleam/io
 import gleam/list
@@ -215,6 +216,14 @@ pub fn observers(
   })
 }
 
+/// Every contributed hook, in registry order.
+pub fn hooks(composition: Composition) -> List(hook.Hook) {
+  list.filter_map(contributions(composition), fn(item) {
+    option.to_result(item.value.hook, Nil)
+    |> result.map(fn(ask) { #(item.extension, ask) })
+  })
+}
+
 /// The prepared managed plugins, in registry order.
 pub fn managed(composition: Composition) -> List(extension.Prepared) {
   composition.managed
@@ -258,10 +267,17 @@ pub fn tools(composition: Composition) -> List(extension.Tool) {
   list.flat_map(contributions(composition), fn(item) { item.value.tools })
 }
 
+/// With `hook` last when any extension hooks the session: it reports the
+/// calls cells make, which a session without hooks never pays for.
 pub fn python_modules(composition: Composition) -> List(String) {
-  list.flat_map(contributions(composition), fn(item) {
-    item.value.python_modules
-  })
+  let modules =
+    list.flat_map(contributions(composition), fn(item) {
+      item.value.python_modules
+    })
+  case hooks(composition) {
+    [] -> modules
+    _ -> list.append(modules, ["hook"])
+  }
 }
 
 /// Every session command, in registry order. One list feeds the CLI menu,
