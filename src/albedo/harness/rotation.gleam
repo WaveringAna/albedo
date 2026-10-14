@@ -146,18 +146,22 @@ pub type Pool(account) {
     same: fn(account, account) -> Bool,
     stream: fn(account, types.Request, fn(types.Event) -> types.Control) ->
       Result(types.Turn, types.Error),
+    /// Records that the provider refused `account`'s credential (a 401), so
+    /// `current` signs in afresh or moves to a sibling. A pool whose
+    /// credential cannot be renewed, such as an API key, does nothing.
+    reject: fn(account) -> Nil,
   )
 }
 
 /// How far one request may go looking for room: account hops left, waits
 /// taken so far, and the sleep it uses (tests replace it).
 pub type Budget {
-  Budget(hops: Int, waits: Int, pause: fn(Int) -> Nil)
+  Budget(hops: Int, waits: Int, pause: fn(Int) -> Nil, renewed: Bool)
 }
 
 /// Accounts one request may move through after limits, beyond the first.
 fn budget() -> Budget {
-  Budget(8, 0, process.sleep)
+  Budget(8, 0, process.sleep, False)
 }
 
 /// Backoff when every account is briefly limited: about a minute in all.
@@ -198,7 +202,9 @@ pub fn upstream(
   )
 }
 
-/// Streams on `account`, moving to siblings or waiting as limits allow.
+/// Streams on `account`, moving to siblings or waiting as limits allow, and
+/// renewing a refused credential once: a token that expired or was revoked
+/// is what a user would otherwise fix by sending the message again.
 /// `on_account` hears each account an attempt is sent to after the first.
 pub fn stream(
   pool: Pool(account),
@@ -209,6 +215,27 @@ pub fn stream(
   on_account: fn(account) -> Nil,
 ) -> Result(types.Turn, types.Error) {
   case pool.stream(account, request, on_event) {
+    Error(types.HttpError(401, _)) as failed if !budget.renewed -> {
+      pool.reject(account)
+      case pool.current() {
+        Ok(next) ->
+          case pool.same(next, account) {
+            True -> failed
+            False -> {
+              on_account(next)
+              stream(
+                pool,
+                next,
+                request,
+                on_event,
+                Budget(..budget, renewed: True),
+                on_account,
+              )
+            }
+          }
+        Error(_) -> failed
+      }
+    }
     Error(types.HttpError(429, body)) as failed -> {
       let marked = pool.mark(account, body)
       let next = case budget.hops > 0, marked {

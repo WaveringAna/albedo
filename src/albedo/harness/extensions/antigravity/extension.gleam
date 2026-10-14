@@ -285,6 +285,7 @@ fn profile_pool(
     },
     same: fn(a, b) { a.token == b.token },
     stream: stream,
+    reject: fn(access) { native_expire(home, access.token) },
   )
 }
 

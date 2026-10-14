@@ -218,6 +218,12 @@ fn profile_pool(
     },
     same: rotation.same_client,
     stream: stream,
+    // A refused ChatGPT sign-in cannot be refreshed; removing it moves the
+    // session to a sibling account when there is one.
+    reject: fn(client) {
+      let _ = native_revoke(home, client.api_key)
+      Nil
+    },
   )
 }
 

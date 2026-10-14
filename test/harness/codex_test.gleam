@@ -115,7 +115,7 @@ fn rotate(
     first,
     request,
     fn(_) { types.Continue },
-    rotation.Budget(8, 0, pause),
+    rotation.Budget(8, 0, pause, False),
     fn(_) { Nil },
   )
 }

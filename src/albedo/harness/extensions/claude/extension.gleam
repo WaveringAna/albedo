@@ -94,27 +94,44 @@ fn resolve(
     types.ChatCompletions,
     fn(request, on_event) {
       let request = with_output_limit(request)
-      ensure_files(
-        context.home,
-        wire.auth_header(auth),
-        owner,
-        endpoint,
-        request,
-      )
-      use exchange <- result.try(wire.encode(context.home, auth, request))
-      let outcome =
-        openai_api.exchange(
-          exchange,
-          stream.reducer(request.model, request.tools),
-          on_event,
+      let send = fn(auth) {
+        ensure_files(
+          context.home,
+          wire.auth_header(auth),
+          owner,
+          endpoint,
+          request,
         )
-      case outcome {
-        // Drop cached file handles on 4xx so next turn heals inline.
-        Error(types.HttpError(status, body)) if status >= 400 && status < 500 -> {
-          reject_files(context.home, owner, body)
-          outcome
+        use exchange <- result.try(wire.encode(context.home, auth, request))
+        let outcome =
+          openai_api.exchange(
+            exchange,
+            stream.reducer(request.model, request.tools),
+            on_event,
+          )
+        case outcome {
+          // Drop cached file handles on 4xx so next turn heals inline.
+          Error(types.HttpError(status, body))
+            if status >= 400 && status < 500
+          -> {
+            reject_files(context.home, owner, body)
+            outcome
+          }
+          _ -> outcome
         }
-        _ -> outcome
+      }
+      // A refused subscription token is renewed once, which is what sending
+      // the message again would do.
+      case send(auth), auth {
+        Error(types.HttpError(401, _)) as failed, wire.Subscription(access:, ..)
+        -> {
+          native_expire(context.home, access)
+          case authenticate(context) {
+            Ok(fresh) if fresh != auth -> send(fresh)
+            _ -> failed
+          }
+        }
+        outcome, _ -> outcome
       }
     },
     fn(error) {

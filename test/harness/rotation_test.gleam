@@ -105,9 +105,12 @@ pub fn antigravity_quota_moves_the_request_to_a_sibling_test() -> Nil {
     first,
     request(),
     fn(_) { types.Continue },
-    rotation.Budget(8, 0, fn(_) {
-      panic as "a spent quota lasts hours; it must not be waited on"
-    }),
+    rotation.Budget(
+      8,
+      0,
+      fn(_) { panic as "a spent quota lasts hours; it must not be waited on" },
+      False,
+    ),
     fn(_) { Nil },
   )
   |> should.equal(Error(types.HttpError(429, quota)))
@@ -145,7 +148,7 @@ pub fn antigravity_limit_text_says_how_long_a_near_reset_takes_test() -> Nil {
         first,
         request(),
         fn(_) { types.Continue },
-        rotation.Budget(8, 0, no_wait),
+        rotation.Budget(8, 0, no_wait, False),
         fn(_) { Nil },
       )
     let assert Ok(last) = pool.current()
@@ -189,7 +192,7 @@ pub fn antigravity_claude_quota_leaves_gemini_served_test() -> Nil {
     first,
     openai_api.request("claude-sonnet-4-6", [types.User("hi")]),
     fn(_) { types.Continue },
-    rotation.Budget(8, 0, no_wait),
+    rotation.Budget(8, 0, no_wait, False),
     fn(_) { Nil },
   )
   |> should.equal(Error(types.HttpError(500, "sibling answered")))
@@ -228,9 +231,12 @@ pub fn antigravity_claude_quota_leaves_gemini_served_test() -> Nil {
     c1,
     openai_api.request("claude-sonnet-4-6", [types.User("hi")]),
     fn(_) { types.Continue },
-    rotation.Budget(8, 0, fn(_) {
-      panic as "a spent quota lasts hours; it must not be waited on"
-    }),
+    rotation.Budget(
+      8,
+      0,
+      fn(_) { panic as "a spent quota lasts hours; it must not be waited on" },
+      False,
+    ),
     fn(_) { Nil },
   )
   |> should.equal(Error(types.HttpError(429, claude_quota)))
@@ -319,7 +325,7 @@ pub fn antigravity_hands_off_when_one_account_is_spent_test() -> Nil {
     first,
     request(),
     fn(_) { types.Continue },
-    rotation.Budget(8, 0, no_wait),
+    rotation.Budget(8, 0, no_wait, False),
     fn(_) { Nil },
   )
   |> should.equal(Error(types.HttpError(500, "sibling answered")))
@@ -349,9 +355,12 @@ pub fn antigravity_capacity_waits_without_moving_test() -> Nil {
     first,
     request(),
     fn(_) { types.Continue },
-    rotation.Budget(8, 0, fn(delay) {
-      process.send(paused, int.to_string(delay))
-    }),
+    rotation.Budget(
+      8,
+      0,
+      fn(delay) { process.send(paused, int.to_string(delay)) },
+      False,
+    ),
     fn(_) { Nil },
   )
   |> should.equal(Error(types.HttpError(429, capacity)))
@@ -393,7 +402,7 @@ pub fn alibaba_rotates_to_another_profiles_key_test() -> Nil {
     first,
     openai_api.request("qwen3.8-max", [types.User("hi")]),
     fn(_) { types.Continue },
-    rotation.Budget(8, 0, no_wait),
+    rotation.Budget(8, 0, no_wait, False),
     fn(_) { Nil },
   )
   |> should.equal(Error(types.HttpError(500, "sibling answered")))
@@ -485,4 +494,70 @@ pub fn native_order_only_reads_identity_for_usable_sticky_accounts_test() -> Nil
     )
   native_order("identity-contract", [limited], "pinned", no_identity)
   |> should.equal([limited])
+}
+
+/// A pool over two tokens where a rejection makes `current` sign in afresh,
+/// recording every attempt.
+fn renewing_pool(
+  tried: process.Subject(String),
+  answer: fn(String) -> Result(types.Turn, types.Error),
+  renews: Bool,
+) -> rotation.Pool(String) {
+  let rejected = process.new_subject()
+  rotation.Pool(
+    current: fn() {
+      case process.receive(rejected, 0), renews {
+        Ok(_), True -> Ok("fresh")
+        _, _ -> Ok("stale")
+      }
+    },
+    mark: fn(_, _) { None },
+    same: fn(a, b) { a == b },
+    stream: fn(account, _, _) {
+      process.send(tried, account)
+      answer(account)
+    },
+    reject: fn(account) { process.send(rejected, account) },
+  )
+}
+
+fn renew(pool: rotation.Pool(String)) -> Result(types.Turn, types.Error) {
+  rotation.stream(
+    pool,
+    "stale",
+    request(),
+    fn(_) { types.Continue },
+    rotation.Budget(8, 0, no_wait, False),
+    fn(_) { Nil },
+  )
+}
+
+pub fn a_refused_credential_is_renewed_and_retried_once_test() -> Nil {
+  let tried = process.new_subject()
+  let answer = fn(account) {
+    case account {
+      "stale" -> Error(types.HttpError(401, "expired"))
+      _ -> Error(types.HttpError(500, "fresh answered"))
+    }
+  }
+  renewing_pool(tried, answer, True)
+  |> renew
+  |> should.equal(Error(types.HttpError(500, "fresh answered")))
+  drain(tried, []) |> should.equal(["stale", "fresh"])
+}
+
+pub fn a_credential_that_cannot_be_renewed_fails_at_once_test() -> Nil {
+  let tried = process.new_subject()
+  renewing_pool(tried, fn(_) { Error(types.HttpError(401, "bad key")) }, False)
+  |> renew
+  |> should.equal(Error(types.HttpError(401, "bad key")))
+  drain(tried, []) |> should.equal(["stale"])
+}
+
+pub fn a_renewed_credential_refused_again_is_not_retried_test() -> Nil {
+  let tried = process.new_subject()
+  renewing_pool(tried, fn(_) { Error(types.HttpError(401, "revoked")) }, True)
+  |> renew
+  |> should.equal(Error(types.HttpError(401, "revoked")))
+  drain(tried, []) |> should.equal(["stale", "fresh"])
 }

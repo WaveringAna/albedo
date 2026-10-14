@@ -63,6 +63,7 @@ pub fn pool(
     },
     same: rotation.same_client,
     stream: openai_api.stream,
+    reject: fn(_) { Nil },
   )
 }
 
