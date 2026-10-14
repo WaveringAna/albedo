@@ -402,7 +402,9 @@ pub fn one_long_agentic_turn_folds_its_older_steps_test() -> Nil {
   let assert Ok(fifth_result) = list.first(list.drop(rows, 10))
   #(leaf.first_seq, leaf.last_seq)
   |> should.equal(#(first.source.seq, fifth_result.source.seq))
-  let assert [summary, last_work, last_result] = view
+  // The task the turn answers stays verbatim ahead of the leaf that folded it.
+  let assert [task, summary, last_work, last_result] = view
+  task |> should.equal(types.User("the task"))
   should.be_true(case summary {
     types.User(text) -> string.contains(text, "the first five steps")
     _ -> False
@@ -453,6 +455,11 @@ pub fn a_later_leaf_is_told_what_earlier_leaves_remember_test() -> Nil {
       },
       list.append(first, more),
     )
+  let assert Ok(view) =
+    compact(host, session, fn(_) { Ok("unused") }, list.append(first, more))
+  list.filter(view, fn(input) { input == types.User("the task") })
+  |> list.length
+  |> should.equal(1)
   let assert Ok([one, two]) = graph.frontier(runtime.ledger(host), "lcm-test")
   #(one.summary, two.summary)
   |> should.equal(#("steps one and two", "steps three to five"))

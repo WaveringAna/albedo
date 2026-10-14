@@ -1227,6 +1227,8 @@ pub type SourceStats {
     /// Every row after the cursor: the newest history inputs a projection
     /// keeps verbatim, one per row.
     uncovered_rows: Int,
+    /// The rows after the newest user row, which locate that row in history.
+    after_latest_user: Int,
   )
 }
 
@@ -1265,7 +1267,18 @@ pub fn source_stats(
       decode.field(0, decode.int, decode.success),
       "transcript uncovered rows",
     ))
-    Ok(SourceStats(latest, uncovered > 0, count, uncovered))
+    use after <- result.try(store.one(
+      db,
+      "SELECT COUNT(*) FROM transcript WHERE session=? AND seq>? AND seq<=?",
+      [
+        sqlight.text(snapshot.session),
+        sqlight.int(option.unwrap(latest, snapshot.upper)),
+        sqlight.int(snapshot.upper),
+      ],
+      decode.field(0, decode.int, decode.success),
+      "transcript rows after the user boundary",
+    ))
+    Ok(SourceStats(latest, uncovered > 0, count, uncovered, after))
   })
 }
 
