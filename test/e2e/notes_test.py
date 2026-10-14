@@ -67,12 +67,20 @@ class NotesTests(unittest.TestCase):
         self.say("first question", "second question", "third question")
         self.compact()
 
+        # The evicted turns arrive as the conversation they were, between any
+        # previous notes and a closing turn that asks for the rewrite.
         (first,) = self.note_calls()
         self.assertIn("at most 2000 tokens", first["instructions"])
-        self.assertIn("(none)", last_user(first))
-        self.assertIn("first question", last_user(first))
-        self.assertIn("[assistant]\ndone", last_user(first))
-        self.assertNotIn("provider item", last_user(first))
+        self.assertIn(EVICTED, last_user(first))
+        sent = json.dumps(first["input"])
+        self.assertNotIn("<previous-summary>", sent)
+        self.assertIn("first question", sent)
+        self.assertTrue(
+            any(
+                item.get("role") == "assistant" and "done" in json.dumps(item)
+                for item in first["input"]
+            )
+        )
         head = self.head_of_next_request()
         self.assertIn("compaction notes", head)
         self.assertIn("NOTES-ONE commit abc123", head)
@@ -81,10 +89,11 @@ class NotesTests(unittest.TestCase):
         self.compact()
 
         second = self.note_calls()[1]
-        previous, evicted = last_user(second).split(EVICTED)
-        self.assertIn("NOTES-ONE commit abc123", previous)
-        self.assertIn("fourth question", evicted)
-        self.assertNotIn("first question", evicted)
+        previous, *evicted = second["input"]
+        self.assertIn("<previous-summary>", json.dumps(previous))
+        self.assertIn("NOTES-ONE commit abc123", json.dumps(previous))
+        self.assertIn("fourth question", json.dumps(evicted))
+        self.assertNotIn("first question", json.dumps(evicted))
         head = self.head_of_next_request()
         self.assertIn("NOTES-TWO", head)
         self.assertNotIn("NOTES-ONE", head)

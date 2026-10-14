@@ -1012,27 +1012,42 @@ fn summarize(
     max_output_tokens,
     instructions,
   ) = request
-  let previous = option.unwrap(previous, "(none)")
-  let transcript =
-    evicted
-    |> compaction.without_superseded
-    |> list.map(compaction.render_summary_input)
-    |> list.filter(fn(line) { line != "" })
-    |> string.join("\n")
-  let prompt =
-    "<previous-summary>\n"
-    <> previous
-    <> "\n</previous-summary>\n<newly-evicted-history>\n"
-    <> transcript
-    <> "\n</newly-evicted-history>"
+  // The evicted history goes out as the conversation it was, so a provider
+  // reads its own signed or encrypted reasoning the way a turn would, and a
+  // foreign model's turns replay as that model's wire replays them. The
+  // session's tools ride along because a provider may refuse tool calls in
+  // a request that defines none; the summary asks for none.
+  let opening = case previous {
+    Some(previous) -> [
+      types.User("<previous-summary>\n" <> previous <> "\n</previous-summary>"),
+    ]
+    None -> []
+  }
+  let history =
+    list.flatten([
+      opening,
+      compaction.without_superseded(evicted),
+      [types.User(summary_close)],
+    ])
+  let base =
+    request_for(
+      model,
+      state.effort,
+      state.kernel,
+      instructions,
+      readable(state.upstream.images, history),
+    )
   let summary_request =
     types.Request(
-      model,
-      Some(instructions),
-      [types.User(prompt)],
-      [],
-      Some(max_output_tokens),
-      types.defaults,
+      ..base,
+      max_output_tokens: Some(max_output_tokens),
+      // Nothing sends this prefix again, so a cache write would be paid for
+      // and never read.
+      options: types.Options(
+        ..base.options,
+        tool_choice: Some(types.NoTool),
+        cache: False,
+      ),
     )
   use #(_, turn, _, _) <- result.try(
     call(
@@ -1040,7 +1055,11 @@ fn summarize(
       requests.Summarizer,
       summary_request,
       // The summarizer's history is exactly what it says; nothing replaced.
-      requests.direct_prefix(instructions, [], [types.User(prompt)]),
+      requests.direct_prefix(
+        instructions,
+        summary_request.tools,
+        summary_request.input,
+      ),
       state.publish,
       fn(_) { types.Continue },
       fn(_, _) { types.Continue },
@@ -1064,6 +1083,11 @@ fn summarize(
     value -> Ok(value)
   }
 }
+
+/// The turn that closes a summarizer request: everything before it is the
+/// history being folded.
+const summary_close =
+  "<newly-evicted-history>\nEverything above, after any previous summary, is newly evicted history. Write the summary of it now as your instructions describe. Do not call tools.\n</newly-evicted-history>"
 
 fn request_source(upstream: extension.Upstream, model: String) -> String {
   string.join(

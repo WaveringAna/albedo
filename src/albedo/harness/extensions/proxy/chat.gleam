@@ -306,6 +306,7 @@ fn options_decoder() -> decode.Decoder(types.Options) {
     parallel,
     option.or(effort, nested_effort),
     format,
+    True,
   ))
 }
 

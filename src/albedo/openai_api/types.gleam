@@ -228,10 +228,14 @@ pub type Options {
     /// Reasoning effort: "minimal", "low", "medium", or "high".
     effort: Option(String),
     format: Option(Format),
+    /// Whether the request asks the provider to write a prompt cache. A
+    /// one-off request, such as a summary nobody sends again, should not
+    /// pay for a write; providers that cache implicitly ignore it.
+    cache: Bool,
   )
 }
 
-pub const defaults = Options(None, None, [], None, None, None, None)
+pub const defaults = Options(None, None, [], None, None, None, None, True)
 
 pub type ToolChoice {
   AnyTool

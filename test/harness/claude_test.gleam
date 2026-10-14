@@ -780,6 +780,15 @@ pub fn claude_cache_marks_match_the_encoded_markers_test() -> Nil {
       None,
       types.defaults,
     ),
+    // A one-off request, such as a summary, asks for no cache write at all.
+    types.Request(
+      "claude-opus-5-5",
+      Some("summarize"),
+      [types.User("a"), types.Assistant("b"), types.User("c")],
+      [types.Tool("read", "read", json.object([]), False)],
+      None,
+      types.Options(..types.defaults, cache: False),
+    ),
   ]
   use request <- list.each(requests)
   use auth <- list.each([subscription, wire.ApiKey("sk-ant-test")])
@@ -837,6 +846,7 @@ pub fn claude_cache_marks_match_the_encoded_markers_test() -> Nil {
       wire.cache_marks(request)
       |> list.map(fn(mark) { #(mark.through, mark.ttl_seconds) })
     assert declared == encoded
+    assert { encoded == [] } == !request.options.cache
   }
 }
 

@@ -85,7 +85,9 @@ pub fn encode_with(
   let files = Files(home, owner(auth))
   use history <- result.try(
     list.try_fold(
-      mark_last(request.input, fn(input, last) { #(input, last) }),
+      mark_last(request.input, fn(input, last) {
+        #(input, last && request.options.cache)
+      }),
       History([], dict.new()),
       fn(history, pair) { add(history, pair.0, request.model, files, pair.1) },
     ),
@@ -168,7 +170,9 @@ pub fn encode_with(
       #(
         "tools",
         json.preprocessed_array(list.append(
-          mark_last(tools, fn(tool, last) { tool_block(tool, last) }),
+          mark_last(tools, fn(tool, last) {
+            tool_block(tool, last && request.options.cache)
+          }),
           hosted,
         )),
       ),
@@ -461,9 +465,13 @@ fn system_blocks(
     Subscription(..) -> [billing_block(claude_code_version, first_user)]
     ApiKey(_) -> []
   }
+  let head = case request.options.cache {
+    True -> cached_text_block
+    False -> text_block(_, False)
+  }
   list.append(billing, case request.instructions {
-    Some(text) -> [text_block(identity, False), cached_text_block(text)]
-    None -> [cached_text_block(identity)]
+    Some(text) -> [text_block(identity, False), head(text)]
+    None -> [head(identity)]
   })
 }
 
@@ -530,8 +538,10 @@ const tail_ttl_seconds = 3600
 
 /// The prefixes `encode` marks for caching: through the last tool, through
 /// the system prompt, and through the last input unless it is a replayed
-/// assistant turn, which carries no mark.
+/// assistant turn, which carries no mark. A request that asks for no cache
+/// write carries none.
 pub fn cache_marks(request: types.Request) -> List(types.CacheMark) {
+  use <- bool.guard(!request.options.cache, [])
   let tools = case request.tools {
     [] -> []
     _ -> [types.CacheMark(types.ToolsSpan, head_ttl_seconds)]
