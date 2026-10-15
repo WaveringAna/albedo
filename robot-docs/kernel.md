@@ -374,12 +374,27 @@ still for it, `generation_over` ends it and replays what waited.
   are still running, the session's first turn on a `Resumed` kernel carries a
   model note that the kernel reattached with its namespace, naming those jobs
   (id and command) and cells (id and first line), so a live handle is not
-  mistaken for one the restart killed (with nothing running, only the UI note
-  appears). an origin is handed out once: later opens of the same kernel get
+  mistaken for one the restart killed. a session with history is told even
+  when nothing runs ("Nothing was running"), so it need not probe its
+  variables. an origin is handed out once: later opens of the same kernel get
   `Kept`, so no notice repeats and no live cell is journaled as ended. the
   note is built from the port owner's observation and the
   cells journal, never from a new kernel frame, so a reattached kernel on an
   older bundle still gets it.
+
+a recorded kernel found gone (killed while the daemon was down, or dead when
+its session asks) boots a `Fresh` replacement. the dead record's job groups
+carry id and command, so `link.lose` keeps the awaited ones in `kernel_lost`
+before the record is forgotten, and `open` reads them before the replacement's
+record clears them (`Fresh(lost_jobs)`). this is needed because a starting
+daemon reattaches in the background and finds the kernel dead before its
+session asks. adopting a `Fresh` kernel in a session with history ends the
+journal's unfinished cells as interrupted (nothing of the old kernel runs) and
+the model note names them with the lost jobs: "Jobs stopped by the restart:
+id (command). Cells ended by the restart: id (first line).", after the
+restored-variables or reset sentence. a reset with nothing to name keeps the
+bare reset notice. deleting a session, and `/cd` which deletes its namespace,
+clear `kernel_lost`; the model's own reset names nothing.
 
 explicit drops still end the kernel at once: reset, release by the idle
 sweep, `/cd`, session close, extension reloads (the replacement boots beside

@@ -10,12 +10,15 @@
 //// has its reply, so a replayed call never runs twice.
 
 import albedo/daemon/store
+import gleam/dict
 import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
 import gleam/io
+import gleam/json
 import gleam/list
-import gleam/option.{type Option}
+import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/string
 import sqlight
 
 /// Frames and bytes one kernel's outbox keeps; past either, the oldest go.
@@ -76,7 +79,9 @@ pub fn apply(db: sqlight.Connection) -> Result(Nil, String) {
       frame BLOB NOT NULL, PRIMARY KEY (session, kernel, seq));
     CREATE TABLE IF NOT EXISTS kernel_calls (
       kernel TEXT NOT NULL, call TEXT NOT NULL, reply_seq INTEGER,
-      PRIMARY KEY (kernel, call));",
+      PRIMARY KEY (kernel, call));
+    CREATE TABLE IF NOT EXISTS kernel_lost (
+      session TEXT PRIMARY KEY, jobs TEXT NOT NULL);",
   ))
   use _ <- result.try(
     store.add_columns(db, "kernel_links", [
@@ -252,6 +257,101 @@ pub fn find(storage: store.Store, session: String) -> Option(Record) {
   |> option.from_result
 }
 
+/// The jobs the record's kernel last reported, as `#(id, command)` by id. A
+/// service job, which nothing waits on, is left out.
+fn owned_jobs(record: Record) -> List(#(String, String)) {
+  let job = {
+    use command <- decode.optional_field(
+      "command",
+      None,
+      decode.optional(decode.string),
+    )
+    use service <- decode.optional_field(
+      "service",
+      None,
+      decode.optional(decode.bool),
+    )
+    decode.success(#(option.unwrap(command, ""), service == Some(True)))
+  }
+  let groups = decode.at(["groups"], decode.dict(decode.string, job))
+  case json.parse(record.owned, groups) {
+    Ok(groups) ->
+      dict.to_list(groups)
+      |> list.filter_map(fn(entry) {
+        case entry.1 {
+          #(command, False) -> Ok(#(entry.0, command))
+          #(_, True) -> Error(Nil)
+        }
+      })
+      |> list.sort(fn(a, b) { string.compare(a.0, b.0) })
+    Error(_) -> []
+  }
+}
+
+/// Keep what a kernel found gone was running, so the session's next kernel can
+/// name it: the record is about to go, and a starting daemon finds kernels
+/// dead before their sessions ask. `forget_session` clears it once that
+/// kernel has booted.
+pub fn lose(storage: store.Store, record: Record) -> Nil {
+  case owned_jobs(record) {
+    [] -> Nil
+    jobs -> {
+      let encoded =
+        json.array(jobs, fn(job) {
+          json.object([
+            #("id", json.string(job.0)),
+            #("command", json.string(job.1)),
+          ])
+        })
+        |> json.to_string
+      let _ =
+        store.query(storage, fn(db) {
+          use _ <- result.try(apply(db))
+          store.run(
+            db,
+            "INSERT OR REPLACE INTO kernel_lost(session,jobs) VALUES(?,?)",
+            [sqlight.text(record.session), sqlight.text(encoded)],
+          )
+        })
+      Nil
+    }
+  }
+}
+
+/// The `#(id, command)` jobs the session's last kernel was running when it
+/// was found gone, if it was.
+pub fn lost(storage: store.Store, session: String) -> List(#(String, String)) {
+  let job = {
+    use id <- decode.field("id", decode.string)
+    use command <- decode.field("command", decode.string)
+    decode.success(#(id, command))
+  }
+  store.read(
+    storage,
+    "SELECT jobs FROM kernel_lost WHERE session=?",
+    [sqlight.text(session)],
+    decode.field(0, decode.string, decode.success),
+  )
+  |> result.unwrap([])
+  |> list.first
+  |> result.try(fn(encoded) {
+    json.parse(encoded, decode.list(job)) |> result.replace_error(Nil)
+  })
+  |> result.unwrap([])
+}
+
+pub fn forget_lost(
+  storage: store.Store,
+  session: String,
+) -> Result(Nil, String) {
+  store.query(storage, fn(db) {
+    use _ <- result.try(apply(db))
+    store.run(db, "DELETE FROM kernel_lost WHERE session=?", [
+      sqlight.text(session),
+    ])
+  })
+}
+
 /// Every recorded kernel, oldest first: what a starting daemon reattaches.
 pub fn all(storage: store.Store) -> List(Record) {
   store.read(
@@ -288,6 +388,11 @@ pub fn forget_session(
   use _ <- result.try(store.run(
     db,
     "DELETE FROM kernel_stages WHERE session=?",
+    id,
+  ))
+  use _ <- result.try(store.run(
+    db,
+    "DELETE FROM kernel_lost WHERE session=?",
     id,
   ))
   store.run(db, "DELETE FROM kernel_links WHERE session=?", id)

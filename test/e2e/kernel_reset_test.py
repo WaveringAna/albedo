@@ -1,5 +1,6 @@
 """A Python crash injects exactly one reset notice without corrupting history; a
-daemon crash leaves the detached kernel alive, so it injects none."""
+daemon crash leaves the detached kernel alive, so it injects only the line that
+says nothing was lost."""
 
 import json
 import urllib.error
@@ -10,6 +11,10 @@ from harness import Albedo, Provider, exclusive, python, text
 
 NOTICE = (
     "<system-note>The python kernel got reset and all variables are lost</system-note>"
+)
+REATTACHED = (
+    "<system-note>The python kernel reattached; its variables and jobs carried on."
+    " Nothing was running.</system-note>"
 )
 
 
@@ -50,7 +55,9 @@ class KernelResetTests(unittest.TestCase):
         with self.assertRaises(urllib.error.HTTPError) as rejected:
             app.prompt(session, "   ").close()
         self.assertEqual(rejected.exception.code, 400)
-        self.assertEqual(self.turn(session, "after restart"), "after restart")
+        self.assertEqual(
+            self.turn(session, "after restart"), "after restart" + REATTACHED
+        )
         self.assertEqual(self.turn(session, "ordinary turn"), "ordinary turn")
         self.assertEqual(self.turn(session, "lose kernel"), "lose kernel")
         self.assertEqual(

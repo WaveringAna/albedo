@@ -101,8 +101,8 @@ pub fn open_kernel(
   )
   |> result.map(fn(opened) {
     let origin = case opened.1 {
-      True -> runtime_state.Resumed
-      False -> runtime_state.Fresh
+      python.Attached -> runtime_state.Resumed
+      python.Booted(lost_jobs) -> runtime_state.Fresh(lost_jobs)
     }
     session_over(owner, id, cached, opened.0, origin)
   })

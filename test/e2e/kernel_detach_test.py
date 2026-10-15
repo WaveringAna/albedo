@@ -174,9 +174,9 @@ class KernelDetachTests(unittest.TestCase):
 
     def test_a_kernel_killed_while_the_daemon_was_down_has_its_jobs_ended(self):
         started = self.cell(
-            "import asyncio, os\nj = run('sleep', '300')\nawait asyncio.sleep(0.5)\n(os.getpid(), j.process.pid)"
+            "import asyncio, os\nj = run('sleep', '300')\nawait asyncio.sleep(0.5)\n(os.getpid(), j.process.pid, j.id)"
         )
-        kernel, job = (int(part) for part in started["value"].strip("()").split(","))
+        kernel, job, handle = ast.literal_eval(started["value"])
 
         # Graceful stop leaves the kernel running; it dies hard before the
         # next daemon reaches it, and its job's group outlives it.
@@ -185,6 +185,27 @@ class KernelDetachTests(unittest.TestCase):
         while alive(job) and time.monotonic() < deadline:
             time.sleep(0.1)
         self.assertFalse(alive(job), "the dead kernel's job is still running")
+
+        # The new kernel's first request tells the model what died with the
+        # old one, from the job record the daemon kept.
+        self.cells.append("import os\nos.getpid()")
+        self.app.prompt(self.session, "run it").close()
+        self.app.idle(self.session)
+        prompt = self.last_prompt()
+        self.assertIn("<system-note>The python kernel restarted", prompt)
+        self.assertIn(f"Jobs stopped by the restart: {handle} (sleep 300)", prompt)
+
+    def test_a_restart_tells_the_model_when_nothing_was_running(self):
+        self.cell("survivor = 1")
+        self.app.restart()
+        self.cells.append("survivor")
+        self.app.prompt(self.session, "run it").close()
+        self.app.idle(self.session)
+        self.assertIn(
+            "The python kernel reattached; its variables and jobs carried on."
+            " Nothing was running.",
+            self.last_prompt(),
+        )
 
 
 if __name__ == "__main__":

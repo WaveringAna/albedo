@@ -14,8 +14,9 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 
-pub const lost_notice =
-  "<system-note>The python kernel got reset and all variables are lost</system-note>"
+const lost_sentence = "The python kernel got reset and all variables are lost"
+
+pub const lost_notice = "<system-note>" <> lost_sentence <> "</system-note>"
 
 pub type KernelObservation {
   KernelObservation(
@@ -105,8 +106,10 @@ fn preparation_stage(workspace: String, preparing: Bool) -> Option(String) {
   }
 }
 
-const lost_text =
+fn lost_text(jobs: List(String), cells: List(#(String, String))) -> String {
   "python kernel restarted; earlier variables are gone, the transcript is intact"
+  <> ended_counts(jobs, cells)
+}
 
 /// An idle release can use the full budget; shutdown must not wait on a large namespace.
 pub const state_timeout = 30_000
@@ -166,7 +169,11 @@ fn missed_names(missed: List(#(String, String))) -> String {
   |> string.join(", ")
 }
 
-fn restored_notice(saved: python.Saved) -> String {
+fn restored_notice(
+  saved: python.Saved,
+  jobs: List(String),
+  cells: List(#(String, String)),
+) -> String {
   "<system-note>The python kernel restarted. These variables were restored from disk: "
   <> names(saved.names)
   <> case saved.defs {
@@ -182,10 +189,63 @@ fn restored_notice(saved: python.Saved) -> String {
     [] -> ""
     _ -> ". Largest saved variables: " <> largest(saved)
   }
-  <> ". Other imports and definitions from earlier cells are gone.</system-note>"
+  <> ". Other imports and definitions from earlier cells are gone."
+  <> ended_clauses(jobs, cells, "the restart")
+  <> "</system-note>"
 }
 
-pub fn restored_text(saved: python.Saved) -> String {
+/// What a replaced kernel took with it, as a notice says it: the jobs that
+/// were stopped and the cells that ended, `by` naming the cause.
+fn ended_clauses(
+  jobs: List(String),
+  cells: List(#(String, String)),
+  by: String,
+) -> String {
+  let stopped = case jobs {
+    [] -> ""
+    _ -> " Jobs stopped by " <> by <> ": " <> string.join(jobs, ", ") <> "."
+  }
+  let ended = case cells {
+    [] -> ""
+    _ -> " Cells ended by " <> by <> ": " <> listed(cells) <> "."
+  }
+  stopped <> ended
+}
+
+/// The same, counted, for the stream note.
+fn ended_counts(jobs: List(a), cells: List(b)) -> String {
+  case jobs, cells {
+    [], [] -> ""
+    _, _ ->
+      "; stopped "
+      <> int.to_string(list.length(jobs))
+      <> " jobs, ended "
+      <> int.to_string(list.length(cells))
+      <> " cells"
+  }
+}
+
+/// The reset notice; it names the jobs and cells the reset ended, if any.
+fn lost_notice_for(
+  jobs: List(String),
+  cells: List(#(String, String)),
+) -> String {
+  case jobs, cells {
+    [], [] -> lost_notice
+    _, _ ->
+      "<system-note>"
+      <> lost_sentence
+      <> "."
+      <> ended_clauses(jobs, cells, "the restart")
+      <> "</system-note>"
+  }
+}
+
+pub fn restored_text(
+  saved: python.Saved,
+  jobs: List(String),
+  cells: List(#(String, String)),
+) -> String {
   "python kernel restarted; restored "
   <> int.to_string(list.length(saved.names))
   <> " variables from disk"
@@ -193,6 +253,7 @@ pub fn restored_text(saved: python.Saved) -> String {
     [] -> ""
     missed -> ", " <> int.to_string(list.length(missed)) <> " could not be read"
   }
+  <> ended_counts(jobs, cells)
 }
 
 pub fn released_text(
@@ -259,7 +320,7 @@ pub fn adopt(
     runtime_state.Resumed -> resumed(state, kernel)
     runtime_state.Upgraded(carried) -> upgraded(state, kernel, carried)
     runtime_state.Kept -> session_state.State(..state, kernel: Some(kernel))
-    runtime_state.Fresh -> revive(state, kernel)
+    runtime_state.Fresh(lost_jobs) -> revive(state, kernel, lost_jobs)
   }
 }
 
@@ -296,11 +357,12 @@ fn still_running(
   Running(jobs, cells)
 }
 
+fn labels(items: List(#(String, String))) -> List(String) {
+  list.map(items, fn(item) { item.0 <> " (" <> item.1 <> ")" })
+}
+
 fn listed(items: List(#(String, String))) -> String {
-  string.join(
-    list.map(items, fn(item) { item.0 <> " (" <> item.1 <> ")" }),
-    ", ",
-  )
+  string.join(labels(items), ", ")
 }
 
 fn clause(prefix: String, items: List(#(String, String))) -> String {
@@ -314,7 +376,11 @@ fn resumed_notice(running: Running) -> String {
   "<system-note>The python kernel reattached; its variables and jobs carried on"
   <> clause(". Jobs still running: ", running.jobs)
   <> clause(". Background cells still running: ", running.cells)
-  <> ". Anything without a result yet is still running, not lost.</system-note>"
+  <> case running {
+    Running([], []) -> ". Nothing was running.</system-note>"
+    _ ->
+      ". Anything without a result yet is still running, not lost.</system-note>"
+  }
 }
 
 fn resumed_text(running: Running) -> String {
@@ -335,11 +401,12 @@ fn resumed(
   kernel: runtime.Session,
 ) -> session_state.State(message) {
   let running = still_running(state, kernel)
-  // Only live work is news to the model: a daemon restart merely reattaches,
-  // and what still runs must not be mistaken for what the restart killed.
-  let notice = case running {
-    Running([], []) -> state.notice
-    _ -> Some(resumed_notice(running))
+  // A session with history is told the kernel carried on even when nothing
+  // runs, so it need not probe its variables; what still runs must not be
+  // mistaken for what the restart killed.
+  let notice = case running, state.history {
+    Running([], []), None | Running([], []), Some([]) -> state.notice
+    _, _ -> Some(resumed_notice(running))
   }
   session_state.State(..state, kernel: Some(kernel), notice: notice)
   |> session_state.emit(view.note("daemon", resumed_text(running)))
@@ -433,14 +500,7 @@ fn upgraded_notice(
     [] -> "."
     missed -> ". Not carried: " <> missed_names(missed) <> "."
   }
-  <> case carried.stopped_jobs {
-    [] -> ""
-    jobs -> " Jobs stopped by the swap: " <> string.join(jobs, ", ") <> "."
-  }
-  <> case ended {
-    [] -> ""
-    cells -> " Cells ended by the swap: " <> listed(cells) <> "."
-  }
+  <> ended_clauses(carried.stopped_jobs, ended, "the swap")
   <> " Retained output from before the upgrade is gone; the cells journal keeps every cell's source and recorded result. Imports and definitions from earlier cells are gone unless named here.</system-note>"
 }
 
@@ -457,15 +517,7 @@ fn upgraded_text(
     [] -> ""
     missed -> ", " <> int.to_string(list.length(missed)) <> " not carried"
   }
-  <> case carried.stopped_jobs, ended {
-    [], [] -> ""
-    jobs, cells ->
-      "; stopped "
-      <> int.to_string(list.length(jobs))
-      <> " jobs, ended "
-      <> int.to_string(list.length(cells))
-      <> " cells"
-  }
+  <> ended_counts(carried.stopped_jobs, ended)
 }
 
 /// Adopt only the actual settled runtime handle carried by the completion.
@@ -479,23 +531,41 @@ pub fn upgrade(
   }
 }
 
+/// A kernel that booted where the session had one: its variables come back
+/// from disk when they were saved, and what the old kernel was running is
+/// named as ended, since it is not running anywhere.
 fn revive(
   state: session_state.State(message),
   kernel: runtime.Session,
+  lost_jobs: List(#(String, String)),
 ) -> session_state.State(message) {
   case state.notice, state.history {
     Some(notice), _ if notice == lost_notice ->
       session_state.State(..state, kernel: Some(kernel))
     _, None | _, Some([]) -> session_state.State(..state, kernel: Some(kernel))
     _, Some(_) -> {
+      let #(state, ended) = end_unfinished(state)
+      let jobs =
+        list.map(lost_jobs, fn(job) { #(job.0, short(job.1)) }) |> labels
       let revived = case state_path(state.home, state.info.id) {
         Some(path) -> runtime.load_state(kernel, path, state_timeout)
         None -> Error(python.Invalid("session has no state file"))
       }
       case revived {
         Ok(python.Saved([_, ..], _, _, _, _) as saved) ->
-          adopted(state, kernel, restored_notice(saved), restored_text(saved))
-        _ -> adopted(state, kernel, lost_notice, lost_text)
+          adopted(
+            state,
+            kernel,
+            restored_notice(saved, jobs, ended),
+            restored_text(saved, jobs, ended),
+          )
+        _ ->
+          adopted(
+            state,
+            kernel,
+            lost_notice_for(jobs, ended),
+            lost_text(jobs, ended),
+          )
       }
     }
   }

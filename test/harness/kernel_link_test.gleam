@@ -59,3 +59,20 @@ pub fn a_restarted_daemon_resends_and_keeps_counting_test() -> Nil {
   link.find(ledger, "s") |> should.equal(option.None)
   store.close(ledger)
 }
+
+pub fn the_jobs_of_a_kernel_found_gone_are_named_until_the_next_one_boots_test() -> Nil {
+  let #(ledger, record) = recorded()
+  // Two awaited jobs (one with no command) and a service, as the port owner
+  // records them; only what a model waits on is reported, by id.
+  let owned =
+    "{\"pid\":1,\"groups\":{\"b\":{\"command\":\"sleep 5\",\"service\":false},"
+    <> "\"a\":{\"command\":null,\"service\":false},"
+    <> "\"s\":{\"command\":\"serve\",\"service\":true}}}"
+  link.lose(ledger, link.Record(..record, owned: owned))
+  link.lost(ledger, "s") |> should.equal([#("a", ""), #("b", "sleep 5")])
+  link.lost(ledger, "other") |> should.equal([])
+  // A kernel that booted has taken the report with its own record.
+  let assert Ok(_) = link.create(ledger, link.Record(..record, kernel: "k2"))
+  link.lost(ledger, "s") |> should.equal([])
+  store.close(ledger)
+}

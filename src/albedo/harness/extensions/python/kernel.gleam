@@ -351,7 +351,8 @@ pub fn stop_recorded(
       option.values([published]),
       list.filter(stages, fn(record) { record.session == session }),
     )
-  list.try_each(records, stop_recorded_instance(store, _))
+  use _ <- result.try(list.try_each(records, stop_recorded_instance(store, _)))
+  link.forget_lost(store, session)
 }
 
 pub fn stop_recorded_instance(
@@ -472,25 +473,36 @@ fn grace() -> Int
 @external(erlang, "albedo_native", "new_id")
 fn new_id() -> String
 
+/// How `open` came by the session's kernel.
+pub type Opened {
+  /// The recorded kernel answered: its namespace is the one the session left.
+  Attached
+  /// A new kernel booted. `lost_jobs` are the `#(id, command)` the recorded
+  /// one was running when it was found gone, which ended with it.
+  Booted(lost_jobs: List(#(String, String)))
+}
+
 /// The session's kernel: the one it recorded, attached again, when that one
-/// is still alive, otherwise a fresh one. The flag says it was attached, so
-/// its namespace is the one the session left.
+/// is still alive, otherwise a fresh one.
 pub fn open(
   store: store.Store,
   session: String,
   cwd: String,
   host: fn(String, Dynamic) -> String,
   modules: List(String),
-) -> Result(#(Kernel, Bool), Error) {
+) -> Result(#(Kernel, Opened), Error) {
   use _ <- result.try(
     reconcile_stages(store, session) |> result.map_error(Unavailable),
   )
   use #(modules, runs, boot) <- result.try(booter(store, cwd, host, modules))
   case reattach(store, session, cwd, modules, boot) {
-    Some(kernel) -> Ok(#(kernel, True))
-    None ->
+    Ok(kernel) -> Ok(#(kernel, Attached))
+    Error(Nil) -> {
+      // Read first: the new kernel's record clears what this holds.
+      let lost_jobs = link.lost(store, session)
       boot_fresh(store, session, cwd, modules, runs, boot, False)
-      |> result.map(fn(value) { #(value.0, False) })
+      |> result.map(fn(value) { #(value.0, Booted(lost_jobs)) })
+    }
   }
 }
 
@@ -568,7 +580,8 @@ pub fn resume(
   modules: List(String),
 ) -> Option(Kernel) {
   case booter(store, cwd, host, modules) {
-    Ok(#(modules, _, boot)) -> reattach(store, session, cwd, modules, boot)
+    Ok(#(modules, _, boot)) ->
+      reattach(store, session, cwd, modules, boot) |> option.from_result
     Error(_) -> None
   }
 }
@@ -625,38 +638,45 @@ fn booter(
 }
 
 /// The recorded kernel, when it still answers and still fits this session.
+/// One that is gone leaves the jobs that ended with it in the link's ledger.
 fn reattach(
   store: store.Store,
   session: String,
   cwd: String,
   modules: String,
   boot: fn(link.Record, Bool) -> Result(Kernel, Error),
-) -> Option(Kernel) {
-  use record <- option.then(link.find(store, session))
-  case boot(record, False) {
-    Error(_) -> {
-      // Gone. The port owner forgets what it found gone; this also covers a
-      // bridge that never started.
-      let _ = link.forget(store, record)
-      None
-    }
-    Ok(kernel) if record.cwd == cwd && record.modules == modules -> Some(kernel)
-    // Another module set: kept, like an older bundle, and swapped at the
-    // session's next idle moment so its variables come along.
-    Ok(kernel) if record.cwd == cwd -> {
-      mark_stale(kernel, Modules)
-      Some(kernel)
-    }
-    // Another workspace is a move, which never keeps the namespace.
-    Ok(kernel) -> {
-      io.println_error(
-        "kernel "
-        <> record.kernel
-        <> " belongs to another workspace; replacing it",
-      )
-      let _ = stop(kernel)
-      None
-    }
+) -> Result(Kernel, Nil) {
+  case link.find(store, session) {
+    None -> Error(Nil)
+    Some(record) ->
+      case boot(record, False) {
+        Error(_) -> {
+          // Gone. The port owner forgets what it found gone; this also covers
+          // a bridge that never started.
+          link.lose(store, record)
+          let _ = link.forget(store, record)
+          Error(Nil)
+        }
+        Ok(kernel) if record.cwd == cwd && record.modules == modules ->
+          Ok(kernel)
+        // Another module set: kept, like an older bundle, and swapped at the
+        // session's next idle moment so its variables come along.
+        Ok(kernel) if record.cwd == cwd -> {
+          mark_stale(kernel, Modules)
+          Ok(kernel)
+        }
+        // Another workspace is a move, which never keeps the namespace.
+        Ok(kernel) -> {
+          io.println_error(
+            "kernel "
+            <> record.kernel
+            <> " belongs to another workspace; replacing it",
+          )
+          link.lose(store, record)
+          let _ = stop(kernel)
+          Error(Nil)
+        }
+      }
   }
 }
 

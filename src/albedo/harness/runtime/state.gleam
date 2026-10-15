@@ -79,8 +79,9 @@ pub type Application {
 }
 
 pub type Origin {
-  /// Booted for this open; its namespace starts empty.
-  Fresh
+  /// Booted for this open; its namespace starts empty. `lost_jobs` are the
+  /// `#(id, command)` the kernel it replaced was running, which ended with it.
+  Fresh(lost_jobs: List(#(String, String)))
   /// Attached to the kernel the session already had: the namespace the
   /// session left.
   Resumed
