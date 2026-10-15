@@ -4,6 +4,7 @@ package tui
 import (
 	"albedo/cli/internal/config"
 	"albedo/cli/internal/daemon"
+	"context"
 	"errors"
 	"maps"
 	"slices"
@@ -37,6 +38,9 @@ type pendingSessionIntents struct {
 
 type AppModel struct {
 	pendingBySession map[string]pendingSessionIntents
+	// afterReset is a note for the chat to show once its stream's first reset has
+	// hydrated it, which clears any notice added sooner.
+	afterReset       string
 	pendingCreations map[string]pendingOperation
 	ActiveSession    *daemon.Session
 	openBrowser      func(url string)
@@ -346,10 +350,45 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.loadCommandCatalogCmd(m.CatalogGen)
 
 	case ChatOpenTreePickerMsg:
-		return m, m.openTreePicker()
+		return m, m.openTreePicker(false)
+
+	case ChatOpenForkPickerMsg:
+		return m, m.openTreePicker(true)
 
 	case ChatOpenQuotaMsg:
 		return m, m.openQuota()
+
+	case TreeRewindSuccessMsg:
+		if m.State != AppStateTreePicker || msg.Generation != m.TreePicker.Generation || m.ActiveSession == nil {
+			return m, nil
+		}
+		conn, id, outcome, gen := m.Conn, m.ActiveSession.ID, msg.Outcome, msg.Generation
+		return m, func() tea.Msg {
+			s, err := daemon.GetSession(context.Background(), conn, id)
+			return TreeRewindReloadMsg{Session: s, Outcome: outcome, Generation: gen, Err: err}
+		}
+
+	case TreeRewindReloadMsg:
+		if msg.Err != nil {
+			m.AddError(operationError(msg.Err, "Could not reload rewound session: ", "Reconnect to refresh this session."))
+			m.State = AppStateChat
+			return m, nil
+		}
+		note := "Rewound. The earlier conversation is archived as " + msg.Outcome.ArchiveSessionID[:min(8, len(msg.Outcome.ArchiveSessionID))] + "."
+		if msg.Outcome.Summary != "" {
+			note += " Summary added."
+		}
+		draft := m.Chat.TextArea.Value()
+		cmd := m.setChatSession(msg.Session, false)
+		m.afterReset = note
+		// A draft the person was writing outranks the message taken back.
+		switch {
+		case draft != "":
+			m.Chat.TextArea.SetValue(draft)
+		case msg.Outcome.HasInput:
+			m.Chat.TextArea.SetValue(msg.Outcome.Input)
+		}
+		return m, cmd
 
 	case TreeForkSuccessMsg:
 		if m.State != AppStateTreePicker || msg.Generation != m.TreePicker.Generation {

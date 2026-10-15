@@ -16,6 +16,7 @@ import albedo/harness/runtime
 import albedo/openai_api/types
 import gleam/erlang/process.{type Subject}
 import gleam/option.{type Option, None, Some}
+import gleam/result
 
 pub type Messages(message) {
   Messages(
@@ -407,6 +408,16 @@ pub fn start(
           // A background call never starts here; start_background owns it.
           turn.Background(_) ->
             Error("background calls run through start_background")
+          // The summary or its failure goes straight to its caller, so the
+          // run itself always ends cleanly.
+          turn.Summary(instructions, last, reply) -> {
+            process.send(
+              reply,
+              loop.summarize_branch(worker, model_history, instructions)
+                |> result.map(fn(text) { #(text, last) }),
+            )
+            Ok(Nil)
+          }
         }),
       )
     })
@@ -419,7 +430,8 @@ pub fn start(
     history: None,
     activity: turn.Running(run),
     context: case work {
-      turn.Compaction(..) | turn.Background(_) -> state.context
+      turn.Compaction(..) | turn.Background(_) | turn.Summary(..) ->
+        state.context
       turn.Turn(..) -> session_state.unprepared()
     },
   )

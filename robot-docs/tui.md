@@ -90,6 +90,10 @@ transcript rows carry private `albedo:` APC marks for copy, wrap joining and cli
 
 ctrl- or cmd-click on a transcript row opens the file it names (`editor.go`, `openFileAt`); a plain click keeps its row action. the token under the click wins, else the row's only existing file; a numbered diff row opens its file at that line, read after the rail (`rowBody`). only regular files that exist under the workspace (or absolute) open. inside zed's or a vs code family terminal (`TERM_PROGRAM`, `VSCODE_PID`, `ZED_TERM`) the file opens through that editor's cli in the background; otherwise through `$EDITOR`, run on the terminal with `tea.Exec` unless it is a gui editor. `cli/test/e2e/tui_open_file_test.go` clicks real rendered rows.
 
+## history navigation
+
+`/tree` rewinds the current session in place to before a selected user message (`GET /sessions/{id}/history?view=checkpoints` lists them, `POST /sessions/{id}/rewind` cuts). In the picker `enter` rewinds, `ctrl+s` rewinds and asks for a summary of what it removes, and `ctrl+g` forks a new session instead (plain letters stay with the type-to-filter field); each asks first, with the usual enter-or-esc question. `/fork` opens the same picker with only the fork, as `/tree` used to. A rewind keeps the session's id: the app rebuilds its chat model for that id so the daemon's reset hydrates it fresh, puts the removed message back in the composer unless a draft is there (a draft wins), and adds a note naming the archive the earlier conversation went to. See [rewind](sessions.md#rewind).
+
 ## tests
 
 unit tests here catch what the daemon e2e cannot drive: key routing, stale replies, in-flight save rendering, footer fitting. the screen-level scenarios in `cli/test/e2e` drive the real daemon through the same keys. when a screen changes keys, update both and the gallery state that shows the footer.

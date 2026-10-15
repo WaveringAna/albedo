@@ -88,6 +88,9 @@ pub type Message {
     Subject(Result(#(conversation.Info, family.Member), String)),
   )
   Lookup(String, Subject(Result(session.Session, String)))
+  /// A session created in the store by some other path, such as the archive a
+  /// rewind keeps: hold it like any other, so a lookup finds it.
+  Adopt(String)
   /// Start an idle session that waits on work, so it can warm again.
   Rewarm(String)
   Existing(String, Subject(Result(Option(session.Session), String)))
@@ -229,6 +232,11 @@ fn serve(state: State, message: Message) -> actor.Next(State, a) {
       process.send(reply, found)
       actor.continue(state)
     }
+    Adopt(id) ->
+      case conversation.get(runtime.ledger(state.host), id) {
+        Ok(info) -> actor.continue(holding(state, id, #(info, None)))
+        Error(_) -> actor.continue(state)
+      }
     Rewarm(id) -> {
       let #(state, found) = activate(state, id)
       case found {
@@ -408,7 +416,7 @@ fn refuse(state: State, message: Message) -> Nil {
     Create(_, _, _, reply) -> process.send(reply, Error(closed))
     CreateChild(_, _, _, _, reply) -> process.send(reply, Error(closed))
     Lookup(_, reply) -> process.send(reply, Error(closed))
-    Rewarm(_) -> Nil
+    Adopt(_) | Rewarm(_) -> Nil
     Existing(_, reply) -> process.send(reply, Error(closed))
     AgentOp(_, reply) -> process.send(reply, Error(closed))
     List(reply) -> process.send(reply, [])
@@ -1332,6 +1340,11 @@ fn selected_effort(
         False -> Error("unsupported effort")
       }
   }
+}
+
+/// Hold a session another path just created in the store.
+pub fn adopt(registry: Subject(Message), id: String) -> Nil {
+  process.send(registry, Adopt(id))
 }
 
 /// Fetch the runtime host with the registry's five-second lookup budget.

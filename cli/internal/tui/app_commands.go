@@ -422,7 +422,9 @@ func (m *AppModel) handleCommandInvocation(msg tea.Msg) (tea.Cmd, bool) {
 		case "/extensions", "/plugins":
 			return m.openExtensionPicker(), true
 		case "/tree":
-			return m.openTreePicker(), true
+			return m.openTreePicker(false), true
+		case "/fork":
+			return m.openTreePicker(true), true
 		case "/quota":
 			return m.openQuota(), true
 		case "/cd":

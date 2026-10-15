@@ -97,6 +97,7 @@ own section. An omitted method is unsupported. `GET` defaults to JSON.
 | `/sessions/{session_id}/reload` | POST | Reload session composition, model catalogs, or both |
 | `/sessions/{session_id}/kernel/upgrade` | POST | Explicitly replace this session's Python kernel |
 | `/sessions/{session_id}/compaction` | POST | Compact the model-facing conversation |
+| `/sessions/{session_id}/rewind` | POST | Cut an idle session back to before a user message, archiving the removed tail |
 | `/models` | GET | Provider model metadata, effort choices, context limits, cache policy |
 | `/workspaces` | GET | Recent workspaces or one directory with optional repository preview |
 | `/hosts` | GET | Known hosts or one host's cached probe state |
@@ -299,8 +300,8 @@ Capabilities are a map from stable feature names to integer contract versions.
 The required version-1 features are `durable_inputs`,
 `collection_invalidation`, and `tool_progress`; `session_replay` requires
 version 2. Optional features include
-`context`, `catalog`, `workspace_browsing`, `host_probes`, `provider_auth`, and
-`storage_report`. Extension entries identify enabled services and their
+`context`, `catalog`, `workspace_browsing`, `host_probes`, `provider_auth`,
+`history_rewind`, and `storage_report`. Extension entries identify enabled services and their
 contract versions. Builds cannot substitute for protocol compatibility.
 
 `quota` contains the latest recorded observations per account and limit. Each
@@ -598,6 +599,18 @@ references, captured execution traces, continuation boundaries, and selected ext
 They copy no Python namespace, live jobs, progress, or usage totals. The daemon
 closes incomplete tool exchanges at the chosen checkpoint using its existing
 history rules.
+
+`POST /sessions/{session_id}/rewind` is the in-place counterpart. It takes a
+`checkpoint_id` of a user message and an optional `summary` request. The daemon
+copies the whole session into a new archived session first, then deletes every
+row from the checkpoint on, and recomputes what derives from them (preview,
+tool-call index, captured traces, LCM nodes, image references). The session
+must be idle; its actor stops, so attached streams reconnect and reset.
+`input` returns the removed message's text for the composer. With `summary`,
+the daemon summarises the removed tail before it changes anything and adds the
+result after the cut as a note from origin `rewind`; a failed summary leaves the
+session unchanged. The Python namespace and files on disk are not rewound.
+Requires capability `history_rewind: 1`.
 
 Success returns `201` with `Session`, its `Location`, and `ETag`. A retained
 rejected creation returns its original problem and admission status on retry.

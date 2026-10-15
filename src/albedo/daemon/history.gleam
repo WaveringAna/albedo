@@ -1,17 +1,21 @@
-//// Durable prefix forks. These operations never start a session actor.
+//// Durable prefix forks and rewinds. These operations never start a session
+//// actor; a rewind runs inside the actor of the session it cuts.
 
 import albedo/daemon/conversation
+import albedo/daemon/images
 import albedo/daemon/message_content as events
+import albedo/daemon/note
 import albedo/daemon/operations
 import albedo/daemon/session_configuration
 import albedo/daemon/store
+import albedo/daemon/transcript
 import albedo/daemon/usage
 import albedo/harness/extensions/lcm/graph as lcm_graph
 import albedo/openai_api/types
 import gleam/dynamic/decode
 import gleam/json
 import gleam/list
-import gleam/option.{type Option, None}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import sqlight
@@ -138,6 +142,175 @@ fn fork_in(
   ))
 }
 
+/// What a rewind leaves: the archived copy of the whole session, and the text
+/// of the user message it cut at when a person wrote it.
+pub type Rewound {
+  Rewound(archive_id: String, input: Option(String))
+}
+
+/// Cut `session_id` back to the rows before the user message at `checkpoint`.
+/// The whole session is copied first into `archive_id`, an archived session of
+/// its own, so nothing is lost; what derives from the removed rows goes with
+/// them. A `summary` of the removed rows is added after the cut as a note from
+/// origin `rewind`; `expected_last` is the last row it covered, and the rewind
+/// is refused when the session has grown past it since.
+pub fn rewind(
+  ledger: store.Store,
+  session_id: String,
+  archive_id: String,
+  checkpoint: Int,
+  summary: Option(String),
+  expected_last: Option(Int),
+) -> Result(Rewound, String) {
+  store.query(ledger, fn(db) {
+    store.transaction(db, fn() {
+      rewind_in(db, session_id, archive_id, checkpoint, summary, expected_last)
+    })
+  })
+}
+
+fn rewind_in(
+  db: sqlight.Connection,
+  id: String,
+  archive_id: String,
+  checkpoint: Int,
+  summary: Option(String),
+  expected_last: Option(Int),
+) -> Result(Rewound, String) {
+  use cut <- result.try(read_cut(db, id, checkpoint))
+  use last <- result.try(store.one(
+    db,
+    "SELECT MAX(seq) FROM transcript WHERE session=?",
+    [sqlight.text(id)],
+    decode.field(0, decode.int, decode.success),
+    "session has no history",
+  ))
+  use _ <- result.try(case expected_last {
+    Some(seen) if seen != last ->
+      Error("history changed while the summary was written")
+    _ -> Ok(Nil)
+  })
+  use source <- result.try(conversation.read_info(db, id))
+  use _ <- result.try(fork_in(db, id, archive_id, last))
+  use _ <- result.try(
+    store.run(db, "UPDATE sessions SET archived=1,title=? WHERE id=?", [
+      sqlight.text(conversation.title("rewound: " <> source.title)),
+      sqlight.text(archive_id),
+    ]),
+  )
+  use kept <- result.try(read_prefix(db, id, checkpoint - 1))
+  use pending <- result.try(unmatched_calls(kept))
+  use tail <- result.try(read_tail(db, id, checkpoint))
+  use hashes <- result.try(images.session_hashes(db, id))
+  let through = case list.last(kept) {
+    Ok(row) -> row.seq
+    Error(_) -> 0
+  }
+  use _ <- result.try(remove_tail(db, id, checkpoint, through, tail))
+  use _ <- result.try(conversation.reset_preview_in(
+    db,
+    id,
+    conversation.latest_user(list.map(kept, fn(row) { row.input })),
+    through,
+  ))
+  use _ <- result.try(append_incomplete_results(
+    db,
+    id,
+    source.provider,
+    pending,
+  ))
+  use _ <- result.try(case summary {
+    Some(text) ->
+      append_note(db, id, source.provider, "rewind", rewind_note(text))
+    None -> Ok(Nil)
+  })
+  use _ <- result.try(images.release(db, hashes))
+  Ok(Rewound(archive_id, conversation.latest_user([cut.input])))
+}
+
+/// What the model is told after a rewind that kept a summary.
+fn rewind_note(summary: String) -> String {
+  "The conversation was rewound to before a message, and what followed it was removed. Files and other state on disk were not rolled back. Summary of the removed part:\n\n"
+  <> summary
+}
+
+/// The user row a rewind cuts before.
+fn read_cut(
+  db: sqlight.Connection,
+  id: String,
+  checkpoint: Int,
+) -> Result(Row, String) {
+  use rows <- result.try(store.rows(
+    db,
+    "SELECT seq,payload,timestamp FROM transcript WHERE session=? AND seq=? AND row_class='user'",
+    [sqlight.text(id), sqlight.int(checkpoint)],
+    row_decoder(),
+  ))
+  case rows {
+    [row] -> decode_row(row)
+    _ -> Error("checkpoint not found")
+  }
+}
+
+fn read_tail(
+  db: sqlight.Connection,
+  id: String,
+  from: Int,
+) -> Result(List(Row), String) {
+  use rows <- result.try(store.rows(
+    db,
+    "SELECT seq,payload,timestamp FROM transcript WHERE session=? AND seq>=? ORDER BY seq",
+    [sqlight.text(id), sqlight.int(from)],
+    row_decoder(),
+  ))
+  list.try_map(rows, decode_row)
+}
+
+/// Delete the rows from `cut` on and everything indexed by their positions.
+/// Markers follow the rule a fork applies: one anchored at the last row kept
+/// belongs to the input after it, which is gone. Provider request records stay
+/// for usage and lose the link to a row that no longer exists. Notes, rolling
+/// state and archives check their own fingerprint against the history, so a
+/// cut they covered is recomputed rather than trusted.
+fn remove_tail(
+  db: sqlight.Connection,
+  id: String,
+  cut: Int,
+  through: Int,
+  tail: List(Row),
+) -> Result(Nil, String) {
+  use _ <- result.try(
+    list.filter_map(tail, fn(row) { cell_id(row.input) })
+    |> list.try_each(fn(cell_id) {
+      store.run(
+        db,
+        "DELETE FROM transcript_traces WHERE session=? AND cell_id=?",
+        [sqlight.text(id), sqlight.text(cell_id)],
+      )
+    }),
+  )
+  use _ <- result.try(
+    list.try_each(
+      [
+        "DELETE FROM transcript_calls WHERE session=? AND seq>=?",
+        "DELETE FROM transcript_quarantine WHERE session=? AND seq>=?",
+        "DELETE FROM submission_events WHERE session=? AND seq>=?",
+        "UPDATE provider_requests SET seq=NULL WHERE session=? AND seq>=?",
+        "DELETE FROM transcript WHERE session=? AND seq>=?",
+      ],
+      fn(sql) { store.run(db, sql, [sqlight.text(id), sqlight.int(cut)]) },
+    ),
+  )
+  use _ <- result.try(
+    store.run(
+      db,
+      "DELETE FROM continuation_markers WHERE session=? AND seq>=?",
+      [sqlight.text(id), sqlight.int(through)],
+    ),
+  )
+  lcm_graph.truncate(db, id, through)
+}
+
 fn row_decoder() -> decode.Decoder(#(Int, BitArray, Option(Int))) {
   use seq <- decode.field(0, decode.int)
   use payload <- decode.field(1, decode.bit_array)
@@ -256,36 +429,36 @@ fn copy_prefix(
       #(pair.0.seq, pair.1),
       checkpoint,
     ))
-    case pair.0.input {
-      types.ToolOutput(_, output, _) -> {
-        case
-          json.parse(
-            output,
-            decode.field("cell_id", decode.string, decode.success),
+    case cell_id(pair.0.input) {
+      Error(_) -> Ok(Nil)
+      Ok(cell_id) -> {
+        use traces <- result.try(
+          conversation.traces_in(db, source_id, [cell_id]),
+        )
+        list.try_each(traces, fn(trace) {
+          store.run(
+            db,
+            "INSERT OR IGNORE INTO transcript_traces(session,cell_id,payload) VALUES(?,?,?)",
+            [
+              sqlight.text(branch_id),
+              sqlight.text(trace.0),
+              sqlight.text(json.to_string(trace.1)),
+            ],
           )
-        {
-          Error(_) -> Ok(Nil)
-          Ok(cell_id) -> {
-            use traces <- result.try(
-              conversation.traces_in(db, source_id, [cell_id]),
-            )
-            list.try_each(traces, fn(trace) {
-              store.run(
-                db,
-                "INSERT OR IGNORE INTO transcript_traces(session,cell_id,payload) VALUES(?,?,?)",
-                [
-                  sqlight.text(branch_id),
-                  sqlight.text(trace.0),
-                  sqlight.text(json.to_string(trace.1)),
-                ],
-              )
-            })
-          }
-        }
+        })
       }
-      _ -> Ok(Nil)
     }
   })
+}
+
+/// The cell a tool result reports, when it is a cell's.
+fn cell_id(input: types.Input) -> Result(String, Nil) {
+  case input {
+    types.ToolOutput(_, output, _) ->
+      json.parse(output, decode.field("cell_id", decode.string, decode.success))
+      |> result.replace_error(Nil)
+    _ -> Error(Nil)
+  }
 }
 
 fn copy_input_metadata(
@@ -360,6 +533,31 @@ fn append_incomplete_results(
       ],
     )
   })
+}
+
+/// A note from the daemon, stored as the user row the model reads.
+fn append_note(
+  db: sqlight.Connection,
+  id: String,
+  provider: String,
+  origin: String,
+  text: String,
+) -> Result(Nil, String) {
+  let input = types.User(note.wrap(origin, text))
+  use position <- result.try(store.one(
+    db,
+    "INSERT INTO transcript(session,payload,timestamp,provider,row_class) VALUES(?,?,?,?,?) RETURNING seq",
+    [
+      sqlight.text(id),
+      sqlight.blob(pack(input)),
+      sqlight.int(usage.now()),
+      sqlight.text(provider),
+      sqlight.text(transcript.row_class(input)),
+    ],
+    decode.field(0, decode.int, decode.success),
+    "rewind note was not committed",
+  ))
+  conversation.index_entry_in(db, id, position, input)
 }
 
 @external(erlang, "albedo_conversation", "pack")

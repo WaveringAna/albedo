@@ -415,6 +415,31 @@ pub fn compact(state: Loop, inputs: List(types.Input)) -> Result(Nil, String) {
   Ok(Nil)
 }
 
+/// The summary of `inputs`, newest first like the other entry points, which a
+/// rewind removes. `extra` is the user's own wish for what it should keep.
+pub fn summarize_branch(
+  state: Loop,
+  inputs: List(types.Input),
+  extra: Option(String),
+) -> Result(String, String) {
+  summarize(
+    state,
+    compaction.SummaryRequest(
+      state.model,
+      None,
+      list.reverse(inputs),
+      4096,
+      case extra {
+        Some(wish) ->
+          compaction.branch_summary_instructions
+          <> " The user also asks: "
+          <> wish
+        None -> compaction.branch_summary_instructions
+      },
+    ),
+  )
+}
+
 /// One background call: `request` sent exactly as given — never rebuilt
 /// through `prepare`, which could compact or call the summarizer — and
 /// recorded under `prefix`. It commits nothing and publishes nothing; it

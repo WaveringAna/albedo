@@ -320,7 +320,7 @@ func (m *ChatModel) isRecognizedCommand(input string) bool {
 	token, typed := fields[0], len(fields) > 1
 	switch token {
 	case "/a", "/agents", "/sessions", "/q", "/quit", "/exit", "/new", "/model", "/extensions",
-		"/plugins", "/tree", "/quota", "/context", "/t", "/thinking", "/v", "/verbose",
+		"/plugins", "/tree", "/fork", "/quota", "/context", "/t", "/thinking", "/v", "/verbose",
 		"/status", "/login", "/mouse", "/skills", "/instructions", "/mcp", "/cd", "/effort", "/compact", "/kernel", "/reload",
 		"/work", "/paperclips", "/webhooks":
 		return true
@@ -433,6 +433,8 @@ func (m *ChatModel) handleSubmittedCommand(input string, cmds *[]tea.Cmd) {
 		emit(ChatOpenExtensionPickerMsg{})
 	case "/tree":
 		emit(ChatOpenTreePickerMsg{})
+	case "/fork":
+		emit(ChatOpenForkPickerMsg{})
 	case "/quota":
 		emit(ChatOpenQuotaMsg{})
 	case "/context":

@@ -74,6 +74,10 @@ func (m *AppModel) handleChatLifecycle(msg tea.Msg) (tea.Cmd, bool) {
 		}
 		if event, ok := msg.(ChatStreamEventMsg); ok && event.SessionID == m.Chat.SessionID && event.Generation == m.Chat.Generation && event.Event.Type == daemon.EventReset {
 			cmd = tea.Batch(cmd, m.refreshSettingsCmd())
+			if m.afterReset != "" {
+				m.Chat.AddNotice(m.afterReset)
+				m.afterReset = ""
+			}
 		}
 		if event, ok := msg.(ChatStreamEventMsg); ok && event.SessionID == m.Chat.SessionID && event.Generation == m.Chat.Generation && !event.Event.Replayed && event.Event.Invalidation != nil {
 			if event.Event.Invalidation.Catalog {

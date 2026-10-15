@@ -10,6 +10,7 @@ import albedo/daemon/conversation
 import albedo/daemon/event_buffer
 import albedo/daemon/events as view
 import albedo/daemon/family
+import albedo/daemon/history
 import albedo/daemon/images
 import albedo/daemon/mail
 import albedo/daemon/message_content
@@ -282,6 +283,24 @@ pub type Message {
   /// Stop the actor if nothing runs, waits, watches, or holds a live job or a
   /// running child, whose report will wake it. True when it stopped.
   Unload(Subject(Bool))
+  /// Archive the whole transcript, cut it back before a user message, and
+  /// stop, so each stream ends and its client reconnects to a reset.
+  RewindHistory(
+    String,
+    Int,
+    Option(String),
+    Option(Int),
+    Subject(Result(history.Rewound, String)),
+  )
+  /// Summarize the rows from a user message on, for a rewind that keeps a
+  /// summary. The worker answers the first subject with the text and the last
+  /// row it covers; the second answers at once, whether the run started.
+  StartSummary(
+    Int,
+    Option(String),
+    Subject(Result(#(String, Int), String)),
+    Subject(Result(Nil, String)),
+  )
   CloseForDeletion(Subject(Result(Nil, String)))
   ClaimDeletion(
     family.DeletionRequest,
@@ -700,6 +719,51 @@ pub fn report(session: Session) -> Report {
 /// Release the kernel if nothing is attached or running. True when one was released.
 pub fn release(session: Session) -> Bool {
   actor.call(session, 40_000, Release)
+}
+
+/// Cut an idle session back to before the user message at `checkpoint`, after
+/// copying all of it into the archived session `archive_id`. The actor stops on
+/// success; the next lookup starts one that reads what is left.
+pub fn rewind(
+  session: Session,
+  archive_id: String,
+  checkpoint: Int,
+  summary: Option(#(String, Int)),
+) -> Result(history.Rewound, String) {
+  actor_call.try_call(session, 30_000, RewindHistory(
+    archive_id,
+    checkpoint,
+    option.map(summary, fn(done) { done.0 }),
+    option.map(summary, fn(done) { done.1 }),
+    _,
+  ))
+  |> result.replace_error("rewind response unavailable; inspect the session")
+  |> result.flatten
+}
+
+/// The summary of what a rewind to `checkpoint` would remove, and the last row
+/// it covers, which `rewind` checks is still the last. Nothing changes; the
+/// session is only held while the model writes it.
+pub fn summarize_tail(
+  session: Session,
+  checkpoint: Int,
+  instructions: Option(String),
+) -> Result(#(String, Int), String) {
+  let out = process.new_subject()
+  use _ <- result.try(
+    actor_call.try_call(session, 60_000, StartSummary(
+      checkpoint,
+      instructions,
+      out,
+      _,
+    ))
+    |> result.replace_error("summary response unavailable; inspect the session")
+    |> result.flatten,
+  )
+  case process.receive(out, 600_000) {
+    Ok(outcome) -> outcome
+    Error(Nil) -> Error("the summary went unanswered for ten minutes")
+  }
 }
 
 /// Drop an idle actor's reloadable transcript cache without touching its event
@@ -1770,6 +1834,13 @@ fn handle(
                 reply,
                 Error("background call worker stopped"),
               )
+            turn.Summary(_, _, reply) ->
+              summary_finish(
+                state,
+                run,
+                reply,
+                Error("the summary worker stopped"),
+              )
             _ ->
               finish_run(
                 state,
@@ -1888,16 +1959,8 @@ fn handle(
       process.send(reply, Nil)
       actor.stop()
     }
-    Unload(reply) -> {
-      let jobs = option.map(state.kernel, runtime.job_count) |> option.unwrap(0)
-      case
-        busy(state)
-        || state.booting != None
-        || state.steering != []
-        || state.watchers != []
-        || jobs > 0
-        || children_working(state.host, state.info.id)
-      {
+    Unload(reply) ->
+      case occupied(state) || state.watchers != [] {
         True -> answer(state, reply, False)
         False -> {
           close_idle(state)
@@ -1905,8 +1968,67 @@ fn handle(
           actor.stop()
         }
       }
-    }
+    StartSummary(checkpoint, instructions, out, ack) ->
+      case occupied(state) {
+        True -> answer(state, ack, Error("session must be idle to rewind"))
+        False ->
+          case
+            kernel_or_park(
+              state,
+              StartSummary(checkpoint, instructions, out, ack),
+            )
+          {
+            Error(state) -> actor.continue(state)
+            Ok(state) ->
+              start_summary(state, checkpoint, instructions, out, ack)
+          }
+      }
+    RewindHistory(archive_id, checkpoint, summary, expected_last, reply) ->
+      case occupied(state) {
+        True -> answer(state, reply, Error("session must be idle to rewind"))
+        False ->
+          case
+            history.rewind(
+              runtime.ledger(state.host),
+              state.info.id,
+              archive_id,
+              checkpoint,
+              summary,
+              expected_last,
+            )
+          {
+            Error(error) -> answer(state, reply, Error(error))
+            Ok(rewound) -> {
+              let base = "/sessions/" <> state.info.id
+              bus.invalidate(
+                [
+                  "/sessions",
+                  base,
+                  base <> "/context",
+                  base <> "/context-window",
+                ],
+                [state.info.id, archive_id],
+                False,
+              )
+              close_idle(state)
+              wake_watchers(state)
+              process.send(reply, Ok(rewound))
+              actor.stop()
+            }
+          }
+      }
   }
+}
+
+/// Something keeps this session from stopping now: a turn, a booting kernel,
+/// queued steering, a live job, or a running child that will wake it.
+fn occupied(state: State) -> Bool {
+  let jobs = option.map(state.kernel, runtime.job_count) |> option.unwrap(0)
+  busy(state)
+  || state.booting != None
+  || state.steering != []
+  || jobs > 0
+  || children_working(state.host, state.info.id)
 }
 
 /// Stop an idle session, keeping its kernel's variables first: a clean stop is
@@ -2381,6 +2503,10 @@ fn kernel_opened(
               |> session_state.emit(view.error(why))
             Compact(_, reply) -> {
               process.send(reply, Error(why))
+              state
+            }
+            StartSummary(_, _, _, ack) -> {
+              process.send(ack, Error(why))
               state
             }
             _ -> state
@@ -2880,6 +3006,7 @@ fn finish_run(
     // commits nothing and never reaches the transcript.
     turn.Background(reply) ->
       background_finish(state, run, reply, result.replace(outcome, None))
+    turn.Summary(_, _, reply) -> summary_finish(state, run, reply, outcome)
     _ -> finish_turn(state, run, outcome)
   }
 }
@@ -3060,6 +3187,93 @@ fn background_finish(
   actor.continue(start_queued(follow_up(state)))
 }
 
+/// A summary worker ended. It answers its caller itself, so only a worker
+/// that died without answering is reported here. Like a background call it
+/// commits nothing; the submissions it held back start now.
+fn summary_finish(
+  state: State,
+  run: turn.Run,
+  reply: Subject(Result(#(String, Int), String)),
+  outcome: Result(Nil, String),
+) -> actor.Next(State, Message) {
+  process.demonitor_process(run.monitor)
+  case outcome {
+    Error(reason) ->
+      process.send(
+        reply,
+        Error(case run.cancelled {
+          True -> "cancelled"
+          False -> reason
+        }),
+      )
+    Ok(_) -> Nil
+  }
+  let state =
+    session_state.State(..state, activity: turn.Resting)
+    |> session_state.announce
+  mail.waiting()
+  actor.continue(start_queued(follow_up(state)))
+}
+
+/// Start the worker that summarizes the rows from `checkpoint` on, which must
+/// begin with a user message. Its history is just that tail.
+fn start_summary(
+  state: State,
+  checkpoint: Int,
+  instructions: Option(String),
+  out: Subject(Result(#(String, Int), String)),
+  ack: Subject(Result(Nil, String)),
+) -> actor.Next(State, Message) {
+  let prepared = {
+    use #(state, kernel, client) <- result.try(
+      prepare_submission(state) |> result.map_error(submission_error),
+    )
+    use sources <- result.try(conversation.load_sources(
+      runtime.ledger(state.host),
+      state.info.id,
+    ))
+    let tail = list.filter(sources, fn(row) { row.source.seq >= checkpoint })
+    use last <- result.try(case tail {
+      [first, ..] if first.source.seq == checkpoint ->
+        case transcript.row_class(first.entry.input) {
+          "user" ->
+            Ok(list.fold(tail, checkpoint, fn(_, row) { row.source.seq }))
+          _ -> Error("checkpoint not found")
+        }
+      _ -> Error("checkpoint not found")
+    })
+    use inputs <- result.try(
+      list.map(tail, fn(row) { row.entry })
+      |> session_history.tag_unknown_provider(state.info.provider)
+      |> list.reverse
+      |> Some
+      |> session_history.projected_for(state.info.provider, state.info.protocol)
+      |> result.map_error(fn(error) {
+        "cannot prepare model history: " <> error
+      }),
+    )
+    Ok(#(state, kernel, client, inputs, last))
+  }
+  case prepared {
+    Error(error) -> answer(state, ack, Error(error))
+    Ok(#(state, kernel, client, inputs, last)) -> {
+      process.send(ack, Ok(Nil))
+      actor.continue(
+        session_run.start(
+          stirred(state),
+          kernel,
+          client,
+          inputs,
+          turn.Summary(instructions, last, out),
+          mail.new_id(),
+          run_messages(),
+        )
+        |> session_state.announce,
+      )
+    }
+  }
+}
+
 /// A background call repeats the session's last turn call, so the provider's
 /// cache clock starts over from it, warm or cold: the cached count fades from
 /// there now, and clients hear the moved steps.
@@ -3095,7 +3309,7 @@ fn report_end(state: State, run: turn.Run) -> Nil {
     turn.Compaction(_, turn.CompactionReport(observation: Some(_), ..)) ->
       observe(state, extension.Compacted)
     turn.Compaction(..) -> Nil
-    turn.Background(_) -> Nil
+    turn.Background(_) | turn.Summary(..) -> Nil
   }
 }
 
@@ -3290,25 +3504,30 @@ fn start_worker(
     model_history,
     work,
     run_id,
-    session_run.Messages(
-      Publish,
-      ToolProgressDelta,
-      ToolProgressRunning,
-      ToolProgressReset,
-      ToolProgressFinish,
-      Commit,
-      CommitFits,
-      RecordContext,
-      RecordUsage,
-      DrainSteering,
-      ReportPin,
-      ReportSent,
-      ReportCompacting,
-      Finished,
-      Collect,
-    ),
+    run_messages(),
   )
   |> session_state.announce
+}
+
+/// The messages a run's worker sends this actor.
+fn run_messages() -> session_run.Messages(Message) {
+  session_run.Messages(
+    Publish,
+    ToolProgressDelta,
+    ToolProgressRunning,
+    ToolProgressReset,
+    ToolProgressFinish,
+    Commit,
+    CommitFits,
+    RecordContext,
+    RecordUsage,
+    DrainSteering,
+    ReportPin,
+    ReportSent,
+    ReportCompacting,
+    Finished,
+    Collect,
+  )
 }
 
 fn projected_inputs(state: State) -> Result(List(types.Input), String) {

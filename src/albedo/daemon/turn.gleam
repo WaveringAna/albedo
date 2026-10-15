@@ -69,6 +69,14 @@ pub type Work {
   /// An extension's background call: commits nothing and publishes
   /// nothing; its outcome goes back to `reply`.
   Background(reply: process.Subject(Result(Option(types.Usage), String)))
+  /// The summary a rewind keeps of the tail it removes. The worker sends the
+  /// text with `last`, the final row the summary covers, to `reply`; it
+  /// commits nothing.
+  Summary(
+    instructions: Option(String),
+    last: Int,
+    reply: process.Subject(Result(#(String, Int), String)),
+  )
   /// `stage` is None until the turn's first commit; `compacting` holds while
   /// the worker compacts history ahead of a request.
   Turn(stage: Option(conversation.Stage), compacting: Bool)

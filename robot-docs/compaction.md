@@ -1,6 +1,6 @@
 # compaction
 
-Compaction changes only what a request shows the model. The durable transcript, `/tree`, and forks always keep the full conversation.
+Compaction changes only what a request shows the model. The durable transcript and forks always keep the full conversation, and a `/tree` rewind keeps what it removes in an archived session.
 
 The default session uses `rolling`. Selecting another strategy (`snapcompact` or `lcm`) through `/extensions` disables the current one in the same reload. A strategy enabled by name, for a session or globally, displaces a default one it did not choose, so a new default strategy cannot break an older choice. A session with the built-in extensions keeps one compaction strategy enabled. The registry also permits a custom host with no compaction strategy installed.
 

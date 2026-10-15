@@ -193,3 +193,23 @@ steers a turn. Completion follows its final output or failure. The durable input
 read retains membership and terminal outcome across reconnects and restarts.
 Prompt clients follow their input identity instead of inferring completion from
 echo metadata or idle status. Drafts and unresolved input handles survive resets.
+
+## rewind
+
+`POST /sessions/{session_id}/rewind` (capability `history_rewind`) cuts an idle session back to before a user message and keeps everything it removes. The module doing it is `daemon/history.gleam`, beside the fork it reuses, and it runs inside the session actor (`RewindHistory`) so no submission can land mid-cut.
+
+One transaction does the work. It copies the whole session into a new archived session with `fork_in` (its name is `rewound: ` plus the title; `archived` is the ordinary preference, so it is a normal session that opens, forks and deletes like any other), then `remove_tail` deletes every row from the checkpoint on and what is keyed by those positions. The rules for that, in one place:
+
+- the rows themselves, their `transcript_calls`, `transcript_quarantine`, `submission_events`, and the captured traces of the cells they ran;
+- `continuation_markers` anchored at the last row kept or later, as a fork drops them;
+- `provider_requests` stay for usage and lose their `seq`, which is nullable for calls with no row;
+- LCM nodes whose source reaches past the cut go with their edges (`lcm_graph.truncate`), and the cursor falls back to what a surviving leaf covers;
+- the preview, and the image payloads only the removed rows named (`images.release`);
+- notes, rolling state and snapcompact archives are not touched: each checks its fingerprint against the history it is given, so a cut it covered is recomputed.
+
+A table keyed by `session` and `seq` that is not in that list fails `RewindStoredStateTest` in `test/e2e/rewind_test.py`, which reads the schema; a `seq` that counts something else (a kernel link's frames) is listed there as unrelated.
+
+When the cut succeeds the actor stops like an idle `Unload`, but ignoring its own watchers: their streams end, clients reconnect to the actor the registry starts on the next lookup, and a new actor generation means a durable reset. The registry learns of the archive through `Adopt`, which the HTTP handler sends before it answers. The Python namespace and files on disk are not rewound.
+
+With `summary`, the handler first asks the actor to start a summary run (`StartSummary`, work `turn.Summary`). It holds the session like a background call, sends the tail to the model through the compaction summarizer (`loop.summarize_branch`, instructions in `compaction.branch_summary_instructions`), and the worker answers the waiting handler directly with the text and the last row it covered. Only then does `rewind` run, with the summary stored after the cut as a `rewind` system note, and it refuses (`history_changed`, 409) if the session has grown past that row. A summary that fails or comes back empty is a 502 `rewind_summary_failed` and nothing has changed, not even the archive.
+

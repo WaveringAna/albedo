@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"time"
 
 	"albedo/cli/internal/daemon/protocol"
 )
@@ -205,6 +206,53 @@ func SetContextWindow(ctx context.Context, conn *Connection, id, etag string, to
 func ForkSession(ctx context.Context, conn *Connection, id string, body ForkRequest) (Session, error) {
 	return CreateSession(ctx, conn, CreateSessionRequest{Kind: "fork", SourceSessionID: id, CheckpointID: body.Checkpoint})
 }
+
+// RewindOutcome is what a rewind leaves for the caller: the archived copy of
+// the whole conversation, the removed message's text when a person wrote it,
+// and the summary that was added, if one was asked for.
+type RewindOutcome struct {
+	ArchiveSessionID string
+	Input            string
+	HasInput         bool
+	Summary          string
+}
+
+// RewindSession cuts a session back to before the user message at checkpointID.
+// A summary waits on a model call, so it gets a longer deadline.
+func RewindSession(ctx context.Context, conn *Connection, sessionID, checkpointID string, summarize bool) (RewindOutcome, error) {
+	body := protocol.RewindRequest{CheckpointID: protocol.ID(checkpointID)}
+	if summarize {
+		body.Summary = &struct {
+			Instructions *string `json:"instructions,omitempty" nullable:"true"`
+		}{}
+	}
+	var result RewindOutcome
+	op := operation{Capability: "history_rewind", Name: "rewind session", BuildRequest: func(base string, _ io.Reader) (*http.Request, error) {
+		return protocol.NewRewindSessionRequest(base, protocol.ID(sessionID), body)
+	}, Body: body, Policy: authRecovery}
+	if summarize {
+		op.Timeout = 5 * time.Minute
+	}
+	err := executeMutation(ctx, conn, op, []int{http.StatusOK}, func(data []byte, _ int) error {
+		var wire protocol.RewindResult
+		if err := decodeRequired(data, &wire); err != nil {
+			return err
+		}
+		if wire.ArchiveSessionID == "" {
+			return fieldError("archive_session_id")
+		}
+		result.ArchiveSessionID = string(wire.ArchiveSessionID)
+		if wire.Input != nil {
+			result.Input, result.HasInput = *wire.Input, true
+		}
+		if wire.Summary != nil {
+			result.Summary = *wire.Summary
+		}
+		return nil
+	})
+	return result, err
+}
+
 func DeleteSession(ctx context.Context, conn *Connection, id string, tree bool, condition SessionCondition) (DeletionResult, error) {
 	headers, err := observedHeaders(condition.ETag)
 	if err != nil {

@@ -70,7 +70,7 @@ pub fn status(
         case run.cancelled, run.work {
           True, _ -> "interrupting"
           _, turn.Compaction(..) -> "compacting"
-          _, turn.Background(_) -> "generating"
+          _, turn.Background(_) | _, turn.Summary(..) -> "generating"
           _, turn.Turn(_, True) -> "compacting"
           _, turn.Turn(Some(stage), _) ->
             case stage {

@@ -75,6 +75,10 @@ func TestOptionalCapabilitiesPreventRequestsWithoutRepeatedServerReads(t *testin
 		{"host_probes", func(ctx context.Context, conn *Connection) error { _, err := WarmHost(ctx, conn, "target"); return err }},
 		{"provider_auth", func(ctx context.Context, conn *Connection) error { _, err := SignInList(ctx, conn); return err }},
 		{"storage_report", func(ctx context.Context, conn *Connection) error { _, err := GetStorageReport(ctx, conn); return err }},
+		{"history_rewind", func(ctx context.Context, conn *Connection) error {
+			_, err := RewindSession(ctx, conn, "s", "1", false)
+			return err
+		}},
 	} {
 		t.Run(feature.name, func(t *testing.T) {
 			var serverReads, requests atomic.Int32

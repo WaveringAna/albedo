@@ -98,6 +98,7 @@ const reserved_commands = [
   "context",
   "exit",
   "extensions",
+  "fork",
   "login",
   "model",
   "mouse",

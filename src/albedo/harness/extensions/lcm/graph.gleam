@@ -245,6 +245,52 @@ fn mapped(mapping: Dict(Int, Int), original: Int) -> Result(Int, String) {
   |> result.replace_error("fork has no matching source row")
 }
 
+/// Drop the summary nodes whose source span reaches past `keep_through`, with
+/// their edges, once the transcript rows after it are gone. Complete children
+/// of a dropped parent stay and become the frontier again, as in a fork, and
+/// the cursor falls back to the last row a surviving leaf covers.
+pub fn truncate(
+  db: sqlight.Connection,
+  session: String,
+  keep_through: Int,
+) -> Result(Nil, String) {
+  use installed <- result.try(store.rows(
+    db,
+    "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='lcm_compaction_node'",
+    [],
+    decode.field(0, decode.int, decode.success),
+  ))
+  case installed {
+    [0] -> Ok(Nil)
+    [1] -> {
+      let arguments = [sqlight.text(session), sqlight.int(keep_through)]
+      use _ <- result.try(store.run(
+        db,
+        "DELETE FROM lcm_compaction_edge WHERE child IN (SELECT id FROM lcm_compaction_node WHERE session=?1 AND last_seq>?2) OR parent IN (SELECT id FROM lcm_compaction_node WHERE session=?1 AND last_seq>?2)",
+        arguments,
+      ))
+      use _ <- result.try(store.run(
+        db,
+        "DELETE FROM lcm_compaction_node WHERE session=? AND last_seq>?",
+        arguments,
+      ))
+      use _ <- result.try(
+        store.run(
+          db,
+          "DELETE FROM lcm_compaction_state WHERE session=?1 AND NOT EXISTS(SELECT 1 FROM lcm_compaction_node WHERE session=?1 AND depth=0)",
+          [sqlight.text(session)],
+        ),
+      )
+      store.run(
+        db,
+        "UPDATE lcm_compaction_state SET last_seq=(SELECT MAX(last_seq) FROM lcm_compaction_node WHERE session=?1 AND depth=0) WHERE session=?1",
+        [sqlight.text(session)],
+      )
+    }
+    _ -> Error("could not inspect installed LCM storage")
+  }
+}
+
 /// A failed summary never advances the cursor. Persist a complete successful
 /// batch and its last covered source in one transaction.
 pub fn save_leaves(

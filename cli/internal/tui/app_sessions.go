@@ -239,6 +239,7 @@ func (m *AppModel) updateSessionPickerItems() {
 
 func (m *AppModel) setChatSession(s daemon.Session, prepend bool) tea.Cmd {
 	m.SessionGen++
+	m.afterReset = ""
 	if m.pendingBySession == nil {
 		m.pendingBySession = make(map[string]pendingSessionIntents)
 	}

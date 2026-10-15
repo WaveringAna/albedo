@@ -540,6 +540,35 @@ fn index_preview_in(
   )
 }
 
+/// Point the preview at `latest`, the newest user text among the rows that
+/// remain, once rows after `position` were removed. `index_entry_in` only moves
+/// a preview forward, so a removal has to reset it.
+pub fn reset_preview_in(
+  db: sqlight.Connection,
+  session: String,
+  latest: Option(String),
+  position: Int,
+) -> Result(Nil, String) {
+  let text = option.unwrap(latest, "")
+  let prefix = preview_prefix(text, 0, 256)
+  store.run(
+    db,
+    "UPDATE sessions SET preview_text=?,preview_truncated=?,preview_position=? WHERE id=?",
+    [
+      sqlight.text(prefix),
+      sqlight.int(case prefix == text {
+        True -> 0
+        False -> 1
+      }),
+      sqlight.int(case latest {
+        Some(_) -> position
+        None -> 0
+      }),
+      sqlight.text(session),
+    ],
+  )
+}
+
 /// Replaces an unreadable saved row with a note saying so and moves its bytes
 /// to `transcript_quarantine`; returns the note.
 pub fn heal_in(

@@ -776,6 +776,8 @@ pub fn failure(code: String) -> Failure {
       Failure(410, code, "prepared context changed; read a new snapshot")
     "catalog_changed" ->
       Failure(409, code, "discovery changed; refresh the catalog")
+    "history changed while the summary was written" ->
+      Failure(409, "history_changed", code)
     "settings_changed" ->
       Failure(412, code, "provider settings changed during the edit")
     "session_busy"
@@ -783,6 +785,7 @@ pub fn failure(code: String) -> Failure {
     | "session must be idle to change workspace"
     | "session must be idle to compact"
     | "session must be idle to delete"
+    | "session must be idle to rewind"
     | "kernel preparation is already in progress" ->
       Failure(409, "session_busy", code)
     "candidate_unavailable" ->

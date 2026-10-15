@@ -2044,6 +2044,29 @@ type ResourceValidator struct {
 	URL ResourceURL `json:"url"`
 }
 
+// RewindRequest defines model for RewindRequest.
+type RewindRequest struct {
+	// CheckpointID Opaque identity. Never infer a resource type or route from its contents.
+	CheckpointID ID `json:"checkpoint_id"`
+
+	// Summary Ask for a summary of the removed tail, added to the session as a note.
+	Summary *struct {
+		Instructions *string `json:"instructions,omitempty" nullable:"true"`
+	} `json:"summary,omitempty" nullable:"true"`
+}
+
+// RewindResult defines model for RewindResult.
+type RewindResult struct {
+	// ArchiveSessionID Opaque identity. Never infer a resource type or route from its contents.
+	ArchiveSessionID ID `json:"archive_session_id"`
+
+	// Input The text of the removed user message, when a person wrote it.
+	Input *string `json:"input" nullable:"true"`
+
+	// Summary The summary note added after the cut, when one was requested.
+	Summary *string `json:"summary" nullable:"true"`
+}
+
 // SafeReason defines model for SafeReason.
 type SafeReason struct {
 	Code   string `json:"code"`
@@ -3538,6 +3561,9 @@ type UpgradeKernelJSONRequestBody = EmptyRequest
 // ReloadSessionJSONRequestBody defines body for ReloadSession for application/json ContentType.
 type ReloadSessionJSONRequestBody = ReloadRequest
 
+// RewindSessionJSONRequestBody defines body for RewindSession for application/json ContentType.
+type RewindSessionJSONRequestBody = RewindRequest
+
 // RecordVisitJSONRequestBody defines body for RecordVisit for application/json ContentType.
 type RecordVisitJSONRequestBody = EmptyRequest
 
@@ -4346,6 +4372,24 @@ type ClientInterface interface {
 	//
 	// Corresponds with POST /sessions/{session_id}/reload (the `ReloadSession` operationId).
 	ReloadSession(ctx context.Context, sessionID ID, body ReloadSessionJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// RewindSessionWithBody Cut a session back to before a user message and keep the removed tail as an archived session
+	//
+	// Idle required. The checkpoint must be a user message from the checkpoint view. The session keeps every row before it, and the full prior conversation is copied first into a new archived session. The session actor stops, so attached streams reconnect and reset. Python namespace and files on disk are not rewound. A requested summary is made before anything changes, so a failed summary leaves the session untouched. Requires capability `history_rewind: 1`.
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with POST /sessions/{session_id}/rewind (the `RewindSession` operationId).
+	RewindSessionWithBody(ctx context.Context, sessionID ID, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// RewindSession Cut a session back to before a user message and keep the removed tail as an archived session
+	//
+	// Idle required. The checkpoint must be a user message from the checkpoint view. The session keeps every row before it, and the full prior conversation is copied first into a new archived session. The session actor stops, so attached streams reconnect and reset. Python namespace and files on disk are not rewound. A requested summary is made before anything changes, so a failed summary leaves the session untouched. Requires capability `history_rewind: 1`.
+	//
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with POST /sessions/{session_id}/rewind (the `RewindSession` operationId).
+	RewindSession(ctx context.Context, sessionID ID, body RewindSessionJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// RecordVisitWithBody Count one deliberate opening
 	//
@@ -6034,6 +6078,44 @@ func (c *Client) ReloadSessionWithBody(ctx context.Context, sessionID ID, conten
 // Corresponds with POST /sessions/{session_id}/reload (the `ReloadSession` operationId).
 func (c *Client) ReloadSession(ctx context.Context, sessionID ID, body ReloadSessionJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewReloadSessionRequest(c.Server, sessionID, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// RewindSessionWithBody Cut a session back to before a user message and keep the removed tail as an archived session
+//
+// Idle required. The checkpoint must be a user message from the checkpoint view. The session keeps every row before it, and the full prior conversation is copied first into a new archived session. The session actor stops, so attached streams reconnect and reset. Python namespace and files on disk are not rewound. A requested summary is made before anything changes, so a failed summary leaves the session untouched. Requires capability `history_rewind: 1`.
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with POST /sessions/{session_id}/rewind (the `RewindSession` operationId).
+func (c *Client) RewindSessionWithBody(ctx context.Context, sessionID ID, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewRewindSessionRequestWithBody(c.Server, sessionID, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// RewindSession Cut a session back to before a user message and keep the removed tail as an archived session
+//
+// Idle required. The checkpoint must be a user message from the checkpoint view. The session keeps every row before it, and the full prior conversation is copied first into a new archived session. The session actor stops, so attached streams reconnect and reset. Python namespace and files on disk are not rewound. A requested summary is made before anything changes, so a failed summary leaves the session untouched. Requires capability `history_rewind: 1`.
+//
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with POST /sessions/{session_id}/rewind (the `RewindSession` operationId).
+func (c *Client) RewindSession(ctx context.Context, sessionID ID, body RewindSessionJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewRewindSessionRequest(c.Server, sessionID, body)
 	if err != nil {
 		return nil, err
 	}
@@ -10210,6 +10292,53 @@ func NewReloadSessionRequestWithBody(server string, sessionID ID, contentType st
 	}
 
 	operationPath := fmt.Sprintf("/sessions/%s/reload", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewRewindSessionRequest calls the generic RewindSession builder with application/json body
+func NewRewindSessionRequest(server string, sessionID ID, body RewindSessionJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewRewindSessionRequestWithBody(server, sessionID, "application/json", bodyReader)
+}
+
+// NewRewindSessionRequestWithBody constructs an http.Request for the RewindSession method, with any body, and a specified content type
+func NewRewindSessionRequestWithBody(server string, sessionID ID, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "session_id", sessionID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/sessions/%s/rewind", pathParam0)
 	if operationPath[0] == '/' {
 		operationPath = "." + operationPath
 	}

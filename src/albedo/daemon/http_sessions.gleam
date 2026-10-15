@@ -11,6 +11,7 @@ import albedo/daemon/http_session_resource
 import albedo/daemon/http_session_stream
 import albedo/daemon/http_wire
 import albedo/daemon/image
+import albedo/daemon/mail
 import albedo/daemon/operations
 import albedo/daemon/pastes
 import albedo/daemon/registry.{
@@ -1305,6 +1306,92 @@ pub fn context_window(
     Ok(http_api.reply(200, window))
   }
   http_api.answer(outcome)
+}
+
+/// Cut a session back to before a user message. The removed tail stays in an
+/// archived session of its own, named in the answer.
+pub fn rewind(
+  registry: Subject(Message),
+  id: String,
+  req: request.Request(BitArray),
+) -> response.Response(mist.ResponseData) {
+  let outcome = {
+    use _ <- result.try(http_api.json_parameters(req, []))
+    use #(checkpoint, wanted) <- result.try(
+      http_api.body(req, ["checkpoint_id", "summary"], {
+        use checkpoint <- decode.field(
+          "checkpoint_id",
+          http_api.bounded_string(512, True),
+        )
+        use wanted <- decode.optional_field(
+          "summary",
+          None,
+          decode.optional(
+            http_api.object(["instructions"], {
+              decode.optional_field(
+                "instructions",
+                None,
+                decode.optional(http_api.bounded_string(4096, False)),
+                decode.success,
+              )
+            }),
+          ),
+        )
+        decode.success(#(checkpoint, wanted))
+      }),
+    )
+    use checkpoint <- result.try(
+      int.parse(checkpoint)
+      |> result.replace_error(http_api.failure("checkpoint not found")),
+    )
+    use host <- result.try(
+      registry.host(registry) |> result.map_error(http_api.failure),
+    )
+    use _ <- result.try(
+      conversation.get(runtime.ledger(host), id)
+      |> result.map_error(http_api.failure),
+    )
+    use worker <- result.try(
+      actor.call(registry, 5000, Lookup(id, _))
+      |> result.map_error(http_api.failure),
+    )
+    use summary <- result.try(case wanted {
+      None -> Ok(None)
+      Some(instructions) ->
+        session.summarize_tail(worker, checkpoint, instructions)
+        |> result.map(Some)
+        |> result.map_error(summary_failure)
+    })
+    use rewound <- result.try(
+      session.rewind(worker, mail.new_id(), checkpoint, summary)
+      |> result.map_error(http_api.failure),
+    )
+    registry.adopt(registry, rewound.archive_id)
+    Ok(http_api.reply(
+      200,
+      json.object([
+        #("archive_session_id", json.string(rewound.archive_id)),
+        #("input", json.nullable(rewound.input, json.string)),
+        #("summary", json.nullable(summary, fn(done) { json.string(done.0) })),
+      ]),
+    ))
+  }
+  http_api.answer(outcome)
+}
+
+/// A summary that could not be written leaves the session as it was; what the
+/// model said is the reason.
+fn summary_failure(error: String) -> http_api.Failure {
+  case error {
+    "session must be idle to rewind" | "checkpoint not found" ->
+      http_api.failure(error)
+    _ ->
+      http_api.Failure(
+        502,
+        "rewind_summary_failed",
+        http_api.scalar_prefix(error, 512),
+      )
+  }
 }
 
 pub fn upgrade(

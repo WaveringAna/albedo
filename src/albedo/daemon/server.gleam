@@ -667,6 +667,7 @@ fn daemon_route(
     Get, ["sessions", id, "context-window"] ->
       http_sessions.context_window(registry, id, req)
     Post, ["sessions", id, "reload"] -> http_sessions.reload(registry, id, req)
+    Post, ["sessions", id, "rewind"] -> http_sessions.rewind(registry, id, req)
     Post, ["sessions", id, "kernel", "upgrade"] ->
       http_sessions.upgrade(registry, id, req)
     Post, ["sessions", id, "compaction"] ->
@@ -916,6 +917,7 @@ fn protocol_server(
               "workspace_browsing",
               "host_probes",
               "provider_auth",
+              "history_rewind",
               "zstd_requests",
             ],
             fn(name) {

@@ -68,11 +68,14 @@ func (m *AppModel) openExtensionPicker() tea.Cmd {
 	return m.openScreen(AppStateExtensionPicker, &m.ExtensionPicker)
 }
 
-func (m *AppModel) openTreePicker() tea.Cmd {
+func (m *AppModel) openTreePicker(forkOnly bool) tea.Cmd {
 	if m.ActiveSession == nil {
 		return nil
 	}
 	m.TreePicker = NewTreePickerModel(m.Conn, m.ActiveSession.ID)
+	if forkOnly {
+		m.TreePicker = NewForkPickerModel(m.Conn, m.ActiveSession.ID)
+	}
 	return m.openScreen(AppStateTreePicker, &m.TreePicker)
 }
 
