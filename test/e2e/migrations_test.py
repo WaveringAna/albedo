@@ -151,6 +151,41 @@ class MigrationsTest(unittest.TestCase):
                 # Restore other fixtures' fields erased by the legacy schema seed.
                 app.restart(prepare=restore)
 
+    def test_mail_kind_migration_preserves_existing_request_rows(self):
+        provider = Provider(lambda request: text("done"))
+        self.addCleanup(provider.close)
+        with Albedo(provider) as app:
+            sender, recipient = app.session(), app.session()
+            database = app.home / "albedo.sqlite"
+
+            def prepare(_app):
+                with sqlite3.connect(database) as db:
+                    db.execute("DROP TABLE mail")
+                    db.execute(
+                        "CREATE TABLE mail (id TEXT PRIMARY KEY, recipient TEXT NOT NULL, "
+                        "sender TEXT, sender_name TEXT NOT NULL, kind TEXT NOT NULL "
+                        "CHECK(kind IN ('task','message','result','unreviewed','webhook')), "
+                        "body TEXT NOT NULL, created_at INTEGER NOT NULL, delivered_at INTEGER, "
+                        "delivery_owner TEXT NOT NULL DEFAULT 'mail', attempts INTEGER NOT NULL DEFAULT 0, "
+                        "last_error TEXT)"
+                    )
+                    db.execute(
+                        "INSERT INTO mail(id,recipient,sender,sender_name,kind,body,created_at) "
+                        "VALUES('legacy-request',?,?,?,'task','legacy body',1)",
+                        (recipient, sender, "legacy sender"),
+                    )
+
+            app.restart(prepare=prepare)
+            with sqlite3.connect(database) as db:
+                definition = db.execute(
+                    "SELECT sql FROM sqlite_master WHERE type='table' AND name='mail'"
+                ).fetchone()[0]
+                row = db.execute(
+                    "SELECT body FROM mail WHERE id='legacy-request'"
+                ).fetchone()
+            self.assertIn("'request'", definition)
+            self.assertEqual(row, ("legacy body",))
+
     def test_startup_migrates_legacy_images_once_with_a_consistent_backup(self):
         probe = ""
 
