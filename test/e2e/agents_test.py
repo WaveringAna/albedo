@@ -916,6 +916,29 @@ class AgentsTests(unittest.TestCase):
         )
         self.app.idle(made["id"])
 
+    def test_request_to_missing_session_is_rejected(self):
+        session = self.app.session()
+        marker = "missing request " + operation_id()
+        answer = self.provider.script
+
+        def dispatch(request):
+            if latest_user(request) == marker:
+                return python(
+                    "try:\n"
+                    "    await mail.request('does-not-exist', 'body')\n"
+                    "except Exception as error:\n"
+                    "    print(type(error).__name__)\n"
+                )
+            return answer(request)
+
+        self.provider.script = dispatch
+        try:
+            self.send(session, marker)
+            self.app.idle(session)
+        finally:
+            self.provider.script = answer
+        self.assertTrue(any("HostError" in item for item in self.asked("HostError")))
+
     def test_start_peer_and_role_are_visible_in_sessions(self):
         parent = self.app.session()
         marker = "start peer " + operation_id()
