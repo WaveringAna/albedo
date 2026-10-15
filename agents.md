@@ -31,6 +31,10 @@ The e2e suites compile the daemon once per run with `test/snapshot-daemon.sh` (t
 
 Test placement (expanded rules in `.agents/skills/writing-tests/SKILL.md`): the default is an end-to-end scenario through the real daemon on the shared harness in `test/e2e/` — a scripted fake model provider, one shared daemon for the tests that isolate themselves by session, workspace and provider profile, and a fresh daemon for each `@exclusive` test that changes global state or restarts it. Unit tests are the exception; each module docstring must say which bug it catches that E2E cannot. `test/harness/api_docs_test.py` is the invariant test to imitate: it builds the model's real Python namespace and fails whenever a public binding exists that the model is never told about. `test/manual/` is opt-in (needs a provider, a PTY, or benchmark artifacts) and is never part of the gate.
 
+### Private daemons
+
+An experiment, eval or reproduction that needs a second daemon starts it with its own `ALBEDO_HOME` and an `ALBEDO_DAEMON` copy from `test/snapshot-daemon.sh`, and must not leave it running: the CLI starts the daemon detached, so it outlives the command. Set `ALBEDO_PARENT_PID` to the pid of the process that owns the run (the eval script, not the CLI, which exits at once) and the daemon stops when that process does; the e2e harnesses do this for their runners. End the run with `albedo daemon --stop` under the same environment, and check `ps` for daemons whose environment names your home before you report done.
+
 ### Committing and pushing
 
 Other sessions and agents often work in this checkout at the same time. Stage only the paths you changed (`git add -- <paths>`), leave other files alone, and never stash someone else's changes.
