@@ -90,3 +90,9 @@ and their deadlines count wall time after the program starts.
 ## deletion failures
 
 Direct parent deletion requires a successful child lookup. Tree deletion collects the child-first walk before deleting any session. A failed lookup returns an error and leaves the sessions intact. A failure during deletion still reports how many sessions were already deleted.
+
+## requests, roles, and peers
+
+`await mail.request(to, body)` creates a request; the recipient owes the sender until it sends any letter. `await mail.open()` returns bounded `owed` and `awaiting` entries. `await agents.set_role(text, id=None)` stores optional trimmed metadata for workspace views; it is not prompt context.
+
+Peers are root sessions started with `await agents.start(task, name, model, cwd=None, role=None)`. They have no family parent and do not count against child limits. The starter alone may cancel or close its peers. Session snapshots expose role, provenance, pinned state, and open request counts.

@@ -25,6 +25,8 @@ import sqlight
 pub type Kind {
   /// The brief a parent hands a child it spawned.
   Task
+  /// A request that must be answered by the recipient.
+  RequestLetter
   /// Anything one agent says to another.
   Message
   /// A child's answer. `unreviewed` marks one the daemon forwarded because the
@@ -67,7 +69,7 @@ CREATE TABLE IF NOT EXISTS mail (
  recipient TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
  sender TEXT REFERENCES sessions(id) ON DELETE SET NULL,
  sender_name TEXT NOT NULL,
- kind TEXT NOT NULL CHECK(kind IN ('task','message','result','unreviewed','webhook')),
+ kind TEXT NOT NULL CHECK(kind IN ('task','request','message','result','unreviewed','webhook')),
  body TEXT NOT NULL,
  created_at INTEGER NOT NULL,
  delivered_at INTEGER,
@@ -94,6 +96,7 @@ pub fn initialise(db: store.Store) -> Result(Nil, String) {
 pub fn kind_name(kind: Kind) -> String {
   case kind {
     Task -> "task"
+    RequestLetter -> "request"
     Message -> "message"
     Answer(False) -> "result"
     Answer(True) -> "unreviewed"
@@ -104,6 +107,7 @@ pub fn kind_name(kind: Kind) -> String {
 fn parse_kind(name: String) -> Result(Kind, Nil) {
   case name {
     "task" -> Ok(Task)
+    "request" -> Ok(RequestLetter)
     "message" -> Ok(Message)
     "result" -> Ok(Answer(False))
     "unreviewed" -> Ok(Answer(True))
@@ -134,7 +138,7 @@ pub fn parent_request_in(
     [parent, ..] ->
       store.rows(
         db,
-        "SELECT id,substr(body,1,512) FROM mail WHERE recipient=? AND sender=? AND kind IN ('task','message') AND delivered_at IS NOT NULL ORDER BY created_at DESC,id DESC LIMIT 1",
+        "SELECT id,substr(body,1,512) FROM mail WHERE recipient=? AND sender=? AND kind IN ('task','request','message') AND delivered_at IS NOT NULL ORDER BY created_at DESC,id DESC LIMIT 1",
         [sqlight.text(recipient), sqlight.text(parent)],
         {
           use id <- decode.field(0, decode.string)
@@ -372,7 +376,7 @@ pub fn owes_reply(
 ) -> Result(Bool, String) {
   store.read(
     db,
-    "SELECT (SELECT max(delivered_at) FROM mail WHERE recipient=?1 AND sender=?2 AND kind IN ('task','message')), (SELECT max(created_at) FROM mail WHERE recipient=?2 AND sender=?1)",
+    "SELECT (SELECT max(delivered_at) FROM mail WHERE recipient=?1 AND sender=?2 AND kind IN ('task','request','message')), (SELECT max(created_at) FROM mail WHERE recipient=?2 AND sender=?1)",
     [sqlight.text(child), sqlight.text(parent)],
     {
       use asked <- decode.field(0, decode.optional(decode.int))
@@ -475,6 +479,16 @@ pub fn receipt_json(receipt: Receipt) -> json.Json {
   ])
 }
 
+/// Send a request that the recipient owes until it sends any letter back.
+pub fn request(
+  db: store.Store,
+  from: String,
+  to: String,
+  body: String,
+) -> Result(Receipt, String) {
+  send_kind(db, from, to, body, RequestLetter)
+}
+
 /// One agent writes to another: `to` is "parent", a session id, or a name in
 /// the sender's family. The letter is stored first, so it arrives even when
 /// the hand-off below cannot happen now.
@@ -484,6 +498,16 @@ pub fn send(
   to: String,
   body: String,
 ) -> Result(Receipt, String) {
+  send_kind(db, from, to, body, Message)
+}
+
+fn send_kind(
+  db: store.Store,
+  from: String,
+  to: String,
+  body: String,
+  kind: Kind,
+) -> Result(Receipt, String) {
   use address <- result.try(family.resolve(db, from, to))
   use letter <- result.try(post(
     db,
@@ -491,7 +515,7 @@ pub fn send(
     address.session,
     Some(from),
     family.name_of(db, from),
-    Message,
+    kind,
     body,
   ))
   let status = case deliver(letter) {
@@ -500,6 +524,65 @@ pub fn send(
     Error(_) -> "pending"
   }
   Ok(Receipt(letter.id, address.session, address.name, status))
+}
+
+/// Open requests this session owes and requests it sent without a reply.
+pub fn open_json(
+  db: store.Store,
+  session: String,
+) -> Result(json.Json, String) {
+  let row = fn(recipient: String, sender: String) {
+    store.read(
+      db,
+      "SELECT sender,substr(body,1,512),created_at FROM mail WHERE recipient=? AND sender=? AND kind='request' AND delivered_at IS NOT NULL ORDER BY created_at DESC,id DESC LIMIT 1",
+      [sqlight.text(recipient), sqlight.text(sender)],
+      {
+        use sender <- decode.field(0, decode.string)
+        use body <- decode.field(1, decode.string)
+        use since <- decode.field(2, decode.int)
+        decode.success(
+          json.object([
+            #("session", json.string(sender)),
+            #("name", json.string(family.name_of(db, sender))),
+            #("letter", json.string(body)),
+            #("since", json.int(since)),
+          ]),
+        )
+      },
+    )
+  }
+  use owed <- result.try(store.read(
+    db,
+    "SELECT DISTINCT sender FROM mail WHERE recipient=? AND sender IS NOT NULL AND kind='request' AND delivered_at IS NOT NULL",
+    [sqlight.text(session)],
+    decode.field(0, decode.string, decode.success),
+  ))
+  use awaiting <- result.try(store.read(
+    db,
+    "SELECT DISTINCT recipient FROM mail WHERE sender=? AND kind='request' AND delivered_at IS NOT NULL",
+    [sqlight.text(session)],
+    decode.field(0, decode.string, decode.success),
+  ))
+  let owed =
+    list.fold(owed, [], fn(found, sender) {
+      case owes_reply(db, session, sender), row(session, sender) {
+        Ok(True), Ok([item, ..]) -> [item, ..found]
+        _, _ -> found
+      }
+    })
+  let awaiting =
+    list.fold(awaiting, [], fn(found, recipient) {
+      case owes_reply(db, recipient, session), row(recipient, session) {
+        Ok(True), Ok([item, ..]) -> [item, ..found]
+        _, _ -> found
+      }
+    })
+  Ok(
+    json.object([
+      #("owed", json.array(owed, fn(x) { x })),
+      #("awaiting", json.array(awaiting, fn(x) { x })),
+    ]),
+  )
 }
 
 /// Hand a stored letter to its recipient's actor now. Ok(True) means it waits

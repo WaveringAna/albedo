@@ -141,6 +141,33 @@ pub fn valid_name(name: String) -> Result(Nil, String) {
   }
 }
 
+/// Read the optional free-form role metadata.
+pub fn role(db: store.Store, session: String) -> Result(String, String) {
+  store.read(
+    db,
+    "SELECT role FROM sessions WHERE id=?",
+    [sqlight.text(session)],
+    decode.field(0, decode.string, decode.success),
+  )
+  |> result.map(fn(rows) { list.first(rows) |> result.unwrap("") })
+}
+
+pub fn set_role(
+  db: store.Store,
+  session: String,
+  value: String,
+) -> Result(Nil, String) {
+  let value = string.trim(value)
+  case string.length(value) <= 512 {
+    False -> Error("role is at most 512 characters")
+    True ->
+      store.write(db, "UPDATE sessions SET role=? WHERE id=?", [
+        sqlight.text(value),
+        sqlight.text(session),
+      ])
+  }
+}
+
 pub fn get(db: store.Store, session: String) -> Result(Option(Member), String) {
   store.read(db, members("WHERE session=?"), [sqlight.text(session)], decoder())
   |> result.map(fn(found) { list.first(found) |> option.from_result })

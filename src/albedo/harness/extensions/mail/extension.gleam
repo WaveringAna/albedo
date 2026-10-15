@@ -16,7 +16,7 @@ pub fn extension() -> extension.Extension {
     ["python"],
     [
       extension.ToolPlugin(
-        "await mail.submit(to, body) sends a letter as this session. `to` is \"parent\", the name of a child or sibling, an agent handle, or any session id; names outside your family do not resolve, so use the id. It returns a receipt (id, to, name, status): \"delivered\" was accepted by an idle recipient (its kernel may still be booting), \"queued\" waits behind its running turn, \"pending\" is stored and arrives once that session is running. There is no mail.read: letters to you arrive in your conversation as <mail> blocks. Bodies over 1 MiB fail; write big results to a file and send the path.",
+        "await mail.submit(to, body) sends a letter; await mail.request(to, body) sends a request that stays open until the recipient sends any letter back; await mail.open() returns {owed, awaiting}. `to` is \"parent\", the name of a child or sibling, an agent handle, or any session id; names outside your family do not resolve, so use the id. It returns a receipt (id, to, name, status): \"delivered\" was accepted by an idle recipient (its kernel may still be booting), \"queued\" waits behind its running turn, \"pending\" is stored and arrives once that session is running. There is no mail.read: letters to you arrive in your conversation as <mail> blocks. Bodies over 1 MiB fail; write big results to a file and send the path.",
         [],
         ["mail"],
         [
@@ -37,6 +37,23 @@ fn handle(
   args: decode.Dynamic,
 ) -> Result(json.Json, #(String, String)) {
   case method {
+    "mail.request" -> {
+      let decoder = {
+        use to <- decode.field("to", decode.string)
+        use body <- decode.field("body", decode.string)
+        decode.success(#(to, body))
+      }
+      case decode.run(args, decoder) {
+        Ok(#(to, body)) ->
+          mail.request(db, session, to, body)
+          |> result.map(mail.receipt_json)
+          |> result.map_error(fn(m) { #("invalid", m) })
+        Error(_) ->
+          Error(#("invalid", "mail.request(to, body) takes two strings"))
+      }
+    }
+    "mail.open" ->
+      mail.open_json(db, session) |> result.map_error(fn(m) { #("invalid", m) })
     "mail.submit" -> {
       let decoder = {
         use to <- decode.field("to", decode.string)
