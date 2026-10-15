@@ -2539,20 +2539,12 @@ fn failed_queued(state: State, error: String) -> State {
 fn answer_parent(state: State, outcome: Result(Nil, String)) -> State {
   let db = runtime.ledger(state.host)
   let owed = case turn.starts_turn(state.steering) {
-    True -> Error(Nil)
-    False ->
-      case family.get(db, state.info.id) {
-        Ok(Some(member)) ->
-          case mail.owes_reply(db, state.info.id, member.parent) {
-            Ok(True) -> Ok(member)
-            _ -> Error(Nil)
-          }
-        _ -> Error(Nil)
-      }
+    True -> []
+    False -> mail.owed_requesters(db, state.info.id) |> result.unwrap([])
   }
   case owed {
-    Error(_) -> state
-    Ok(member) -> {
+    [] -> state
+    requesters -> {
       let #(state, words) = last_words(state)
       let body = case outcome, words {
         Ok(_), Some(text) -> text
@@ -2560,28 +2552,26 @@ fn answer_parent(state: State, outcome: Result(Nil, String)) -> State {
         Error(error), Some(text) -> "run failed: " <> error <> "\n\n" <> text
         Error(error), None -> "run failed: " <> error
       }
-      case
-        mail.post(
-          db,
-          mail.new_id(),
-          member.parent,
-          Some(state.info.id),
-          member.name,
-          mail.Answer(unreviewed: True),
-          body,
-        )
-      {
-        // Off the actor: the parent's actor may be the one calling into us.
-        Ok(letter) -> {
-          process.spawn_unlinked(fn() { mail.deliver(letter) })
-          state
-        }
-        Error(error) ->
-          session_state.emit(
-            state,
-            view.error("could not answer the parent: " <> error),
+      list.each(requesters, fn(requester) {
+        case
+          mail.post(
+            db,
+            mail.new_id(),
+            requester,
+            Some(state.info.id),
+            family.name_of(db, state.info.id),
+            mail.Answer(unreviewed: True),
+            body,
           )
-      }
+        {
+          Ok(letter) -> {
+            let _ = process.spawn_unlinked(fn() { mail.deliver(letter) })
+            Nil
+          }
+          Error(_) -> Nil
+        }
+      })
+      state
     }
   }
 }

@@ -39,19 +39,19 @@ pub fn extension() -> extension.Extension {
           handle(context.store, context.session, method, args)
         }),
       ]),
-      // A child learns who it is and how to answer; a root needs nothing.
+      // The hook is cheap for roots with no requests and keeps prompt context stable.
       extension.ManagedPlugin(fn(db, session, _) {
-        case family.get(db, session) {
-          Ok(Some(member)) ->
-            Ok(
-              extension.Managed(
-                ..extension.empty(),
-                context: doctrine(db, member),
-                hook: Some(answered(db, session, member.parent, _)),
-              ),
-            )
-          _ -> Ok(extension.empty())
+        let context = case family.get(db, session) {
+          Ok(Some(member)) -> doctrine(db, member)
+          _ -> ""
         }
+        Ok(
+          extension.Managed(
+            ..extension.empty(),
+            context: context,
+            hook: Some(answered(db, session, _)),
+          ),
+        )
       }),
     ],
     // Its tables, whether or not the daemon made them first.
@@ -75,17 +75,18 @@ fn doctrine(db: store.Store, member: family.Member) -> String {
 fn answered(
   db: store.Store,
   session: String,
-  parent: String,
   event: hook.Event,
 ) -> hook.Verdict {
   case event {
     hook.Stopping(held: 0, ..) ->
-      case mail.owes_reply(db, session, parent) {
-        Ok(True) ->
+      case mail.owed_requesters(db, session) {
+        Ok([first, ..rest]) ->
           hook.Verdict(
             ..hook.proceed,
             block: Some(
-              "You have not answered your parent yet. Send your result with await mail.submit(\"parent\", result) before you finish.",
+              "You owe a reply to "
+              <> string.join([first, ..rest], ", ")
+              <> ". Send it with await mail.submit(\"<id>\", result) before you finish.",
             ),
           )
         _ -> hook.proceed

@@ -410,6 +410,24 @@ pub fn receive(
   })
 }
 
+/// Senders whose latest delivered request is newer than this session's latest letter.
+pub fn owed_requesters(
+  db: store.Store,
+  recipient: String,
+) -> Result(List(String), String) {
+  use senders <- result.try(store.read(
+    db,
+    "SELECT DISTINCT sender FROM mail WHERE recipient=? AND sender IS NOT NULL AND kind IN ('task','request') AND delivered_at IS NOT NULL",
+    [sqlight.text(recipient)],
+    decode.field(0, decode.string, decode.success),
+  ))
+  Ok(
+    list.filter(senders, fn(sender) {
+      owes_reply(db, recipient, sender) == Ok(True)
+    }),
+  )
+}
+
 /// Whether `child` wrote to `parent` since the parent's latest task or
 /// message reached it. A child that was never given anything owes nothing.
 pub fn owes_reply(
@@ -577,17 +595,19 @@ pub fn open_json(
   let row = fn(recipient: String, sender: String) {
     store.read(
       db,
-      "SELECT sender,substr(body,1,512),created_at FROM mail WHERE recipient=? AND sender=? AND kind='request' AND delivered_at IS NOT NULL ORDER BY created_at DESC,id DESC LIMIT 1",
+      "SELECT id,sender,substr(body,1,512),created_at FROM mail WHERE recipient=? AND sender=? AND kind='request' AND delivered_at IS NOT NULL ORDER BY created_at DESC,id DESC LIMIT 1",
       [sqlight.text(recipient), sqlight.text(sender)],
       {
-        use sender <- decode.field(0, decode.string)
-        use body <- decode.field(1, decode.string)
-        use since <- decode.field(2, decode.int)
+        use id <- decode.field(0, decode.string)
+        use sender <- decode.field(1, decode.string)
+        use body <- decode.field(2, decode.string)
+        use since <- decode.field(3, decode.int)
         decode.success(
           json.object([
             #("session", json.string(sender)),
             #("name", json.string(family.name_of(db, sender))),
-            #("letter", json.string(body)),
+            #("letter", json.string(id)),
+            #("preview", json.string(body)),
             #("since", json.int(since)),
           ]),
         )
