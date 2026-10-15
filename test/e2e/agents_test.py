@@ -915,3 +915,36 @@ class AgentsTests(unittest.TestCase):
             (made["provider_profile"], made["model"]), (self.beta, "fixture-listed")
         )
         self.app.idle(made["id"])
+
+    def test_start_peer_and_role_are_visible_in_sessions(self):
+        parent = self.app.session()
+        marker = "start peer " + operation_id()
+        answer = self.provider.script
+
+        def dispatch(request):
+            if latest_user(request) == marker:
+                return python(
+                    "peer = await agents.start("
+                    + repr("peer task")
+                    + ", name="
+                    + repr("peer")
+                    + ", role="
+                    + repr("research")
+                    + ")\n"
+                )
+            return answer(request)
+
+        self.provider.script = dispatch
+        try:
+            self.send(parent, marker)
+            self.app.idle(parent)
+        finally:
+            self.provider.script = answer
+        peers = [
+            item
+            for item in self.api("/sessions?scope=all")["items"]
+            if item["name"] == "peer"
+        ]
+        self.assertEqual(len(peers), 1)
+        self.assertEqual(peers[0]["started_by"], parent)
+        self.assertEqual(peers[0]["role"], "research")

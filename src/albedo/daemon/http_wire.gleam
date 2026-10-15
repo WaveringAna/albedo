@@ -69,6 +69,8 @@ pub fn summary_fields(capture: session.Capture) -> List(#(String, json.Json)) {
         json.string,
       ),
     ),
+    #("role", json.string(capture.family.role)),
+    #("started_by", json.nullable(capture.family.started_by, json.string)),
     #(
       "address",
       json.nullable(

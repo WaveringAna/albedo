@@ -27,7 +27,13 @@ pub type Member {
 }
 
 pub type Facts {
-  Facts(root_id: String, member: Option(Member), revision: Int)
+  Facts(
+    root_id: String,
+    member: Option(Member),
+    revision: Int,
+    role: String,
+    started_by: Option(String),
+  )
 }
 
 /// Family identity and its membership validator share the caller's store read.
@@ -46,7 +52,31 @@ pub fn capture_in(
   use member <- result.try(
     rows(connection, members("WHERE session=?"), [sqlight.text(session)]),
   )
-  Ok(Facts(root, list.first(member) |> option.from_result, revision))
+  let role =
+    store.one(
+      connection,
+      "SELECT role FROM sessions WHERE id=?",
+      [sqlight.text(session)],
+      decode.field(0, decode.string, decode.success),
+      "",
+    )
+    |> result.unwrap("")
+  let started_by =
+    store.one(
+      connection,
+      "SELECT started_by FROM sessions WHERE id=?",
+      [sqlight.text(session)],
+      decode.field(0, decode.optional(decode.string), decode.success),
+      "",
+    )
+    |> result.unwrap(None)
+  Ok(Facts(
+    root,
+    list.first(member) |> option.from_result,
+    revision,
+    role,
+    started_by,
+  ))
 }
 
 fn root_in(

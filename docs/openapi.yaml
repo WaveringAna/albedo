@@ -5598,6 +5598,13 @@ components:
           - type: 'null'
         root_id:
           $ref: '#/components/schemas/ID'
+        role:
+          type: string
+          maxLength: 512
+        started_by:
+          anyOf:
+          - $ref: '#/components/schemas/ID'
+          - type: 'null'
         address:
           anyOf:
           - type: string
@@ -5649,7 +5656,7 @@ components:
           - type: 'null'
       description: Live fields and cursor are captured together. Extra response fields may be ignored.
       required: [id, name, automatic_name, workspace, location, parent_id, root_id, address, depth, closed, created_at,
-        activity_at, provider_profile, model, effort, status, preview, preferences, current_progress,
+        activity_at, role, started_by, provider_profile, model, effort, status, preview, preferences, current_progress,
         activity, cursor]
     SessionPage:
       type: object

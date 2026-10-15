@@ -24,6 +24,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import sqlight
 
 const instructions =
   "Agents are sessions you spawn to work in parallel; every call is async. A lead session can keep a few long-lived peers for distinct areas, reusing useful context and starting fresh when context is unrelated; the right set depends on the project. agents.self is your handle (id, name, depth, parent). Call await agents.models() once before spawning; other providers appear as provider/model, and selecting one routes the child through that provider. Then child = await agents.self.spawn(task, name=\"scout\", model=<one of models()>, deliverable=None, evidence_bar=None, falsifier=None): it returns as soon as the child exists, never with its answer. Answers arrive later as <mail> in your conversation and start your next turn, so spawn independent children back to back and end your turn instead of waiting; never sleep or poll. Talk with await mail.submit(child, text). await agents.self.children() and siblings() return live snapshots (running, closed). running=False means no active turn; a new child may still be waiting for its kernel and have no transcript yet. It does not prove spawn failed; wait for its mail rather than cancelling it on that snapshot. await child.cancel() stops its turn, and child.cancel(tree=True) the turns of everything beneath it; await agents.cancel_all(tree=True) stops every child you have, and their descendants, in one call, so use it when the user says to stop the swarm; await child.close() when you are done with it keeps its messages and files and frees its kernel. await agents.get(to) returns a live handle for \"parent\", a family name, or any session id. On any handle, await h.messages(seq=0, offset=0, limit=4000) reads a page of that session's messages from row seq on (content, next_offset) and await h.search_messages(pattern) finds rows by seq: any session may read any other, so you can see what a child or another session did without waiting for mail. await agents.sessions(query=\"\", cwd=None, limit=20, offset=0) lists every session, most recently active first, as snapshots that also carry cwd, model, last_active, and matches; with a query it keeps sessions whose title or name contains it or whose messages do, and matches holds up to 3 of each one's newest matching rows as {seq, preview} to read with messages(seq=...). cwd keeps one directory. Only the user deletes agents: if one should go, ask them. Children nest at most 3 deep and 12 open per parent; mail any session by id instead of nesting to reach it. Children share your workspace, so give two children the same files only if one only reads."
@@ -375,18 +376,6 @@ fn own_target(
   }
 }
 
-fn own_child(
-  db: store.Store,
-  session: String,
-  args: dynamic.Dynamic,
-) -> Result(family.Member, String) {
-  use id <- result.try(text(args, "id"))
-  case family.get(db, id) {
-    Ok(Some(member)) if member.parent == session -> Ok(member)
-    _ -> Error("you can only cancel or close your own children")
-  }
-}
-
 /// The session `args.id` names, as mail would resolve it. Reading is open to
 /// every session: families only narrow who may stop whom.
 fn addressed(
@@ -462,30 +451,79 @@ fn status_fields(
 fn found_json(db: store.Store, found: sessions.Found) -> json.Json {
   let info = found.info
   let member = family.get(db, info.id) |> result.unwrap(None)
-  json.object(
-    list.append(status_fields(db, info.id, member), [
-      #("cwd", json.string(info.cwd)),
-      #("role", json.string(family.role(db, info.id) |> result.unwrap(""))),
-      #(
-        "started_by",
-        json.nullable(
-          family.started_by(db, info.id) |> result.unwrap(None),
-          json.string,
+  json.object(list.append(
+    status_fields(db, info.id, member),
+    list.append(
+      [
+        #("cwd", json.string(info.cwd)),
+        #("role", json.string(family.role(db, info.id) |> result.unwrap(""))),
+        #(
+          "started_by",
+          json.nullable(
+            family.started_by(db, info.id) |> result.unwrap(None),
+            json.string,
+          ),
         ),
-      ),
-      #("model", json.string(info.model)),
-      #("last_active", json.nullable(info.last_assistant_at, json.int)),
-      #(
-        "matches",
-        json.array(found.hits, fn(hit) {
-          json.object([
-            #("seq", json.int(hit.seq)),
-            #("preview", json.string(hit.preview)),
-          ])
-        }),
-      ),
-    ]),
-  )
+        #("model", json.string(info.model)),
+        #("last_active", json.nullable(info.last_assistant_at, json.int)),
+        #(
+          "matches",
+          json.array(found.hits, fn(hit) {
+            json.object([
+              #("seq", json.int(hit.seq)),
+              #("preview", json.string(hit.preview)),
+            ])
+          }),
+        ),
+      ],
+      snapshot_fields(db, info.id),
+    ),
+  ))
+}
+
+fn snapshot_fields(
+  db: store.Store,
+  session: String,
+) -> List(#(String, json.Json)) {
+  let owed = mail.owed_requesters(db, session) |> result.unwrap([])
+  let awaiting =
+    store.read(
+      db,
+      "SELECT DISTINCT recipient FROM mail WHERE sender=? AND kind IN ('task','request') AND delivered_at IS NOT NULL",
+      [sqlight.text(session)],
+      decode.field(0, decode.string, decode.success),
+    )
+    |> result.unwrap([])
+    |> list.filter(fn(target) {
+      mail.owes_reply(db, target, session) == Ok(True)
+    })
+  let context_tokens =
+    store.read(
+      db,
+      "SELECT usage_prompt_tokens FROM sessions WHERE id=?",
+      [sqlight.text(session)],
+      decode.field(0, decode.optional(decode.int), decode.success),
+    )
+    |> result.unwrap([])
+    |> list.first
+    |> result.unwrap(None)
+  let pinned =
+    store.read(
+      db,
+      "SELECT pinned FROM sessions WHERE id=?",
+      [sqlight.text(session)],
+      decode.field(0, decode.int, decode.success),
+    )
+    |> result.unwrap([])
+    |> list.first
+    |> result.unwrap(0)
+    == 1
+  [
+    #("pinned", json.bool(pinned)),
+    #("owed", json.int(list.length(owed))),
+    #("awaiting", json.int(list.length(awaiting))),
+    #("context_tokens", json.nullable(context_tokens, json.int)),
+  ]
 }
 
 fn member_status(db: store.Store, member: family.Member) -> json.Json {

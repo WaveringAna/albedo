@@ -489,7 +489,7 @@ approved cleanup remain explicit local operations under the ownership lock.
 ### Session representations
 
 `SessionSummary` contains `id`, `name`, `automatic_name`, `workspace`, `parent_id`,
-`root_id`, `address`, `depth`, `closed`, `created_at`, `activity_at`,
+`root_id`, `address`, `depth`, `role`, `started_by`, `closed`, `created_at`, `activity_at`,
 `provider_profile`, `model`, `effort`, `status`, `preview`, `preferences`,
 `current_progress`, `activity`, and `cursor`. Each summary captures its own
 status, progress, activity, and cursor together. Family `address` stays stable

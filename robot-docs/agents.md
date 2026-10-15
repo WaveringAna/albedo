@@ -28,6 +28,14 @@ await agents.progress("on turn.gleam now")    # shows in /agents, starts no turn
 - any session may look up and read any other: `get`, `messages`, and `search_messages` resolve names and ids the way mail does, and closed agents stay readable. cancel and close work on your own children only. `cancel(tree=True)` and `cancel_all()` stop parents before their children, so a stopped agent cannot answer by spawning, and answer the sessions that were running; they never close or delete anything. the model cannot delete an agent; it asks the user.
 - limits: 3 deep, 12 open children per parent, 1 MiB per letter, 1000 undelivered letters per session.
 
+## root peers, roles, and snapshots
+
+`agents.start(task, name=None, model=None, cwd=None, role=None)` creates a root peer
+rather than a child. The task is delivered as a request, and only the starter may
+close or cancel that peer. `agents.set_role(text, id=None)` stores optional free-form
+role text (trimmed to 512 characters). `agents.sessions` reports `role`,
+`started_by`, `pinned`, and bounded `owed`/`awaiting` request counts.
+
 ## mail delivery
 
 a letter is stored first and marked delivered in the same transaction that writes it into the recipient's transcript. an idle recipient accepts it for a turn (kernel preparation may still be pending); a running one reads it at its next step.
