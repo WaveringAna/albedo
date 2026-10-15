@@ -870,8 +870,12 @@ fn create_peer(
       dict.get(state.sessions, caller)
       |> result.replace_error("session not found"),
     )
+    let requested_cwd = case string.trim(cwd) {
+      "" -> cached.cwd
+      _ -> cwd
+    }
     use workspace <- result.try(
-      location.workspace(cwd)
+      location.workspace(requested_cwd)
       |> result.map_error(fn(failure) { failure.detail }),
     )
     use #(provider, selected_model) <- result.try(child_model(

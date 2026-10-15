@@ -2232,11 +2232,13 @@ type Session struct {
 	ProviderProfile *ID                `json:"provider_profile" nullable:"true"`
 
 	// Revision Opaque identity. Never infer a resource type or route from its contents.
-	Revision ID `json:"revision"`
+	Revision ID     `json:"revision"`
+	Role     string `json:"role"`
 
 	// RootID Opaque identity. Never infer a resource type or route from its contents.
 	RootID    ID               `json:"root_id"`
 	Selection SessionSelection `json:"selection"`
+	StartedBy *ID              `json:"started_by" nullable:"true"`
 	Status    SessionStatus    `json:"status"`
 	Usage     Usage            `json:"usage"`
 
@@ -2539,10 +2541,12 @@ type SessionSummary struct {
 	Preferences     SessionPreferences `json:"preferences"`
 	Preview         Preview            `json:"preview"`
 	ProviderProfile *ID                `json:"provider_profile" nullable:"true"`
+	Role            string             `json:"role"`
 
 	// RootID Opaque identity. Never infer a resource type or route from its contents.
-	RootID ID            `json:"root_id"`
-	Status SessionStatus `json:"status"`
+	RootID    ID            `json:"root_id"`
+	StartedBy *ID           `json:"started_by" nullable:"true"`
+	Status    SessionStatus `json:"status"`
 
 	// Workspace Canonical daemon-host location, local or SSH. Clients do not resolve this path locally.
 	Workspace Workspace `json:"workspace"`

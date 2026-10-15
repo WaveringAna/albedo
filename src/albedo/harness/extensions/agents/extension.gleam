@@ -81,15 +81,17 @@ fn answered(
   case event {
     hook.Stopping(held: 0, ..) ->
       case mail.owed_requesters(db, session) {
-        Ok([first, ..rest]) ->
-          hook.Verdict(
-            ..hook.proceed,
-            block: Some(
+        Ok([first, ..rest] as requesters) -> {
+          let reminder = case requesters, family.get(db, session) {
+            [parent], Ok(Some(member)) if member.parent == parent ->
+              "You have not answered your parent yet. Send your result with await mail.submit(\"parent\", result) before you finish."
+            _, _ ->
               "You owe a reply to "
               <> string.join([first, ..rest], ", ")
-              <> ". Send it with await mail.submit(\"<id>\", result) before you finish.",
-            ),
-          )
+              <> ". Send it with await mail.submit(\"<id>\", result) before you finish."
+          }
+          hook.Verdict(..hook.proceed, block: Some(reminder))
+        }
         _ -> hook.proceed
       }
     _ -> hook.proceed
@@ -286,7 +288,7 @@ fn dispatch(
         |> result.unwrap(None)
         |> option.unwrap(session)
       use _ <- result.try(
-        case target == session || ownable(db, session, target) {
+        case target == session || owns_target(db, session, target) {
           True -> Ok(Nil)
           False ->
             Error("you can only set your own, a child, or a peer you started")
@@ -356,10 +358,11 @@ fn stop_each(
   })
 }
 
-fn ownable(db: store.Store, caller: String, target: String) -> Bool {
-  case family.get(db, target) {
-    Ok(Some(member)) -> member.parent == caller
-    _ -> False
+fn owns_target(db: store.Store, caller: String, target: String) -> Bool {
+  case family.get(db, target), family.started_by(db, target) {
+    Ok(Some(member)), _ if member.parent == caller -> True
+    _, Ok(Some(owner)) if owner == caller -> True
+    _, _ -> False
   }
 }
 
@@ -369,10 +372,9 @@ fn own_target(
   args: dynamic.Dynamic,
 ) -> Result(String, String) {
   use id <- result.try(text(args, "id"))
-  case family.get(db, id), family.started_by(db, id) {
-    Ok(Some(member)), _ if member.parent == session -> Ok(id)
-    _, Ok(Some(owner)) if owner == session -> Ok(id)
-    _, _ -> Error("you can only cancel or close your own children or peers")
+  case owns_target(db, session, id) {
+    True -> Ok(id)
+    False -> Error("you can only cancel or close your own children or peers")
   }
 }
 
@@ -438,8 +440,7 @@ fn status_fields(
     Ok(agents.RunningState(running)) -> running
     _ -> False
   }
-  let closed =
-    option.map(member, fn(member) { member.closed }) |> option.unwrap(False)
+  let closed = family.closed(db, session) |> result.unwrap(False)
   list.append(handle_fields(db, session, member), [
     #("running", json.bool(running)),
     #("closed", json.bool(closed)),

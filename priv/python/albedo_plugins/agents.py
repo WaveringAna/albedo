@@ -101,35 +101,6 @@ class Agent:
             )
         )
 
-    async def start(
-        self,
-        task: str,
-        name: str,
-        model: str,
-        *,
-        cwd: str | None = None,
-        role: str | None = None,
-    ) -> "Agent":
-        """Start a root peer owned by this session; its first letter is a request."""
-        if not all(
-            isinstance(value, str) and value.strip() for value in (task, name, model)
-        ):
-            raise TypeError("task, name, and model must be non-empty strings")
-        raw = cast(
-            dict,
-            await _act(
-                "agents.start",
-                {
-                    "task": task,
-                    "name": name,
-                    "model": model,
-                    "cwd": _directory(cwd),
-                    "role": role or "",
-                },
-            ),
-        )
-        return _agent(raw)
-
     async def children(self) -> list["Agent"]:
         if self.id != agents.self.id:
             raise PermissionError(
@@ -248,6 +219,35 @@ class Agents:
         global _models_seen
         _models_seen = True
         return list(cast(list, await host("agents.models", {})))
+
+    async def start(
+        self,
+        task: str,
+        name: str,
+        model: str,
+        *,
+        cwd: str | None = None,
+        role: str | None = None,
+    ) -> "Agent":
+        """Start a root peer owned by this session; its first letter is a request."""
+        if not all(
+            isinstance(value, str) and value.strip() for value in (task, name, model)
+        ):
+            raise TypeError("task, name, and model must be non-empty strings")
+        raw = cast(
+            dict,
+            await _act(
+                "agents.start",
+                {
+                    "task": task,
+                    "name": name,
+                    "model": model,
+                    "cwd": _directory(cwd),
+                    "role": role or "",
+                },
+            ),
+        )
+        return _agent(raw)
 
     async def cancel_all(self, *, tree: bool = True) -> list[str]:
         """Stop the running turn of every one of your children, and with

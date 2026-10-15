@@ -183,7 +183,14 @@ class MigrationsTest(unittest.TestCase):
                 row = db.execute(
                     "SELECT body FROM mail WHERE id='legacy-request'"
                 ).fetchone()
+                indexes = {
+                    item[0]
+                    for item in db.execute(
+                        "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='mail'"
+                    )
+                }
             self.assertIn("'request'", definition)
+            self.assertIn("mail_outgoing", indexes)
             self.assertEqual(row, ("legacy body",))
 
     def test_startup_migrates_legacy_images_once_with_a_consistent_backup(self):

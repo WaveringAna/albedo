@@ -101,6 +101,6 @@ Direct parent deletion requires a successful child lookup. Tree deletion collect
 
 ## requests, roles, and peers
 
-`await mail.request(to, body)` creates a request; the recipient owes the sender until it sends any letter. `await mail.open()` returns bounded `owed` and `awaiting` entries. `await agents.set_role(text, id=None)` stores optional trimmed metadata for workspace views; it is not prompt context.
+`await mail.request(to, body)` creates a request; the recipient owes the sender until it sends any letter. Peer messages do not create obligations; a child still owes its parent after a task or ordinary message. `await mail.open()` returns bounded `owed` and `awaiting` entries. `await agents.set_role(text, id=None)` stores optional trimmed metadata for workspace views; it is not prompt context.
 
 Peers are root sessions started with `await agents.start(task, name, model, cwd=None, role=None)`. They have no family parent and do not count against child limits. The starter alone may cancel or close its peers. Session snapshots expose role, provenance, pinned state, and open request counts.

@@ -79,6 +79,7 @@ CREATE TABLE IF NOT EXISTS mail (
 );
 CREATE INDEX IF NOT EXISTS mail_pending ON mail(created_at) WHERE delivered_at IS NULL;
 CREATE INDEX IF NOT EXISTS mail_conversation ON mail(recipient,sender,created_at);
+CREATE INDEX IF NOT EXISTS mail_outgoing ON mail(sender,recipient,created_at);
 "
 
 pub fn initialise(db: store.Store) -> Result(Nil, String) {
@@ -129,7 +130,7 @@ fn upgrade_kind_check(connection: sqlight.Connection) -> Result(Nil, String) {
         ))
         use _ <- result.try(store.exec(
           connection,
-          "CREATE INDEX mail_pending ON mail(created_at) WHERE delivered_at IS NULL; CREATE INDEX mail_conversation ON mail(recipient,sender,created_at)",
+          "CREATE INDEX mail_pending ON mail(created_at) WHERE delivered_at IS NULL; CREATE INDEX mail_conversation ON mail(recipient,sender,created_at); CREATE INDEX mail_outgoing ON mail(sender,recipient,created_at)",
         ))
         Ok(Nil)
       })
@@ -417,7 +418,7 @@ pub fn owed_requesters(
 ) -> Result(List(String), String) {
   use senders <- result.try(store.read(
     db,
-    "SELECT DISTINCT sender FROM mail WHERE recipient=? AND sender IS NOT NULL AND kind IN ('task','request') AND delivered_at IS NOT NULL",
+    "SELECT DISTINCT sender FROM mail WHERE recipient=? AND sender IS NOT NULL AND kind IN ('task','request','message') AND delivered_at IS NOT NULL",
     [sqlight.text(recipient)],
     decode.field(0, decode.string, decode.success),
   ))
@@ -428,8 +429,8 @@ pub fn owed_requesters(
   )
 }
 
-/// Whether `child` wrote to `parent` since the parent's latest task or
-/// message reached it. A child that was never given anything owes nothing.
+/// Whether `recipient` has answered `sender`'s latest request. A parent's
+/// ordinary message also asks its child for a reply.
 pub fn owes_reply(
   db: store.Store,
   child: String,
@@ -437,7 +438,7 @@ pub fn owes_reply(
 ) -> Result(Bool, String) {
   store.read(
     db,
-    "SELECT (SELECT max(delivered_at) FROM mail WHERE recipient=?1 AND sender=?2 AND kind IN ('task','request','message')), (SELECT max(created_at) FROM mail WHERE recipient=?2 AND sender=?1)",
+    "SELECT (SELECT max(delivered_at) FROM mail WHERE recipient=?1 AND sender=?2 AND (kind IN ('task','request') OR (kind='message' AND EXISTS (SELECT 1 FROM session_family WHERE session=?1 AND parent=?2)))), (SELECT max(created_at) FROM mail WHERE recipient=?2 AND sender=?1)",
     [sqlight.text(child), sqlight.text(parent)],
     {
       use asked <- decode.field(0, decode.optional(decode.int))
@@ -592,26 +593,29 @@ pub fn open_json(
   db: store.Store,
   session: String,
 ) -> Result(json.Json, String) {
-  let row = fn(recipient: String, sender: String) {
+  let row = fn(recipient: String, sender: String, other: String) {
     store.read(
       db,
-      "SELECT id,sender,substr(body,1,512),created_at FROM mail WHERE recipient=? AND sender=? AND kind='request' AND delivered_at IS NOT NULL ORDER BY created_at DESC,id DESC LIMIT 1",
+      "SELECT id,substr(body,1,512),created_at FROM mail WHERE recipient=? AND sender=? AND kind='request' AND delivered_at IS NOT NULL ORDER BY created_at DESC,id DESC LIMIT 1",
       [sqlight.text(recipient), sqlight.text(sender)],
       {
         use id <- decode.field(0, decode.string)
-        use sender <- decode.field(1, decode.string)
-        use body <- decode.field(2, decode.string)
-        use since <- decode.field(3, decode.int)
-        decode.success(
-          json.object([
-            #("session", json.string(sender)),
-            #("name", json.string(family.name_of(db, sender))),
-            #("letter", json.string(id)),
-            #("preview", json.string(body)),
-            #("since", json.int(since)),
-          ]),
-        )
+        use body <- decode.field(1, decode.string)
+        use since <- decode.field(2, decode.int)
+        decode.success(#(id, body, since))
       },
+    )
+    |> result.map(
+      list.map(_, fn(item) {
+        let #(id, body, since) = item
+        json.object([
+          #("session", json.string(other)),
+          #("name", json.string(family.name_of(db, other))),
+          #("letter", json.string(id)),
+          #("preview", json.string(body)),
+          #("since", json.int(since)),
+        ])
+      }),
     )
   }
   use owed <- result.try(store.read(
@@ -628,14 +632,17 @@ pub fn open_json(
   ))
   let owed =
     list.fold(owed, [], fn(found, sender) {
-      case owes_reply(db, session, sender), row(session, sender) {
+      case owes_reply(db, session, sender), row(session, sender, sender) {
         Ok(True), Ok([item, ..]) -> [item, ..found]
         _, _ -> found
       }
     })
   let awaiting =
     list.fold(awaiting, [], fn(found, recipient) {
-      case owes_reply(db, recipient, session), row(recipient, session) {
+      case
+        owes_reply(db, recipient, session),
+        row(recipient, session, recipient)
+      {
         Ok(True), Ok([item, ..]) -> [item, ..found]
         _, _ -> found
       }

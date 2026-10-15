@@ -41,6 +41,7 @@ pub fn apply(db: sqlight.Connection) -> Result(Nil, String) {
       #("context_window", "INTEGER"),
       #("role", "TEXT NOT NULL DEFAULT ''"),
       #("started_by", "TEXT"),
+      #("peer_closed_at", "INTEGER"),
     ]),
   )
   use _ <- result.try(

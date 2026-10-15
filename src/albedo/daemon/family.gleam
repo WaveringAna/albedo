@@ -33,6 +33,7 @@ pub type Facts {
     revision: Int,
     role: String,
     started_by: Option(String),
+    closed: Bool,
   )
 }
 
@@ -70,12 +71,23 @@ pub fn capture_in(
       "",
     )
     |> result.unwrap(None)
+  let closed =
+    store.one(
+      connection,
+      "SELECT peer_closed_at IS NOT NULL FROM sessions WHERE id=?",
+      [sqlight.text(session)],
+      decode.field(0, decode.int, decode.success),
+      "",
+    )
+    |> result.unwrap(0)
+    == 1
   Ok(Facts(
     root,
     list.first(member) |> option.from_result,
     revision,
     role,
     started_by,
+    closed,
   ))
 }
 
@@ -306,10 +318,40 @@ pub fn close(db: store.Store, session: String) -> Result(Nil, String) {
           )
           changed_in(connection, session)
         }
+        [] -> {
+          use closed <- result.try(store.rows(
+            connection,
+            "UPDATE sessions SET peer_closed_at=? WHERE id=? AND started_by IS NOT NULL AND peer_closed_at IS NULL RETURNING id",
+            [sqlight.int(usage.now()), sqlight.text(session)],
+            decode.field(0, decode.string, decode.success),
+          ))
+          case closed {
+            [_] -> changed_in(connection, session)
+            _ -> Ok(Nil)
+          }
+        }
         _ -> Ok(Nil)
       }
     })
   })
+}
+
+pub fn closed(db: store.Store, session: String) -> Result(Bool, String) {
+  case get(db, session) {
+    Ok(Some(member)) -> Ok(member.closed)
+    Ok(None) ->
+      store.query(db, fn(connection) {
+        store.one(
+          connection,
+          "SELECT peer_closed_at IS NOT NULL FROM sessions WHERE id=?",
+          [sqlight.text(session)],
+          decode.field(0, decode.int, decode.success),
+          "session not found",
+        )
+        |> result.map(fn(value) { value == 1 })
+      })
+    Error(error) -> Error(error)
+  }
 }
 
 pub type Address {
