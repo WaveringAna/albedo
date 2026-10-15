@@ -134,13 +134,15 @@ class Search(Generic[Result]):
         raise self._unawaited()
 
 
-async def _run(command: str) -> tuple[int | None, str]:
+async def _run(command: str) -> tuple[int | None, str, bool]:
     """One supervised shell job, awaited to completion, with its bounded output.
     The plugin's own work, so neither traced as the cell's command nor refused."""
     job = jobs.start(["/bin/sh", "-c", command], SEARCH_TIMEOUT, traced=False)
     try:
         await job
-        return job.exit_code, job.tail(jobs.preview_limit)
+        clipped = job.capture.seen > job.capture.retained
+        limit = min(jobs.preview_limit, job.capture.retained)
+        return job.exit_code, str(job.read(offset=0, limit=limit)), clipped
     except asyncio.CancelledError:
         await job.stop()
         raise
@@ -444,7 +446,7 @@ class Files:
             )
 
         per_match = 4 + 2 * context
-        status, output = await _run(
+        status, output, clipped = await _run(
             f"{search('--json', *visible, *(['-C', str(context)] if context else []))}"
             f" | head -n {max(1, max_results) * per_match}"
         )
@@ -474,19 +476,20 @@ class Files:
             )
             matched += kind == "match"
         if results:
-            return Rows(results)
+            return Rows(results, truncated=clipped)
         skipped = [
             *([] if hidden else ["hidden files"]),
             *([] if ignored else [".gitignore/.ignore rules"]),
         ]
         withheld: list[str] = []
         if skipped:
-            _, listing = await _run(
+            _, listing, _ = await _run(
                 f"{search('-l', '--hidden', '--no-ignore')} | head -n {WITHHELD}"
             )
             withheld = listing.splitlines()
         return Rows(
-            note=_empty_note(pattern, targets, searched, skipped, glob, withheld)
+            truncated=clipped,
+            note=_empty_note(pattern, targets, searched, skipped, glob, withheld),
         )
 
     def paths(
@@ -526,12 +529,12 @@ class Files:
         command = " ".join(
             shlex.quote(part) for part in ["rg", *flags, *map(str, targets)]
         )
-        _, output = await _run(command)
+        _, output, clipped = await _run(command)
         matches = _name_matcher(pattern)
         # rg lists "./x" under ".", where a path from the root is just "x"
         listed = (line.removeprefix("./") for line in output.splitlines() if line)
         found = [line for line in listed if matches(line)]
-        return Rows(found[:max_results], truncated=len(found) > max_results)
+        return Rows(found[:max_results], truncated=len(found) > max_results or clipped)
 
     @hook.reported(
         "files.edit",

@@ -99,7 +99,7 @@ def setup(api: PythonApi) -> dict[str, object]:
                     + " > "
                     + shlex.quote(str(diff))
                 )
-                status, output = await _run(command)
+                status, output, _ = await _run(command)
                 if status != 0:
                     raise RuntimeError(
                         f"git diff failed: {output.strip()[-400:] or f'exit {status}'}"
@@ -189,7 +189,7 @@ async def _render(
                 *options,
             ]
         )
-        status, output = await _run(command)
+        status, output, _ = await _run(command)
         if status != 0:
             failure = [
                 line
