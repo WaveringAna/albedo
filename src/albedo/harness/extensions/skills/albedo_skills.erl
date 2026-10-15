@@ -244,7 +244,7 @@ valid_selected_skill({skill, SelectedName, SelectedDescription, Source,
                           when Size > ?MAX_SKILL_BYTES ->
                             {error, <<"SKILL.md exceeds 1048576 bytes">>};
                         {ok, #file_info{type = regular}} ->
-                            case frontmatter(Canonical) of
+                            case frontmatter(Canonical, SelectedName) of
                                 {ok, SelectedName, SelectedDescription} ->
                                     {ok, {SelectedName, SelectedDescription, Source,
                                           ActualDirectory, Canonical}};
@@ -379,7 +379,7 @@ parse_skill(Skill0, Entry) ->
                   when Size > ?MAX_SKILL_BYTES ->
                     {error, "SKILL.md exceeds 1048576 bytes"};
                 {ok, #file_info{type = regular}} ->
-                    case frontmatter(SkillFile) of
+                    case frontmatter(SkillFile, Entry) of
                         {ok, Name, Description} ->
                             case Name =:= unicode:characters_to_binary(Entry) of
                                 true -> {ok, {Name, Description,
@@ -395,7 +395,26 @@ parse_skill(Skill0, Entry) ->
         {error, _} -> {error, "SKILL.md cannot be resolved"}
     end.
 
-frontmatter(Path) ->
+%% A skill that omits `name` (many installed ones do, against the specification)
+%% takes `Default`, the name of the directory it was found under.
+frontmatter(Path, Default) ->
+    case read_frontmatter(Path) of
+        {ok, undefined, Description} -> default_name(Default, Description);
+        Metadata -> Metadata
+    end.
+
+default_name(Default, Description) ->
+    try unicode:characters_to_binary(Default) of
+        Name ->
+            case valid_name(Name) of
+                true -> {ok, Name, Description};
+                false -> {error, "directory name is not a valid skill name"}
+            end
+    catch
+        _:_ -> {error, "directory name is not a valid skill name"}
+    end.
+
+read_frontmatter(Path) ->
     case file:open(Path, [read, binary, raw]) of
         {ok, Io} ->
             Read = file:pread(Io, 0, ?MAX_FRONTMATTER_BYTES + 1),
@@ -454,8 +473,9 @@ metadata(Document) ->
                   proplists:get_all_values("description", Document)} of
                 {[Name0], [Description0]} when is_list(Name0), is_list(Description0) ->
                     validate_metadata(Name0, Description0);
-                {[], _} -> {error, "frontmatter is missing name"};
                 {_, []} -> {error, "frontmatter is missing description"};
+                {[], [Description0]} when is_list(Description0) ->
+                    validate_metadata(undefined, Description0);
                 {[_], [_]} -> {error, "name and description must be YAML strings"};
                 _ -> {error, "frontmatter has duplicate name or description fields"}
             end
@@ -463,11 +483,12 @@ metadata(Document) ->
 
 validate_metadata(Name0, Description0) ->
     try
-        Name = unicode:characters_to_binary(Name0),
+        Name = case Name0 of
+            undefined -> undefined;
+            _ -> unicode:characters_to_binary(Name0)
+        end,
         Description = unicode:characters_to_binary(string:trim(Description0)),
-        NameValid = byte_size(Name) >= 1 andalso byte_size(Name) =< 64
-            andalso re:run(Name, <<"^[a-z0-9]+(?:-[a-z0-9]+)*$">>,
-                           [{capture, none}, unicode]) =:= match,
+        NameValid = Name =:= undefined orelse valid_name(Name),
         DescriptionValid = byte_size(Description) >= 1
             andalso length(unicode:characters_to_list(Description)) =< 1024,
         case {NameValid, DescriptionValid} of
@@ -478,6 +499,11 @@ validate_metadata(Name0, Description0) ->
     catch
         _:_ -> {error, "frontmatter strings must be valid UTF-8"}
     end.
+
+valid_name(Name) ->
+    byte_size(Name) >= 1 andalso byte_size(Name) =< 64
+        andalso re:run(Name, <<"^[a-z0-9]+(?:-[a-z0-9]+)*$">>,
+                       [{capture, none}, unicode]) =:= match.
 
 walk_resources(_Directory, _Relative, _Depth, Files, Diagnostics,
                Seen, Entries, _Truncated)

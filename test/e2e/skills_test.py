@@ -33,10 +33,11 @@ class SkillSymlinkTests(unittest.TestCase):
         with self.app.api(path, body) as response:
             return json.load(response)
 
-    def skill(self, directory, name, body="INSTRUCTIONS"):
+    def skill(self, directory, name, body="INSTRUCTIONS", named=True):
         directory.mkdir(parents=True, exist_ok=True)
         source = directory / "SKILL.md"
-        source.write_text(f"---\nname: {name}\ndescription: {name}\n---\n{body}\n")
+        field = f"name: {name}\n" if named else ""
+        source.write_text(f"---\n{field}description: {name}\n---\n{body}\n")
         return source
 
     def reload(self):
@@ -99,6 +100,25 @@ class SkillSymlinkTests(unittest.TestCase):
             self.assertIn(
                 str(self.installed / name / "SKILL.md"), request["instructions"]
             )
+
+    def test_a_skill_without_a_name_takes_its_directory_name(self):
+        self.skill(self.installed / "unnamed", "unnamed", "BODY_unnamed", named=False)
+        self.skill(self.installed / "Not_A_Name", "x", named=False)
+        catalog = self.request(self.route)
+        rows = {row["title"]: row for row in catalog["discovery"]["candidates"]}
+        self.assertTrue(rows["unnamed"]["valid"], rows["unnamed"])
+        self.assertIsNone(rows["unnamed"]["diagnostic"])
+        self.reload()
+        self.probe(
+            "activation = await commands.invoke('/unnamed')\n"
+            "assert 'BODY_unnamed' in activation['instructions'], activation"
+        )
+        # A directory that is no valid skill name cannot stand in for one.
+        details = [item["detail"] for item in catalog["discovery"]["diagnostics"]]
+        self.assertTrue(
+            any("directory name is not a valid skill name" in text for text in details),
+            details,
+        )
 
     def test_linked_instructions_keep_installed_siblings_and_follow_resource_links(
         self,

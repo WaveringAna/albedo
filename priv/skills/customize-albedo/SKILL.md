@@ -46,7 +46,7 @@ description: Drafts release notes from merged pull requests and tags. Use when t
 
 Frontmatter:
 
-- `name`: required. 1-64 characters of `a-z`, `0-9`, and single hyphens, equal to the directory name.
+- `name`: 1-64 characters of `a-z`, `0-9`, and single hyphens, equal to the directory name. Write it, since the specification requires it; albedo falls back to the directory name when a downloaded skill leaves it out.
 - `description`: required, at most 1024 characters. Say what the skill does and when to use it, and name the concrete tasks and phrases a request would contain. "Helps with PDFs" never triggers; "Extracts text and tables from PDFs, fills forms, merges files. Use when working with PDF documents" does.
 - `license`, `compatibility`, and `metadata` are optional. `allowed-tools` is accepted but grants nothing.
 
