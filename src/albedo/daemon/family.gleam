@@ -142,6 +142,21 @@ pub fn valid_name(name: String) -> Result(Nil, String) {
 }
 
 /// Read the optional free-form role metadata.
+pub fn started_by(
+  db: store.Store,
+  session: String,
+) -> Result(Option(String), String) {
+  store.read(
+    db,
+    "SELECT started_by FROM sessions WHERE id=?",
+    [sqlight.text(session)],
+    decode.field(0, decode.optional(decode.string), decode.success),
+  )
+  |> result.map(fn(rows) {
+    list.first(rows) |> option.from_result |> option.flatten
+  })
+}
+
 pub fn role(db: store.Store, session: String) -> Result(String, String) {
   store.read(
     db,

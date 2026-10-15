@@ -134,6 +134,30 @@ fn dispatch(
         Ok(_) -> Ok(json.array([], json.string))
         Error(error) -> Error(error)
       }
+    "agents.start" -> {
+      use task <- result.try(text(args, "task"))
+      use name <- result.try(text(args, "name"))
+      use model <- result.try(text(args, "model"))
+      let cwd =
+        decode.run(
+          args,
+          decode.optional_field("cwd", "", decode.string, decode.success),
+        )
+        |> result.unwrap("")
+      let role =
+        decode.run(
+          args,
+          decode.optional_field("role", "", decode.string, decode.success),
+        )
+        |> result.unwrap("")
+      use started <- result.try(
+        agents.call(agents.Start(session, task, name, model, cwd, role)),
+      )
+      case started {
+        agents.Started(info) -> Ok(handle_json(db, info.id, None))
+        _ -> Error("start answered unexpectedly")
+      }
+    }
     "agents.spawn" -> {
       use task <- result.try(text(args, "task"))
       use name <- result.try(text(args, "name"))
@@ -174,14 +198,20 @@ fn dispatch(
         _ -> Ok(json.array([], json.string))
       }
     "agents.close" -> {
-      use child <- result.try(own_child(db, session, args))
-      agents.call(agents.Close(child.session))
+      use child <- result.try(own_target(db, session, args))
+      agents.call(agents.Close(child))
       |> result.replace(json.bool(True))
     }
     "agents.cancel" -> {
-      use child <- result.try(own_child(db, session, args))
+      use child_id <- result.try(own_target(db, session, args))
       use tree <- result.try(tree_flag(args))
-      stop_all(db, [child], tree)
+      use child <- result.try(family.get(db, child_id))
+      case child {
+        Some(member) -> stop_all(db, [member], tree)
+        None ->
+          agents.call(agents.Stop(child_id))
+          |> result.replace(json.array([], json.string))
+      }
     }
     "agents.cancel_all" -> {
       use tree <- result.try(tree_flag(args))
@@ -331,6 +361,19 @@ fn ownable(db: store.Store, caller: String, target: String) -> Bool {
   }
 }
 
+fn own_target(
+  db: store.Store,
+  session: String,
+  args: dynamic.Dynamic,
+) -> Result(String, String) {
+  use id <- result.try(text(args, "id"))
+  case family.get(db, id), family.started_by(db, id) {
+    Ok(Some(member)), _ if member.parent == session -> Ok(id)
+    _, Ok(Some(owner)) if owner == session -> Ok(id)
+    _, _ -> Error("you can only cancel or close your own children or peers")
+  }
+}
+
 fn own_child(
   db: store.Store,
   session: String,
@@ -422,6 +465,13 @@ fn found_json(db: store.Store, found: sessions.Found) -> json.Json {
     list.append(status_fields(db, info.id, member), [
       #("cwd", json.string(info.cwd)),
       #("role", json.string(family.role(db, info.id) |> result.unwrap(""))),
+      #(
+        "started_by",
+        json.nullable(
+          family.started_by(db, info.id) |> result.unwrap(None),
+          json.string,
+        ),
+      ),
       #("model", json.string(info.model)),
       #("last_active", json.nullable(info.last_assistant_at, json.int)),
       #(

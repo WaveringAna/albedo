@@ -53,6 +53,7 @@ class Agent:
     id: str
     name: str
     role: str | None
+    started_by: str | None
     depth: int
     parent: "Agent | None" = None
     running: bool | None = None
@@ -99,6 +100,35 @@ class Agent:
                 ),
             )
         )
+
+    async def start(
+        self,
+        task: str,
+        name: str,
+        model: str,
+        *,
+        cwd: str | None = None,
+        role: str | None = None,
+    ) -> "Agent":
+        """Start a root peer owned by this session; its first letter is a request."""
+        if not all(
+            isinstance(value, str) and value.strip() for value in (task, name, model)
+        ):
+            raise TypeError("task, name, and model must be non-empty strings")
+        raw = cast(
+            dict,
+            await _act(
+                "agents.start",
+                {
+                    "task": task,
+                    "name": name,
+                    "model": model,
+                    "cwd": _directory(cwd),
+                    "role": role or "",
+                },
+            ),
+        )
+        return _agent(raw)
 
     async def children(self) -> list["Agent"]:
         if self.id != agents.self.id:
@@ -169,6 +199,7 @@ def _agent(raw: dict) -> Agent:
         id=raw["id"],
         name=raw["name"],
         role=raw.get("role"),
+        started_by=raw.get("started_by"),
         depth=raw["depth"],
         parent=_agent(parent) if isinstance(parent, dict) else None,
         running=raw.get("running"),
