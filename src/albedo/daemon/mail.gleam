@@ -90,7 +90,50 @@ pub fn initialise(db: store.Store) -> Result(Nil, String) {
         "TEXT NOT NULL DEFAULT 'mail' CHECK(delivery_owner IN ('mail','input'))",
       ),
     ])
+    |> result.try(fn(_) { upgrade_kind_check(connection) })
   })
+}
+
+fn upgrade_kind_check(connection: sqlight.Connection) -> Result(Nil, String) {
+  use definition <- result.try(store.one(
+    connection,
+    "SELECT sql FROM sqlite_master WHERE type='table' AND name='mail'",
+    [],
+    decode.field(0, decode.string, decode.success),
+    "mail table is missing",
+  ))
+  case string.contains(definition, "'request'") {
+    True -> Ok(Nil)
+    False ->
+      store.transaction(connection, fn() {
+        use _ <- result.try(store.exec(
+          connection,
+          "CREATE TABLE mail_upgrade ("
+            <> "id TEXT PRIMARY KEY,"
+            <> "recipient TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,"
+            <> "sender TEXT REFERENCES sessions(id) ON DELETE SET NULL,"
+            <> "sender_name TEXT NOT NULL,"
+            <> "kind TEXT NOT NULL CHECK(kind IN ('task','request','message','result','unreviewed','webhook')),"
+            <> "body TEXT NOT NULL,created_at INTEGER NOT NULL,delivered_at INTEGER,"
+            <> "delivery_owner TEXT NOT NULL DEFAULT 'mail' CHECK(delivery_owner IN ('mail','input')),"
+            <> "attempts INTEGER NOT NULL DEFAULT 0,last_error TEXT)",
+        ))
+        use _ <- result.try(store.exec(
+          connection,
+          "INSERT INTO mail_upgrade SELECT id,recipient,sender,sender_name,kind,body,created_at,delivered_at,delivery_owner,attempts,last_error FROM mail",
+        ))
+        use _ <- result.try(store.exec(connection, "DROP TABLE mail"))
+        use _ <- result.try(store.exec(
+          connection,
+          "ALTER TABLE mail_upgrade RENAME TO mail",
+        ))
+        use _ <- result.try(store.exec(
+          connection,
+          "CREATE INDEX mail_pending ON mail(created_at) WHERE delivered_at IS NULL; CREATE INDEX mail_conversation ON mail(recipient,sender,created_at)",
+        ))
+        Ok(Nil)
+      })
+  }
 }
 
 pub fn kind_name(kind: Kind) -> String {
