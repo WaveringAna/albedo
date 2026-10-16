@@ -9,6 +9,7 @@ import albedo/harness/extensions/codex/extension as codex
 import albedo/harness/extensions/colab/extension as colab
 import albedo/harness/extensions/commands/extension as commands
 import albedo/harness/extensions/cua/extension as cua
+import albedo/harness/extensions/discord/extension as discord
 import albedo/harness/extensions/exa/extension as exa
 import albedo/harness/extensions/files/extension as files
 import albedo/harness/extensions/hooks/extension as hooks
@@ -94,6 +95,7 @@ fn installed() -> Config {
       view.extension(),
       proxy.extension(),
       webhooks.extension(),
+      discord.extension(),
       hooks.extension(),
       warm.extension(),
       exa.extension(),

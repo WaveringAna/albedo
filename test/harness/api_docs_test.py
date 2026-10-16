@@ -67,6 +67,7 @@ def namespace() -> dict[str, object]:
         "view",
         "browser",
         "cua",
+        "discord",
     ]:
         result = importlib.import_module("albedo_plugins." + name).setup(api)
         bindings.update(

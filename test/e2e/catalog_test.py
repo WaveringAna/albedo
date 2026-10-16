@@ -23,7 +23,11 @@ class CatalogTest(unittest.TestCase):
             return json.load(response)
 
     def discovery(self, session=None):
-        return self.request(f"/sessions/{session or self.session}/catalog")["discovery"]
+        # One page holds every candidate: the default page of 50 is smaller
+        # than the installed extensions plus the shipped skills.
+        return self.request(f"/sessions/{session or self.session}/catalog?limit=200")[
+            "discovery"
+        ]
 
     def commands(self, session=None):
         return self.request(f"/sessions/{session or self.session}/catalog")["loaded"][
