@@ -398,8 +398,12 @@ func (t *transcriptState) closeTurn(stopped bool) []HistoryEntry {
 }
 
 func inputSpeaker(evt daemon.StreamEvent) string {
-	if evt.Source == "mail" {
+	switch evt.Source {
+	case "mail":
 		return cmp.Or(evt.Speaker, "Agent")
+	case "event":
+		// Named by its producer, such as discord.
+		return cmp.Or(evt.Speaker, "event")
 	}
 	if evt.Source == "" || evt.Source == "chat" {
 		return "You"

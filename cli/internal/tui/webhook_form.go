@@ -3,13 +3,10 @@ package tui
 import (
 	"albedo/cli/internal/daemon"
 	"errors"
-	"fmt"
 	"regexp"
-	"slices"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/charmbracelet/x/ansi"
 )
 
 // webhookForm adds a hook or edits one on a single screen: the session it
@@ -18,17 +15,14 @@ import (
 type webhookForm struct {
 	form
 	// Editing is the hook being edited; nil for a new hook.
-	Editing         *webhookEntry
-	Current, Chosen string
-	// Sessions are offered in order; Chosen starts at Current, the session
-	// the screen was opened from.
-	Sessions []daemon.Session
+	Editing *webhookEntry
+	sessionChoice
 }
 
 var hookFields = []string{hookFieldSession, hookFieldName, hookFieldSecret, hookFieldHeader, hookFieldPrefix}
 
 func newWebhookForm(editing *webhookEntry, sessions []daemon.Session, current string) *webhookForm {
-	f := &webhookForm{form: newForm(hookFields, hookFieldSecret), Sessions: sessions, Current: current, Chosen: current}
+	f := &webhookForm{form: newForm(hookFields, hookFieldSecret), sessionChoice: sessionChoice{Sessions: sessions, Current: current, Chosen: current}}
 	f.Inputs[hookFieldSession].Placeholder = "type to filter"
 	f.Inputs[hookFieldName].Placeholder = "github-deploys"
 	f.Inputs[hookFieldHeader].SetValue(defaultSignatureHeader)
@@ -49,22 +43,6 @@ func newWebhookForm(editing *webhookEntry, sessions []daemon.Session, current st
 
 func (f *webhookForm) current() string { return hookFields[f.Focus] }
 
-// matches are the sessions the picker's filter leaves, in order.
-func (f *webhookForm) matches() []daemon.Session {
-	query := strings.ToLower(strings.TrimSpace(f.Inputs[hookFieldSession].Value()))
-	var out []daemon.Session
-	for _, s := range f.Sessions {
-		if query == "" || strings.Contains(strings.ToLower(sessionTitle(s)+" "+homePath(s.Workspace)+" "+s.ID), query) {
-			out = append(out, s)
-		}
-	}
-	return out
-}
-
-func (f *webhookForm) chosenIndex(matches []daemon.Session) int {
-	return slices.IndexFunc(matches, func(s daemon.Session) bool { return s.ID == f.Chosen })
-}
-
 // update handles one key or paste; submit reports that the form should be saved.
 func (f *webhookForm) update(msg tea.Msg) (submit bool, cmd tea.Cmd) {
 	firstField := 0
@@ -74,31 +52,15 @@ func (f *webhookForm) update(msg tea.Msg) (submit bool, cmd tea.Cmd) {
 	if submit, handled := f.key(msg, hookFields, firstField); handled {
 		return submit, nil
 	}
-	if key, ok := msg.(tea.KeyPressMsg); ok {
-		if f.current() == hookFieldSession && (key.String() == "left" || key.String() == "right") {
-			if matches := f.matches(); len(matches) > 0 {
-				i := f.chosenIndex(matches)
-				if i < 0 {
-					i = 0
-				} else {
-					step := 1
-					if key.String() == "left" {
-						step = -1
-					}
-					i = (i + step + len(matches)) % len(matches)
-				}
-				f.Chosen = matches[i].ID
-				return false, nil
-			}
-		}
+	query := f.Inputs[hookFieldSession].Value()
+	if key, ok := msg.(tea.KeyPressMsg); ok && f.current() == hookFieldSession && f.step(query, key.String()) {
+		return false, nil
 	}
 	input := f.Inputs[f.current()]
 	next, cmd := input.Update(msg)
 	*input = next
 	if f.current() == hookFieldSession {
-		if matches := f.matches(); len(matches) > 0 && f.chosenIndex(matches) < 0 {
-			f.Chosen = matches[0].ID
-		}
+		f.follow(input.Value())
 	}
 	return false, cmd
 }
@@ -123,7 +85,7 @@ func (f *webhookForm) steps() ([]daemon.WebhookRequest, string, error) {
 	}
 	if f.Editing == nil {
 		steps := []daemon.WebhookRequest{{Action: daemon.WebhookCreate, SessionID: f.Chosen, Name: name, Secret: secret, Header: header, Prefix: prefix}}
-		return steps, "added " + name + " · wakes " + sessionLabel(f.Sessions, f.Chosen, f.Current), nil
+		return steps, "added " + name + " · wakes " + f.label(), nil
 	}
 	var steps []daemon.WebhookRequest
 	if !strings.EqualFold(header, f.Editing.Header) || prefix != f.Editing.Prefix {
@@ -148,15 +110,15 @@ func (f *webhookForm) view(width int) []string {
 		value := f.Inputs[key].View()
 		switch {
 		case key == hookFieldSession && f.Editing != nil:
-			value = DefaultStyles.Faint.Render(sessionLabel(f.Sessions, f.Chosen, f.Current))
+			value = DefaultStyles.Faint.Render(f.label())
 		case key == hookFieldSession && i != f.Focus:
-			value = sessionLabel(f.Sessions, f.Chosen, f.Current)
+			value = f.label()
 		case key == hookFieldName && f.Editing != nil:
 			value = DefaultStyles.Faint.Render(f.Editing.Name)
 		}
 		rows = append(rows, formRow(i == f.Focus, key, 11, value, width))
 		if key == hookFieldSession && i == f.Focus {
-			rows = append(rows, f.pickerRows(indent, width)...)
+			rows = append(rows, f.rows(f.Inputs[hookFieldSession].Value(), indent, width)...)
 		}
 	}
 	return rows
@@ -185,30 +147,6 @@ func (f *webhookForm) footer(width int) string {
 	return footerLine(width, keys, DefaultStyles.Faint.Render(note), false)
 }
 
-// pickerRows lists the matching sessions around the chosen one.
-func (f *webhookForm) pickerRows(indent string, width int) []string {
-	matches := f.matches()
-	if len(matches) == 0 {
-		return []string{indent + DefaultStyles.Faint.Render("No sessions match. Try another search.")}
-	}
-	chosen := max(0, f.chosenIndex(matches))
-	start := max(0, min(chosen-sessionChoices/2, len(matches)-sessionChoices))
-	var rows []string
-	w := width - len(indent)
-	for i := start; i < min(len(matches), start+sessionChoices); i++ {
-		label := sessionLabel(f.Sessions, matches[i].ID, f.Current)
-		if i == chosen {
-			rows = append(rows, indent+selectedLine(ansi.Truncate(selectBar()+" "+label, w, "…"), w))
-		} else {
-			rows = append(rows, indent+DefaultStyles.Faint.Render(ansi.Truncate("  "+label, w, "…")))
-		}
-	}
-	if more := len(matches) - sessionChoices; more > 0 {
-		rows = append(rows, indent+DefaultStyles.Faint.Render(fmt.Sprintf("  %d more · type to filter", more)))
-	}
-	return rows
-}
-
 const (
 	hookFieldSession = "session"
 	hookFieldName    = "name"
@@ -216,9 +154,6 @@ const (
 	hookFieldHeader  = "header"
 	hookFieldPrefix  = "prefix"
 )
-
-// sessionChoices is how many matching sessions the picker shows at once.
-const sessionChoices = 5
 
 var (
 	hookName   = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)

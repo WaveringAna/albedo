@@ -15,7 +15,7 @@ every list screen is built from the same four parts. a new list screen composes 
 
 `pageStatus` (`page.go`) is the small state every screen embeds beside those: width and height, the load or save in flight, the last error and notice, and the generation that makes a stale reply harmless (`settle`). every command carries the generation it started under.
 
-on the shared look: `/model`, `/sessions`, `/folders`, `/extensions`, `/skills`, `/instructions`, `/mcp`, `/webhooks`, `/tree`, `/quota`, `/context`, `/login`, and the daemon-driven pages (`/work`, `/paperclips`, `/schedule`, `/links`, run jobs, web-search order).
+on the shared look: `/model`, `/sessions`, `/folders`, `/extensions`, `/skills`, `/instructions`, `/mcp`, `/webhooks`, `/discord`, `/tree`, `/quota`, `/context`, `/login`, and the daemon-driven pages (`/work`, `/paperclips`, `/schedule`, `/links`, run jobs, web-search order).
 
 not on it, on purpose: the chat (a transcript is not a list) and the agents canvas (a graph). the agents delete question still uses `confirm`.
 
@@ -47,9 +47,9 @@ these mean the same thing on every screen that has them:
 | ctrl+o | add, create, link |
 | ctrl+r | refresh, or retry a failed load |
 
-other chords belong to one screen and say so in their hint: `ctrl+t` (enable an extension on `/skills`, reply or toggle on pages, agent access on `/webhooks`), `ctrl+g` (enable an mcp server, new webhook secret, done or acknowledge on pages), `ctrl+l` (copy a webhook url, sign in on `/folders`), `ctrl+w` (webhooks from `/extensions`), `ctrl+a` (actions menu on pages, archive on `/sessions`), `ctrl+s` (save a form, pin a session).
+other chords belong to one screen and say so in their hint: `ctrl+t` (enable an extension on `/skills`, reply or toggle on pages, agent access on `/webhooks`), `ctrl+g` (enable an mcp server, new webhook secret, done or acknowledge on pages), `ctrl+l` (copy a webhook url, sign in on `/folders`), `ctrl+w` (webhooks or discord from `/extensions`), `ctrl+a` (actions menu on pages, archive on `/sessions`), `ctrl+s` (save a form, pin a session).
 
-known exceptions to the table: on `/sessions` `ctrl+r` renames (on `/folders` it retries), and on the agents canvas `ctrl+x` deletes. pages use `ctrl+x` for dismiss or stop. a terminal without the kitty keyboard protocol sends plain enter for shift+enter, so the confirm on `/extensions`, `/skills` and `/mcp` names its scope ("globally?" or "for this session only?") and a mixup is visible before enter.
+known exceptions to the table: on `/sessions` `ctrl+r` renames (on `/folders` it retries), and on the agents canvas `ctrl+x` deletes. on `/discord` a bot's channels cycle their delivery on space (Discord channel names have no spaces, so the filter never needs one) and `ctrl+t` toggles mentions-only; `tab` switches between its channels and DMs. pages use `ctrl+x` for dismiss or stop. a terminal without the kitty keyboard protocol sends plain enter for shift+enter, so the confirm on `/extensions`, `/skills` and `/mcp` names its scope ("globally?" or "for this session only?") and a mixup is visible before enter.
 
 ## confirms
 

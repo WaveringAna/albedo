@@ -270,6 +270,9 @@ func (m ExtensionPickerModel) Update(msg tea.Msg) (ExtensionPickerModel, tea.Cmd
 			if ext.Name == "webhooks" && ext.Enabled {
 				return m, func() tea.Msg { return ChatOpenWebhooksPageMsg{} }
 			}
+			if ext.Name == "discord" && ext.Enabled {
+				return m, func() tea.Msg { return ChatOpenDiscordPageMsg{} }
+			}
 		case "ctrl+r":
 			m.Loading, m.Error, m.Notice = true, "", ""
 			m.Generation = nextPageGeneration()
@@ -356,8 +359,8 @@ func (m ExtensionPickerModel) footer(width int) string {
 	if ext.Overridden {
 		hints = append(hints, hint{"ctrl+x", "follow global"})
 	}
-	if ext.Name == "webhooks" && ext.Enabled {
-		hints = append(hints, hint{"ctrl+w", "webhooks"})
+	if (ext.Name == "webhooks" || ext.Name == "discord") && ext.Enabled {
+		hints = append(hints, hint{"ctrl+w", ext.Name})
 	}
 	if len(m.Extensions) == 0 && m.Error != "" {
 		hints = append(hints, hint{"ctrl+r", "retry"})

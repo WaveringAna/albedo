@@ -155,6 +155,8 @@ func historyEntryEvents(entry protocol.HistoryEntry) ([]StreamEvent, error) {
 			event.Source = "mail"
 		case "webhook":
 			event.Source = "webhook"
+		case "event":
+			event.Source = "event"
 		case "scheduled":
 			event.Source = "job"
 		case "continue":

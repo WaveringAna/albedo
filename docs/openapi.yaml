@@ -36,6 +36,7 @@ tags:
 - name: schedule
 - name: links
 - name: webhooks
+- name: discord
 - name: proxy
 paths:
   /server:
@@ -3750,6 +3751,702 @@ paths:
             schema:
               $ref: '#/components/schemas/HookPermissionPatch'
         description: UTF-8 JSON; duplicate keys and unknown fields are rejected.
+  /extensions/discord/bots:
+    get:
+      operationId: listDiscordBots
+      summary: List Discord bots of every session without tokens
+      tags:
+      - discord
+      responses:
+        '200':
+          description: Successful result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiscordBotPage'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '405':
+          $ref: '#/components/responses/Problem405'
+        '406':
+          $ref: '#/components/responses/Problem406'
+        '503':
+          $ref: '#/components/responses/Problem503'
+    post:
+      operationId: createDiscordBot
+      summary: Create the Discord bot of a session
+      tags:
+      - discord
+      responses:
+        '201':
+          description: Successful result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiscordBot'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '405':
+          $ref: '#/components/responses/Problem405'
+        '406':
+          $ref: '#/components/responses/Problem406'
+        '503':
+          $ref: '#/components/responses/Problem503'
+        '413':
+          $ref: '#/components/responses/Problem413'
+        '415':
+          $ref: '#/components/responses/Problem415'
+        '404':
+          $ref: '#/components/responses/Problem404'
+        '409':
+          $ref: '#/components/responses/Problem409'
+      description: One bot per session (409 bot_exists). The token must have three dot-separated parts and is never returned.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DiscordBotCreate'
+        description: UTF-8 JSON; duplicate keys and unknown fields are rejected.
+  /extensions/discord/bots/{bot_id}:
+    get:
+      operationId: getDiscordBot
+      summary: Read a Discord bot and its live state
+      tags:
+      - discord
+      responses:
+        '200':
+          description: Successful result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiscordBot'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '405':
+          $ref: '#/components/responses/Problem405'
+        '406':
+          $ref: '#/components/responses/Problem406'
+        '503':
+          $ref: '#/components/responses/Problem503'
+        '404':
+          $ref: '#/components/responses/Problem404'
+      parameters:
+      - name: bot_id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ID'
+    patch:
+      operationId: patchDiscordBot
+      summary: Edit a Discord bot at an observed revision
+      tags:
+      - discord
+      responses:
+        '200':
+          description: Successful result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiscordBot'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '405':
+          $ref: '#/components/responses/Problem405'
+        '406':
+          $ref: '#/components/responses/Problem406'
+        '503':
+          $ref: '#/components/responses/Problem503'
+        '413':
+          $ref: '#/components/responses/Problem413'
+        '415':
+          $ref: '#/components/responses/Problem415'
+        '404':
+          $ref: '#/components/responses/Problem404'
+        '412':
+          $ref: '#/components/responses/Problem412'
+      description: A token or enabled change restarts or stops the bot process. A stale revision is 412 precondition_failed.
+      parameters:
+      - name: bot_id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ID'
+      requestBody:
+        required: true
+        content:
+          application/merge-patch+json:
+            schema:
+              $ref: '#/components/schemas/DiscordBotPatch'
+        description: UTF-8 JSON; duplicate keys and unknown fields are rejected.
+    delete:
+      operationId: deleteDiscordBot
+      summary: Delete a Discord bot and its channel and DM settings
+      tags:
+      - discord
+      responses:
+        '200':
+          description: Successful result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiscordDeletion'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '405':
+          $ref: '#/components/responses/Problem405'
+        '406':
+          $ref: '#/components/responses/Problem406'
+        '503':
+          $ref: '#/components/responses/Problem503'
+        '404':
+          $ref: '#/components/responses/Problem404'
+        '412':
+          $ref: '#/components/responses/Problem412'
+      parameters:
+      - name: bot_id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ID'
+      - name: revision
+        in: query
+        required: true
+        schema:
+          type: integer
+          minimum: 1
+  /extensions/discord/bots/{bot_id}/guilds:
+    get:
+      operationId: listDiscordGuilds
+      summary: List the servers and channels the bot can see, with their delivery
+      tags:
+      - discord
+      responses:
+        '200':
+          description: Successful result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiscordGuildList'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '405':
+          $ref: '#/components/responses/Problem405'
+        '406':
+          $ref: '#/components/responses/Problem406'
+        '503':
+          $ref: '#/components/responses/Problem503'
+        '404':
+          $ref: '#/components/responses/Problem404'
+      description: Read live from the bot process; 503 bot_offline when the bot is not online.
+      parameters:
+      - name: bot_id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ID'
+  /extensions/discord/bots/{bot_id}/channels/{channel_id}:
+    put:
+      operationId: putDiscordChannel
+      summary: Set how a channel reaches the session
+      tags:
+      - discord
+      responses:
+        '200':
+          description: Successful result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiscordChannelState'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '405':
+          $ref: '#/components/responses/Problem405'
+        '406':
+          $ref: '#/components/responses/Problem406'
+        '503':
+          $ref: '#/components/responses/Problem503'
+        '413':
+          $ref: '#/components/responses/Problem413'
+        '415':
+          $ref: '#/components/responses/Problem415'
+        '404':
+          $ref: '#/components/responses/Problem404'
+      description: Delivery off removes the channel; threads follow their parent channel.
+      parameters:
+      - name: bot_id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ID'
+      - name: channel_id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DiscordChannelSetting'
+        description: UTF-8 JSON; duplicate keys and unknown fields are rejected.
+  /extensions/discord/bots/{bot_id}/dms:
+    get:
+      operationId: getDiscordDMs
+      summary: Read the DM allow list and pending requests
+      tags:
+      - discord
+      responses:
+        '200':
+          description: Successful result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiscordDMs'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '405':
+          $ref: '#/components/responses/Problem405'
+        '406':
+          $ref: '#/components/responses/Problem406'
+        '503':
+          $ref: '#/components/responses/Problem503'
+        '404':
+          $ref: '#/components/responses/Problem404'
+      parameters:
+      - name: bot_id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ID'
+  /extensions/discord/bots/{bot_id}/dms/{user_id}:
+    put:
+      operationId: putDiscordDM
+      summary: Allow a person to DM the session
+      tags:
+      - discord
+      responses:
+        '200':
+          description: Successful result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiscordAllowed'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '405':
+          $ref: '#/components/responses/Problem405'
+        '406':
+          $ref: '#/components/responses/Problem406'
+        '503':
+          $ref: '#/components/responses/Problem503'
+        '413':
+          $ref: '#/components/responses/Problem413'
+        '415':
+          $ref: '#/components/responses/Problem415'
+        '404':
+          $ref: '#/components/responses/Problem404'
+      description: A null name is resolved from Discord when the bot is online. Allowing removes a pending request.
+      parameters:
+      - name: bot_id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ID'
+      - name: user_id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DiscordAllow'
+        description: UTF-8 JSON; duplicate keys and unknown fields are rejected.
+    delete:
+      operationId: deleteDiscordDM
+      summary: Remove a person from the DM allow list
+      tags:
+      - discord
+      responses:
+        '200':
+          description: Successful result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiscordUserDeletion'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '405':
+          $ref: '#/components/responses/Problem405'
+        '406':
+          $ref: '#/components/responses/Problem406'
+        '503':
+          $ref: '#/components/responses/Problem503'
+        '404':
+          $ref: '#/components/responses/Problem404'
+      description: The owner cannot be removed (400).
+      parameters:
+      - name: bot_id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ID'
+      - name: user_id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ID'
+  /extensions/discord/bots/{bot_id}/requests/{user_id}:
+    delete:
+      operationId: deleteDiscordRequest
+      summary: Dismiss a pending DM request
+      tags:
+      - discord
+      responses:
+        '200':
+          description: Successful result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiscordUserDeletion'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '405':
+          $ref: '#/components/responses/Problem405'
+        '406':
+          $ref: '#/components/responses/Problem406'
+        '503':
+          $ref: '#/components/responses/Problem503'
+        '404':
+          $ref: '#/components/responses/Problem404'
+      parameters:
+      - name: bot_id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ID'
+      - name: user_id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ID'
+  /extensions/discord/account:
+    get:
+      operationId: getDiscordAccount
+      summary: Read whether a Discord login is connected for creating bots
+      tags:
+      - discord
+      responses:
+        '200':
+          description: Successful result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiscordAccount'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '405':
+          $ref: '#/components/responses/Problem405'
+        '406':
+          $ref: '#/components/responses/Problem406'
+        '503':
+          $ref: '#/components/responses/Problem503'
+    put:
+      operationId: putDiscordAccount
+      summary: Connect the Discord login that creates bots
+      tags:
+      - discord
+      responses:
+        '200':
+          description: Successful result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiscordAccount'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '405':
+          $ref: '#/components/responses/Problem405'
+        '406':
+          $ref: '#/components/responses/Problem406'
+        '503':
+          $ref: '#/components/responses/Problem503'
+        '413':
+          $ref: '#/components/responses/Problem413'
+        '415':
+          $ref: '#/components/responses/Problem415'
+      description: Validated against Discord before it is stored (400 invalid_token). The token is never returned and never reaches kernels or bot processes.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DiscordAccountToken'
+        description: UTF-8 JSON; duplicate keys and unknown fields are rejected.
+    delete:
+      operationId: deleteDiscordAccount
+      summary: Forget the Discord login; bots stay
+      tags:
+      - discord
+      responses:
+        '200':
+          description: Successful result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiscordAccount'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '405':
+          $ref: '#/components/responses/Problem405'
+        '406':
+          $ref: '#/components/responses/Problem406'
+        '503':
+          $ref: '#/components/responses/Problem503'
+  /extensions/discord/account/guilds:
+    get:
+      operationId: listDiscordAccountGuilds
+      summary: List the servers the connected login can add bots to
+      tags:
+      - discord
+      responses:
+        '200':
+          description: Successful result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiscordAccountGuildList'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '405':
+          $ref: '#/components/responses/Problem405'
+        '406':
+          $ref: '#/components/responses/Problem406'
+        '503':
+          $ref: '#/components/responses/Problem503'
+        '412':
+          $ref: '#/components/responses/Problem412'
+      description: 412 no_account when no login is connected.
+  /extensions/discord/provisions:
+    post:
+      operationId: createDiscordProvision
+      summary: Create a bot application for a session with the connected login
+      tags:
+      - discord
+      responses:
+        '202':
+          description: Successful result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiscordProvision'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '405':
+          $ref: '#/components/responses/Problem405'
+        '406':
+          $ref: '#/components/responses/Problem406'
+        '503':
+          $ref: '#/components/responses/Problem503'
+        '413':
+          $ref: '#/components/responses/Problem413'
+        '415':
+          $ref: '#/components/responses/Problem415'
+        '404':
+          $ref: '#/components/responses/Problem404'
+        '409':
+          $ref: '#/components/responses/Problem409'
+        '412':
+          $ref: '#/components/responses/Problem412'
+      description: 409 bot_exists when the session has a bot; 412 no_account without a login. On success the bot is created like POST /bots with the login as owner, then added to guild_id when one is given.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DiscordProvisionCreate'
+        description: UTF-8 JSON; duplicate keys and unknown fields are rejected.
+  /extensions/discord/provisions/{provision_id}:
+    get:
+      operationId: getDiscordProvision
+      summary: Read a provision in progress or finished
+      tags:
+      - discord
+      responses:
+        '200':
+          description: Successful result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiscordProvision'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '405':
+          $ref: '#/components/responses/Problem405'
+        '406':
+          $ref: '#/components/responses/Problem406'
+        '503':
+          $ref: '#/components/responses/Problem503'
+        '404':
+          $ref: '#/components/responses/Problem404'
+      description: Finished provisions expire after 10 minutes (404).
+      parameters:
+      - name: provision_id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ID'
+    delete:
+      operationId: cancelDiscordProvision
+      summary: Cancel a provision in progress
+      tags:
+      - discord
+      responses:
+        '200':
+          description: Successful result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiscordProvision'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '405':
+          $ref: '#/components/responses/Problem405'
+        '406':
+          $ref: '#/components/responses/Problem406'
+        '503':
+          $ref: '#/components/responses/Problem503'
+        '404':
+          $ref: '#/components/responses/Problem404'
+      parameters:
+      - name: provision_id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ID'
+  /extensions/discord/provisions/{provision_id}/mfa:
+    post:
+      operationId: answerDiscordProvisionMFA
+      summary: Answer the two-factor code a provision waits for
+      tags:
+      - discord
+      responses:
+        '200':
+          description: Successful result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiscordProvision'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '405':
+          $ref: '#/components/responses/Problem405'
+        '406':
+          $ref: '#/components/responses/Problem406'
+        '503':
+          $ref: '#/components/responses/Problem503'
+        '413':
+          $ref: '#/components/responses/Problem413'
+        '415':
+          $ref: '#/components/responses/Problem415'
+        '404':
+          $ref: '#/components/responses/Problem404'
+        '409':
+          $ref: '#/components/responses/Problem409'
+      description: 409 not_waiting unless the provision is in state mfa.
+      parameters:
+      - name: provision_id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DiscordMFACode'
+        description: UTF-8 JSON; duplicate keys and unknown fields are rejected.
   /extensions/proxy/v1/models:
     get:
       operationId: listProxyModels
@@ -7177,7 +7874,7 @@ components:
           type: string
         kind:
           type: string
-          enum: [task, message, result, unreviewed, webhook]
+          enum: [task, message, result, unreviewed, webhook, event_tool, event_turn]
       required: [mail_id, sender_session_id, sender_label, kind]
       additionalProperties: false
     HistoryEntry:
@@ -7192,7 +7889,7 @@ components:
           enum: [user, assistant, thinking, tool_call, tool_result, note, continuation, compaction, image_fit]
         turn_type:
           type: string
-          enum: [user, agent, webhook, scheduled, continue]
+          enum: [user, agent, webhook, event, scheduled, continue]
         mail:
           anyOf:
           - $ref: '#/components/schemas/HistoryMail'
@@ -7287,7 +7984,7 @@ components:
           maxLength: 4096
         turn_type:
           type: string
-          enum: [user, continue, agent, scheduled, webhook]
+          enum: [user, continue, agent, scheduled, webhook, event]
         preview:
           $ref: '#/components/schemas/Preview'
       required: [position, checkpoint_id, title, turn_type, preview]
@@ -9074,7 +9771,7 @@ components:
           $ref: '#/components/schemas/ID'
         kind:
           type: string
-          enum: [task, message, result, unreviewed, webhook]
+          enum: [task, message, result, unreviewed, webhook, event_tool, event_turn]
         bytes:
           $ref: '#/components/schemas/Counter'
         sender_label:
@@ -10420,6 +11117,404 @@ components:
         notification:
           $ref: '#/components/schemas/Notification'
       required: [resource, notification]
+      additionalProperties: false
+    DiscordAccount:
+      type: object
+      properties:
+        connected:
+          type: boolean
+        user:
+          anyOf:
+          - $ref: '#/components/schemas/DiscordBotUser'
+          - type: 'null'
+      required: [connected, user]
+      additionalProperties: false
+      description: The user's own Discord login that creates bots. Its token is never returned.
+    DiscordAccountToken:
+      type: object
+      properties:
+        token:
+          type: string
+          minLength: 1
+          maxLength: 4096
+      required: [token]
+      additionalProperties: false
+    DiscordAccountGuildList:
+      type: object
+      properties:
+        guilds:
+          type: array
+          items:
+            $ref: '#/components/schemas/DiscordAccountGuild'
+      required: [guilds]
+      additionalProperties: false
+    DiscordAccountGuild:
+      type: object
+      properties:
+        id:
+          $ref: '#/components/schemas/DiscordID'
+        name:
+          type: string
+          maxLength: 256
+        icon:
+          anyOf:
+          - type: string
+            maxLength: 256
+          - type: 'null'
+      required: [id, name, icon]
+      additionalProperties: false
+    DiscordProvisionCreate:
+      type: object
+      properties:
+        session_id:
+          $ref: '#/components/schemas/ID'
+        name:
+          type: string
+          minLength: 1
+          maxLength: 64
+        guild_id:
+          anyOf:
+          - $ref: '#/components/schemas/DiscordID'
+          - type: 'null'
+      required: [session_id, name, guild_id]
+      additionalProperties: false
+    DiscordMFACode:
+      type: object
+      properties:
+        code:
+          type: string
+          minLength: 1
+          maxLength: 64
+      required: [code]
+      additionalProperties: false
+    DiscordProvision:
+      type: object
+      properties:
+        id:
+          $ref: '#/components/schemas/ID'
+        session_id:
+          $ref: '#/components/schemas/ID'
+        name:
+          type: string
+          maxLength: 64
+        state:
+          type: string
+          enum: [running, mfa, done, failed, cancelled]
+        step:
+          anyOf:
+          - type: string
+            enum: [create, bot, intent, token, authorize]
+          - type: 'null'
+        methods:
+          type: array
+          items:
+            type: string
+            maxLength: 64
+        mfa_error:
+          anyOf:
+          - type: string
+            maxLength: 4096
+          - type: 'null'
+        error:
+          anyOf:
+          - type: string
+            maxLength: 4096
+          - type: 'null'
+        code:
+          anyOf:
+          - type: string
+            enum: [captcha, mfa_failed, unauthorized, rate_limited, http]
+          - type: 'null'
+        bot:
+          anyOf:
+          - $ref: '#/components/schemas/DiscordBot'
+          - type: 'null'
+        portal_url:
+          type: string
+          maxLength: 4096
+      required: [id, session_id, name, state, step, methods, mfa_error, error, code, bot, portal_url]
+      additionalProperties: false
+      description: A bot application being created with the user's login. mfa waits for a two-factor code; a
+        captcha code means Discord wants a human, so the bot is made in the developer portal instead.
+    DiscordID:
+      type: string
+      minLength: 1
+      maxLength: 64
+      description: Discord snowflake as decimal text.
+    DiscordBot:
+      type: object
+      properties:
+        id:
+          $ref: '#/components/schemas/ID'
+        session_id:
+          $ref: '#/components/schemas/ID'
+        name:
+          type: string
+          minLength: 1
+          maxLength: 64
+        owner_id:
+          $ref: '#/components/schemas/DiscordID'
+        enabled:
+          type: boolean
+        revision:
+          type: integer
+          minimum: 1
+        state:
+          type: string
+          enum: [disabled, connecting, online, reconnecting, failed]
+        detail:
+          anyOf:
+          - type: string
+            maxLength: 4096
+          - type: 'null'
+        user:
+          anyOf:
+          - $ref: '#/components/schemas/DiscordBotUser'
+          - type: 'null'
+        application_id:
+          anyOf:
+          - $ref: '#/components/schemas/DiscordID'
+          - type: 'null'
+        invite_url:
+          anyOf:
+          - type: string
+            maxLength: 4096
+          - type: 'null'
+        channels:
+          $ref: '#/components/schemas/Counter'
+        allowed:
+          $ref: '#/components/schemas/Counter'
+        requests:
+          $ref: '#/components/schemas/Counter'
+      required: [id, session_id, name, owner_id, enabled, revision, state, detail, user, application_id, invite_url,
+        channels, allowed, requests]
+      additionalProperties: false
+      description: A session's Discord bot. The token never leaves the daemon.
+    DiscordBotUser:
+      type: object
+      properties:
+        id:
+          $ref: '#/components/schemas/DiscordID'
+        username:
+          type: string
+          maxLength: 256
+      required: [id, username]
+      additionalProperties: false
+    DiscordBotPage:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/DiscordBot'
+      required: [items]
+      additionalProperties: false
+    DiscordBotCreate:
+      type: object
+      properties:
+        session_id:
+          $ref: '#/components/schemas/ID'
+        name:
+          type: string
+          minLength: 1
+          maxLength: 64
+        token:
+          type: string
+          minLength: 1
+          maxLength: 4096
+        owner_id:
+          type: string
+          pattern: ^[0-9]{17,20}$
+      required: [session_id, name, token, owner_id]
+      additionalProperties: false
+    DiscordBotPatch:
+      type: object
+      properties:
+        revision:
+          type: integer
+          minimum: 1
+        name:
+          type: string
+          minLength: 1
+          maxLength: 64
+        token:
+          type: string
+          minLength: 1
+          maxLength: 4096
+        owner_id:
+          type: string
+          pattern: ^[0-9]{17,20}$
+        enabled:
+          type: boolean
+      required: [revision]
+      additionalProperties: false
+    DiscordDeletion:
+      type: object
+      properties:
+        deleted:
+          $ref: '#/components/schemas/ID'
+      required: [deleted]
+      additionalProperties: false
+    DiscordUserDeletion:
+      type: object
+      properties:
+        deleted:
+          $ref: '#/components/schemas/DiscordID'
+      required: [deleted]
+      additionalProperties: false
+    DiscordDelivery:
+      type: string
+      enum: ['off', turn, tool]
+      description: off ignores the channel; turn queues messages until the running turn ends; tool steers
+        the running turn after its current tool call.
+    DiscordGuildList:
+      type: object
+      properties:
+        guilds:
+          type: array
+          items:
+            $ref: '#/components/schemas/DiscordGuild'
+      required: [guilds]
+      additionalProperties: false
+    DiscordGuild:
+      type: object
+      properties:
+        id:
+          $ref: '#/components/schemas/DiscordID'
+        name:
+          type: string
+          maxLength: 256
+        channels:
+          type: array
+          items:
+            $ref: '#/components/schemas/DiscordChannel'
+      required: [id, name, channels]
+      additionalProperties: false
+    DiscordChannel:
+      type: object
+      properties:
+        id:
+          $ref: '#/components/schemas/DiscordID'
+        name:
+          type: string
+          maxLength: 256
+        type:
+          type: integer
+          description: Discord channel type; 0 text, 2 voice, 4 category, 5 announcement, 15 forum.
+        parent_id:
+          anyOf:
+          - $ref: '#/components/schemas/DiscordID'
+          - type: 'null'
+        position:
+          type: integer
+        delivery:
+          $ref: '#/components/schemas/DiscordDelivery'
+        mentions_only:
+          type: boolean
+      required: [id, name, type, parent_id, position, delivery, mentions_only]
+      additionalProperties: false
+    DiscordChannelSetting:
+      type: object
+      properties:
+        delivery:
+          $ref: '#/components/schemas/DiscordDelivery'
+        mentions_only:
+          type: boolean
+        guild_id:
+          $ref: '#/components/schemas/DiscordID'
+        guild_name:
+          type: string
+          maxLength: 256
+        channel_name:
+          type: string
+          maxLength: 256
+      required: [delivery, mentions_only]
+      additionalProperties: false
+    DiscordChannelState:
+      type: object
+      properties:
+        channel_id:
+          $ref: '#/components/schemas/DiscordID'
+        delivery:
+          $ref: '#/components/schemas/DiscordDelivery'
+        mentions_only:
+          type: boolean
+      required: [channel_id, delivery, mentions_only]
+      additionalProperties: false
+    DiscordDMs:
+      type: object
+      properties:
+        owner:
+          $ref: '#/components/schemas/DiscordOwner'
+        allowed:
+          type: array
+          items:
+            $ref: '#/components/schemas/DiscordAllowed'
+        requests:
+          type: array
+          items:
+            $ref: '#/components/schemas/DiscordRequest'
+          maxItems: 50
+      required: [owner, allowed, requests]
+      additionalProperties: false
+    DiscordOwner:
+      type: object
+      properties:
+        user_id:
+          $ref: '#/components/schemas/DiscordID'
+        name:
+          anyOf:
+          - type: string
+            maxLength: 256
+          - type: 'null'
+      required: [user_id, name]
+      additionalProperties: false
+    DiscordAllowed:
+      type: object
+      properties:
+        user_id:
+          $ref: '#/components/schemas/DiscordID'
+        name:
+          anyOf:
+          - type: string
+            maxLength: 256
+          - type: 'null'
+        added_at:
+          type: integer
+          minimum: 0
+          description: Unix milliseconds.
+      required: [user_id, name, added_at]
+      additionalProperties: false
+    DiscordRequest:
+      type: object
+      properties:
+        user_id:
+          $ref: '#/components/schemas/DiscordID'
+        username:
+          type: string
+          maxLength: 256
+        preview:
+          type: string
+          maxLength: 200
+        last_at:
+          type: integer
+          minimum: 0
+          description: Unix milliseconds.
+        count:
+          type: integer
+          minimum: 1
+      required: [user_id, username, preview, last_at, count]
+      additionalProperties: false
+      description: Someone whose DMs were refused because they are not on the allow list.
+    DiscordAllow:
+      type: object
+      properties:
+        name:
+          anyOf:
+          - type: string
+            maxLength: 256
+          - type: 'null'
+      required: [name]
       additionalProperties: false
     Delivery:
       type: object

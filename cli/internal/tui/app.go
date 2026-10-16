@@ -26,6 +26,7 @@ const (
 	AppStateLogin
 	AppStateCapabilityPage
 	AppStateWebhooksPage
+	AppStateDiscordPage
 	AppStateAgents
 	AppStateFolderPicker
 	AppStateQuota
@@ -55,6 +56,7 @@ type AppModel struct {
 	ExtensionPicker  ExtensionPickerModel
 	CapabilityPage   CapabilityPageModel
 	WebhooksPage     WebhooksPageModel
+	DiscordPage      DiscordPageModel
 	TreePicker       TreePickerModel
 	SessionPicker    SessionViewer
 	PageView         PageViewModel
@@ -211,6 +213,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.PageView.SetSize(msg.Width, msg.Height)
 		m.CapabilityPage.SetSize(msg.Width, msg.Height)
 		m.WebhooksPage.SetSize(msg.Width, msg.Height)
+		m.DiscordPage.SetSize(msg.Width, msg.Height)
 		m.Agents.SetSize(msg.Width, msg.Height)
 		m.FolderPicker.SetSize(msg.Width, msg.Height)
 		m.Login.SetSize(msg.Width, msg.Height)
@@ -277,6 +280,12 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.openScreen(AppStateWebhooksPage, &m.WebhooksPage)
 		}
 
+	case ChatOpenDiscordPageMsg:
+		if m.ActiveSession != nil {
+			m.DiscordPage = NewDiscordPageModel(m.Conn, m.ActiveSession.ID)
+			return m, m.openScreen(AppStateDiscordPage, &m.DiscordPage)
+		}
+
 	case ChatOpenAgentsMsg:
 		if m.ActiveSession != nil {
 			m.Agents.Close()
@@ -335,7 +344,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.State = AppStateChat
 		return m, nil
 
-	case WebhooksPageDoneMsg, ExtensionPickerDoneMsg,
+	case WebhooksPageDoneMsg, DiscordPageDoneMsg, ExtensionPickerDoneMsg,
 		TreeCancelMsg, ContextDoneMsg, CapabilityPageDoneMsg, PageCancelMsg,
 		QuotaCancelMsg:
 		m.State = AppStateChat
@@ -520,6 +529,8 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.CapabilityPage, cmd = m.CapabilityPage.Update(msg)
 	case AppStateWebhooksPage:
 		m.WebhooksPage, cmd = m.WebhooksPage.Update(msg)
+	case AppStateDiscordPage:
+		m.DiscordPage, cmd = m.DiscordPage.Update(msg)
 	case AppStateAgents:
 		m.Agents, cmd = m.Agents.Update(msg)
 	case AppStateFolderPicker:
