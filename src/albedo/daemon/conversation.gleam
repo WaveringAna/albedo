@@ -1907,7 +1907,9 @@ pub fn read_range(
       list.filter_map(rows, fn(row) {
         case row.1.display {
           Some(display)
-            if display.source == "mail" || display.source == "webhook"
+            if display.source == "mail"
+            || display.source == "webhook"
+            || display.source == "event"
           -> option.to_result(row.1.input_id, Nil)
           _ -> Error(Nil)
         }

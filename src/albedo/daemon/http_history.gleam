@@ -91,6 +91,7 @@ fn project_row(
     {
       Some("mail") -> "agent"
       Some("webhook") -> "webhook"
+      Some("event") -> "event"
       Some("job") -> "scheduled"
       Some("continue") -> "continue"
       _ -> "user"
@@ -274,7 +275,7 @@ fn user_view(
   case ownership.display {
     Some(display) ->
       case display.source {
-        "chat" | "mail" | "webhook" | "continue" ->
+        "chat" | "mail" | "webhook" | "event" | "continue" ->
           Some(#(
             "user",
             case ownership.letter {

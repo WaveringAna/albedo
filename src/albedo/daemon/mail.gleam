@@ -12,6 +12,7 @@
 
 import albedo/daemon/bus
 import albedo/daemon/family
+import albedo/daemon/migrations/mail_kinds
 import albedo/daemon/store
 import albedo/daemon/usage
 import gleam/dynamic/decode
@@ -31,8 +32,24 @@ pub type Kind {
   /// child's run ended without replying.
   Answer(unreviewed: Bool)
   /// A signed HTTP delivery: outside data, not instructions. It waits for the
-  /// recipient to be idle instead of steering a running turn.
+  /// recipient's running turn to end.
   Webhook
+  /// A message from an extension's outside channel, such as a Discord DM or
+  /// channel post, in the text its producer wrote. `delivery` says whether it
+  /// reaches a running turn after the current tool call or waits for the turn
+  /// to end.
+  Event(delivery: Delivery)
+}
+
+/// When an event reaches a session that is running a turn. A resting session
+/// takes either at once.
+pub type Delivery {
+  /// Steers the running turn after its current tool call, like a letter
+  /// between agents.
+  AfterTool
+  /// Waits for the running turn to end, then starts the next one together
+  /// with whatever else waited.
+  AfterTurn
 }
 
 pub type DeliveryOwner {
@@ -67,7 +84,7 @@ CREATE TABLE IF NOT EXISTS mail (
  recipient TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
  sender TEXT REFERENCES sessions(id) ON DELETE SET NULL,
  sender_name TEXT NOT NULL,
- kind TEXT NOT NULL CHECK(kind IN ('task','message','result','unreviewed','webhook')),
+ kind TEXT NOT NULL CHECK(kind IN ('task','message','result','unreviewed','webhook','event_tool','event_turn')),
  body TEXT NOT NULL,
  created_at INTEGER NOT NULL,
  delivered_at INTEGER,
@@ -82,12 +99,15 @@ CREATE INDEX IF NOT EXISTS mail_conversation ON mail(recipient,sender,created_at
 pub fn initialise(db: store.Store) -> Result(Nil, String) {
   store.query(db, fn(connection) {
     use _ <- result.try(store.exec(connection, schema))
-    store.add_columns(connection, "mail", [
-      #(
-        "delivery_owner",
-        "TEXT NOT NULL DEFAULT 'mail' CHECK(delivery_owner IN ('mail','input'))",
-      ),
-    ])
+    use _ <- result.try(
+      store.add_columns(connection, "mail", [
+        #(
+          "delivery_owner",
+          "TEXT NOT NULL DEFAULT 'mail' CHECK(delivery_owner IN ('mail','input'))",
+        ),
+      ]),
+    )
+    mail_kinds.apply(connection, schema)
   })
 }
 
@@ -98,6 +118,8 @@ pub fn kind_name(kind: Kind) -> String {
     Answer(False) -> "result"
     Answer(True) -> "unreviewed"
     Webhook -> "webhook"
+    Event(AfterTool) -> "event_tool"
+    Event(AfterTurn) -> "event_turn"
   }
 }
 
@@ -108,6 +130,8 @@ fn parse_kind(name: String) -> Result(Kind, Nil) {
     "result" -> Ok(Answer(False))
     "unreviewed" -> Ok(Answer(True))
     "webhook" -> Ok(Webhook)
+    "event_tool" -> Ok(Event(AfterTool))
+    "event_turn" -> Ok(Event(AfterTurn))
     _ -> Error(Nil)
   }
 }
@@ -400,6 +424,16 @@ const close = "</mail>"
 pub fn text(letter: Letter) -> String {
   case letter.kind {
     Webhook -> webhook_text(letter.sender_name, letter.id, letter.body)
+    Event(_) ->
+      event_open
+      <> "id=\""
+      <> letter.id
+      <> "\" from=\""
+      <> attribute(letter.sender_name)
+      <> "\">\n"
+      <> letter.body
+      <> "\n"
+      <> event_close
     kind -> {
       let from = case letter.sender {
         Some(session) -> " session=\"" <> session <> "\""
@@ -426,6 +460,7 @@ pub fn text(letter: Letter) -> String {
 pub fn display(letter: Letter) -> String {
   case letter.kind {
     Webhook -> "webhook " <> letter.sender_name <> " #" <> letter.id
+    Event(_) -> letter.body
     Answer(True) ->
       letter.sender_name
       <> " finished without replying; its last message:\n"
@@ -442,8 +477,15 @@ fn attribute(value: String) -> String {
 /// Whether a transcript user message is a letter rather than a person.
 pub fn is_mail(text: String) -> Bool {
   { string.starts_with(text, open) && string.ends_with(text, close) }
+  || {
+    string.starts_with(text, event_open) && string.ends_with(text, event_close)
+  }
   || is_webhook(text)
 }
+
+const event_open = "<event "
+
+const event_close = "</event>"
 
 fn webhook_text(name: String, id: String, preview: String) -> String {
   webhook_open <> name <> " #" <> id <> webhook_close <> "\n" <> preview

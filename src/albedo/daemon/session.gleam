@@ -1645,11 +1645,16 @@ fn handle(
           }
         None -> answer(state, reply, Error("stale run"))
       }
+    // Inputs that wait for the turn to end stay queued; the run's end starts
+    // the next turn with them.
     DrainSteering(id, reply) ->
-      case turn.live(state.activity, id), state.steering {
+      case
+        turn.live(state.activity, id),
+        list.partition(state.steering, turn.steers)
+      {
         False, _ -> answer(state, reply, Error("cancelled"))
-        True, [] -> answer(state, reply, Ok([]))
-        True, queued -> {
+        True, #([], _) -> answer(state, reply, Ok([]))
+        True, #(queued, held) -> {
           let inputs = session_submission.inputs(queued)
           case
             conversation.commit_operations(
@@ -1675,7 +1680,7 @@ fn handle(
               answer(
                 session_state.State(
                   ..state,
-                  steering: [],
+                  steering: held,
                   active_submissions: list.append(
                     state.active_submissions,
                     queued,

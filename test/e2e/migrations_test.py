@@ -151,6 +151,69 @@ class MigrationsTest(unittest.TestCase):
                 # Restore other fixtures' fields erased by the legacy schema seed.
                 app.restart(prepare=restore)
 
+    def test_mail_from_before_events_is_copied_into_the_current_kinds(self):
+        provider = Provider(lambda request: text("done"))
+        self.addCleanup(provider.close)
+        with Albedo(provider) as app:
+            session = app.session()
+            database = app.home / "albedo.sqlite"
+
+            def prepare(_app):
+                with sqlite3.connect(database) as db:
+                    db.executescript(
+                        """
+DROP TABLE mail;
+CREATE TABLE mail (
+ id TEXT PRIMARY KEY,
+ recipient TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+ sender TEXT REFERENCES sessions(id) ON DELETE SET NULL,
+ sender_name TEXT NOT NULL,
+ kind TEXT NOT NULL CHECK(kind IN ('task','message','result','unreviewed','webhook')),
+ body TEXT NOT NULL,
+ created_at INTEGER NOT NULL,
+ delivered_at INTEGER,
+ attempts INTEGER NOT NULL DEFAULT 0,
+ last_error TEXT
+);
+CREATE INDEX mail_pending ON mail(created_at) WHERE delivered_at IS NULL;
+"""
+                    )
+                    db.execute(
+                        "INSERT INTO mail(id,recipient,sender_name,kind,body,created_at,delivered_at)"
+                        " VALUES('old-letter',?,'hook','webhook','old body',1,2)",
+                        (session,),
+                    )
+
+            app.restart(prepare=prepare)
+            with sqlite3.connect(database) as db:
+                schema = db.execute(
+                    "SELECT sql FROM sqlite_master WHERE type='table' AND name='mail'"
+                ).fetchone()[0]
+                self.assertIn("'event_turn'", schema)
+                self.assertEqual(
+                    db.execute(
+                        "SELECT recipient,kind,body,delivered_at,delivery_owner FROM mail"
+                    ).fetchall(),
+                    [(session, "webhook", "old body", 2, "mail")],
+                )
+                indexes = {
+                    row[0]
+                    for row in db.execute(
+                        "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='mail'"
+                    )
+                }
+                self.assertTrue({"mail_pending", "mail_conversation"} <= indexes)
+                self.assertIsNone(
+                    db.execute(
+                        "SELECT name FROM sqlite_master WHERE name='mail_before_events'"
+                    ).fetchone()
+                )
+                db.execute(
+                    "INSERT INTO mail(id,recipient,sender_name,kind,body,created_at,delivered_at)"
+                    " VALUES('new-event',?,'discord','event_turn','hi',3,4)",
+                    (session,),
+                )
+
     def test_startup_migrates_legacy_images_once_with_a_consistent_backup(self):
         probe = ""
 

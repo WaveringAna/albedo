@@ -639,8 +639,8 @@ fn dispatch_mail(db: store.Store, registry: Subject(Message)) -> Nil {
             session.submit_mail(worker, letter)
             |> result.map_error(fn(error) {
               case error {
-                // A webhook waits for idle and a full queue drains; neither
-                // is a failure worth recording.
+                // A full queue drains when its turn ends; that is not a
+                // failure worth recording.
                 session.Busy -> ""
                 other -> session.submission_error(other)
               }

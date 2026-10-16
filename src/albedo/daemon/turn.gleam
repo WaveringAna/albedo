@@ -21,7 +21,8 @@ pub type Source {
   Chat
   JobWake
   /// A letter from the durable inbox, marked delivered when its input commits.
-  /// Letters between agents steer a running turn; webhooks wait for idle.
+  /// Letters between agents steer a running turn; webhooks and events
+  /// delivered after the turn wait in the queue until it ends.
   Mail(id: String, kind: mail.Kind)
   /// Something an extension tells the agent, such as a user's work ledger
   /// change. `origin` labels it in the transcript.
@@ -147,6 +148,7 @@ pub fn source_name(source: Source) -> String {
     Chat -> "chat"
     JobWake -> "job"
     Mail(_, mail.Webhook) -> "webhook"
+    Mail(_, mail.Event(_)) -> "event"
     Mail(..) -> "mail"
     Note(origin) -> origin
     Continue -> "continue"
@@ -156,15 +158,24 @@ pub fn source_name(source: Source) -> String {
 type SourceRule {
   StartsTurn
   SteersOnly
+  /// Starts a turn, or queues behind a running one without steering it.
+  WaitsForTurn
   RefusedWhenBusy
 }
 
 fn source_rule(source: Source) -> SourceRule {
   case source {
-    JobWake | Mail(_, mail.Webhook) -> RefusedWhenBusy
+    JobWake -> RefusedWhenBusy
+    Mail(_, mail.Webhook) | Mail(_, mail.Event(mail.AfterTurn)) -> WaitsForTurn
     Note(_) -> SteersOnly
     _ -> StartsTurn
   }
+}
+
+/// Whether a queued submission joins the running turn at its next tool
+/// boundary; the rest wait for the turn to end and start the next together.
+pub fn steers(submission: Submission) -> Bool {
+  source_rule(submission.source) != WaitsForTurn
 }
 
 pub fn admit(
@@ -182,7 +193,8 @@ pub fn admit(
     True, False, _, _ -> Reject(Busy)
     True, True, SteersOnly, _ -> Queue
     True, True, RefusedWhenBusy, Running(_) -> Reject(Busy)
-    True, True, StartsTurn, Running(_) -> Queue
+    True, True, StartsTurn, Running(_) | True, True, WaitsForTurn, Running(_) ->
+      Queue
     True, True, _, _ -> Start
   }
 }
