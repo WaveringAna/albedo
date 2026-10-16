@@ -31,7 +31,12 @@ func (m LoginModel) signedOut(provider string) bool {
 	if _, known := m.signInFor(provider); !known {
 		return false
 	}
-	return !slices.ContainsFunc(m.Accounts, func(account daemon.Account) bool { return account.Provider == provider })
+	return len(m.accountsFor(provider)) == 0
+}
+
+// accountsFor lists the accounts signed in to a provider.
+func (m LoginModel) accountsFor(provider string) []daemon.Account {
+	return slices.DeleteFunc(slices.Clone(m.Accounts), func(account daemon.Account) bool { return account.Provider != provider })
 }
 
 // accountAt resolves a chooser row back to the account it lists.
@@ -43,40 +48,188 @@ func (m LoginModel) accountAt(id string) (daemon.Account, bool) {
 	return m.Accounts[index], true
 }
 
+// The rules the accounts picker groups its rows under.
+const (
+	sectionProviders = "providers"
+	sectionAccounts  = "accounts"
+	sectionSignIn    = "sign in"
+	sectionAdd       = "add a provider"
+)
+
+// buildChoosePicker lists everything /login can do: the profiles new sessions
+// can use, the accounts the daemon holds, the providers it can sign in to, and
+// the ones a profile can be set up for by hand. The rules say which is which,
+// so enter can mean one thing per section.
 func (m *LoginModel) buildChoosePicker() {
-	var items []PickerItem
+	var items []loginItem
 	for _, name := range slices.Sorted(maps.Keys(m.Profiles.Providers)) {
 		settings := m.Profiles.Providers[name]
 		extension := cmp.Or(settings.Extension, "openai")
-		detail := fmt.Sprintf("%s · %s", settings.Model, extension)
-		if _, signIn := m.signInFor(extension); signIn && hasKey(settings) {
-			detail += " · API key"
-		} else if m.signedOut(extension) {
-			detail += " · signed out"
+		item := loginItem{
+			ID:      "use:" + name,
+			Label:   name,
+			Detail:  m.profileDetail(settings, extension),
+			section: sectionProviders,
+			facts:   m.profileFacts(settings, extension),
+			note:    "enter makes this the one new sessions use",
 		}
 		if name == m.Profiles.Active {
-			detail += " · active"
+			item.tag = DefaultStyles.Muted.Render("active")
+			item.note = "this is the one new sessions use"
 		}
-		items = append(items, PickerItem{ID: "use:" + name, Label: name, Detail: detail, Note: "a saved provider profile; enter makes it the one new sessions use"})
+		items = append(items, item)
 	}
 	for index, account := range m.Accounts {
-		note := "a signed-in account; enter picks the profile it runs under"
+		note := "enter picks the profile this account signs in for"
 		if account.Kind == "service" {
 			note = "service account for tools; its tokens stay in creds.json"
 		}
-		items = append(items, PickerItem{ID: "account:" + strconv.Itoa(index), Label: account.Label, Detail: account.Detail, Note: note})
-	}
-	for _, p := range customProviders {
-		items = append(items, PickerItem{ID: p.ID, Label: p.Label, Detail: p.Detail, Note: "creates or updates a provider profile"})
+		items = append(items, loginItem{
+			ID:      "account:" + strconv.Itoa(index),
+			Label:   account.Label,
+			Detail:  accountDetail(account),
+			section: sectionAccounts,
+			lead:    DefaultStyles.Success.Render("●"),
+			facts:   m.accountFacts(account),
+			note:    note,
+		})
 	}
 	for _, login := range m.SignIns {
-		note := "signs in through the daemon; its tokens stay in the daemon's credential store"
+		accounts := m.accountsFor(login.Provider)
+		detail := login.Detail
+		if len(accounts) > 0 {
+			detail = joinDetail(detail, "signed in")
+		}
+		note := "enter signs in through the daemon; its tokens stay in creds.json"
 		if login.Kind == "service" {
 			note = "service sign-in for tools; its tokens stay in creds.json"
 		}
-		items = append(items, PickerItem{ID: "signin:" + login.Provider, Label: login.Label, Detail: login.Detail, Note: note})
+		items = append(items, loginItem{
+			ID: "signin:" + login.Provider, Label: login.Label, Detail: detail, section: sectionSignIn,
+			facts: signInFacts(login, accounts),
+			note:  note,
+		})
 	}
-	m.ChoosePicker = newLoginPick("Provider for new sessions", items, "use:"+m.Profiles.Active, m.Width, m.Height)
+	for _, p := range customProviders {
+		items = append(items, loginItem{
+			ID: p.ID, Label: p.Label, Detail: p.Detail, section: sectionAdd,
+			lead:  DefaultStyles.Muted.Render("+"),
+			facts: p.facts(),
+			note:  "enter creates this provider profile, or updates the one you have",
+		})
+	}
+	m.ChoosePicker = newLoginPick("", items, "use:"+m.Profiles.Active, m.Width, m.Height)
+}
+
+// profileDetail is a profile's one-line summary: what it runs and how it
+// authenticates.
+func (m LoginModel) profileDetail(settings config.Settings, extension string) string {
+	detail := cmp.Or(settings.Model, "no model yet") + " · " + extension
+	if _, signIn := m.signInFor(extension); signIn && hasKey(settings) {
+		return detail + " · API key"
+	}
+	if m.signedOut(extension) {
+		return detail + " · signed out"
+	}
+	return detail
+}
+
+// profileFacts are what a profile's pane says: what it sends, with what, and
+// where its credentials stand.
+func (m LoginModel) profileFacts(settings config.Settings, extension string) []loginFact {
+	// The model and the extension are the pane's subtitle, so the facts start
+	// below them.
+	facts := []loginFact{{"protocol", cmp.Or(settings.Protocol, "not set")}}
+	if settings.AccountID != nil {
+		facts = append(facts, loginFact{"account", m.accountLabel(*settings.AccountID)})
+	}
+	if settings.Project != nil {
+		facts = append(facts, loginFact{"project", *settings.Project})
+	}
+	if settings.Location != nil {
+		facts = append(facts, loginFact{"location", *settings.Location})
+	}
+	if settings.BaseURL != "" {
+		facts = append(facts, loginFact{"endpoint", settings.BaseURL})
+	}
+	switch _, signIn := m.signInFor(extension); {
+	case hasKey(settings):
+		facts = append(facts, loginFact{"key", "held by the daemon"})
+	case !signIn:
+		facts = append(facts, loginFact{"key", "not saved"})
+	}
+	return facts
+}
+
+// accountLabel names the account an id belongs to, or reports it is gone.
+func (m LoginModel) accountLabel(id string) string {
+	if i := slices.IndexFunc(m.Accounts, func(account daemon.Account) bool { return account.ID == id }); i >= 0 {
+		return m.Accounts[i].Label
+	}
+	return "removed"
+}
+
+// accountDetail is an account's one-line summary: its provider, whether it is
+// for tools rather than sessions, and whatever the daemon says about it.
+func accountDetail(account daemon.Account) string {
+	parts := []string{account.Provider}
+	if account.Kind == "service" {
+		parts = append(parts, "service")
+	}
+	if account.Detail != "" {
+		parts = append(parts, account.Detail)
+	}
+	return strings.Join(parts, " · ")
+}
+
+// accountFacts are what an account's pane says: the provider holding it, the
+// profiles using it, and, when two accounts share a label, its id.
+func (m LoginModel) accountFacts(account daemon.Account) []loginFact {
+	facts := []loginFact{
+		{"provider", account.Provider},
+		{"used by", joinOr(account.SelectedByProfiles, ", ", "no profile yet")},
+	}
+	if m.sharedAccountLabel(account) {
+		facts = append(facts, loginFact{"id", accountIDPrefix(account.ID)})
+	}
+	return facts
+}
+
+// sharedAccountLabel reports whether another account of the same provider
+// carries this one's label, so the two rows are told apart by id.
+func (m LoginModel) sharedAccountLabel(account daemon.Account) bool {
+	return slices.ContainsFunc(m.Accounts, func(other daemon.Account) bool {
+		return other.ID != account.ID && other.Provider == account.Provider && other.Label == account.Label
+	})
+}
+
+// accountIDPrefix is the first 8 characters of an account id: enough to match
+// a row against creds.json, short enough to read.
+func accountIDPrefix(id string) string {
+	if len(id) > 8 {
+		return id[:8]
+	}
+	return id
+}
+
+// signInFacts are what a sign-in's pane says: which accounts it already holds.
+func signInFacts(login daemon.SignIn, accounts []daemon.Account) []loginFact {
+	labels := make([]string, len(accounts))
+	for i, account := range accounts {
+		labels[i] = account.Label
+	}
+	return []loginFact{
+		{"provider", login.Provider},
+		{"accounts", joinOr(labels, ", ", "none yet")},
+	}
+}
+
+// joinDetail adds a word to a description that may be empty.
+func joinDetail(detail, word string) string {
+	if detail == "" {
+		return word
+	}
+	return detail + " · " + word
 }
 
 // removalFor maps a chooser row to what removing it would delete.
@@ -171,9 +324,21 @@ func (m *LoginModel) chooseAccount(account daemon.Account) tea.Cmd {
 	}
 	m.SelectedAccount = &account
 	m.Step = StepAccountProfile
-	items := make([]PickerItem, 0, len(names))
+	items := make([]loginItem, 0, len(names))
 	for _, name := range names {
-		items = append(items, PickerItem{ID: name, Label: name, Detail: "use " + account.Label, Note: "the profile this account signs in for"})
+		settings := m.Profiles.Providers[name]
+		extension := cmp.Or(settings.Extension, "openai")
+		item := loginItem{
+			ID:     name,
+			Label:  name,
+			Detail: m.profileDetail(settings, extension),
+			facts:  m.profileFacts(settings, extension),
+			note:   "enter signs " + account.Label + " in for this profile",
+		}
+		if name == m.Profiles.Active {
+			item.tag = DefaultStyles.Muted.Render("active")
+		}
+		items = append(items, item)
 	}
 	m.ChoosePicker = newLoginPick("Choose the profile for this account", items, m.Profiles.Active, m.Width, m.Height)
 	return m.ChoosePicker.Init()
@@ -190,6 +355,25 @@ func (m *LoginModel) backToChoose() tea.Cmd {
 	m.Step = StepChoose
 	m.buildChoosePicker()
 	return m.ChoosePicker.Init()
+}
+
+// flowDetail is what a sign-in flow asks of you.
+func flowDetail(flow string) string {
+	switch flow {
+	case "browser":
+		return "opens the provider's page; the daemon finishes it"
+	case "manual":
+		return "paste the callback URL or code yourself"
+	}
+	return ""
+}
+
+// flowNote says what starting this flow does.
+func flowNote(flow string) string {
+	if flow == "manual" {
+		return "enter starts the sign-in and waits for the code"
+	}
+	return "enter starts the sign-in and opens the provider's page"
 }
 
 // startSignIn hands the provider to the daemon, which owns the PKCE pair, the
@@ -213,9 +397,9 @@ func (m *LoginModel) startSignIn(login daemon.SignIn) tea.Cmd {
 	m.Error = ""
 	if len(login.Flows) > 1 {
 		m.Step = StepOAuthFlow
-		items := make([]PickerItem, 0, len(login.Flows))
+		items := make([]loginItem, 0, len(login.Flows))
 		for _, flow := range login.Flows {
-			items = append(items, PickerItem{ID: flow, Label: flow})
+			items = append(items, loginItem{ID: flow, Label: flow, Detail: flowDetail(flow), note: flowNote(flow)})
 		}
 		m.ChoosePicker = newLoginPick("Choose a sign-in flow", items, login.Flows[0], m.Width, m.Height)
 		return m.ChoosePicker.Init()
@@ -236,12 +420,12 @@ func (m *LoginModel) nextLoginField() tea.Cmd {
 		}
 		m.Step = StepOAuthFields
 		if field.Type == "choice" || field.Type == "boolean" {
-			items := []PickerItem{}
+			items := []loginItem{}
 			if field.Type == "boolean" {
-				items = []PickerItem{{ID: "false", Label: "false"}, {ID: "true", Label: "true"}}
+				items = []loginItem{{ID: "false", Label: "false"}, {ID: "true", Label: "true"}}
 			} else {
 				for _, choice := range field.Choices {
-					items = append(items, PickerItem{ID: choice.Label, Label: choice.Label})
+					items = append(items, loginItem{ID: choice.Label, Label: choice.Label})
 				}
 			}
 			initial := ""
@@ -253,7 +437,9 @@ func (m *LoginModel) nextLoginField() tea.Cmd {
 		}
 		initial := ""
 		_ = json.Unmarshal(field.Default, &initial)
-		m.TextInput.Placeholder = field.Label
+		// The question already stands on the input line, so the field asks for
+		// nothing twice.
+		m.TextInput.Placeholder = ""
 		return m.promptInput(initial, field.Type == "secret")
 	}
 	return m.beginLoginCmd()

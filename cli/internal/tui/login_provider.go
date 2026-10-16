@@ -31,7 +31,7 @@ type customProvider struct {
 var customProviders = []customProvider{
 	{
 		ID:            "add-alibaba",
-		Label:         "add or update an Alibaba provider",
+		Label:         "Alibaba",
 		Detail:        "token plan · Qwen, DeepSeek, GLM",
 		Extension:     "alibaba",
 		DefaultName:   "alibaba",
@@ -40,8 +40,8 @@ var customProviders = []customProvider{
 	},
 	{
 		ID:            "add-opencode-go",
-		Label:         "add or update an OpenCode Go provider",
-		Detail:        "subscription · Qwen, GLM, Kimi, DeepSeek, MiMo, MiniMax",
+		Label:         "OpenCode Go",
+		Detail:        "subscription · Qwen, GLM, Kimi, DeepSeek, MiMo",
 		Extension:     "opencode-go",
 		DefaultName:   "opencode-go",
 		DefaultURL:    "https://opencode.ai/inference/go/v1",
@@ -49,8 +49,8 @@ var customProviders = []customProvider{
 	},
 	{
 		ID:            "add-opencode-zen",
-		Label:         "add or update an OpenCode Zen provider",
-		Detail:        "pay per token · GLM, Claude, GPT, DeepSeek, Kimi; the free models need no key",
+		Label:         "OpenCode Zen",
+		Detail:        "pay per token · free models need no key",
 		Extension:     "opencode-zen",
 		DefaultName:   "opencode-zen",
 		DefaultURL:    "https://opencode.ai/zen/v1",
@@ -59,7 +59,7 @@ var customProviders = []customProvider{
 	},
 	{
 		ID:            "add-anthropic",
-		Label:         "add or update an Anthropic API key",
+		Label:         "Anthropic",
 		Detail:        "console billing · Claude models",
 		Extension:     "claude",
 		DefaultName:   "anthropic",
@@ -68,7 +68,7 @@ var customProviders = []customProvider{
 	},
 	{
 		ID:            "add-bedrock",
-		Label:         "add or update an Amazon Bedrock provider",
+		Label:         "Amazon Bedrock",
 		Detail:        "aws credentials · Claude models",
 		Extension:     "bedrock",
 		DefaultName:   "bedrock",
@@ -77,7 +77,7 @@ var customProviders = []customProvider{
 	},
 	{
 		ID:            "add-vertex",
-		Label:         "add or update a Google Vertex AI provider",
+		Label:         "Google Vertex AI",
 		Detail:        "application default credentials · Gemini models",
 		Extension:     "vertex",
 		DefaultName:   "vertex",
@@ -86,10 +86,30 @@ var customProviders = []customProvider{
 	},
 	{
 		ID:         "add-openai",
-		Label:      "add or update an OpenAI-compatible provider",
+		Label:      "OpenAI-compatible",
+		Detail:     "your own base URL and api key",
 		Extension:  "openai",
 		DefaultURL: "https://api.openai.com/v1",
 	},
+}
+
+// facts are what an add row's pane says: which extension it configures, where
+// it sends by default, and what it will ask for.
+func (p customProvider) facts() []loginFact {
+	facts := []loginFact{{"extension", p.Extension}}
+	switch {
+	case p.DefaultURL != "":
+		facts = append(facts, loginFact{"endpoint", p.DefaultURL})
+	case p.FixedEndpoint:
+		facts = append(facts, loginFact{"endpoint", "the extension's own"})
+	}
+	if p.FixedProtocol != "" {
+		facts = append(facts, loginFact{"protocol", p.FixedProtocol})
+	}
+	if p.Scoped {
+		facts = append(facts, loginFact{"asks for", "project and location"})
+	}
+	return facts
 }
 
 func customProviderByID(id string) (customProvider, bool) {
@@ -224,19 +244,19 @@ func (m *LoginModel) applyHint() tea.Cmd {
 }
 
 func (m *LoginModel) buildProtocolPicker() {
-	items := []PickerItem{
-		{ID: "responses", Label: "responses", Detail: "OpenAI Responses API"},
-		{ID: "chat_completions", Label: "chat completions", Detail: "widely supported by compatible endpoints"},
+	items := []loginItem{
+		{ID: "responses", Label: "responses", Detail: "OpenAI Responses API", note: "the newer API; the endpoint has to support it"},
+		{ID: "chat_completions", Label: "chat completions", Detail: "widely supported by compatible endpoints", note: "the safe choice for a compatible endpoint"},
 	}
 	m.ProtocolPicker = newLoginPick("api protocol", items, m.Draft.Protocol, m.Width, m.Height)
 }
 
 func (m *LoginModel) buildModelPicker() {
-	items := make([]PickerItem, 0, len(m.Catalog)+1)
+	items := make([]loginItem, 0, len(m.Catalog)+1)
 	for _, name := range m.Catalog {
-		items = append(items, PickerItem{ID: "model:" + name, Label: name, Note: "from the models.dev catalog"})
+		items = append(items, loginItem{ID: "model:" + name, Label: name, note: "from the models.dev catalog"})
 	}
-	items = append(items, PickerItem{ID: "manual", Label: "enter a model ID manually", Note: "type a model ID yourself"})
+	items = append(items, loginItem{ID: "manual", Label: "enter a model ID manually", note: "type a model ID yourself"})
 	m.ModelPicker = newLoginPick("model", items, "model:"+m.Draft.Model, m.Width, m.Height)
 }
 

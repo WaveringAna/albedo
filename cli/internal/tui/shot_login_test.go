@@ -30,6 +30,17 @@ func init() {
 			m.nextLoginField()
 		})},
 		shotState{"account-profile", loginShot(func(m *LoginModel) { m.chooseAccount(m.Accounts[0]) })},
+		shotState{"account-service", loginShot(func(m *LoginModel) {
+			m.Accounts = append(m.Accounts, daemon.Account{Provider: "colab", ID: "acc-colab", Label: "ana@valefar", Kind: "service"})
+			m.buildChoosePicker()
+			focusLoginRow(m, "account:1")
+		})},
+		shotState{"add-provider-row", loginShot(func(m *LoginModel) { focusLoginRow(m, "add-vertex") })},
+		shotState{"profile-signed-out", loginShot(func(m *LoginModel) {
+			m.Accounts = nil
+			m.buildChoosePicker()
+			focusLoginRow(m, "use:claude")
+		})},
 		shotState{"api-key", loginShot(func(m *LoginModel) { m.askAPIKey() }, typedKeys("sk-live-abc123")...)},
 		shotState{"api-key-error", loginShot(func(m *LoginModel) {
 			m.askAPIKey()
@@ -42,33 +53,34 @@ func init() {
 			m.askProject()
 		})},
 		shotState{"protocol", loginShot(func(m *LoginModel) {
-			m.Step = StepProtocol
+			m.enterStep(StepProtocol)
 			m.buildProtocolPicker()
 		})},
 		shotState{"browser-wait", loginShot(func(m *LoginModel) {
-			m.Step = StepOAuth
+			m.enterStep(StepOAuth)
 			m.Status = "waiting for the browser…"
 			m.SignInURL = "https://login.example/authorize?client_id=albedo&state=7f3c"
 			m.LoginInstructions = "Finish signing in in your browser."
 		})},
-		shotState{"device-code", loginShot(func(m *LoginModel) {
-			m.Step = StepOAuth
-			m.Status = "enter the code to finish"
+		shotState{"manual-code", loginShot(func(m *LoginModel) {
+			m.enterStep(StepOAuth)
+			m.LoginFlow = "manual"
+			m.Status = "waiting for the pasted code"
 			m.LoginInstructions = "Open https://login.example/device and enter ABCD-1234."
 		})},
 		shotState{"models", loginShot(func(m *LoginModel) {
-			m.Step = StepModels
+			m.enterStep(StepModels)
 			*m, _ = m.Update(loginModelsLoadedMsg{Gen: m.Generation, Models: []string{"gpt-5", "gpt-5-mini", "gpt-4.1"}})
 		})},
-		shotState{"models-loading", loginShot(func(m *LoginModel) { m.Step = StepModels })},
+		shotState{"models-loading", loginShot(func(m *LoginModel) { m.enterStep(StepModels) })},
 		shotState{"models-note", loginShot(func(m *LoginModel) {
-			m.Step = StepModels
+			m.enterStep(StepModels)
 			*m, _ = m.Update(loginModelsLoadedMsg{Gen: m.Generation, Note: "No matching models in models.dev. Enter a model ID manually."})
 		})},
-		shotState{"saving", loginShot(func(m *LoginModel) { m.Step = StepSaving })},
+		shotState{"saving", loginShot(func(m *LoginModel) { m.enterStep(StepSaving) })},
 		shotState{"removing", loginShot(func(m *LoginModel) {
 			m.Removing = removal{Kind: "account", Label: "mayer@chernobog"}
-			m.Step = StepSaving
+			m.enterStep(StepSaving)
 		})},
 	)
 }
@@ -85,7 +97,7 @@ func loginModel(width, height int) LoginModel {
 	}}
 	listed := daemon.SignIns{
 		Logins: []daemon.SignIn{
-			{Provider: "claude", Label: "Claude", Detail: "console billing or your subscription", Protocol: "chat_completions", Flows: []string{"browser", "device"}},
+			{Provider: "claude", Label: "Claude", Detail: "console billing or your subscription", Protocol: "chat_completions", Flows: []string{"browser", "manual"}},
 			{Provider: "antigravity", Label: "Antigravity", Detail: "Google account", Flows: []string{"browser"}},
 		},
 		Accounts: []daemon.Account{{Provider: "claude", ID: "acc-1", Label: "mayer@chernobog", Detail: "Max plan"}},
@@ -105,6 +117,13 @@ func loginEmpty(setup func(*LoginModel)) func(width, height int) string {
 		}
 		return m.View()
 	}
+}
+
+// enterStep moves the screen to a step the way a real transition does, so its
+// input is sized for the question it now asks.
+func (m *LoginModel) enterStep(step LoginStep) {
+	m.Step = step
+	m.SetSize(m.Width, m.Height)
 }
 
 // loginShot draws the login screen after setup and keys.

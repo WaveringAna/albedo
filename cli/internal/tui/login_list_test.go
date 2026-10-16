@@ -6,6 +6,8 @@ package tui
 
 import (
 	"albedo/cli/internal/daemon"
+	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -63,8 +65,89 @@ func TestLoginFilterFuzzilyFindsAProvider(t *testing.T) {
 func TestLoginDetailShowsWithoutEnter(t *testing.T) {
 	m := loginModel(120, 30)
 	view := ansi.Strip(m.View())
-	if !strings.Contains(view, "a saved provider profile") {
-		t.Fatalf("the highlighted provider's detail is not in the pane:\n%s", view)
+	if !strings.Contains(view, "endpoint") || !strings.Contains(view, "api.openai.com") {
+		t.Fatalf("the highlighted profile's facts are not in the pane:\n%s", view)
+	}
+}
+
+// The accounts picker lists four kinds of row under rules of their own, so a
+// person can see what a row is before pressing enter, and no row is cut off
+// before the word that names it.
+func TestChoosePickerGroupsEveryKindUnderItsOwnRule(t *testing.T) {
+	m := loginModel(120, 30)
+	view := ansi.Strip(m.View())
+	for _, rule := range []string{"providers 3", "accounts 1", "sign in 2", fmt.Sprintf("add a provider %d", len(customProviders))} {
+		if !strings.Contains(view, rule) {
+			t.Fatalf("the list is missing the %q rule:\n%s", rule, view)
+		}
+	}
+	for _, label := range []string{"OpenCode Go", "OpenAI-compatible", "Antigravity"} {
+		if !strings.Contains(view, label) {
+			t.Fatalf("the list is missing %q, or cuts it short:\n%s", label, view)
+		}
+	}
+	if strings.Contains(view, "add or update") {
+		t.Fatalf("the add rows repeat the words their rule already says:\n%s", view)
+	}
+	sections := map[string]string{}
+	for _, item := range m.ChoosePicker.items {
+		sections[item.ID] = item.section
+	}
+	for id, want := range map[string]string{
+		"use:work":      sectionProviders,
+		"account:0":     sectionAccounts,
+		"signin:claude": sectionSignIn,
+		"add-alibaba":   sectionAdd,
+	} {
+		if sections[id] != want {
+			t.Fatalf("%s sits under %q, want %q", id, sections[id], want)
+		}
+	}
+}
+
+// Accounts of one provider can carry the same label, and their rows then read
+// alike; the pane names the account it is showing only when it has to.
+func TestAccountPaneNamesTheIDWhenLabelsCollide(t *testing.T) {
+	m := loginModel(120, 30)
+	focusLoginRow(&m, "account:0")
+	if view := ansi.Strip(m.View()); strings.Contains(view, "acc-1") {
+		t.Fatalf("a label of its own does not need the id:\n%s", view)
+	}
+	m.Accounts = append(m.Accounts, daemon.Account{Provider: "claude", ID: "0123456789abcdef", Label: "mayer@chernobog", Detail: "Max plan"})
+	m.buildChoosePicker()
+	for id, want := range map[string]string{"account:0": "acc-1", "account:1": "01234567"} {
+		focusLoginRow(&m, id)
+		if view := ansi.Strip(m.View()); !strings.Contains(view, want) {
+			t.Fatalf("the pane for %s does not name the account it shows:\n%s", id, view)
+		}
+	}
+}
+
+// Enter is named per row: a service account is ready as it stands, so its row
+// offers no enter at all.
+func TestEnterVerbFollowsTheRow(t *testing.T) {
+	m := loginModel(120, 30)
+	m.Accounts = append(m.Accounts, daemon.Account{Provider: "colab", ID: "acc-colab", Label: "colab-user@example.com", Detail: "", Kind: "service"})
+	m.buildChoosePicker()
+	for id, want := range map[string]string{
+		"use:work":      "use",
+		"account:0":     "use",
+		"account:1":     "",
+		"signin:claude": "sign in",
+		"add-alibaba":   "set up",
+	} {
+		focusLoginRow(&m, id)
+		if got := m.enterVerb(); got != want {
+			t.Fatalf("enter on %s is %q, want %q", id, got, want)
+		}
+	}
+}
+
+// focusLoginRow puts the cursor on the row keyed id, so a test can read what
+// that row says and offers.
+func focusLoginRow(m *LoginModel, id string) {
+	if i := slices.IndexFunc(m.ChoosePicker.shown, func(s listShown) bool { return m.ChoosePicker.rows[s.row].key == id }); i >= 0 {
+		m.ChoosePicker.Cursor = i
 	}
 }
 
@@ -136,7 +219,7 @@ func TestServiceAccountAndSignInNotesInChoosePicker(t *testing.T) {
 	m.Accounts = append(m.Accounts, daemon.Account{ID: "acc-colab", Provider: "colab", Label: "colab-user@example.com", Kind: "service"})
 	m.buildChoosePicker()
 
-	var accountItem, signInItem *PickerItem
+	var accountItem, signInItem *loginItem
 	for i := range m.ChoosePicker.items {
 		item := &m.ChoosePicker.items[i]
 		if strings.HasPrefix(item.ID, "account:") && item.Label == "colab-user@example.com" {
@@ -146,10 +229,10 @@ func TestServiceAccountAndSignInNotesInChoosePicker(t *testing.T) {
 			signInItem = item
 		}
 	}
-	if accountItem == nil || accountItem.Note != "service account for tools; its tokens stay in creds.json" {
+	if accountItem == nil || accountItem.note != "service account for tools; its tokens stay in creds.json" {
 		t.Fatalf("unexpected service account note: %+v", accountItem)
 	}
-	if signInItem == nil || signInItem.Note != "service sign-in for tools; its tokens stay in creds.json" {
+	if signInItem == nil || signInItem.note != "service sign-in for tools; its tokens stay in creds.json" {
 		t.Fatalf("unexpected service sign-in note: %+v", signInItem)
 	}
 }

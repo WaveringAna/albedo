@@ -3,6 +3,7 @@ package tui
 import (
 	"albedo/cli/internal/config"
 	"cmp"
+	"strings"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -61,11 +62,13 @@ func (m LoginModel) View() string {
 	width := cmp.Or(m.Width, 80)
 	title := brand("albedo") + " " + DefaultStyles.Muted.Render("/login")
 	right := DefaultStyles.Faint.Render(m.Name)
-	if m.Step == StepChoose {
-		right = DefaultStyles.Faint.Render(config.HomeDir())
+	if m.Step == StepChoose || m.Step == StepRemove {
+		right = DefaultStyles.Faint.Render(homePath(config.HomeDir()))
 	}
 	footer := m.footer(width)
-	if m.listing() {
+	// A removal question keeps the list it asks about on screen, the way every
+	// other confirm does.
+	if m.listing() || m.Step == StepRemove {
 		lv := m.pickerFor().listView
 		lv.Empty = "nothing to choose"
 		return lv.frame(title, right, footer).view(m.Width, m.Height)
@@ -73,20 +76,26 @@ func (m LoginModel) View() string {
 	f := listFrame{
 		title:  title,
 		right:  right,
-		filter: promptLead() + DefaultStyles.Muted.Render(m.fieldLabel()+"  ") + m.TextInput.View(),
+		filter: m.filterLine(),
 		list:   func(w, _ int) []string { return m.body(w) },
 		footer: footer,
 	}
 	return f.view(m.Width, m.Height)
 }
 
+// filterLine is the question's input line; a step that is only waiting on the
+// daemon takes no input and shows none.
+func (m LoginModel) filterLine() string {
+	if m.Step == StepSaving {
+		return ""
+	}
+	return promptLead() + DefaultStyles.Muted.Render(m.fieldLabel()+"  ") + m.TextInput.View()
+}
+
 // body is the text above a question: what it asks, what it takes, and what
 // a sign-in or save is doing.
 func (m LoginModel) body(width int) []string {
 	switch m.Step {
-	case StepRemove:
-		kind := m.Removing.Kind
-		return []string{DefaultStyles.Bold.Render(m.Removing.Label), DefaultStyles.Faint.Render(kind)}
 	case StepSaving:
 		state := "saving provider…"
 		if m.Removing.Kind != "" {
@@ -102,7 +111,7 @@ func (m LoginModel) body(width int) []string {
 			lines = append(lines, "", DefaultStyles.Faint.Render(ansi.Hardwrap(m.SignInURL, width, true)))
 		}
 		lines = append(lines, "")
-		return append(lines, paneNote("browser sign-in finishes on its own; paste the callback URL or code if it stalls", width)...)
+		return append(lines, paneNote(m.signInHint(), width)...)
 	case StepModels, StepOAuthModels:
 		return []string{DefaultStyles.Faint.Render("loading models…")}
 	}
@@ -118,9 +127,9 @@ func (m LoginModel) body(width int) []string {
 func (m LoginModel) question() (string, []string) {
 	switch m.Step {
 	case StepName:
-		var notes []string
-		for _, login := range m.SignIns {
-			notes = append(notes, "use "+login.Provider+" to sign in")
+		notes := []string{"a name for this provider profile"}
+		if names := m.signInNames(); len(names) > 0 {
+			notes = append(notes, "or name "+orList(names)+" to sign in instead of using an api key")
 		}
 		return "provider name", notes
 	case StepBaseURL:
@@ -129,7 +138,7 @@ func (m LoginModel) question() (string, []string) {
 		}
 		return "API base URL", nil
 	case StepAPIKey:
-		return "API key", nil
+		return "API key", []string{"the daemon keeps a key in creds.json, not in config.json"}
 	case StepProject:
 		return "Google Cloud project ID", nil
 	case StepLocation:
@@ -153,7 +162,10 @@ func (m LoginModel) hints() []hint {
 	case (m.Step == StepModels || m.Step == StepOAuthModels) && !m.listing():
 		return []hint{{"esc", "back"}}
 	case m.listing():
-		hints := []hint{{"↑↓", "move"}, {"enter", m.enterVerb()}}
+		hints := []hint{{"↑↓", "move"}}
+		if verb := m.enterVerb(); verb != "" {
+			hints = append(hints, hint{"enter", verb})
+		}
 		if item, ok := m.ChoosePicker.Highlighted(); ok && m.Step == StepChoose {
 			if _, removable := m.removalFor(item.ID); removable {
 				hints = append(hints, hint{"ctrl+d", "remove"})
@@ -168,8 +180,14 @@ func (m LoginModel) hints() []hint {
 	return []hint{{"enter", "continue"}, {"esc", "cancel"}}
 }
 
-// enterVerb says what enter does on the list the step shows.
+// enterVerb says what enter does on the list the step shows, naming the
+// highlighted row's own action where the rows differ.
 func (m LoginModel) enterVerb() string {
+	if item, ok := m.pickerFor().Highlighted(); ok {
+		if verb, known := m.rowVerb(item); known {
+			return verb
+		}
+	}
 	switch m.Step {
 	case StepAccountProfile:
 		return "use"
@@ -179,6 +197,52 @@ func (m LoginModel) enterVerb() string {
 		return "use model"
 	}
 	return "choose"
+}
+
+// rowVerb is what enter does with one row of the accounts picker, and whether
+// the row's kind decides it. A service account is ready as it stands, so its
+// row has no action to name.
+func (m LoginModel) rowVerb(item loginItem) (string, bool) {
+	switch {
+	case strings.HasPrefix(item.ID, "use:"):
+		return "use", true
+	case strings.HasPrefix(item.ID, "signin:"):
+		return "sign in", true
+	case strings.HasPrefix(item.ID, "account:"):
+		if account, ok := m.accountAt(item.ID); ok && account.Kind == "service" {
+			return "", true
+		}
+		return "use", true
+	}
+	if _, ok := customProviderByID(item.ID); ok {
+		return "set up", true
+	}
+	return "", false
+}
+
+// signInNames lists the providers a name at the first step can sign in with.
+func (m LoginModel) signInNames() []string {
+	names := make([]string, 0, len(m.SignIns))
+	for _, login := range m.SignIns {
+		names = append(names, login.Provider)
+	}
+	return names
+}
+
+// orList joins names the way a sentence does: "a", "a or b", "a, b or c".
+func orList(names []string) string {
+	if len(names) < 2 {
+		return strings.Join(names, "")
+	}
+	return strings.Join(names[:len(names)-1], ", ") + " or " + names[len(names)-1]
+}
+
+// signInHint says how the sign-in in flight finishes.
+func (m LoginModel) signInHint() string {
+	if m.LoginFlow == "manual" {
+		return "paste the callback URL or code from the provider's page"
+	}
+	return "browser sign-in finishes on its own; paste the callback URL or code if it stalls"
 }
 
 // footer is the keys, with an error on a row of its own above them so the
