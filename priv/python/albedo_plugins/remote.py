@@ -94,7 +94,7 @@ def _report_live() -> None:
     try:
         live = [
             *_fallback_live.values(),
-            *(job for c in connections for job in c._live.values()),
+            *(job for c in connections if not c.closed for job in c._live.values()),
         ]
         send_frame(
             {
@@ -759,6 +759,9 @@ class RemoteConnection:
                     RemoteLost(f"the connection to {self.host} was lost")
                 )
         self.closed = True
+        if self._live:
+            self._live.clear()
+            _report_live()
 
     # --- calls ---
 
@@ -1484,7 +1487,7 @@ class Remote:
     @staticmethod
     def connections() -> ReadyList:
         """Every open connection, kernel or degraded."""
-        return ReadyList(connections)
+        return ReadyList([c for c in connections if not c.closed])
 
     @staticmethod
     async def close_all() -> None:
@@ -1503,7 +1506,7 @@ async def stop_remote_job(job_id: str) -> dict[str, object] | None:
         await fallback.stop()
         return {"ok": True}
     for connection in connections:
-        if job_id in connection._live:
+        if not connection.closed and job_id in connection._live:
             return await connection.stop_job(job_id)
     return None
 
