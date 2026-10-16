@@ -193,6 +193,19 @@ func TestTUILoginSavesCloudProviderProfiles(t *testing.T) {
 	if got.Extension != "opencode-go" || got.BaseURL != "https://opencode.ai/inference/go/v1" || got.Protocol != "chat_completions" || !got.HasKey || got.Model != "glm-5.3-flash" {
 		t.Fatalf("config.json kept %+v", got)
 	}
+
+	// Zen's free models authenticate as OpenCode's client does, so the key
+	// may stay blank; the default endpoint is the gateway root.
+	preserveLoginState(t, "opencode-zen")
+	start("add-opencode-zen", "opencode-zen")
+	expect(tui.StepBaseURL)
+	d.Key(tea.KeyEnter)
+	expect(tui.StepAPIKey)
+	d.Dispatch(d.Key(tea.KeyEnter))
+	got = finish("glm-5.3-flash-free")
+	if got.Extension != "opencode-zen" || got.BaseURL != "https://opencode.ai/zen/v1" || got.Protocol != "chat_completions" || got.HasKey || got.Model != "glm-5.3-flash-free" {
+		t.Fatalf("config.json kept %+v", got)
+	}
 }
 
 func deref(value *string) string {

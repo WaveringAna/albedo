@@ -53,6 +53,15 @@ ALIBABA_MODELS = {"data": [{"id": "qwen-fresh"}, {"id": "qwen-tts-fresh"}]}
 
 OPENCODE_GO_MODELS = {"data": [{"id": "glm-5.3-flash"}, {"id": "glm-audio-1"}]}
 
+# Zen's own list, free tier included, with a speech route the picker filters.
+OPENCODE_ZEN_MODELS = {
+    "data": [
+        {"id": "glm-5.3-flash-free"},
+        {"id": "deepseek-v4-pro"},
+        {"id": "cat-jam-tts"},
+    ]
+}
+
 GATEWAY_MODELS = {"data": [{"id": "local-b"}, {"id": "local-a"}]}
 
 # As the Anthropic Models API answered, newest first; neither id is one
@@ -89,11 +98,18 @@ class ModelCatalogReloadTests(unittest.TestCase):
             lambda _request: text("ok"), catalog=OPENCODE_GO_MODELS
         )
         self.addCleanup(self.opencode_go.close)
+        self.opencode_zen = Provider(
+            lambda _request: text("ok"), catalog=OPENCODE_ZEN_MODELS
+        )
+        self.addCleanup(self.opencode_zen.close)
 
         def prepare(app):
             # Fresh on disk, so nothing but an explicit reload refetches them.
             (app.home / "alibaba-models.json").write_text(json.dumps(["qwen-stale"]))
             (app.home / "opencode-go-models.json").write_text(json.dumps(["glm-stale"]))
+            (app.home / "opencode-zen-models.json").write_text(
+                json.dumps(["glm-stale-free"])
+            )
             (app.home / "claude-models.json").write_text(json.dumps(CLAUDE_MODELS))
             (app.home / "models.json").unlink(missing_ok=True)
             app.write_extensions({"models": {"url": self.catalog.url + "/models.json"}})
@@ -122,12 +138,20 @@ class ModelCatalogReloadTests(unittest.TestCase):
                     "model": "glm-5.3-flash",
                     "protocol": "chat_completions",
                 },
+                "fixture-opencode-zen": {
+                    "extension": "opencode-zen",
+                    "baseUrl": self.opencode_zen.url,
+                    "apiKey": "fixture-opencode-zen-key",
+                    "model": "glm-5.3-flash-free",
+                    "protocol": "chat_completions",
+                },
             },
         )
         self.app.__enter__()
         for name in (
             "alibaba-models.json",
             "opencode-go-models.json",
+            "opencode-zen-models.json",
             "claude-models.json",
         ):
             self.addCleanup((self.app.home / name).unlink, missing_ok=True)
@@ -154,15 +178,22 @@ class ModelCatalogReloadTests(unittest.TestCase):
     def opencode_go_listed(self):
         return self.listed("opencode-go", self.opencode_go.url)
 
+    def opencode_zen_listed(self):
+        return self.listed("opencode-zen", self.opencode_zen.url)
+
     def test_reload_models_refetches_provider_lists_and_names_failures(self):
         self.assertEqual([item["id"] for item in self.alibaba_listed()], ["qwen-stale"])
         self.assertEqual(
             [item["id"] for item in self.opencode_go_listed()], ["glm-stale"]
         )
+        self.assertEqual(
+            [item["id"] for item in self.opencode_zen_listed()], ["glm-stale-free"]
+        )
         outcome = self.reload("models")
         catalogs = {item["provider"]: item for item in outcome["models"]}
         self.assertEqual(catalogs["alibaba"]["state"], "refreshed")
         self.assertEqual(catalogs["opencode-go"]["state"], "refreshed")
+        self.assertEqual(catalogs["opencode-zen"]["state"], "refreshed")
         self.assertEqual(catalogs["models"]["state"], "refreshed")
         self.assertEqual(
             {"codex", "antigravity", "claude"},
@@ -173,6 +204,12 @@ class ModelCatalogReloadTests(unittest.TestCase):
         self.assertEqual([item["id"] for item in self.alibaba_listed()], ["qwen-fresh"])
         self.assertEqual(
             [item["id"] for item in self.opencode_go_listed()], ["glm-5.3-flash"]
+        )
+        # Zen's free tier reaches the picker, which is the point of fetching
+        # its own list: models.dev lists a `-free` id the gateway may retire.
+        self.assertEqual(
+            [item["id"] for item in self.opencode_zen_listed()],
+            ["deepseek-v4-pro", "glm-5.3-flash-free"],
         )
         # A failed reload keeps the list it had.
         self.assertEqual(

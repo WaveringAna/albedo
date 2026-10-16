@@ -34,6 +34,11 @@ pub type ProviderPolicy {
   OpenAI
   Codex(account_id: String, session_id: String)
   OpenCodeGo(session_id: String, org_id: String)
+  /// OpenCode Zen carrying the OpenCode client's own identity: the user agent
+  /// it launches with and the header set its model requests send. The gateway
+  /// answers the free tier (`-free` models) only for a client that looks like
+  /// that one, so a request on a free model is dressed as OpenCode's.
+  OpenCodeZen(session_id: String, project_id: String, user_agent: String)
 }
 
 pub type Client {

@@ -48,6 +48,16 @@ var customProviders = []customProvider{
 		FixedProtocol: "chat_completions",
 	},
 	{
+		ID:            "add-opencode-zen",
+		Label:         "add or update an OpenCode Zen provider",
+		Detail:        "pay per token · GLM, Claude, GPT, DeepSeek, Kimi; the free models need no key",
+		Extension:     "opencode-zen",
+		DefaultName:   "opencode-zen",
+		DefaultURL:    "https://opencode.ai/zen/v1",
+		FixedProtocol: "chat_completions",
+		Optional:      true,
+	},
+	{
 		ID:            "add-anthropic",
 		Label:         "add or update an Anthropic API key",
 		Detail:        "console billing · Claude models",

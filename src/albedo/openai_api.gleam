@@ -89,6 +89,27 @@ pub fn opencode_go_client(
   )
 }
 
+/// OpenCode Zen transport carrying OpenCode's own client identity: the user
+/// agent its binary launches with, the session and project headers its model
+/// requests send, and `session_id` — which the gateway only accepts in the
+/// shape OpenCode mints, `ses_` then nine hex then `ffe` then fourteen base62.
+pub fn opencode_zen_client(
+  base_url: String,
+  api_key: String,
+  session_id: String,
+  project_id: String,
+  user_agent: String,
+) -> Client {
+  types.Client(
+    ChatCompletions,
+    base_url,
+    api_key,
+    timeout_ms: 60_000,
+    max_event_bytes: 8 * 1024 * 1024,
+    policy: types.OpenCodeZen(session_id, project_id, user_agent),
+  )
+}
+
 pub fn request(model: String, input: List(Input)) -> Request {
   types.Request(model, None, input, [], None, types.defaults)
 }
@@ -127,7 +148,8 @@ pub fn stream(
       // content type. Its framing, not that header, is authoritative.
       require_event_stream: case client.policy {
         types.Codex(_, _) -> False
-        types.OpenAI | types.OpenCodeGo(_, _) -> True
+        types.OpenAI | types.OpenCodeGo(_, _) | types.OpenCodeZen(_, _, _) ->
+          True
       },
     ),
     reducer.reducer(client.protocol),
@@ -143,6 +165,16 @@ pub fn headers(client: Client, model: String) -> List(#(String, String)) {
   ]
   let headers = case client.policy {
     types.OpenAI -> headers
+    types.OpenCodeZen(session_id, project_id, user_agent) -> [
+      #("user-agent", user_agent),
+      #("x-opencode-client", "cli"),
+      #("x-opencode-session", session_id),
+      #("x-opencode-session-id", session_id),
+      #("x-session-affinity", session_id),
+      #("x-session-id", session_id),
+      #("x-opencode-project", project_id),
+      ..headers
+    ]
     types.OpenCodeGo(session_id, org_id) -> {
       let headers = [
         #("user-agent", "albedo/1.0"),
@@ -290,6 +322,18 @@ fn validate_policy(
 ) -> Result(Nil, Error) {
   case policy {
     types.OpenAI -> Ok(Nil)
+    types.OpenCodeZen(session_id, project_id, user_agent) ->
+      case
+        string.trim(session_id) == ""
+        || string.trim(user_agent) == ""
+        || unsafe_header(session_id)
+        || unsafe_header(project_id)
+        || unsafe_header(user_agent)
+      {
+        True ->
+          Error(types.InvalidRequest("invalid OpenCode Zen session identity"))
+        False -> Ok(Nil)
+      }
     types.OpenCodeGo(session_id, org_id) ->
       case
         string.trim(session_id) == ""

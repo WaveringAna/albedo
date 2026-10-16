@@ -243,6 +243,23 @@
       "checked": "2026-10-18"
     },
     {
+      "id": "opencode-zen",
+      "match": {
+        "extension": "opencode-zen",
+        "host": "opencode.ai"
+      },
+      "policy": "evict",
+      "survival": {
+        "typical": 300,
+        "max": 3600
+      },
+      "read": 0.1,
+      "evidence": "documented",
+      "source": "https://opencode.ai/docs/zen/",
+      "note": "OpenCode Zen routes conversations by x-opencode-session to keep prefixes on the same upstream cache; the free tier and the paid model families apply their own implicit or explicit caching rules.",
+      "checked": "2026-10-18"
+    },
+    {
       "id": "zai",
       "match": {
         "host": [
