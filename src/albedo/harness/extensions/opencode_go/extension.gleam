@@ -1,7 +1,11 @@
-//// OpenCode Go subscription provider over the OpenAI-compatible Chat Completions API.
+//// OpenCode Go subscription provider over Chat Completions, Responses,
+//// Anthropic Messages, and Gemini wire formats.
 
 import albedo/harness/extension
+import albedo/harness/extensions/claude/stream as claude_stream
 import albedo/harness/extensions/opencode_go/catalog
+import albedo/harness/extensions/opencode_go/wire
+import albedo/harness/extensions/vertex/stream as vertex_stream
 import albedo/harness/oauth
 import albedo/harness/rotation
 import albedo/openai_api
@@ -18,7 +22,7 @@ const provider_name = "opencode-go"
 pub fn extension() -> extension.Extension {
   extension.Extension(
     provider_name,
-    "OpenCode Go subscription provider via OpenCode Console OAuth or API key for Qwen, GLM, Kimi, DeepSeek, MiMo, and MiniMax models; a rate-limited key hands off to sibling accounts and keys",
+    "OpenCode Go subscription provider via OpenCode Console OAuth or API key for Qwen, GLM, Kimi, DeepSeek, MiMo, MiniMax, Claude, GPT, Grok, and Gemini models; a rate-limited key hands off to sibling accounts and keys",
     ["models"],
     [
       extension.LoginPlugin(login()),
@@ -81,9 +85,35 @@ pub fn pool(
       limited(home, profile, client, body) |> rotation.mark_limit
     },
     same: rotation.same_client,
-    stream: openai_api.stream,
+    stream: stream,
     reject: fn(client) { native_expire(home, client.api_key) },
   )
+}
+
+pub fn stream(
+  client: types.Client,
+  request: types.Request,
+  on_event: fn(types.Event) -> types.Control,
+) -> Result(types.Turn, types.Error) {
+  case wire.route(request.model) {
+    wire.ChatRoute -> openai_api.stream(client, request, on_event)
+    wire.ResponsesRoute -> {
+      use exchange <- result.try(wire.encode_responses(client, request))
+      openai_api.exchange(exchange, wire.responses_reducer(), on_event)
+    }
+    wire.MessagesRoute -> {
+      use exchange <- result.try(wire.encode_messages(client, request))
+      openai_api.exchange(
+        exchange,
+        claude_stream.reducer(request.model, request.tools),
+        on_event,
+      )
+    }
+    wire.GeminiRoute -> {
+      use exchange <- result.try(wire.encode_gemini(client, request))
+      openai_api.exchange(exchange, vertex_stream.reducer(), on_event)
+    }
+  }
 }
 
 fn connect(

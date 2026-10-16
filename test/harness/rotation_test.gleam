@@ -7,6 +7,8 @@ import albedo/harness/extension as harness_extension
 import albedo/harness/extensions/alibaba/extension as alibaba
 import albedo/harness/extensions/antigravity/extension as antigravity
 import albedo/harness/extensions/opencode_go/extension as opencode_go
+import albedo/harness/extensions/opencode_go/wire as opencode_go_wire
+import albedo/harness/extensions/vertex/stream as vertex_stream
 import albedo/harness/oauth
 import albedo/harness/rotation
 import albedo/openai_api
@@ -523,6 +525,78 @@ pub fn opencode_go_oauth_account_sends_org_header_test() -> Nil {
   let assert [account] = oauth.accounts(home, opencode_go.login())
   account.label |> should.equal("dawn@example.com · Personal")
   cleanup(root)
+}
+
+pub fn opencode_go_dispatches_each_model_family_to_its_wire_route_test() -> Nil {
+  opencode_go_wire.route("glm-5.3-flash")
+  |> should.equal(opencode_go_wire.ChatRoute)
+  opencode_go_wire.route("qwen3.8-max")
+  |> should.equal(opencode_go_wire.ChatRoute)
+  opencode_go_wire.route("gpt-5.6-luna")
+  |> should.equal(opencode_go_wire.ResponsesRoute)
+  opencode_go_wire.route("grok-4.7")
+  |> should.equal(opencode_go_wire.ResponsesRoute)
+  opencode_go_wire.route("muse-spark-1.2-contributor")
+  |> should.equal(opencode_go_wire.ResponsesRoute)
+  opencode_go_wire.route("claude-haiku-5-5")
+  |> should.equal(opencode_go_wire.MessagesRoute)
+  opencode_go_wire.route("minimax-m2.7")
+  |> should.equal(opencode_go_wire.MessagesRoute)
+  opencode_go_wire.route("gemini-4-argon-contributor")
+  |> should.equal(opencode_go_wire.GeminiRoute)
+
+  let client =
+    openai_api.opencode_go_client(
+      "https://opencode.ai/zen/go/v1",
+      "test-token",
+      "sess-1",
+      "org-1",
+    )
+  let req =
+    types.Request(
+      "gemini-4-argon-contributor",
+      Some("be brief"),
+      [types.User("hi")],
+      [],
+      Some(256),
+      types.Options(..types.defaults, effort: Some("low")),
+    )
+  let assert Ok(gem_ex) = opencode_go_wire.encode_gemini(client, req)
+  gem_ex.url
+  |> should.equal(
+    "https://opencode.ai/inference/go/v1/models/gemini-4-argon-contributor:streamGenerateContent?alt=sse",
+  )
+  gem_ex.headers
+  |> list.contains(#("x-opencode-org-id", "org-1"))
+  |> should.be_true
+
+  let reducer = vertex_stream.reducer()
+  let assert Ok(#(reducer, _, None)) =
+    reducer.feed(
+      "{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"pong\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":4,\"candidatesTokenCount\":1}}",
+    )
+  let assert Ok(turn) = reducer.finish()
+  let assert [replay_item] = turn.output
+  types.replay_protocol(replay_item) |> should.equal(types.ChatCompletions)
+
+  // Replay that portable item into a Responses-routed model and a Messages-routed model.
+  let follow_up =
+    types.Request(
+      "gpt-5.6-luna",
+      None,
+      [types.User("hi"), types.Replay(replay_item), types.User("again")],
+      [],
+      Some(128),
+      types.defaults,
+    )
+  let assert Ok(resp_ex) = opencode_go_wire.encode_responses(client, follow_up)
+  resp_ex.url
+  |> should.equal("https://opencode.ai/inference/go/v1/responses")
+
+  let msg_req = types.Request(..follow_up, model: "claude-haiku-5-5")
+  let assert Ok(msg_ex) = opencode_go_wire.encode_messages(client, msg_req)
+  msg_ex.url
+  |> should.equal("https://opencode.ai/inference/go/v1/messages")
 }
 
 fn google() -> antigravity.Endpoints {

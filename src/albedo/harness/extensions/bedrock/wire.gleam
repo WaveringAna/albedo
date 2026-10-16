@@ -18,7 +18,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
-import gleam/string_tree
+import gleam/string_tree.{type StringTree}
 import gleam/uri
 
 pub type Auth {
@@ -42,11 +42,39 @@ pub fn encode(
       "this Bedrock profile serves Claude models through the Anthropic Messages route; configure an anthropic.claude* model id",
     )),
   )
+  use #(host, region, service) <- result.try(target(base_url))
+  use body_tree <- result.try(encode_body(request))
+  let body = string_tree.to_string(body_tree)
+  let auth_headers = case auth {
+    Bearer(key) -> [#("x-api-key", key)]
+    SigV4(credentials) ->
+      sigv4.headers(credentials, region, service, host, now, body)
+  }
+  Ok(openai_api.Exchange(
+    "https://" <> host <> "/anthropic/v1/messages",
+    list.flatten([
+      auth_headers,
+      [
+        #("anthropic-version", "2023-06-01"),
+        #("accept", "text/event-stream"),
+      ],
+    ]),
+    body_tree,
+    120_000,
+    None,
+    8 * 1024 * 1024,
+    True,
+  ))
+}
+
+/// Encodes `request` into a portable Anthropic Messages JSON body (text and
+/// tool calls only; thinking is not replayed). Shared by Bedrock and OpenCode
+/// Go's `/messages` route.
+pub fn encode_body(request: Request) -> Result(StringTree, Error) {
   use <- bool.guard(
     request.model == "" || request.max_output_tokens == Some(0),
     Error(InvalidRequest("invalid Bedrock model or output token limit")),
   )
-  use #(host, region, service) <- result.try(target(base_url))
   use messages <- result.try(
     list.try_fold(request.input, [], fn(acc, input) { add(acc, input) }),
   )
@@ -93,28 +121,7 @@ pub fn encode(
     ]
     None -> fields
   }
-  let body_tree = json.to_string_tree(json.object(fields))
-  let body = string_tree.to_string(body_tree)
-  let auth_headers = case auth {
-    Bearer(key) -> [#("x-api-key", key)]
-    SigV4(credentials) ->
-      sigv4.headers(credentials, region, service, host, now, body)
-  }
-  Ok(openai_api.Exchange(
-    "https://" <> host <> "/anthropic/v1/messages",
-    list.flatten([
-      auth_headers,
-      [
-        #("anthropic-version", "2023-06-01"),
-        #("accept", "text/event-stream"),
-      ],
-    ]),
-    body_tree,
-    120_000,
-    None,
-    8 * 1024 * 1024,
-    True,
-  ))
+  Ok(json.to_string_tree(json.object(fields)))
 }
 
 /// `(host, region, service)` from a configured `baseUrl`. The SigV4

@@ -18,6 +18,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import gleam/string_tree.{type StringTree}
 
 /// Google's documented placeholder for a function call whose signature
 /// cannot be verified. Thinking models reject an unsigned call otherwise;
@@ -44,6 +45,33 @@ pub fn encode(
       "this Vertex profile serves Gemini models; configure a gemini* model id",
     )),
   )
+  use body <- result.try(encode_body(request))
+  let path =
+    "/v1/projects/"
+    <> project
+    <> "/locations/"
+    <> location
+    <> "/publishers/google/models/"
+    <> request.model
+    <> ":streamGenerateContent?alt=sse"
+  Ok(openai_api.Exchange(
+    endpoint(location) <> path,
+    [
+      #("authorization", "Bearer " <> token),
+      #("content-type", "application/json"),
+      #("accept", "text/event-stream"),
+    ],
+    body,
+    120_000,
+    None,
+    8 * 1024 * 1024,
+    True,
+  ))
+}
+
+/// Encodes `request` into a portable Gemini `generateContent` JSON body.
+/// Shared by Vertex AI and OpenCode Go's Gemini route.
+pub fn encode_body(request: Request) -> Result(StringTree, Error) {
   use history <- result.try(
     list.try_fold(request.input, History([], dict.new()), fn(h, i) { add(h, i) }),
   )
@@ -98,27 +126,7 @@ pub fn encode(
       ..fields
     ]
   }
-  let path =
-    "/v1/projects/"
-    <> project
-    <> "/locations/"
-    <> location
-    <> "/publishers/google/models/"
-    <> request.model
-    <> ":streamGenerateContent?alt=sse"
-  Ok(openai_api.Exchange(
-    endpoint(location) <> path,
-    [
-      #("authorization", "Bearer " <> token),
-      #("content-type", "application/json"),
-      #("accept", "text/event-stream"),
-    ],
-    json.to_string_tree(json.object(fields)),
-    120_000,
-    None,
-    8 * 1024 * 1024,
-    True,
-  ))
+  Ok(json.to_string_tree(json.object(fields)))
 }
 
 /// The global Vertex endpoint is not a region-prefixed hostname.
@@ -198,6 +206,8 @@ fn thinking_config(
         #("gemini-3.6-flash", levels),
         #("gemini-3.7-flash", pro_levels),
         #("gemini-3.8-flash", pro_levels),
+        #("gemini-4-argon", pro_levels),
+        #("gemini-4-argon-contributor", pro_levels),
       ],
       fn(entry) {
         model == entry.0
