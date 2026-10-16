@@ -50,12 +50,26 @@
         sha256 = lib.toLower p.outer_checksum;
       };
     })
-    manifest.packages;
+    (lib.filter (p: p.source == "hex") manifest.packages);
+  # Git dependencies (forks carrying fixes not yet released) are pinned to a
+  # commit in manifest.toml, which is what makes this fetch pure.
+  gitPackages =
+    map (p: {
+      inherit (p) name version commit;
+      src = builtins.fetchGit {
+        url = p.repo;
+        rev = p.commit;
+        allRefs = true;
+      };
+    })
+    (lib.filter (p: p.source == "git") manifest.packages);
   packageIndex = builtins.toFile "packages.toml" ("[packages]\n"
     + lib.concatMapStrings
     (p: "${p.name} = \"${p.version}\"\n")
-    hexPackages
-    + "\n[git]\n");
+    (hexPackages ++ gitPackages)
+    + lib.concatMapStrings
+    (p: "\n[git.${p.name}]\ncommit = \"${p.commit}\"\n")
+    gitPackages);
   renderSource = lib.fileset.toSource {
     root = ./native/render;
     fileset = lib.fileset.unions [
@@ -129,6 +143,7 @@
           tar -xzf "$TMPDIR/hex-${p.name}/contents.tar.gz" -C build/packages/${p.name}
         '')
         hexPackages}
+      ${lib.concatMapStringsSep "\n" (p: "cp -R ${p.src} build/packages/${p.name}") gitPackages}
       cp ${packageIndex} build/packages/packages.toml
       chmod -R u+w build/packages
       gleam export erlang-shipment

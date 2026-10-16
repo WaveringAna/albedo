@@ -381,6 +381,28 @@ class McpTests(unittest.TestCase):
         self.assertIn(self.message, output)
         self.assertNotIn("capabilities changed", json.dumps(self.app.history(session)))
 
+    def test_a_draft_07_tool_with_an_id_property_is_advertised(self):
+        # The TypeScript MCP SDK labels every tool schema draft-07, and tools
+        # often take an `id`. barrel_mcp 4.3.0 read that property name as the
+        # draft-04 `id` keyword and dropped the tool from tools/list.
+        tools = [
+            {
+                "name": name,
+                "description": name,
+                "inputSchema": {
+                    "$schema": "http://json-schema.org/draft-07/schema#",
+                    "type": "object",
+                    "required": ["id"],
+                    "properties": {"id": {"type": "string"}},
+                },
+            }
+            for name in ("stop", "kernels")
+        ]
+        (self.app.root / "control" / "tools").write_text(json.dumps(tools))
+        self.set_mcp(True)
+        advertised = self.tools(self.turn("list the tools"))
+        self.assertEqual(len(advertised), 2, advertised)
+
     def test_a_changed_catalogue_refreshes_the_session_after_its_turn(self):
         self.set_mcp(True)
         self.turn("learn the catalogue")
