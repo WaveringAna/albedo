@@ -14,6 +14,7 @@ import (
 // matches, and what its detail pane says.
 type listEntry struct {
 	key     string // names the row across reloads, so the cursor stays on it
+	group   string // sections of one group sit together under its heading
 	section string // rows of one section sit together under its rule
 	lead    string // styled state before the name, padded to the widest
 	name    string // what the filter underlines
@@ -74,36 +75,49 @@ func (l *listView) setRows(rows []listEntry) {
 }
 
 // refilter ranks the rows against the filter. Rows rank within their
-// section and sections by their best row; an empty filter keeps the order
-// the rows came in.
+// section, sections within their group by their best row, and groups by
+// their best section; an empty filter keeps the order the rows came in.
 func (l *listView) refilter(keep string) {
 	words := searchWords(l.input.Value())
 	type scored struct {
 		shown listShown
 		rank  matchRank
 	}
-	var order []string
-	groups := map[string][]scored{}
+	type bucket struct{ group, section string }
+	var order []bucket
+	buckets := map[bucket][]scored{}
 	for i, r := range l.rows {
 		rank, hits, ok := matchFields(words, append([]string{r.name, r.desc}, r.search...)...)
 		if !ok {
 			continue
 		}
-		if _, seen := groups[r.section]; !seen {
-			order = append(order, r.section)
+		b := bucket{r.group, r.section}
+		if _, seen := buckets[b]; !seen {
+			order = append(order, b)
 		}
-		groups[r.section] = append(groups[r.section], scored{listShown{i, hits}, rank})
+		buckets[b] = append(buckets[b], scored{listShown{i, hits}, rank})
 	}
 	if len(words) > 0 {
-		for _, g := range groups {
+		for _, g := range buckets {
 			slices.SortStableFunc(g, func(a, b scored) int { return b.rank.compare(a.rank) })
 		}
-		slices.SortStableFunc(order, func(a, b string) int { return groups[b][0].rank.compare(groups[a][0].rank) })
+		slices.SortStableFunc(order, func(a, b bucket) int { return buckets[b][0].rank.compare(buckets[a][0].rank) })
+	}
+	// A group stands where its best section stands, its other sections after.
+	var groups []string
+	sections := map[string][]bucket{}
+	for _, b := range order {
+		if _, seen := sections[b.group]; !seen {
+			groups = append(groups, b.group)
+		}
+		sections[b.group] = append(sections[b.group], b)
 	}
 	l.shown = l.shown[:0]
-	for _, section := range order {
-		for _, s := range groups[section] {
-			l.shown = append(l.shown, s.shown)
+	for _, group := range groups {
+		for _, b := range sections[group] {
+			for _, s := range buckets[b] {
+				l.shown = append(l.shown, s.shown)
+			}
 		}
 	}
 	l.Cursor = max(0, slices.IndexFunc(l.shown, func(s listShown) bool { return l.rows[s.row].key == keep }))
@@ -147,7 +161,8 @@ func (l listView) frame(title, right, footer string) listFrame {
 	return listFrame{title: title, right: right, filter: l.filterLine(), list: l.list, pane: l.pane, footer: footer}
 }
 
-// list draws the rows under their section rules at exactly width × height.
+// list draws the rows under their group headings and section rules at
+// exactly width × height.
 func (l listView) list(width, height int) []string {
 	if len(l.shown) == 0 {
 		note := "  no matches"
@@ -166,20 +181,36 @@ func (l listView) list(width, height int) []string {
 
 	type line struct {
 		text  string
-		shown int // the row it draws, or -1 for a rule
+		shown int // the row it draws, or -1 for a heading or rule
 	}
 	var all []line
 	selectedAt := -1
 	for i, s := range l.shown {
-		if section := l.rows[s.row].section; section != "" && (i == 0 || l.rows[l.shown[i-1].row].section != section) {
-			run := 1
-			for i+run < len(l.shown) && l.rows[l.shown[i+run].row].section == section {
-				run++
-			}
+		r := l.rows[s.row]
+		var prev *listEntry
+		if i > 0 {
+			prev = &l.rows[l.shown[i-1].row]
+		}
+		newGroup := r.group != "" && (prev == nil || prev.group != r.group)
+		if newGroup {
 			if len(all) > 0 && height >= 10 {
 				all = append(all, line{shown: -1})
 			}
-			all = append(all, line{text: sectionRule(section, run, width), shown: -1})
+			all = append(all, line{text: groupHeading(r.group, width), shown: -1})
+		}
+		if r.section != "" && (prev == nil || prev.group != r.group || prev.section != r.section) {
+			run := 1
+			for i+run < len(l.shown) {
+				next := l.rows[l.shown[i+run].row]
+				if next.group != r.group || next.section != r.section {
+					break
+				}
+				run++
+			}
+			if !newGroup && len(all) > 0 && height >= 10 {
+				all = append(all, line{shown: -1})
+			}
+			all = append(all, line{text: sectionRule(r.section, run, width), shown: -1})
 		}
 		if i == l.Cursor {
 			selectedAt = len(all)

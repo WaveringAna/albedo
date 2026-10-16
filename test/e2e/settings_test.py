@@ -500,6 +500,118 @@ class SettingsTest(unittest.TestCase):
         self.reload(session=sessions[0])
         self.assertEqual(pending(), set(sessions[1:]))
 
+    def declared(self, name, key):
+        section = next(
+            section
+            for section in self.group("extension_settings")["sections"]
+            if section["name"] == name
+        )
+        return section, next(
+            field for field in section["fields"] if field["key"] == key
+        )
+
+    # exclusive: saves extensions.json
+    @exclusive
+    def test_declared_settings_save_beside_other_keys_and_reach_a_loaded_session(
+        self,
+    ):
+        path = self.app.home / "extensions.json"
+        path.write_text(
+            json.dumps({"rolling": {"note": "kept"}, "web-search": {"order": ["exa"]}})
+        )
+        section, _ = self.declared("rolling", "contextWindowTokens")
+        self.assertIsNone(section["problem"])
+        self.turn()
+
+        saved = self.patch(
+            "extension_settings",
+            {"values": {"rolling": {"contextWindowTokens": 120000}}},
+        )
+        self.assertFalse(saved["application"]["composition_changed"])
+        self.assertEqual(
+            json.loads(path.read_text()),
+            {
+                "rolling": {"note": "kept", "contextWindowTokens": 120000},
+                "web-search": {"order": ["exa"]},
+            },
+        )
+        _, window = self.declared("rolling", "contextWindowTokens")
+        self.assertEqual(window["value"], 120000)
+
+        # The loaded session reads it at its next request, without a reload.
+        self.turn()
+        compaction = self.read(f"/sessions/{self.session}/context")["compaction"]
+        self.assertEqual(compaction["input_limit_tokens"], 120000)
+
+        # Null drops the saved value and keeps what nothing declares.
+        self.patch(
+            "extension_settings", {"values": {"rolling": {"contextWindowTokens": None}}}
+        )
+        self.assertEqual(json.loads(path.read_text())["rolling"], {"note": "kept"})
+        self.assertIsNone(self.declared("rolling", "contextWindowTokens")[1]["value"])
+
+        # The daemon's own section saves beside the extensions' sections, and
+        # a limit takes -1 for no limit as well as a number in range.
+        self.patch(
+            "extension_settings",
+            {"values": {"subagents": {"maxOpenChildren": -1, "maxDepth": 5}}},
+        )
+        self.assertEqual(
+            json.loads(path.read_text())["subagents"],
+            {"maxOpenChildren": -1, "maxDepth": 5},
+        )
+        self.assertEqual(self.declared("subagents", "maxOpenChildren")[1]["value"], -1)
+
+    # exclusive: refuses saves to extensions.json
+    @exclusive
+    def test_declared_settings_refuse_what_the_extension_cannot_use_and_save_nothing(
+        self,
+    ):
+        path = self.app.home / "extensions.json"
+        path.write_text(json.dumps({"rolling": {"tailPercent": 30}}))
+        before = path.read_bytes()
+        cases = [
+            (
+                {"rolling": {"triggerPercent": 100}},
+                "invalid_settings",
+                "triggerPercent",
+            ),
+            (
+                {"rolling": {"triggerPercent": 20}},
+                "invalid_settings",
+                "tailPercent",
+            ),
+            ({"rolling": {"triggerPercent": "70"}}, "invalid_settings", "triggerPercent"),
+            ({"rolling": {"summaryModel": "x"}}, "invalid_request", "summaryModel"),
+            ({"no-such-extension": {"key": 1}}, "invalid_request", "no-such-extension"),
+            (
+                {"subagents": {"maxOpenChildren": "unlimited"}},
+                "invalid_settings",
+                "maxOpenChildren",
+            ),
+            ({"subagents": {"maxDepth": -2}}, "invalid_settings", "maxDepth"),
+            (
+                {"rolling": {"triggerPercent": 70}, "exa": {"endpoint": " "}},
+                "invalid_settings",
+                "endpoint",
+            ),
+        ]
+        for values, code, detail in cases:
+            with self.subTest(values=values):
+                with self.assertRaises(urllib.error.HTTPError) as refused:
+                    self.patch("extension_settings", {"values": values})
+                self.assertEqual(refused.exception.code, 400)
+                problem = json.load(refused.exception)
+                self.assertEqual(problem["code"], code)
+                self.assertIn(detail, problem["detail"])
+                self.assertEqual(path.read_bytes(), before)
+
+        # A section edited by hand into one the extension cannot use says so.
+        path.write_text(json.dumps({"rolling": {"triggerPercent": "high"}}))
+        section, trigger = self.declared("rolling", "triggerPercent")
+        self.assertIsNone(trigger["value"])
+        self.assertIn("triggerPercent", section["problem"])
+
     # exclusive: malformed preferences cannot be hidden by a session override
     @exclusive
     def test_failed_reload_keeps_loaded_commands_and_does_not_overwrite_malformed_preferences(

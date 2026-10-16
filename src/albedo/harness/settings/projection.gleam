@@ -3,6 +3,7 @@
 
 import albedo/daemon/configuration
 import albedo/harness/cache_ttl
+import albedo/harness/settings/declared
 import albedo/openai_api/types
 import gleam/dict.{type Dict}
 import gleam/dynamic.{type Dynamic}
@@ -123,7 +124,10 @@ pub fn ui_group(picker: Dynamic) -> Result(Dynamic, Error) {
   }
 }
 
-pub fn groups(documents: Dict(String, Dynamic)) -> Result(Dynamic, Error) {
+pub fn groups(
+  documents: Dict(String, Dynamic),
+  declarations: List(declared.Declared),
+) -> Result(Dynamic, Error) {
   let assert Ok(config) = dict.get(documents, "config.json")
   let assert Ok(creds) = dict.get(documents, "creds.json")
   let assert Ok(extensions) = dict.get(documents, "extensions.json")
@@ -168,6 +172,7 @@ pub fn groups(documents: Dict(String, Dynamic)) -> Result(Dynamic, Error) {
             #("cache_ttl_priors", dynamic.list(priors)),
           ]),
         ),
+        #("extension_settings", declared.project(declarations, extensions)),
         #("ui", ui),
       ]),
     ),

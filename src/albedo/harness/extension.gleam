@@ -1,6 +1,7 @@
 //// Extensions are ordered bundles of model context, tools, REPL modules, RPC routes, and request policies.
 
 import albedo/daemon/conversation
+import albedo/daemon/core_settings
 import albedo/daemon/requests
 import albedo/daemon/store
 import albedo/harness/client_api
@@ -13,6 +14,8 @@ import albedo/harness/host
 import albedo/harness/oauth
 import albedo/harness/page
 import albedo/harness/protect
+import albedo/harness/settings
+import albedo/harness/settings/declared as declared_settings
 import albedo/harness/web_search
 import albedo/openai_api/types
 import gleam/bool
@@ -319,6 +322,9 @@ pub type Plugin {
   CleanPlugin(clean: Cleaner)
   /// A web search this extension answers with its own sign-in.
   SearchPlugin(provider: web_search.Provider)
+  /// The settings this extension reads from its own section of
+  /// extensions.json, which the daemon lists and saves for it.
+  SettingsPlugin(declaration: settings.Declaration)
 }
 
 pub type Migration {
@@ -483,18 +489,24 @@ fn sift(
   #(list.reverse(kept), list.reverse(rejected))
 }
 
-/// Extensions with a name of their own, and the ones whose name is blank or
-/// already taken by an earlier one.
+/// Extensions with a name of their own, and the ones whose name is blank,
+/// already taken by an earlier one, or a settings section the daemon owns.
 fn distinctly_named(
   installed: List(Extension),
 ) -> #(List(Extension), List(Quarantined)) {
+  let reserved = core_settings.names()
   sift(installed, fn(kept, extension) {
     let taken =
       list.any(kept, fn(other: Extension) { other.name == extension.name })
-    case string.trim(extension.name), taken {
-      "", _ -> Error("its name is blank")
-      _, True -> Error("another installed extension has this name")
-      _, False -> Ok(Nil)
+    case
+      string.trim(extension.name),
+      taken,
+      list.contains(reserved, extension.name)
+    {
+      "", _, _ -> Error("its name is blank")
+      _, True, _ -> Error("another installed extension has this name")
+      _, _, True -> Error("the daemon's own settings section has this name")
+      _, False, False -> Ok(Nil)
     }
   })
 }
@@ -507,6 +519,7 @@ fn started(
 ) -> #(List(Extension), List(Quarantined)) {
   sift(installed, fn(_, extension) {
     protect.guarded(fn() {
+      use _ <- result.try(settings_declared(extension))
       use _ <- result.try(extension.initialise(ledger))
       list.try_each(extension.plugins, fn(plugin) {
         case plugin {
@@ -517,6 +530,57 @@ fn started(
     })
     |> result.map_error(fn(error) { "it did not install: " <> error })
   })
+}
+
+/// Whether `extension` declares its settings in a way the daemon can serve:
+/// at most once, under its own name, each key once, with defaults its own
+/// check accepts.
+fn settings_declared(extension: Extension) -> Result(Nil, String) {
+  let declarations =
+    plugin_values([extension], fn(_, plugin) {
+      case plugin {
+        SettingsPlugin(declaration) -> Ok(declaration)
+        _ -> Error(Nil)
+      }
+    })
+  case declarations {
+    [] -> Ok(Nil)
+    [declaration] -> {
+      let keys = list.map(declaration.fields, fn(field) { field.key })
+      use <- bool.guard(
+        declaration.section != extension.name,
+        Error("its settings are declared for " <> declaration.section),
+      )
+      use <- bool.guard(
+        list.length(list.unique(keys)) != list.length(keys),
+        Error("it declares a setting twice"),
+      )
+      settings.sound(declaration)
+      |> result.map_error(fn(reason) {
+        "its settings' defaults are refused: " <> reason
+      })
+    }
+    _ -> Error("it declares its settings more than once")
+  }
+}
+
+/// The declared settings sections: the daemon's own, then each installed
+/// extension's in registry order.
+pub fn declared_settings(
+  installed: List(Extension),
+) -> List(declared_settings.Declared) {
+  list.append(
+    core_settings.declared(),
+    list.filter_map(installed, fn(extension) {
+      list.find_map(extension.plugins, fn(plugin) {
+        case plugin {
+          SettingsPlugin(declaration) ->
+            Ok(declared_settings.Declared(extension.description, declaration))
+          _ -> Error(Nil)
+        }
+      })
+    }),
+  )
 }
 
 /// Extensions whose requirements are all installed, and the ones missing

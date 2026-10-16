@@ -26,6 +26,7 @@ const (
 	AppStateLogin
 	AppStateCapabilityPage
 	AppStateWebhooksPage
+	AppStateConfigPage
 	AppStateAgents
 	AppStateFolderPicker
 	AppStateQuota
@@ -55,6 +56,7 @@ type AppModel struct {
 	ExtensionPicker  ExtensionPickerModel
 	CapabilityPage   CapabilityPageModel
 	WebhooksPage     WebhooksPageModel
+	ConfigPage       ConfigPageModel
 	TreePicker       TreePickerModel
 	SessionPicker    SessionViewer
 	PageView         PageViewModel
@@ -211,6 +213,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.PageView.SetSize(msg.Width, msg.Height)
 		m.CapabilityPage.SetSize(msg.Width, msg.Height)
 		m.WebhooksPage.SetSize(msg.Width, msg.Height)
+		m.ConfigPage.SetSize(msg.Width, msg.Height)
 		m.Agents.SetSize(msg.Width, msg.Height)
 		m.FolderPicker.SetSize(msg.Width, msg.Height)
 		m.Login.SetSize(msg.Width, msg.Height)
@@ -277,6 +280,9 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.openScreen(AppStateWebhooksPage, &m.WebhooksPage)
 		}
 
+	case ChatOpenConfigPageMsg:
+		return m, m.openConfigPage()
+
 	case ChatOpenAgentsMsg:
 		if m.ActiveSession != nil {
 			m.Agents.Close()
@@ -337,7 +343,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case WebhooksPageDoneMsg, ExtensionPickerDoneMsg,
 		TreeCancelMsg, ContextDoneMsg, CapabilityPageDoneMsg, PageCancelMsg,
-		QuotaCancelMsg:
+		QuotaCancelMsg, ConfigPageDoneMsg:
 		m.State = AppStateChat
 		return m, nil
 
@@ -520,6 +526,8 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.CapabilityPage, cmd = m.CapabilityPage.Update(msg)
 	case AppStateWebhooksPage:
 		m.WebhooksPage, cmd = m.WebhooksPage.Update(msg)
+	case AppStateConfigPage:
+		m.ConfigPage, cmd = m.ConfigPage.Update(msg)
 	case AppStateAgents:
 		m.Agents, cmd = m.Agents.Update(msg)
 	case AppStateFolderPicker:

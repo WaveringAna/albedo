@@ -337,6 +337,7 @@ that group's canonical representation and its `ETag` header.
 | `providers` | `default_profile` and `profiles` keyed by name. Profiles contain provider extension, endpoint, default model, effort, nullable image edge, nullable OAuth account, and `has_key`. |
 | `mcp` | `definitions` keyed by name: configured enablement, transport, URL or command with arguments, nonsecret environment and headers, timeouts, and secret-presence metadata. |
 | `extensions` | Global default enablement keyed by extension name. |
+| `extension_settings` | `sections`: the daemon's own sections, then each installed extension's that declares settings, with its `name` in extensions.json, a label saying what it configures, its `category` (`web_search`, `context`, `agents`, `models_and_caching` or `tools`, which `/config` groups sections by), its declared fields (key, label, description, kind `integer`, `text` or `limit`, default, range) and saved values, and the `problem` when its owner cannot use its saved section. A limit takes -1 for no limit. A patch is `values` keyed by section then key; null restores the default. |
 | `capabilities` | Global skill, instruction, and MCP preferences keyed by their stable preference key. |
 | `models` | Per-model raised context choices and the cache TTL prior table, with source and units. |
 | `ui` | `thinking`, `tools`, and `dismissed_notices`. Per-session pin, archive, and visits are session fields. |
@@ -454,7 +455,7 @@ Every successful patch returns `{ "group": ..., "resource": ..., "application": 
 `application` includes desired revision, active service revision,
 `composition_changed`, validation, and warnings. `composition_changed` says
 whether the save changed the desired composition; it is always false for
-`providers`, `models`, and `ui`, which never feed it. A patch does not observe
+`providers`, `extension_settings`, `models`, and `ui`, which never feed it. A patch does not observe
 sessions: `GET /sessions?needs_reload=true` pages the ones that need a reload,
 observing loaded sessions a few at a time.
 Persisted defaults do not claim that every open

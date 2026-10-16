@@ -51,6 +51,8 @@ func (m *AppModel) content() string {
 		return m.CapabilityPage.View()
 	case AppStateWebhooksPage:
 		return m.WebhooksPage.View()
+	case AppStateConfigPage:
+		return m.ConfigPage.View()
 	case AppStateAgents:
 		return m.Agents.View()
 	case AppStateFolderPicker:

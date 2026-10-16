@@ -61,20 +61,36 @@ type Definition {
   )
 }
 
-const default_retry_ms = 30_000
-
-fn default_config() -> Config {
-  Config(dict.new(), default_retry_ms)
+fn retry() -> settings.Setting(Int) {
+  settings.whole(
+    "retryMs",
+    "Retry",
+    "Milliseconds after a session prepares before it first probes a server that was down; later probes double, up to twenty times this. Sessions prepared after a change use it.",
+    30_000,
+    1,
+    3_600_000,
+  )
 }
 
-fn config_decoder() -> decode.Decoder(Config) {
-  use servers <- decode.optional_field(
-    "servers",
-    dict.new(),
-    decode.dict(decode.string, server_decoder()),
+/// Servers are saved through the mcp settings group; only the retry is a
+/// declared setting.
+fn config_section() -> settings.Section(Config) {
+  settings.section(
+    "mcp",
+    "MCP servers",
+    settings.Tools,
+    [settings.field(retry())],
+    {
+      use servers <- decode.optional_field(
+        "servers",
+        dict.new(),
+        decode.dict(decode.string, server_decoder()),
+      )
+      use retry_ms <- settings.value(retry())
+      decode.success(Config(servers, retry_ms))
+    },
+    Ok,
   )
-  use retry_ms <- decode.optional_field("retryMs", default_retry_ms, decode.int)
-  decode.success(Config(servers, retry_ms))
 }
 
 fn server_decoder() -> decode.Decoder(Server) {
@@ -138,22 +154,15 @@ fn env_ref_decoder() -> decode.Decoder(EnvRef) {
   decode.map(decode.field("env", decode.string, decode.success), EnvRef)
 }
 
-fn load_config() -> Result(Config, String) {
-  settings.load("mcp", config_decoder(), default_config())
-}
-
 pub fn configured_extension() -> extension.Extension {
-  bundle(load_config)
-}
-
-fn bundle(resolve: fn() -> Result(Config, String)) -> extension.Extension {
   extension.Extension(
     "mcp",
     "Model Context Protocol servers with session-owned connections",
     ["python"],
     [
+      extension.SettingsPlugin(settings.declaration(config_section())),
       extension.ManagedPlugin(fn(ledger, session, workspace) {
-        use config <- result.try(resolve())
+        use config <- result.try(settings.load_section(config_section()))
         prepare(config, ledger, session, workspace)
       }),
     ],

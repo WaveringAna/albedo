@@ -322,7 +322,7 @@ func (m *ChatModel) isRecognizedCommand(input string) bool {
 	case "/a", "/agents", "/sessions", "/q", "/quit", "/exit", "/new", "/model", "/extensions",
 		"/plugins", "/tree", "/fork", "/quota", "/context", "/t", "/thinking", "/v", "/verbose",
 		"/status", "/login", "/mouse", "/skills", "/instructions", "/mcp", "/cd", "/effort", "/compact", "/kernel", "/reload",
-		"/work", "/paperclips", "/webhooks":
+		"/work", "/paperclips", "/webhooks", "/config", "/settings":
 		return true
 	}
 	// Text after a command that declares no arguments is a prompt that
@@ -443,6 +443,8 @@ func (m *ChatModel) handleSubmittedCommand(input string, cmds *[]tea.Cmd) {
 		emit(ChatOpenPageMsg{Command: trimmed})
 	case "/webhooks":
 		emit(ChatOpenWebhooksPageMsg{})
+	case "/config", "/settings":
+		emit(ChatOpenConfigPageMsg{})
 	case "/skills", "/instructions", "/mcp":
 		emit(ChatOpenCapabilityPageMsg{Kind: trimmed[1:]})
 	case "/t", "/thinking", "/v", "/verbose":

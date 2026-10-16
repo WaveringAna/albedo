@@ -246,7 +246,6 @@ class McpTests(unittest.TestCase):
     def test_discovery_namespaced_call_and_scrubbed_credentials(self):
         self.assertEqual(self.set_mcp(True)["session"]["state"], "applied")
         self.assertTrue(self.mcp()["effective_enabled"])
-        self.assertEqual(self.mcp()["extension"]["plugins"], ["managed"])
         requests = self.turn("use the mcp server")
         self.assertEqual(len(requests), 2)
         context = requests[0]["instructions"]

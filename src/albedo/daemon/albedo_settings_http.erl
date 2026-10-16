@@ -1,13 +1,13 @@
 -module(albedo_settings_http).
--export([observe/2, patch/8]).
+-export([observe/3, patch/9]).
 -import(albedo_settings_store, [with_lock/2, object/2, check/1, commit_group/2]).
 
 %% These are HTTP boundary projections. Persisted names remain owned by the
 %% harness, including callers from trusted model tools.
-observe(Home, Group) -> with_lock(Home, fun() -> guarded(fun() ->
+observe(Home, Group, Declared) -> with_lock(Home, fun() -> guarded(fun() ->
     Groups = case Group of
         <<"ui">> -> #{<<"ui">> => projection('albedo@harness@settings@projection':ui_group(albedo_settings_store:read(Home, <<"picker.json">>)))};
-        _ -> projection('albedo@harness@settings@projection':groups(documents(Home)))
+        _ -> projection('albedo@harness@settings@projection':groups(documents(Home), Declared))
     end,
     Revisions = albedo_settings_store:read(Home, <<"settings-revisions.json">>),
     Value = case Group of
@@ -18,17 +18,17 @@ observe(Home, Group) -> with_lock(Home, fun() -> guarded(fun() ->
     {ok, {group_snapshot, encode(Value), Tag}}
 end) end).
 
-patch(Home, Group, Match, PatchJSON, Providers, Logins, Resolve, Defaults) ->
+patch(Home, Group, Match, PatchJSON, Providers, Logins, Resolve, Defaults, Declared) ->
     Captured = with_lock(Home, fun() -> guarded(fun() ->
-        Docs = documents(Home), Groups = projection('albedo@harness@settings@projection':groups(Docs)), Prior = group(Group, Groups),
+        Docs = documents(Home), Groups = projection('albedo@harness@settings@projection':groups(Docs, Declared)), Prior = group(Group, Groups),
         Revisions = albedo_settings_store:read(Home, <<"settings-revisions.json">>),
         match_group(Group, Match, Prior, Revisions),
         {ok, Patch} = albedo_http_api:parse(PatchJSON),
-        {Next, Validation} = candidate(Home, Group, Patch, Docs, Resolve, Defaults),
+        {Next, Validation} = candidate(Home, Group, Patch, Docs, Resolve, Defaults, Declared),
         case Group of <<"providers">> -> validate_provider_accounts(Next, Providers, Logins); _ -> ok end,
         case Group =:= <<"mcp">> andalso maps:get(<<"validate_connection">>, Patch, true) of
             true -> {ok, {probe, Patch, checked_candidates(Patch, Next)}};
-            false -> {ok, {complete, publish(Home, Group, Docs, Next, Validation, Revisions)}}
+            false -> {ok, {complete, publish(Home, Group, Docs, Next, Validation, Revisions, Declared)}}
         end
     end) end),
     case Captured of
@@ -41,14 +41,14 @@ patch(Home, Group, Match, PatchJSON, Providers, Logins, Resolve, Defaults) ->
                 check(albedo_mcp:check_candidate(Name, Definition, Secret))
             end, Checked),
             with_lock(Home, fun() -> guarded(fun() ->
-                Docs = documents(Home), Prior = group(Group, projection('albedo@harness@settings@projection':groups(Docs))),
+                Docs = documents(Home), Prior = group(Group, projection('albedo@harness@settings@projection':groups(Docs, Declared))),
                 Revisions = albedo_settings_store:read(Home, <<"settings-revisions.json">>),
                 match_group(Group, Match, Prior, Revisions),
-                {Next, Validation} = candidate(Home, Group, Patch, Docs, Resolve, Defaults),
+                {Next, Validation} = candidate(Home, Group, Patch, Docs, Resolve, Defaults, Declared),
                 %% Redacted validators alone cannot detect direct secret changes.
                 ensure(checked_candidates(Patch, Next) =:= Checked, 412,
                     <<"precondition_failed">>, <<"MCP candidate inputs changed during validation">>),
-                {ok, publish(Home, Group, Docs, Next, Validation, Revisions)}
+                {ok, publish(Home, Group, Docs, Next, Validation, Revisions, Declared)}
             end) end)
         end)
     end.
@@ -66,8 +66,8 @@ checked_candidates(Patch, Docs) ->
     [{Name, maps:get(Name, Definitions), maps:get(Name, Secrets, #{})}
         || {Name, Change} <- lists:sort(maps:to_list(object(<<"definitions">>, Patch))), Change =/= null].
 
-publish(Home, Group, Docs, Next, Validation, Revisions) ->
-    Value = group(Group, projection('albedo@harness@settings@projection':groups(Next))),
+publish(Home, Group, Docs, Next, Validation, Revisions, Declared) ->
+    Value = group(Group, projection('albedo@harness@settings@projection':groups(Next, Declared))),
     Changed = maps:filter(fun(File, V) -> V =/= maps:get(File, Docs) end, Next),
     NextRevisions = case map_size(Changed) of
         0 -> Revisions;
@@ -90,7 +90,7 @@ group_etag(Name, Value, Revisions) ->
 encode(Value) -> iolist_to_binary(json:encode(Value)).
 nonempty(<<>>) -> null; nonempty(Value) -> Value.
 
-candidate(_, <<"providers">>, Patch, Docs, _, _) ->
+candidate(_, <<"providers">>, Patch, Docs, _, _, _) ->
     fields(Patch, [<<"profiles">>, <<"default_profile">>]),
     Config = saved_config(maps:get(<<"config.json">>, Docs)), Creds = maps:get(<<"creds.json">>, Docs),
     Changes = object(<<"profiles">>, Patch),
@@ -131,7 +131,7 @@ candidate(_, <<"providers">>, Patch, Docs, _, _) ->
     ensure(Default =:= null orelse maps:is_key(Default, Profiles), 409, <<"invalid_default_profile">>, <<"replace or clear the selected profile">>),
     {Docs#{<<"config.json">> => Config#{<<"providers">> => Profiles, <<"active">> => case Default of null -> <<>>; _ -> Default end},
            <<"creds.json">> => Creds#{<<"providers">> => Keys}}, <<"not_applicable">>};
-candidate(_, <<"extensions">>, Patch, Docs, _, Defaults) ->
+candidate(_, <<"extensions">>, Patch, Docs, _, Defaults, _) ->
     fields(Patch, [<<"defaults">>]), Ext = maps:get(<<"extensions.json">>, Docs),
     Current = object(<<"enabled">>, Ext), Changes = object(<<"defaults">>, Patch),
     _ = boolean_choices(Current, Changes),
@@ -142,16 +142,25 @@ candidate(_, <<"extensions">>, Patch, Docs, _, Defaults) ->
         {error, {Status, Code, Detail}} -> refusal(Status, Code, Detail)
     end,
     {Docs#{<<"extensions.json">> => Ext#{<<"enabled">> => Next}}, <<"not_applicable">>};
-candidate(_, <<"models">>, Patch, Docs, _, _) ->
+candidate(_, <<"extension_settings">>, Patch, Docs, _, _, Declared) ->
+    fields(Patch, [<<"values">>]),
+    ensure(maps:is_key(<<"values">>, Patch), 400, <<"invalid_request">>, <<"values is required">>),
+    Ext = maps:get(<<"extensions.json">>, Docs),
+    Next = case 'albedo@harness@settings@declared':patch(Declared, Ext, maps:get(<<"values">>, Patch)) of
+        {ok, Value} -> Value;
+        {error, {Status, Code, Detail}} -> refusal(Status, Code, Detail)
+    end,
+    {Docs#{<<"extensions.json">> => Next}, <<"not_applicable">>};
+candidate(_, <<"models">>, Patch, Docs, _, _, _) ->
     fields(Patch, [<<"raised_caps">>]), Ext = maps:get(<<"extensions.json">>, Docs),
     Next = boolean_choices(object(<<"raisedCaps">>, Ext), object(<<"raised_caps">>, Patch)),
     {Docs#{<<"extensions.json">> => Ext#{<<"raisedCaps">> => Next}}, <<"not_applicable">>};
-candidate(_, <<"ui">>, Patch, Docs, _, _) ->
+candidate(_, <<"ui">>, Patch, Docs, _, _, _) ->
     fields(Patch, [<<"thinking">>, <<"tools">>, <<"dismissed_notices">>]),
     maps:foreach(fun(<<"dismissed_notices">>, Value) -> strings(Value, 1000, 512); (_, Value) -> true = is_boolean(Value) end, Patch),
     Picker = maps:get(<<"picker.json">>, Docs),
     {Docs#{<<"picker.json">> => maps:merge(Picker, Patch)}, <<"not_applicable">>};
-candidate(_, <<"capabilities">>, Patch, Docs, Resolve, _) ->
+candidate(_, <<"capabilities">>, Patch, Docs, Resolve, _, _) ->
     fields(Patch, [<<"catalog_session_id">>, <<"catalog_revision">>, <<"choices">>]),
     Resolved = case Resolve(Patch) of
         {ok, Value} -> Value;
@@ -169,7 +178,7 @@ candidate(_, <<"capabilities">>, Patch, Docs, Resolve, _) ->
     ensure(byte_size(encode(Updated)) =< albedo_capabilities:max_bytes(), 409,
         <<"settings_capacity">>, <<"capability preferences exceed their saved byte limit">>),
     {Docs#{<<"capabilities.json">> => Updated}, <<"not_applicable">>};
-candidate(_, <<"mcp">>, Patch, Docs, _, _) ->
+candidate(_, <<"mcp">>, Patch, Docs, _, _, _) ->
     fields(Patch, [<<"definitions">>, <<"validate_connection">>]),
     Probe = maps:get(<<"validate_connection">>, Patch, true), true = is_boolean(Probe),
     Ext = maps:get(<<"extensions.json">>, Docs), MCP = object(<<"mcp">>, Ext), Creds = maps:get(<<"creds.json">>, Docs),

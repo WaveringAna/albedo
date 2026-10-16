@@ -1,6 +1,7 @@
 //// Daemon-owned persisted settings. Wire values are decoded before mutation.
 
 import albedo/harness/oauth
+import albedo/harness/settings/declared
 import gleam/dict.{type Dict}
 import gleam/dynamic.{type Dynamic}
 import gleam/option.{type Option}
@@ -9,6 +10,8 @@ pub type Group {
   Providers
   MCP
   Extensions
+  /// What installed extensions declare in their own sections.
+  DeclaredSettings
   Capabilities
   Models
   UI
@@ -19,6 +22,7 @@ pub fn parse_group(name: String) -> Result(Group, String) {
     "providers" -> Ok(Providers)
     "mcp" -> Ok(MCP)
     "extensions" -> Ok(Extensions)
+    "extension_settings" -> Ok(DeclaredSettings)
     "capabilities" -> Ok(Capabilities)
     "models" -> Ok(Models)
     "ui" -> Ok(UI)
@@ -32,7 +36,7 @@ pub fn parse_group(name: String) -> Result(Group, String) {
 pub fn composes(group: Group) -> Bool {
   case group {
     Extensions | MCP | Capabilities -> True
-    Providers | Models | UI -> False
+    Providers | Models | UI | DeclaredSettings -> False
   }
 }
 
@@ -44,6 +48,7 @@ pub type GroupSnapshot {
 pub fn observe_group(
   home: String,
   group: String,
+  declarations: List(declared.Declared),
 ) -> Result(GroupSnapshot, #(Int, String, String))
 
 @external(erlang, "albedo_settings_http", "patch")
@@ -58,4 +63,5 @@ pub fn patch_group(
     Result(Dict(String, Dict(String, Option(Bool))), String),
   defaults: fn(List(#(String, Bool)), List(#(String, Option(Bool)))) ->
     Result(List(#(String, Bool)), #(Int, String, String)),
+  declarations: List(declared.Declared),
 ) -> Result(String, #(Int, String, String))

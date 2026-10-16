@@ -310,6 +310,33 @@ class AgentsTests(unittest.TestCase):
             ["coder"],
         )
 
+    # exclusive: saves extensions.json
+    @exclusive
+    def test_saved_subagent_limits_hold_for_the_next_child(self):
+        settings = self.app.home / "extensions.json"
+        settings.write_text(
+            json.dumps({"subagents": {"maxOpenChildren": 1, "maxDepth": 1}})
+        )
+        parent = self.app.session()
+        first = self.spawn(parent, "first")["id"]
+        for under, name in ((parent, "second"), (first, "deeper")):
+            with self.subTest(name=name):
+                with self.assertRaises(urllib.error.HTTPError):
+                    self.spawn(under, name)
+
+        # -1 takes both caps away for the next child, past the defaults of 12
+        # open children and 3 deep.
+        settings.write_text(
+            json.dumps({"subagents": {"maxOpenChildren": -1, "maxDepth": -1}})
+        )
+        self.spawn(parent, "second")
+        lineage = [first]
+        for depth in range(2, 5):
+            child = self.spawn(lineage[-1], f"depth{depth}")
+            self.assertEqual(child["depth"], depth)
+            lineage.append(child["id"])
+        self.assertEqual(self.snapshot(lineage[-1])["root_id"], parent)
+
     @exclusive
     def test_mail_attribution_and_agent_card_survive_reconnect_and_restart(self):
         parent = self.app.session()

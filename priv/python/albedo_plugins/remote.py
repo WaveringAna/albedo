@@ -161,7 +161,8 @@ def parse_target(arg: str) -> dict[str, str | None]:
 
 
 def _settings() -> dict[str, str]:
-    """The `remote` section of extensions.json, falling back to `ssh`; errors raise."""
+    """The `remote` section of extensions.json, each key missing from it taken
+    from the older `ssh` section; errors raise."""
     home = os.environ.get("ALBEDO_HOME") or os.path.expanduser("~/.albedo")
     try:
         with open(os.path.join(home, "extensions.json"), "rb") as handle:
@@ -170,16 +171,23 @@ def _settings() -> dict[str, str]:
         return {}
     if not isinstance(sections, dict):
         raise RemoteError("extensions.json must hold an object")
-    section = sections.get("remote", sections.get("ssh"))
-    if section is None:
-        return {}
-    if not isinstance(section, dict):
-        raise RemoteError("extensions.json remote section must be an object")
-    keys = ("host", "remoteCwd", "python")
-    for key in keys:
-        if key in section and not isinstance(section[key], str):
+    section: dict[str, object] = {}
+    for name in ("ssh", "remote"):
+        part = sections.get(name)
+        if part is None:
+            continue
+        if not isinstance(part, dict):
+            raise RemoteError(f"extensions.json {name} section must be an object")
+        section.update(part)
+    result: dict[str, str] = {}
+    for key in ("host", "remoteCwd", "python"):
+        if key not in section:
+            continue
+        value = section[key]
+        if not isinstance(value, str):
             raise RemoteError(f"extensions.json remote.{key} must be a string")
-    return {key: section[key] for key in keys if key in section}
+        result[key] = value
+    return result
 
 
 def resolve(

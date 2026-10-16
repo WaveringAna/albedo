@@ -13,16 +13,43 @@ import gleam/string
 
 const catalog_file = "models.json"
 
-const default_url = "https://models.dev/api.json"
-
-const default_refresh_hours = 24
-
 type Config {
   Config(url: String, refresh_hours: Int)
 }
 
-fn default_config() -> Config {
-  Config(default_url, default_refresh_hours)
+fn url() -> settings.Setting(String) {
+  settings.text(
+    "url",
+    "Catalog URL",
+    "Where the models.dev catalog is fetched from.",
+    "https://models.dev/api.json",
+  )
+}
+
+fn refresh_hours() -> settings.Setting(Int) {
+  settings.whole(
+    "refreshHours",
+    "Refresh",
+    "Hours a cached catalog is used before it is fetched again in the background. 0 fetches only on /reload.",
+    24,
+    0,
+    8760,
+  )
+}
+
+fn config_section() -> settings.Section(Config) {
+  settings.section(
+    "models",
+    "Model catalog (models.dev)",
+    settings.ModelsAndCaching,
+    [settings.field(url()), settings.field(refresh_hours())],
+    {
+      use url <- settings.value(url())
+      use hours <- settings.value(refresh_hours())
+      decode.success(Config(url, hours))
+    },
+    Ok,
+  )
 }
 
 fn infer_reasoning_efforts(model: String) -> List(String) {
@@ -41,22 +68,15 @@ fn infer_reasoning_efforts(model: String) -> List(String) {
   }
 }
 
-fn config_decoder() -> decode.Decoder(Config) {
-  use url <- decode.optional_field("url", default_url, decode.string)
-  use hours <- decode.optional_field(
-    "refreshHours",
-    default_refresh_hours,
-    decode.int,
-  )
-  decode.success(Config(url, hours))
-}
-
 pub fn extension() -> extension.Extension {
   extension.Extension(
     "models",
     "models.dev catalog of model context limits, modalities, and provider endpoints",
     [],
-    [extension.ModelsPlugin(extension.ModelCatalog(lookup, list, Some(reload)))],
+    [
+      extension.SettingsPlugin(settings.declaration(config_section())),
+      extension.ModelsPlugin(extension.ModelCatalog(lookup, list, Some(reload))),
+    ],
     initialise,
   )
 }
@@ -71,7 +91,7 @@ fn initialise(_ledger: store.Store) -> Result(Nil, String) {
 }
 
 fn load_config() -> Result(Config, String) {
-  settings.load("models", config_decoder(), default_config())
+  settings.load_section(config_section())
 }
 
 /// Refresh the cache in the background when it is missing or older than the

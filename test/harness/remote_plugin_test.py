@@ -251,8 +251,12 @@ class RemotePluginTest(unittest.IsolatedAsyncioTestCase):
                 "python": "python-explicit",
             },
         )
-        settings.write_text(json.dumps({"remote": {}, "ssh": values}))
-        self.assertEqual(remote._settings(), {})
+        # A remote section saved with only some keys still takes the rest
+        # from ssh, so saving one setting never drops the others.
+        settings.write_text(
+            json.dumps({"remote": {"host": "remote-host"}, "ssh": values})
+        )
+        self.assertEqual(remote._settings(), {**values, "host": "remote-host"})
         # ssh takes a URI target with a port; its path is the remote cwd
         self.assertEqual(
             remote.parse_target("ssh://me@box:2222/srv/app"),

@@ -43,9 +43,14 @@ pub fn extension() -> extension.Extension {
         "Gemini",
         search,
       )),
+      extension.SettingsPlugin(settings.declaration(search_settings())),
     ],
     extension.no_initialise,
   )
+}
+
+fn search_settings() -> settings.Section(Option(String)) {
+  web_search.model_settings("antigravity", "Google Antigravity provider")
 }
 
 pub type Endpoints {
@@ -128,7 +133,7 @@ fn search(query: web_search.Query) -> Result(web_search.Answer, String) {
   let home = settings.home()
   // Signed out fails here, before listing models can reach the network.
   use access <- result.try(connect(home, query.session, "", Some("gemini")))
-  use model <- result.try(case web_search.configured_model("antigravity") {
+  use model <- result.try(case web_search.configured_model(search_settings()) {
     Some(model) -> Ok(model)
     None ->
       catalog.catalog().list("antigravity", None)

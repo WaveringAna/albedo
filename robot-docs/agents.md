@@ -26,7 +26,7 @@ await agents.progress("on turn.gleam now")    # shows in /agents, starts no turn
 - spawn never returns the child's answer: the answer arrives later as `<mail>` and starts the parent's next turn. a child about to end its turn without answering is reminded once (a [hook](hooks.md)); one that still ends without answering forwards its last message, marked `unreviewed`.
 - names resolve inside the family (children, siblings, parent); anything else takes a session id.
 - any session may look up and read any other: `get`, `messages`, and `search_messages` resolve names and ids the way mail does, and closed agents stay readable. cancel and close work on your own children only. `cancel(tree=True)` and `cancel_all()` stop parents before their children, so a stopped agent cannot answer by spawning, and answer the sessions that were running; they never close or delete anything. the model cannot delete an agent; it asks the user.
-- limits: 3 deep, 12 open children per parent, 1 MiB per letter, 1000 undelivered letters per session.
+- limits: 3 deep and 12 open children per parent by default, set in the daemon's `subagents` settings section (`maxDepth`, `maxOpenChildren`; -1 for no limit; see [settings](settings.md#extension-settings)), and fixed at 1 MiB per letter and 1000 undelivered letters per session.
 
 ## root peers, roles, and snapshots
 

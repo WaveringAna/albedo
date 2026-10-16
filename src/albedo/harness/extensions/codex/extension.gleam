@@ -43,9 +43,14 @@ pub fn extension() -> extension.Extension {
         Some(reload_models),
       )),
       extension.SearchPlugin(web_search.Provider("codex", "ChatGPT", search)),
+      extension.SettingsPlugin(settings.declaration(search_settings())),
     ],
     extension.no_initialise,
   )
+}
+
+fn search_settings() -> settings.Section(Option(String)) {
+  web_search.model_settings("codex", "ChatGPT provider (Codex)")
 }
 
 /// What the ChatGPT backend reports about a model a Codex session uses;
@@ -100,7 +105,7 @@ fn search(query: web_search.Query) -> Result(web_search.Answer, String) {
 
 fn search_model(home: String, access: Access) -> Result(String, String) {
   use <- option.lazy_unwrap(
-    web_search.configured_model("codex") |> option.map(Ok),
+    web_search.configured_model(search_settings()) |> option.map(Ok),
   )
   let _ = catalog.refresh(home, access.token, access.account_id)
   catalog.listed(home)

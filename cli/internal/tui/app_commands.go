@@ -421,6 +421,8 @@ func (m *AppModel) handleCommandInvocation(msg tea.Msg) (tea.Cmd, bool) {
 			return m.openSessions(), true
 		case "/extensions", "/plugins":
 			return m.openExtensionPicker(), true
+		case "/config", "/settings":
+			return m.openConfigPage(), true
 		case "/tree":
 			return m.openTreePicker(false), true
 		case "/fork":

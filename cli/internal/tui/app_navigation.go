@@ -68,6 +68,13 @@ func (m *AppModel) openExtensionPicker() tea.Cmd {
 	return m.openScreen(AppStateExtensionPicker, &m.ExtensionPicker)
 }
 
+// openConfigPage opens the extension settings screen, which is not scoped to
+// a session.
+func (m *AppModel) openConfigPage() tea.Cmd {
+	m.ConfigPage = NewConfigPageModel(m.Conn)
+	return m.openScreen(AppStateConfigPage, &m.ConfigPage)
+}
+
 func (m *AppModel) openTreePicker(forkOnly bool) tea.Cmd {
 	if m.ActiveSession == nil {
 		return nil

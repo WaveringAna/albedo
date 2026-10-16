@@ -35,19 +35,16 @@ pub type Config {
   )
 }
 
-fn default_config() -> Config {
-  Config(None, None, 20)
-}
-
 pub fn configured_extension(config: Config) -> harness_extension.Extension {
   bundle(fn() { validate(config) })
 }
 
 pub fn extension() -> harness_extension.Extension {
-  bundle(fn() {
-    use config <- result.try(settings.load("lcm", decoder(), default_config()))
-    validate(config)
-  })
+  let bundled = bundle(fn() { settings.load_section(config_section()) })
+  harness_extension.Extension(..bundled, plugins: [
+    harness_extension.SettingsPlugin(settings.declaration(config_section())),
+    ..bundled.plugins
+  ])
 }
 
 fn bundle(
@@ -113,19 +110,57 @@ pub fn stored_prior(
   }
 }
 
-fn decoder() -> decode.Decoder(Config) {
-  use capacity <- decode.optional_field(
+fn window() -> settings.Setting(Option(Int)) {
+  settings.optional_whole(
     "contextWindowTokens",
-    None,
-    decode.optional(decode.int),
+    "Context window",
+    "Tokens compaction measures against when the session sets no window of its own. Unset uses the model catalog's window.",
+    1,
+    100_000_000,
   )
-  use trigger <- decode.optional_field(
+}
+
+fn trigger() -> settings.Setting(Option(Int)) {
+  settings.optional_whole(
     "triggerPercent",
-    None,
-    decode.optional(decode.int),
+    "Trigger",
+    "Compact when a request reaches this percent of the window. Unset uses 80 for a window of 400k tokens or more and "
+      <> int.to_string(small_window_trigger)
+      <> " below that.",
+    1,
+    99,
   )
-  use tail <- decode.optional_field("tailPercent", 20, decode.int)
-  decode.success(Config(capacity, trigger, tail))
+}
+
+fn tail() -> settings.Setting(Int) {
+  settings.whole(
+    "tailPercent",
+    "Verbatim tail",
+    "Percent of the window kept word for word after a compaction. Must be below the trigger.",
+    20,
+    1,
+    98,
+  )
+}
+
+fn config_section() -> settings.Section(Config) {
+  settings.section(
+    "lcm",
+    "Lossless context compaction (LCM)",
+    settings.Context,
+    [
+      settings.field(window()),
+      settings.field(trigger()),
+      settings.field(tail()),
+    ],
+    {
+      use capacity <- settings.value(window())
+      use trigger <- settings.value(trigger())
+      use tail <- settings.value(tail())
+      decode.success(Config(capacity, trigger, tail))
+    },
+    validate,
+  )
 }
 
 fn validate(config: Config) -> Result(Config, String) {

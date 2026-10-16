@@ -868,7 +868,7 @@ fn protocol_server(
       quota.latest(runtime.ledger(host)) |> result.map_error(http_api.failure),
     )
     use ui <- result.try(
-      settings.observe_group(config.home, "ui")
+      settings.observe_group(config.home, "ui", [])
       |> result.map_error(http_api.native_failure),
     )
     use dismissed <- result.try(

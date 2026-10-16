@@ -49,19 +49,35 @@ pub type Provider {
   )
 }
 
-/// The model `searchModel` names in `extension`'s section of
-/// extensions.json, when it names one.
-pub fn configured_model(extension: String) -> Option(String) {
-  let configured =
-    settings.load(
-      extension,
-      decode.optional_field("searchModel", "", decode.string, decode.success),
-      "",
+/// `searchModel` in `extension`'s own section: the model that extension
+/// searches with, for its `SettingsPlugin` and `configured_model`.
+pub fn model_settings(
+  extension: String,
+  label: String,
+) -> settings.Section(Option(String)) {
+  let model =
+    settings.optional_text(
+      "searchModel",
+      "Web search model",
+      "The model web_search asks through this provider. Unset picks one from the provider's model list.",
     )
-  case configured {
-    Ok("") | Error(_) -> None
-    Ok(model) -> Some(model)
-  }
+  settings.section(
+    extension,
+    label,
+    settings.WebSearch,
+    [settings.field(model)],
+    settings.value(model, decode.success),
+    Ok,
+  )
+}
+
+/// The model `searchModel` names in `section`, when it names one the
+/// extension can use.
+pub fn configured_model(
+  section: settings.Section(Option(String)),
+) -> Option(String) {
+  settings.load_section(section)
+  |> result.unwrap(None)
 }
 
 /// Why a provider's HTTP exchange failed, short enough to list beside the

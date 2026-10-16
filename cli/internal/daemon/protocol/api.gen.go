@@ -560,6 +560,75 @@ type Cursor struct {
 	Sequence   Counter    `json:"sequence"`
 }
 
+// DeclaredSetting defines model for DeclaredSetting.
+type DeclaredSetting struct {
+	// Default What the section's owner uses while nothing is saved. Null when leaving the setting unset has a meaning of its own, which the description gives.
+	Default     json.RawMessage `json:"default" nullable:"true"`
+	Description string          `json:"description"`
+
+	// Key The key in the section of extensions.json.
+	Key string `json:"key"`
+
+	// Kind integer takes a whole number from minimum to maximum; text takes a non-empty string of at most 4096 bytes; limit takes a whole number from minimum to maximum, or -1 for no limit.
+	Kind  string `json:"kind"`
+	Label string `json:"label"`
+
+	// Maximum The largest integer accepted; null for text.
+	Maximum *int64 `json:"maximum" nullable:"true"`
+
+	// Minimum The smallest integer accepted; null for text.
+	Minimum *int64 `json:"minimum" nullable:"true"`
+
+	// Value The saved value, or null when nothing is saved and the default applies. A saved value of the wrong kind reads as null, and the section's problem names it.
+	Value json.RawMessage `json:"value" nullable:"true"`
+}
+
+// DeclaredSettings defines model for DeclaredSettings.
+type DeclaredSettings struct {
+	// Sections The daemon's own sections, then the sections installed extensions declare, in registry order.
+	Sections []DeclaredSettingsSection `json:"sections"`
+}
+
+// DeclaredSettingsChange defines model for DeclaredSettingsChange.
+type DeclaredSettingsChange struct {
+	Application SettingsApplication      `json:"application"`
+	Group       string                   `json:"group"`
+	Resource    DeclaredSettingsResource `json:"resource"`
+}
+
+// DeclaredSettingsPatch defines model for DeclaredSettingsPatch.
+type DeclaredSettingsPatch struct {
+	// Values Section name to declared key to value. A value replaces the saved one; null removes it so the default applies. Unknown sections, undeclared keys, values outside the declaration, and a section its owner's own check rejects are refused, and nothing is saved.
+	Values map[string]map[string]json.RawMessage `json:"values"`
+}
+
+// DeclaredSettingsResource defines model for DeclaredSettingsResource.
+type DeclaredSettingsResource struct {
+	// ETag Strong opaque validator for the complete canonical representation.
+	ETag ETag `json:"etag"`
+
+	// URL Daemon-relative URL, including any representation query. No foreign origin or fragment.
+	URL   ResourceURL      `json:"url"`
+	Value DeclaredSettings `json:"value"`
+}
+
+// DeclaredSettingsSection defines model for DeclaredSettingsSection.
+type DeclaredSettingsSection struct {
+	// Category The part of /config the section belongs to. web_search is what web_search asks and where; context is how a session's context is kept within its window; agents is how many agents a session may spawn and how deep; models_and_caching is the model catalog and prompt cache warming; tools is what the agent drives or reaches, such as MCP servers, remote kernels and the desktop.
+	Category    string            `json:"category"`
+	Description string            `json:"description"`
+	Fields      []DeclaredSetting `json:"fields"`
+
+	// Label What the section configures, for a reader who does not know who declares it.
+	Label string `json:"label"`
+
+	// Name The section's key in extensions.json. The daemon's own sections take names no extension may have; every other section is named after the extension that declares it.
+	Name ID `json:"name"`
+
+	// Problem Why the section's owner cannot use its saved section, when it cannot.
+	Problem *string `json:"problem" nullable:"true"`
+}
+
 // Delivery defines model for Delivery.
 type Delivery struct {
 	Attempts       Counter     `json:"attempts"`
@@ -2639,15 +2708,17 @@ type SessionUsageEvent struct {
 
 // Settings defines model for Settings.
 type Settings struct {
-	Capabilities   CapabilitySettings `json:"capabilities"`
-	Extensions     ExtensionSettings  `json:"extensions"`
-	GroupResources struct {
-		Capabilities ResourceValidator `json:"capabilities"`
-		Extensions   ResourceValidator `json:"extensions"`
-		MCP          ResourceValidator `json:"mcp"`
-		Models       ResourceValidator `json:"models"`
-		Providers    ResourceValidator `json:"providers"`
-		UI           ResourceValidator `json:"ui"`
+	Capabilities      CapabilitySettings `json:"capabilities"`
+	ExtensionSettings DeclaredSettings   `json:"extension_settings"`
+	Extensions        ExtensionSettings  `json:"extensions"`
+	GroupResources    struct {
+		Capabilities      ResourceValidator `json:"capabilities"`
+		ExtensionSettings ResourceValidator `json:"extension_settings"`
+		Extensions        ResourceValidator `json:"extensions"`
+		MCP               ResourceValidator `json:"mcp"`
+		Models            ResourceValidator `json:"models"`
+		Providers         ResourceValidator `json:"providers"`
+		UI                ResourceValidator `json:"ui"`
 	} `json:"group_resources"`
 	MCP       MCPSettings      `json:"mcp"`
 	Models    ModelSettings    `json:"models"`
@@ -2659,7 +2730,7 @@ type Settings struct {
 type SettingsApplication struct {
 	ActiveServiceRevision *ID `json:"active_service_revision" nullable:"true"`
 
-	// CompositionChanged Whether this save changed the desired composition, so loaded sessions need a reload to apply it. Always false for providers, models and ui. A concurrent save to another composition group can make it true. GET /sessions?needs_reload=true lists the sessions.
+	// CompositionChanged Whether this save changed the desired composition, so loaded sessions need a reload to apply it. Always false for providers, extension_settings, models and ui. A concurrent save to another composition group can make it true. GET /sessions?needs_reload=true lists the sessions.
 	CompositionChanged bool `json:"composition_changed"`
 
 	// DesiredRevision Opaque identity. Never infer a resource type or route from its contents.

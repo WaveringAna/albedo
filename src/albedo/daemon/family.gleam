@@ -8,6 +8,7 @@ import albedo/clock
 import albedo/daemon/operations
 import albedo/daemon/store
 import albedo/daemon/usage
+import albedo/harness/settings
 import gleam/dynamic/decode
 import gleam/int
 import gleam/list
@@ -91,14 +92,17 @@ pub fn capture_in(
   ))
 }
 
+/// The ancestor with no parent of its own. Every row links a new session
+/// under one that already exists, so lineages have no cycles; `UNION` stops
+/// the walk on a repeated id even so.
 fn root_in(
   connection: sqlight.Connection,
   session: String,
 ) -> Result(String, String) {
   store.one(
     connection,
-    "WITH RECURSIVE lineage(id,depth) AS (SELECT ?,0 UNION ALL SELECT f.parent,l.depth+1 FROM session_family f JOIN lineage l ON f.session=l.id WHERE l.depth<?) SELECT id FROM lineage ORDER BY depth DESC LIMIT 1",
-    [sqlight.text(session), sqlight.int(max_depth)],
+    "WITH RECURSIVE lineage(id) AS (SELECT ? UNION SELECT f.parent FROM session_family f JOIN lineage l ON f.session=l.id) SELECT id FROM lineage WHERE NOT EXISTS (SELECT 1 FROM session_family f WHERE f.session=lineage.id) LIMIT 1",
+    [sqlight.text(session)],
     decode.field(0, decode.string, decode.success),
     "family root not found",
   )
@@ -117,12 +121,56 @@ pub fn changed_in(
   )
 }
 
-/// Children of children of children, and no further. Any agent can mail any
-/// session by id, so depth is never needed just to reach someone.
-pub const max_depth = 3
+/// How far a family may grow: how many open children one parent may have,
+/// and how many generations below a root.
+pub type Limits {
+  Limits(children: settings.Limit, depth: settings.Limit)
+}
 
-/// Open children one parent may have at once.
-const max_children = 12
+fn children_setting() -> settings.Setting(settings.Limit) {
+  settings.limit(
+    "maxOpenChildren",
+    "Open children",
+    "Children one session may have open at once; closing one frees its place. -1 takes the cap away.",
+    settings.Limited(12),
+    1,
+    1000,
+  )
+}
+
+fn depth_setting() -> settings.Setting(settings.Limit) {
+  settings.limit(
+    "maxDepth",
+    "Nesting depth",
+    "Generations of agents below a root session; its children are depth 1. Any agent can mail any session by id, so depth is never needed just to reach someone. -1 lets agents nest without end.",
+    settings.Limited(3),
+    1,
+    1000,
+  )
+}
+
+/// The `subagents` section, which the daemon declares itself: the limits
+/// hold for every child, however it is created.
+pub fn limits_section() -> settings.Section(Limits) {
+  settings.section(
+    "subagents",
+    "Subagents",
+    settings.Agents,
+    [settings.field(children_setting()), settings.field(depth_setting())],
+    {
+      use children <- settings.value(children_setting())
+      use depth <- settings.value(depth_setting())
+      decode.success(Limits(children, depth))
+    },
+    Ok,
+  )
+}
+
+/// The saved limits, read for every new child so a change applies to the
+/// next one.
+pub fn limits() -> Result(Limits, String) {
+  settings.load_section(limits_section())
+}
 
 const schema =
   "
@@ -248,6 +296,7 @@ pub fn link_in(
   child: String,
   parent: String,
   name: String,
+  limits: Limits,
 ) -> Result(Member, String) {
   use _ <- result.try(available_in(connection, parent))
   use _ <- result.try(valid_name(name))
@@ -261,27 +310,29 @@ pub fn link_in(
   use siblings <- result.try(
     rows(connection, members("WHERE parent=?"), [sqlight.text(parent)]),
   )
-  let open = list.filter(siblings, fn(member) { !member.closed })
+  let open = list.count(siblings, fn(member) { !member.closed })
+  use _ <- result.try(case limits.depth {
+    settings.Limited(deepest) if depth > deepest ->
+      Error(
+        "agents nest at most "
+        <> int.to_string(deepest)
+        <> " deep; mail a session by id instead of nesting to reach it",
+      )
+    _ -> Ok(Nil)
+  })
+  use _ <- result.try(case limits.children {
+    settings.Limited(most) if open >= most ->
+      Error(
+        "at most "
+        <> int.to_string(most)
+        <> " open children; close one you are done with first",
+      )
+    _ -> Ok(Nil)
+  })
   use _ <- result.try(
-    case
-      depth > max_depth,
-      list.length(open) >= max_children,
-      list.any(siblings, fn(member) { member.name == name })
-    {
-      True, _, _ ->
-        Error(
-          "agents nest at most "
-          <> int.to_string(max_depth)
-          <> " deep; mail a session by id instead of nesting to reach it",
-        )
-      _, True, _ ->
-        Error(
-          "at most "
-          <> int.to_string(max_children)
-          <> " open children; close one you are done with first",
-        )
-      _, _, True -> Error("a child named '" <> name <> "' already exists")
-      False, False, False -> Ok(Nil)
+    case list.any(siblings, fn(member) { member.name == name }) {
+      True -> Error("a child named '" <> name <> "' already exists")
+      False -> Ok(Nil)
     },
   )
   use _ <- result.try(

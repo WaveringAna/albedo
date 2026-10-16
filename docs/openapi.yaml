@@ -192,7 +192,7 @@ paths:
         required: false
         schema:
           type: string
-          enum: [providers, mcp, extensions, capabilities, models, ui]
+          enum: [providers, mcp, extensions, extension_settings, capabilities, models, ui]
     patch:
       operationId: patchSettings
       summary: Atomically edit one settings group
@@ -236,7 +236,7 @@ paths:
         required: true
         schema:
           type: string
-          enum: [providers, mcp, extensions, capabilities, models, ui]
+          enum: [providers, mcp, extensions, extension_settings, capabilities, models, ui]
       - $ref: '#/components/parameters/IfMatch'
       requestBody:
         required: true
@@ -5010,6 +5010,117 @@ components:
             $ref: '#/components/schemas/ID'
           maxItems: 1000
       additionalProperties: false
+    DeclaredSetting:
+      type: object
+      properties:
+        key:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: The key in the section of extensions.json.
+        label:
+          type: string
+          maxLength: 128
+        description:
+          type: string
+          maxLength: 1024
+        kind:
+          type: string
+          enum: [integer, text, limit]
+          description: integer takes a whole number from minimum to maximum; text takes a non-empty
+            string of at most 4096 bytes; limit takes a whole number from minimum to maximum, or -1
+            for no limit.
+        default:
+          anyOf:
+          - type: integer
+          - type: string
+          - type: 'null'
+          description: What the section's owner uses while nothing is saved. Null when leaving the
+            setting unset has a meaning of its own, which the description gives.
+        minimum:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          description: The smallest integer accepted; null for text.
+        maximum:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          description: The largest integer accepted; null for text.
+        value:
+          anyOf:
+          - type: integer
+          - type: string
+          - type: 'null'
+          description: The saved value, or null when nothing is saved and the default applies. A saved
+            value of the wrong kind reads as null, and the section's problem names it.
+      required: [key, label, description, kind, default, minimum, maximum, value]
+      additionalProperties: false
+    DeclaredSettingsSection:
+      type: object
+      properties:
+        name:
+          $ref: '#/components/schemas/ID'
+          description: The section's key in extensions.json. The daemon's own sections take names no
+            extension may have; every other section is named after the extension that declares it.
+        label:
+          type: string
+          maxLength: 128
+          description: What the section configures, for a reader who does not know who declares it.
+        category:
+          type: string
+          enum: [web_search, context, agents, models_and_caching, tools]
+          description: The part of /config the section belongs to. web_search is what web_search asks
+            and where; context is how a session's context is kept within its window; agents is how
+            many agents a session may spawn and how deep; models_and_caching is the model catalog and
+            prompt cache warming; tools is what the agent drives or reaches, such as MCP servers,
+            remote kernels and the desktop.
+        description:
+          type: string
+          maxLength: 1024
+        fields:
+          type: array
+          items:
+            $ref: '#/components/schemas/DeclaredSetting'
+          maxItems: 64
+        problem:
+          anyOf:
+          - type: string
+            maxLength: 1024
+          - type: 'null'
+          description: Why the section's owner cannot use its saved section, when it cannot.
+      required: [name, label, category, description, fields, problem]
+      additionalProperties: false
+    DeclaredSettings:
+      type: object
+      properties:
+        sections:
+          type: array
+          items:
+            $ref: '#/components/schemas/DeclaredSettingsSection'
+          maxItems: 512
+          description: The daemon's own sections, then the sections installed extensions declare, in
+            registry order.
+      required: [sections]
+      additionalProperties: false
+    DeclaredSettingsPatch:
+      type: object
+      properties:
+        values:
+          type: object
+          description: Section name to declared key to value. A value replaces the saved one; null
+            removes it so the default applies. Unknown sections, undeclared keys, values outside the
+            declaration, and a section its owner's own check rejects are refused, and nothing is
+            saved.
+          additionalProperties:
+            type: object
+            additionalProperties:
+              anyOf:
+              - type: integer
+              - type: string
+              - type: 'null'
+      required: [values]
+      additionalProperties: false
     ProviderSettingsResource:
       type: object
       properties:
@@ -5041,6 +5152,17 @@ components:
           $ref: '#/components/schemas/ETag'
         value:
           $ref: '#/components/schemas/ExtensionSettings'
+      required: [url, etag, value]
+      additionalProperties: false
+    DeclaredSettingsResource:
+      type: object
+      properties:
+        url:
+          $ref: '#/components/schemas/ResourceURL'
+        etag:
+          $ref: '#/components/schemas/ETag'
+        value:
+          $ref: '#/components/schemas/DeclaredSettings'
       required: [url, etag, value]
       additionalProperties: false
     CapabilitySettingsResource:
@@ -5085,6 +5207,8 @@ components:
           $ref: '#/components/schemas/MCPSettings'
         extensions:
           $ref: '#/components/schemas/ExtensionSettings'
+        extension_settings:
+          $ref: '#/components/schemas/DeclaredSettings'
         capabilities:
           $ref: '#/components/schemas/CapabilitySettings'
         models:
@@ -5100,15 +5224,17 @@ components:
               $ref: '#/components/schemas/ResourceValidator'
             extensions:
               $ref: '#/components/schemas/ResourceValidator'
+            extension_settings:
+              $ref: '#/components/schemas/ResourceValidator'
             capabilities:
               $ref: '#/components/schemas/ResourceValidator'
             models:
               $ref: '#/components/schemas/ResourceValidator'
             ui:
               $ref: '#/components/schemas/ResourceValidator'
-          required: [providers, mcp, extensions, capabilities, models, ui]
+          required: [providers, mcp, extensions, extension_settings, capabilities, models, ui]
           additionalProperties: false
-      required: [providers, mcp, extensions, capabilities, models, ui, group_resources]
+      required: [providers, mcp, extensions, extension_settings, capabilities, models, ui, group_resources]
       additionalProperties: false
     SettingsRead:
       oneOf:
@@ -5116,6 +5242,7 @@ components:
       - $ref: '#/components/schemas/ProviderSettings'
       - $ref: '#/components/schemas/MCPSettings'
       - $ref: '#/components/schemas/ExtensionSettings'
+      - $ref: '#/components/schemas/DeclaredSettings'
       - $ref: '#/components/schemas/CapabilitySettings'
       - $ref: '#/components/schemas/ModelSettings'
       - $ref: '#/components/schemas/UISettings'
@@ -5124,6 +5251,7 @@ components:
       - $ref: '#/components/schemas/ProviderSettingsPatch'
       - $ref: '#/components/schemas/MCPSettingsPatch'
       - $ref: '#/components/schemas/ExtensionSettingsPatch'
+      - $ref: '#/components/schemas/DeclaredSettingsPatch'
       - $ref: '#/components/schemas/CapabilitySettingsPatch'
       - $ref: '#/components/schemas/ModelSettingsPatch'
       - $ref: '#/components/schemas/UISettingsPatch'
@@ -5141,7 +5269,7 @@ components:
         composition_changed:
           type: boolean
           description: Whether this save changed the desired composition, so loaded sessions need a
-            reload to apply it. Always false for providers, models and ui. A concurrent save to another
+            reload to apply it. Always false for providers, extension_settings, models and ui. A concurrent save to another
             composition group can make it true. GET /sessions?needs_reload=true lists the sessions.
         validation:
           type: string
@@ -5179,6 +5307,17 @@ components:
           const: extensions
         resource:
           $ref: '#/components/schemas/ExtensionSettingsResource'
+        application:
+          $ref: '#/components/schemas/SettingsApplication'
+      required: [group, resource, application]
+      additionalProperties: false
+    DeclaredSettingsChange:
+      type: object
+      properties:
+        group:
+          const: extension_settings
+        resource:
+          $ref: '#/components/schemas/DeclaredSettingsResource'
         application:
           $ref: '#/components/schemas/SettingsApplication'
       required: [group, resource, application]
@@ -5221,6 +5360,7 @@ components:
       - $ref: '#/components/schemas/ProviderSettingsChange'
       - $ref: '#/components/schemas/MCPSettingsChange'
       - $ref: '#/components/schemas/ExtensionSettingsChange'
+      - $ref: '#/components/schemas/DeclaredSettingsChange'
       - $ref: '#/components/schemas/CapabilitySettingsChange'
       - $ref: '#/components/schemas/ModelSettingsChange'
       - $ref: '#/components/schemas/UISettingsChange'
