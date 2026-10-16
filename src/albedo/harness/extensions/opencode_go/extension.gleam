@@ -176,19 +176,22 @@ fn explain(error: types.Error) -> Option(String) {
         "OpenCode Go rejected the credential; run /login to reconnect your OpenCode Go account or check OPENCODE_API_KEY",
       )
     types.HttpError(403, body) ->
-      Some("OpenCode Go access refused: " <> rotation.error_message(body))
+      Some(with_detail("OpenCode Go access refused", body))
     types.HttpError(429, body) ->
-      Some(
-        "OpenCode Go request limit reached: " <> rotation.error_message(body),
-      )
+      Some(with_detail("OpenCode Go request limit reached", body))
     types.HttpError(status, body) ->
-      Some(
-        "OpenCode Go error ("
-        <> int.to_string(status)
-        <> "): "
-        <> rotation.error_message(body),
-      )
+      Some(with_detail(
+        "OpenCode Go error (" <> int.to_string(status) <> ")",
+        body,
+      ))
     _ -> None
+  }
+}
+
+fn with_detail(prefix: String, body: String) -> String {
+  case string.trim(rotation.error_message(body)) {
+    "" -> prefix
+    detail -> prefix <> ": " <> detail
   }
 }
 

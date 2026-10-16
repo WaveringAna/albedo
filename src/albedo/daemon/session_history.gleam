@@ -58,11 +58,8 @@ pub fn recover_pending(
     Some(history) -> history |> list.reverse |> raw_inputs
     None -> []
   }
-  let completed = tool_results.answered(inputs)
-  let pending =
-    list.flat_map(inputs, message_content.calls)
-    |> list.filter(fn(call) { !list.contains(completed, call.id) })
-  list.map(pending, runtime.recover(host, kernel, _, images))
+  tool_results.unanswered(inputs)
+  |> list.map(runtime.recover(host, kernel, _, images))
 }
 
 pub fn ensure_history(
