@@ -33,6 +33,7 @@ pub fn protocol_decoder() -> decode.Decoder(Protocol) {
 pub type ProviderPolicy {
   OpenAI
   Codex(account_id: String, session_id: String)
+  OpenCodeGo(session_id: String, org_id: String)
 }
 
 pub type Client {

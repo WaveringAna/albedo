@@ -180,7 +180,7 @@ func (m *LoginModel) chooseAccount(account daemon.Account) tea.Cmd {
 }
 
 func providerProtocol(provider string) string {
-	if provider == "claude" {
+	if provider == "claude" || provider == "opencode-go" {
 		return "chat_completions"
 	}
 	return "responses"

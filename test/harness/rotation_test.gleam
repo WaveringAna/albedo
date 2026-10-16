@@ -6,6 +6,7 @@ import albedo/harness/accounts
 import albedo/harness/extension as harness_extension
 import albedo/harness/extensions/alibaba/extension as alibaba
 import albedo/harness/extensions/antigravity/extension as antigravity
+import albedo/harness/extensions/opencode_go/extension as opencode_go
 import albedo/harness/oauth
 import albedo/harness/rotation
 import albedo/openai_api
@@ -445,6 +446,82 @@ pub fn alibaba_rotates_to_another_profiles_key_test() -> Nil {
   let assert Ok(next) = pool.current()
   next.api_key |> should.equal(second_key)
   next.base_url |> should.equal("http://127.0.0.1:1/b")
+  cleanup(root)
+}
+
+fn opencode_go_config(a: String, b: String) -> String {
+  "{\"providers\":{\"go-a\":{\"extension\":\"opencode-go\",\"baseUrl\":\"http://127.0.0.1:1/a\",\"apiKey\":\""
+  <> a
+  <> "\",\"protocol\":\"chat_completions\"},\"go-b\":{\"extension\":\"opencode-go\",\"baseUrl\":\"http://127.0.0.1:1/b\",\"apiKey\":\""
+  <> b
+  <> "\",\"protocol\":\"chat_completions\"},\"other\":{\"extension\":\"openai\",\"baseUrl\":\"http://x\",\"apiKey\":\"not-go\"}}}"
+}
+
+pub fn opencode_go_rotates_and_sends_session_header_test() -> Nil {
+  let #(root, _, home) = fixture()
+  let first_key = "go-a-" <> int.to_string(unique())
+  let second_key = "go-b-" <> int.to_string(unique())
+  let _ = write(home, "config.json", opencode_go_config(first_key, second_key))
+  let tried = process.new_subject()
+  let body =
+    "{\"error\":{\"type\":\"UsageLimit\",\"message\":\"Rolling 5h usage limit reached\"}}"
+  let pool = opencode_go.pool(home, "go-a", "go-session")
+  let assert Ok(first) = pool.current()
+  first.api_key |> should.equal(first_key)
+  first.base_url |> should.equal("http://127.0.0.1:1/a")
+  first.policy |> should.equal(types.OpenCodeGo("go-session", ""))
+  openai_api.headers(first, "glm-5.3-flash")
+  |> list.contains(#("x-opencode-session", "go-session"))
+  |> should.be_true
+  rotation.stream(
+    rotation.Pool(
+      ..pool,
+      stream: limited_stream([first_key], body, tried, api_key),
+    ),
+    first,
+    openai_api.request("glm-5.3-flash", [types.User("hi")]),
+    fn(_) { types.Continue },
+    rotation.Budget(8, 0, no_wait, False),
+    fn(_) { Nil },
+  )
+  |> should.equal(Error(types.HttpError(500, "sibling answered")))
+  drain(tried, []) |> should.equal([first_key, second_key])
+  let assert Ok(next) = pool.current()
+  next.api_key |> should.equal(second_key)
+  next.base_url |> should.equal("http://127.0.0.1:1/b")
+  cleanup(root)
+}
+
+pub fn opencode_go_oauth_account_sends_org_header_test() -> Nil {
+  let #(root, _, home) = fixture()
+  let token = "oauth-go-" <> int.to_string(unique())
+  let _ =
+    write(
+      home,
+      "config.json",
+      "{\"providers\":{\"go\":{\"extension\":\"opencode-go\",\"protocol\":\"chat_completions\",\"model\":\"glm-5.3-flash\"}}}",
+    )
+  let _ =
+    write(
+      home,
+      "creds.json",
+      "{\"accounts\":{\"opencode-go\":[{\"type\":\"oauth\",\"access\":\""
+        <> token
+        <> "\",\"refresh\":\"ref-1\",\"expires\":9999999999999,\"accountId\":\"usr_1\",\"email\":\"dawn@example.com\",\"orgId\":\"org_42\",\"orgName\":\"Personal\"}]}}",
+    )
+  let pool = opencode_go.pool(home, "go", "go-oauth-session")
+  let assert Ok(client) = pool.current()
+  client.api_key |> should.equal(token)
+  client.policy |> should.equal(types.OpenCodeGo("go-oauth-session", "org_42"))
+  let sent_headers = openai_api.headers(client, "glm-5.3-flash")
+  sent_headers
+  |> list.contains(#("x-opencode-session", "go-oauth-session"))
+  |> should.be_true
+  sent_headers
+  |> list.contains(#("x-opencode-org-id", "org_42"))
+  |> should.be_true
+  let assert [account] = oauth.accounts(home, opencode_go.login())
+  account.label |> should.equal("dawn@example.com · Personal")
   cleanup(root)
 }
 

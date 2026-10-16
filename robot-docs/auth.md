@@ -6,7 +6,7 @@ model authentication is supplied by model-provider extensions rather than the da
 
 Every secret albedo keeps lives in `$ALBEDO_HOME/creds.json`, mode `0600`, and only the daemon reads or writes it. It has three sections: `accounts` holds OAuth accounts (and an optional `alibaba` key) by store key, one object or an array; `providers` holds each profile's `apiKey` by profile name; `mcp` holds each MCP server's `bearerToken`, `headers` and `env` by server name. All credential and settings mutations share one per-home daemon lock. OAuth refreshes retain their re-read under that lock and preserve other sections. `config.json` keeps no keys: an `apiKey` still written there by hand is used and wins over the saved one until the next daemon start moves it.
 
-Account limit marks under `accounts` are recorded per model-family meter for Google Antigravity (`limitedMeters: {"claude": <epoch ms>, ...}` with meter keys `gemini`, `claude`, `gpt-oss`, falling back conservatively to legacy `limitedUntil` when `limitedMeters` is absent), whereas Codex and Alibaba record account-wide marks in `limitedUntil`.
+Account limit marks under `accounts` are recorded per model-family meter for Google Antigravity (`limitedMeters: {"claude": <epoch ms>, ...}` with meter keys `gemini`, `claude`, `gpt-oss`, falling back conservatively to legacy `limitedUntil` when `limitedMeters` is absent), whereas Codex, Alibaba, and OpenCode Go record account-wide marks in `limitedUntil`.
 
 At start the daemon moves secrets still kept elsewhere into `creds.json`: `auth.json`'s accounts, `mcp-credentials.json`'s servers, and each `config.json` profile's `apiKey`. It writes `creds.json` first, then moves the old files into `backups/` as `<name>-before-creds-<ms>` with every mode bit cleared, so an interrupted start loses nothing and the next one finishes. Not even their owner can read the backups without `chmod 600` first, so tools and agents running as the user never read them by accident; `rm -f` deletes them.
 
@@ -88,6 +88,12 @@ Vertex passes tool schemas as `parametersJsonSchema` and structured response sch
 Malformed present stream fields fail decoding, and EOF without a terminal `finishReason` is an incomplete response, not success. Only a normal `STOP` completion publishes executable tool calls; limited or filtered responses cannot execute partial calls. Output token totals include thinking tokens, with reasoning also reported separately.
 
 Replay keeps text, thinking text, and tool calls only, each replayed call marked with Google's documented placeholder signature (`skip_thought_signature_validator`) rather than the native one `antigravity` preserves for its own Gemini calls.
+
+## opencode go
+
+The enabled-by-default `opencode-go` extension serves OpenCode Go subscription models over Chat Completions (`https://opencode.ai/inference/go/v1`, or `https://opencode.ai/zen/go/v1`). `/login` offers both **add opencode go account** (the OpenCode Console RFC 8628 device-code browser sign-in against `https://opencode.ai/console`, overrideable via `OPENCODE_CONSOLE_SERVER`) and **add or update an OpenCode Go provider** (for a service-account API key and optional base url), and lists the models OpenCode Go serves (`opencode-go-models.json` cached for 24h from `{baseUrl}/models`, falling back to the models.dev `opencode-go` catalog).
+
+Device-code sign-in requests an org-scoped grant (`client_id: "opencode-cli", supports_org_scope: true`), opens the verification URL in the browser with the confirmation code, polls `/auth/device/token`, and saves `{type: "oauth", access, refresh, expires, accountId, email?, orgId?, orgName?, server}` in `creds.json` under `accounts.opencode-go`, refreshing under the credential lock 60 seconds before expiry. Every OpenCode Go credential albedo can see joins one rotation pool: the profile's own `apiKey` or selected OAuth account first, then sibling `opencode-go` profiles, `creds.json`'s `accounts.opencode-go` (OAuth accounts and keys), and `OPENCODE_GO_API_KEY`/`OPENCODE_API_KEY`. Outbound requests carry `x-opencode-session` set to the session id (and `x-opencode-org-id` when the credential is org-scoped) so OpenCode Go routes the conversation to one upstream cache.
 
 ## Account ordering
 

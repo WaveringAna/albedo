@@ -181,6 +181,18 @@ func TestTUILoginSavesCloudProviderProfiles(t *testing.T) {
 	if got.Extension != "bedrock" || got.BaseURL != "" || got.HasKey || got.Project != nil {
 		t.Fatalf("config.json kept %+v", got)
 	}
+
+	preserveLoginState(t, "opencode-go")
+	start("add-opencode-go", "opencode-go")
+	expect(tui.StepBaseURL)
+	d.Key(tea.KeyEnter)
+	expect(tui.StepAPIKey)
+	d.App.Login.TextInput.SetValue("sk-opencode-go-fixture")
+	d.Dispatch(d.Key(tea.KeyEnter))
+	got = finish("glm-5.3-flash")
+	if got.Extension != "opencode-go" || got.BaseURL != "https://opencode.ai/inference/go/v1" || got.Protocol != "chat_completions" || !got.HasKey || got.Model != "glm-5.3-flash" {
+		t.Fatalf("config.json kept %+v", got)
+	}
 }
 
 func deref(value *string) string {

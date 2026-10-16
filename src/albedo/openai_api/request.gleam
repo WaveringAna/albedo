@@ -34,7 +34,7 @@ pub fn encode_with_policy(
   let fields = case protocol {
     Responses -> {
       let max_tokens = case policy {
-        OpenAI -> request.max_output_tokens
+        OpenAI | types.OpenCodeGo(_, _) -> request.max_output_tokens
         Codex(_, _) -> None
       }
       [
@@ -328,7 +328,7 @@ fn encode_tool(protocol: Protocol, policy: ProviderPolicy, tool: Tool) -> Json {
     #("parameters", tool.parameters),
     #("strict", case policy {
       Codex(_, _) -> json.null()
-      OpenAI -> json.bool(tool.strict)
+      OpenAI | types.OpenCodeGo(_, _) -> json.bool(tool.strict)
     }),
   ]
   json.object(case protocol {

@@ -149,6 +149,64 @@ pub fn a_pasted_code_for_another_attempt_is_rejected_test() -> Nil {
   cleanup(root)
 }
 
+fn device_login() -> oauth.Login {
+  oauth.Login(
+    "fake-device",
+    "add fake device account",
+    "device code",
+    oauth.Model,
+    "fake-device",
+    oauth.Device(fn() {
+      Ok(
+        #(
+          "https://auth.example/device?user_code=ABCD-1234",
+          "Confirm code ABCD-1234 in your browser and select Authorize.",
+          fn(progress) {
+            progress("Waiting for authorization…")
+            process.sleep(30)
+            Ok(
+              dict.from_list([
+                #("type", dynamic.string("oauth")),
+                #("access", dynamic.string("device-access")),
+                #("email", dynamic.string("device@example.com")),
+              ]),
+            )
+          },
+        ),
+      )
+    }),
+    fn(_) { "" },
+    fn(_, _, _) { Error("unused") },
+    fn(credential) {
+      let email =
+        decode.run(credential, decode.at(["email"], decode.string))
+        |> result.unwrap("")
+      oauth.Account(email, email, "fake device account", False)
+    },
+  )
+}
+
+pub fn a_device_code_flow_publishes_instructions_and_completes_test() -> Nil {
+  let #(root, _, home) = fixture()
+  let login = device_login()
+  let id = identity()
+  let assert Ok(#(True, flow)) =
+    oauth.start_identified(
+      home,
+      id,
+      "fake-device",
+      Some(login),
+      "{\"provider\":\"fake-device\"}",
+    )
+  assert field(flow, "url") == "https://auth.example/device?user_code=ABCD-1234"
+  assert string.contains(field(flow, "instructions"), "ABCD-1234")
+  let complete = settle(home, id, login, 100)
+  assert field(complete, "state") == "complete"
+  let assert [account] = oauth.accounts(home, login)
+  assert account.label == "device@example.com"
+  cleanup(root)
+}
+
 pub fn a_busy_fixed_port_fails_instead_of_moving_test() -> Nil {
   let taken = occupy(0)
   let port = taken.1

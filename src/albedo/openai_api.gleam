@@ -71,6 +71,24 @@ pub fn codex_client(
   )
 }
 
+/// OpenCode Go subscription transport: Chat Completions with per-conversation
+/// `x-opencode-session` routing and prompt-cache affinity.
+pub fn opencode_go_client(
+  base_url: String,
+  api_key: String,
+  session_id: String,
+  org_id: String,
+) -> Client {
+  types.Client(
+    ChatCompletions,
+    base_url,
+    api_key,
+    timeout_ms: 60_000,
+    max_event_bytes: 8 * 1024 * 1024,
+    policy: types.OpenCodeGo(session_id, org_id),
+  )
+}
+
 pub fn request(model: String, input: List(Input)) -> Request {
   types.Request(model, None, input, [], None, types.defaults)
 }
@@ -107,7 +125,10 @@ pub fn stream(
       client.max_event_bytes,
       // ChatGPT's Codex endpoint currently streams valid SSE with a generic
       // content type. Its framing, not that header, is authoritative.
-      require_event_stream: client.policy == types.OpenAI,
+      require_event_stream: case client.policy {
+        types.Codex(_, _) -> False
+        types.OpenAI | types.OpenCodeGo(_, _) -> True
+      },
     ),
     reducer.reducer(client.protocol),
     on_event,
@@ -122,6 +143,18 @@ pub fn headers(client: Client, model: String) -> List(#(String, String)) {
   ]
   let headers = case client.policy {
     types.OpenAI -> headers
+    types.OpenCodeGo(session_id, org_id) -> {
+      let headers = [
+        #("user-agent", "albedo/1.0"),
+        #("x-opencode-client", "albedo"),
+        #("x-opencode-session", session_id),
+        ..headers
+      ]
+      case org_id {
+        "" -> headers
+        _ -> [#("x-opencode-org-id", org_id), ..headers]
+      }
+    }
     types.Codex(account_id, session_id) -> [
       #("chatgpt-account-id", account_id),
       #("originator", "albedo"),
@@ -257,6 +290,16 @@ fn validate_policy(
 ) -> Result(Nil, Error) {
   case policy {
     types.OpenAI -> Ok(Nil)
+    types.OpenCodeGo(session_id, org_id) ->
+      case
+        string.trim(session_id) == ""
+        || unsafe_header(session_id)
+        || unsafe_header(org_id)
+      {
+        True ->
+          Error(types.InvalidRequest("invalid OpenCode Go session identity"))
+        False -> Ok(Nil)
+      }
     types.Codex(account_id, session_id) ->
       case
         unsafe_header(model)

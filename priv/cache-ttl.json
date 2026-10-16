@@ -226,6 +226,23 @@
       "checked": "2026-09-28"
     },
     {
+      "id": "opencode-go",
+      "match": {
+        "extension": "opencode-go",
+        "host": "opencode.ai"
+      },
+      "policy": "evict",
+      "survival": {
+        "typical": 300,
+        "max": 3600
+      },
+      "read": 0.1,
+      "evidence": "documented",
+      "source": "https://opencode.ai/docs/go/",
+      "note": "OpenCode Go routes conversations by x-opencode-session to keep prefixes on the same upstream cache; individual model families (Qwen, GLM, Kimi, DeepSeek, MiMo, MiniMax) apply their own implicit or explicit caching rules.",
+      "checked": "2026-10-18"
+    },
+    {
       "id": "zai",
       "match": {
         "host": [

@@ -127,7 +127,7 @@ update(Flows, Id, {State, _} = Status) ->
 
 %% ---- one flow -----------------------------------------------------------
 
-run_flow(Owner, Id, {login, Provider, _, _, _, Store, {callback, Host, Port, Path, Fixed}, Authorize, Exchange, Account}, Save) ->
+watch_owner(Owner) ->
     Self = self(),
     spawn_link(fun() ->
         ParentRef = erlang:monitor(process, Owner), FlowRef = erlang:monitor(process, Self),
@@ -135,7 +135,47 @@ run_flow(Owner, Id, {login, Provider, _, _, _, Store, {callback, Host, Port, Pat
             {'DOWN', ParentRef, process, _, _} -> exit(Self, kill);
             {'DOWN', FlowRef, process, _, _} -> ok
         end
-    end),
+    end).
+
+settle_fn(Owner, Id) ->
+    fun
+        ({Terminal, _} = Status) when Terminal =:= done; Terminal =:= failed ->
+            %% Keep the flow alive until the owner has published its
+            %% terminal fact. A read must not mistake mailbox delay for
+            %% an expired or unexpectedly stopped sign-in.
+            Ref = erlang:monitor(process, Owner),
+            Owner ! {self(), Ref, {identified_terminal, Id, Status}},
+            receive
+                {Ref, Reply} -> erlang:demonitor(Ref, [flush]), Reply;
+                {'DOWN', Ref, process, _, _} -> {error, owner_stopped}
+            end;
+        (Status) -> Owner ! {Id, update, Status}
+    end.
+
+run_flow(Owner, Id, {login, _, _, _, _, Store, {device, Start}, _, _, Account}, Save) ->
+    watch_owner(Owner),
+    Settle = settle_fn(Owner, Id),
+    try Start() of
+        {ok, {Url, Instructions, Complete}} ->
+            Owner ! {Id, ready, Url, Instructions},
+            Progress = fun(Text) -> Settle({waiting, Text}), nil end,
+            try Complete(Progress) of
+                {ok, Credential} ->
+                    case Save(Store, Credential, Account) of
+                        {ok, Label} -> Settle({done, Label});
+                        {error, Reason} -> Settle({failed, Reason})
+                    end;
+                {error, Reason} -> Settle({failed, Reason})
+            catch Class:Reason ->
+                Settle({failed, iolist_to_binary(io_lib:format("sign-in failed: ~p:~p", [Class, Reason]))})
+            end;
+        {error, Reason} ->
+            Owner ! {Id, failed, Reason}
+    catch Class:Reason ->
+        Owner ! {Id, failed, iolist_to_binary(io_lib:format("sign-in failed: ~p:~p", [Class, Reason]))}
+    end;
+run_flow(Owner, Id, {login, Provider, _, _, _, Store, {callback, Host, Port, Path, Fixed}, Authorize, Exchange, Account}, Save) ->
+    watch_owner(Owner),
     case listen(Port, Fixed) of
         {error, Reason} ->
             Owner ! {Id, failed, iolist_to_binary(io_lib:format(
@@ -150,19 +190,7 @@ run_flow(Owner, Id, {login, Provider, _, _, _, Store, {callback, Host, Port, Pat
             spawn_link(fun() -> accept(Socket, Path, Self) end),
             Owner ! {Id, ready, Authorize(Grant)},
             erlang:send_after(?FLOW_TIMEOUT_MS, self(), timeout),
-            Settle = fun
-                ({Terminal, _} = Status) when Terminal =:= done; Terminal =:= failed ->
-                    %% Keep the flow alive until the owner has published its
-                    %% terminal fact. A read must not mistake mailbox delay for
-                    %% an expired or unexpectedly stopped sign-in.
-                    Ref = erlang:monitor(process, Owner),
-                    Owner ! {self(), Ref, {identified_terminal, Id, Status}},
-                    receive
-                        {Ref, Reply} -> erlang:demonitor(Ref, [flush]), Reply;
-                        {'DOWN', Ref, process, _, _} -> {error, owner_stopped}
-                    end;
-                (Status) -> Owner ! {Id, update, Status}
-            end,
+            Settle = settle_fn(Owner, Id),
             Outcome = wait(State),
             gen_tcp:close(Socket),
             case Outcome of
@@ -420,13 +448,23 @@ create_identified(Home, Id, Provider, Login0, Intent, Flows) ->
             Save = fun(Store, Credential, Account) -> owner_store(Owner, Id, Home, Store, Credential, Account) end,
             Pid = spawn(fun() -> run_flow(Owner, Id, Login, Save) end), erlang:monitor(process, Pid),
             Started = receive
+                {Id, ready, Url, Instructions} when is_binary(Instructions) ->
+                    case is_binary(Url) andalso byte_size(Url) =< 4096 of
+                        true -> Flow#{<<"url">> => Url, <<"instructions">> => bounded(Instructions, 4096)};
+                        false -> exit(Pid, kill), failed_record(Flow, <<"Provider authorization URL is invalid.">>)
+                    end;
                 {Id, ready, Url} ->
                     case is_binary(Url) andalso byte_size(Url) =< 4096 of
                         true -> Flow#{<<"url">> => Url};
                         false -> exit(Pid, kill), failed_record(Flow, <<"Provider authorization URL is invalid.">>)
                     end;
-                {Id, failed, _} -> finish(Flow#{<<"state">> => <<"failed">>, <<"failure">> => <<"Could not open the provider callback listener.">>})
-            after 4000 -> exit(Pid, kill), finish(Flow#{<<"state">> => <<"failed">>, <<"failure">> => <<"Provider sign-in did not start.">>}) end,
+                {Id, failed, Reason} ->
+                    Failure = case element(7, Login) of
+                        {device, _} when is_binary(Reason), Reason =/= <<>> -> bounded(Reason, 4096);
+                        _ -> <<"Could not open the provider callback listener.">>
+                    end,
+                    finish(Flow#{<<"state">> => <<"failed">>, <<"failure">> => Failure})
+            after 10000 -> exit(Pid, kill), finish(Flow#{<<"state">> => <<"failed">>, <<"failure">> => <<"Provider sign-in did not start.">>}) end,
             Published = case persisted(Home, Id, Started) of
                 {ok, Stored} -> Stored;
                 error -> exit(Pid, kill), throw({http, 503, <<"auth_unavailable">>, <<"Provider sign-in storage is unavailable.">>})
@@ -514,7 +552,10 @@ auth_snapshot(Home, Logins) ->
     try locked(Home, fun() ->
         Providers = [#{<<"id">> => element(2, Login), <<"label">> => element(3, Login), <<"detail">> => element(4, Login),
             <<"kind">> => atom_to_binary(element(5, Login), utf8),
-            <<"flows">> => [<<"browser">>, <<"manual">>], <<"fields">> => []} || Login <- Logins],
+            <<"flows">> => case element(7, Login) of
+                {device, _} -> [<<"browser">>];
+                _ -> [<<"browser">>, <<"manual">>]
+            end, <<"fields">> => []} || Login <- Logins],
         {ok, iolist_to_binary(json:encode(#{<<"providers">> => Providers, <<"accounts">> => account_projection(Home, Logins)}))}
     end) catch throw:{http, S, C, D} -> {error, {S,C,D}}; _:_ -> {error, {503, <<"auth_unavailable">>, <<"Provider account storage is unavailable.">>}} end.
 

@@ -51,6 +51,8 @@ MODELS_CATALOG = {
 
 ALIBABA_MODELS = {"data": [{"id": "qwen-fresh"}, {"id": "qwen-tts-fresh"}]}
 
+OPENCODE_GO_MODELS = {"data": [{"id": "glm-5.3-flash"}, {"id": "glm-audio-1"}]}
+
 GATEWAY_MODELS = {"data": [{"id": "local-b"}, {"id": "local-a"}]}
 
 # As the Anthropic Models API answered, newest first; neither id is one
@@ -83,10 +85,15 @@ class ModelCatalogReloadTests(unittest.TestCase):
         self.addCleanup(self.catalog.close)
         self.alibaba = Provider(lambda _request: text("ok"), catalog=ALIBABA_MODELS)
         self.addCleanup(self.alibaba.close)
+        self.opencode_go = Provider(
+            lambda _request: text("ok"), catalog=OPENCODE_GO_MODELS
+        )
+        self.addCleanup(self.opencode_go.close)
 
         def prepare(app):
             # Fresh on disk, so nothing but an explicit reload refetches them.
             (app.home / "alibaba-models.json").write_text(json.dumps(["qwen-stale"]))
+            (app.home / "opencode-go-models.json").write_text(json.dumps(["glm-stale"]))
             (app.home / "claude-models.json").write_text(json.dumps(CLAUDE_MODELS))
             (app.home / "models.json").unlink(missing_ok=True)
             app.write_extensions({"models": {"url": self.catalog.url + "/models.json"}})
@@ -108,10 +115,21 @@ class ModelCatalogReloadTests(unittest.TestCase):
                     "model": "qwen-fresh",
                     "protocol": "chat_completions",
                 },
+                "fixture-opencode-go": {
+                    "extension": "opencode-go",
+                    "baseUrl": self.opencode_go.url,
+                    "apiKey": "fixture-opencode-go-key",
+                    "model": "glm-5.3-flash",
+                    "protocol": "chat_completions",
+                },
             },
         )
         self.app.__enter__()
-        for name in ("alibaba-models.json", "claude-models.json"):
+        for name in (
+            "alibaba-models.json",
+            "opencode-go-models.json",
+            "claude-models.json",
+        ):
             self.addCleanup((self.app.home / name).unlink, missing_ok=True)
         self.addCleanup(self.app.__exit__, None, None, None)
 
@@ -133,11 +151,18 @@ class ModelCatalogReloadTests(unittest.TestCase):
     def alibaba_listed(self):
         return self.listed("alibaba", self.alibaba.url)
 
+    def opencode_go_listed(self):
+        return self.listed("opencode-go", self.opencode_go.url)
+
     def test_reload_models_refetches_provider_lists_and_names_failures(self):
         self.assertEqual([item["id"] for item in self.alibaba_listed()], ["qwen-stale"])
+        self.assertEqual(
+            [item["id"] for item in self.opencode_go_listed()], ["glm-stale"]
+        )
         outcome = self.reload("models")
         catalogs = {item["provider"]: item for item in outcome["models"]}
         self.assertEqual(catalogs["alibaba"]["state"], "refreshed")
+        self.assertEqual(catalogs["opencode-go"]["state"], "refreshed")
         self.assertEqual(catalogs["models"]["state"], "refreshed")
         self.assertEqual(
             {"codex", "antigravity", "claude"},
@@ -146,6 +171,9 @@ class ModelCatalogReloadTests(unittest.TestCase):
         self.assertTrue(catalogs["claude"]["failure"])
         # The non-chat entitlement stays filtered, as on any other fetch.
         self.assertEqual([item["id"] for item in self.alibaba_listed()], ["qwen-fresh"])
+        self.assertEqual(
+            [item["id"] for item in self.opencode_go_listed()], ["glm-5.3-flash"]
+        )
         # A failed reload keeps the list it had.
         self.assertEqual(
             [item["id"] for item in self.listed("claude")],

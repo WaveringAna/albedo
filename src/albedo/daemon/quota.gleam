@@ -86,6 +86,7 @@ fn enumerate(home: String) -> List(Target) {
     oauth_targets("anthropic", claude_accounts(home)),
     oauth_targets("openai-codex", codex_accounts(home)),
     oauth_targets("google-antigravity", antigravity_accounts(home)),
+    opencode_go_targets(opencode_go_accounts(home)),
     profile_targets(home),
   ])
 }
@@ -98,6 +99,9 @@ fn codex_accounts(home: String) -> List(Dynamic)
 
 @external(erlang, "albedo_antigravity", "accounts")
 fn antigravity_accounts(home: String) -> List(Dynamic)
+
+@external(erlang, "albedo_opencode_go", "accounts")
+fn opencode_go_accounts(home: String) -> List(Dynamic)
 
 /// A stored OAuth account: the label the provider's own identity logic gives
 /// it, plus the provide-usage credential fields.
@@ -156,9 +160,23 @@ fn oauth_credential(account: Stored) -> json.Json {
   }
 }
 
+fn opencode_go_targets(stored: List(Dynamic)) -> List(Target) {
+  stored
+  |> list.filter_map(fn(value) {
+    decode.run(value, stored_decoder()) |> result.replace_error(Nil)
+  })
+  |> list.filter_map(fn(account) {
+    case account.label {
+      "" -> Error(Nil)
+      label -> api_key_target("opencode-go", label, account.access)
+    }
+  })
+}
+
 /// Config profiles: an alibaba profile polls through the signed-in `bl` CLI,
-/// and a generic `openai` profile maps to a feed by its base url host. A
-/// profile whose host has no feed is skipped.
+/// an `opencode-go` profile polls with its API key, and a generic `openai`
+/// profile maps to a feed by its base url host. A profile whose host has no
+/// feed is skipped.
 fn profile_targets(home: String) -> List(Target) {
   configuration.providers(home)
   |> result.unwrap([])
@@ -172,10 +190,23 @@ fn profile_targets(home: String) -> List(Target) {
             #("kind", json.string("cli")),
           ]),
         ))
+      "opencode-go" -> provider_key_target(home, profile.name, "opencode-go")
       "openai" -> key_target(home, profile.name)
       _ -> Error(Nil)
     }
   })
+}
+
+fn provider_key_target(
+  home: String,
+  name: String,
+  provider: String,
+) -> Result(Target, Nil) {
+  use #(_, api_key) <- result.try(
+    configuration.settings(home, name, profile_decoder())
+    |> result.replace_error(Nil),
+  )
+  api_key_target(provider, name, api_key)
 }
 
 fn key_target(home: String, name: String) -> Result(Target, Nil) {
@@ -184,6 +215,14 @@ fn key_target(home: String, name: String) -> Result(Target, Nil) {
     |> result.replace_error(Nil),
   )
   use provider <- result.try(feed_provider(base_url))
+  api_key_target(provider, name, api_key)
+}
+
+fn api_key_target(
+  provider: String,
+  name: String,
+  api_key: String,
+) -> Result(Target, Nil) {
   case string.trim(api_key) {
     "" -> Error(Nil)
     key ->

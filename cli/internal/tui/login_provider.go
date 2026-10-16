@@ -39,6 +39,15 @@ var customProviders = []customProvider{
 		FixedProtocol: "chat_completions",
 	},
 	{
+		ID:            "add-opencode-go",
+		Label:         "add or update an OpenCode Go provider",
+		Detail:        "subscription · Qwen, GLM, Kimi, DeepSeek, MiMo, MiniMax",
+		Extension:     "opencode-go",
+		DefaultName:   "opencode-go",
+		DefaultURL:    "https://opencode.ai/inference/go/v1",
+		FixedProtocol: "chat_completions",
+	},
+	{
 		ID:            "add-anthropic",
 		Label:         "add or update an Anthropic API key",
 		Detail:        "console billing · Claude models",

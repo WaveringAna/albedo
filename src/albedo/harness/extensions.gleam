@@ -22,6 +22,7 @@ import albedo/harness/extensions/memory/extension as memory
 import albedo/harness/extensions/models/extension as models
 import albedo/harness/extensions/notes/extension as notes
 import albedo/harness/extensions/openai/extension as openai
+import albedo/harness/extensions/opencode_go/extension as opencode_go
 import albedo/harness/extensions/paperclips/extension as paperclips
 import albedo/harness/extensions/proxy/extension as proxy
 import albedo/harness/extensions/python/extension as python
@@ -66,6 +67,7 @@ fn installed() -> Config {
       // shared id such as claude-sonnet-4-6 has Antigravity's limits.
       antigravity.extension(),
       alibaba.extension(),
+      opencode_go.extension(),
       bedrock.extension(),
       claude.extension(),
       vertex.extension(),
@@ -98,9 +100,9 @@ fn installed() -> Config {
     [
       "python", "run", "work", "mail", "agents", "schedule", "files", "memory",
       "links", "instructions", "commands", "skills", "paperclips", "models",
-      "openai", "codex", "antigravity", "alibaba", "bedrock", "claude", "vertex",
-      "rolling", "snapcompact-memory", "lcm-memory", "notes", "remote",
-      "browser", "warm", "exa", "web-search",
+      "openai", "codex", "antigravity", "alibaba", "opencode-go", "bedrock",
+      "claude", "vertex", "rolling", "snapcompact-memory", "lcm-memory", "notes",
+      "remote", "browser", "warm", "exa", "web-search",
     ],
   )
 }

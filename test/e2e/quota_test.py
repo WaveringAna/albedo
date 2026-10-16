@@ -99,6 +99,9 @@ def report_for(provider, credential):
                 },
             ]
         }
+    if provider == "opencode-go":
+        return {"limits": [{"id": "rolling", "label": "5h rolling", "usedPercent": 42,
+                            "windowLabel": "5 hours", "windowSeconds": 18000, "status": "ok"}]}
     if provider == "deepseek":
         return {"error": "the fixture deepseek key has no quota"}
     return {"limits": [{"id": "primary", "label": "Primary", "usedPercent": 85,
@@ -200,6 +203,13 @@ class QuotaTests(unittest.TestCase):
                     "model": "fixture-model",
                     "protocol": "chat_completions",
                 },
+                "opencode-go-fixture": {
+                    "extension": "opencode-go",
+                    "baseUrl": "https://opencode.ai/inference/go/v1",
+                    "apiKey": "fixture-opencode-go-key",
+                    "model": "glm-5.3-flash",
+                    "protocol": "chat_completions",
+                },
             },
             prepare=prepare,
         )
@@ -264,6 +274,7 @@ class QuotaTests(unittest.TestCase):
         wanted = {
             ("anthropic", "weekly"),
             ("hyper", "primary"),
+            ("opencode-go", "rolling"),
             ("deepseek", ""),
             ("google-antigravity", "gemini"),
             ("google-antigravity", "claude"),
@@ -282,6 +293,10 @@ class QuotaTests(unittest.TestCase):
                 + json.dumps(self.readings())
                 + self.fake_errors()
             )
+        opencode_go = reading[("opencode-go", "rolling")]
+        self.assertEqual(opencode_go["account_id"], "opencode-go-fixture")
+        self.assertEqual(opencode_go["used_percent"], 42.0)
+        self.assertEqual(opencode_go["window_seconds"], 18000)
         hyper = reading[("hyper", "primary")]
         self.assertEqual(hyper["account_id"], "charm-hyper")
         self.assertEqual(hyper["used_percent"], 85.0)

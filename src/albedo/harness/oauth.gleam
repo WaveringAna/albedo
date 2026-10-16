@@ -32,10 +32,22 @@ pub type Login {
   )
 }
 
-/// The loopback redirect. A fixed port fails when busy because the provider
-/// allowlists that exact redirect; otherwise an ephemeral port is used.
+/// The loopback redirect, or a provider-polled device authorization flow.
+/// A fixed port fails when busy because the provider allowlists that exact
+/// redirect; otherwise an ephemeral port is used.
 pub type Callback {
   Callback(host: String, port: Int, path: String, fixed: Bool)
+  Device(
+    start: fn() ->
+      Result(
+        #(
+          String,
+          String,
+          fn(fn(String) -> Nil) -> Result(Dict(String, Dynamic), String),
+        ),
+        String,
+      ),
+  )
 }
 
 /// One sign-in attempt: the redirect it uses, its state nonce, and the PKCE pair.
