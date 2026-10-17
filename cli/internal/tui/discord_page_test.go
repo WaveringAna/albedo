@@ -208,6 +208,19 @@ func provisionJSON(state, step, extra string) string {
 // The automatic flow signs in first, then creates the bot, answers the
 // two-factor prompt, and lands on the new bot; each step must send exactly
 // its request and nothing for the steps it skips.
+// Discord rejects such names only after the request, as Invalid Form Body.
+func TestAutomaticBotNameCannotContainDiscord(t *testing.T) {
+	form := newDiscordAutoForm(sessionChoice{}, "DiscordTester")
+	form.Chosen = "s1"
+	if _, err := form.request(); err == nil || !strings.Contains(err.Error(), `"discord"`) {
+		t.Fatalf("request() error = %v, want the discord name rule", err)
+	}
+	form.Inputs[discordFieldName].SetValue("tester")
+	if _, err := form.request(); err != nil {
+		t.Fatalf("request() error = %v", err)
+	}
+}
+
 func TestAutomaticBotFlowSignsInCreatesAndAnswersTwoFactor(t *testing.T) {
 	var seen []string
 	conn := commandTestConnection(t, func(w http.ResponseWriter, r *http.Request) {

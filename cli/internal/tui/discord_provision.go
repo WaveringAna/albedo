@@ -142,6 +142,8 @@ func (f *discordAutoForm) request() (name string, err error) {
 	switch {
 	case !validDiscordName(name):
 		return "", errors.New("name: 1–64 characters")
+	case strings.Contains(strings.ToLower(name), "discord"):
+		return "", errors.New(`name: Discord refuses names that contain "discord"`)
 	case f.Chosen == "":
 		return "", errors.New("choose the session this bot speaks for")
 	}

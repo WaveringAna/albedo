@@ -257,6 +257,13 @@ class DiscordProvisionTest(unittest.TestCase):
         result = self.assert_failure(self.create(), "captcha")
         self.assertIn("captcha", result["error"])
 
+    def test_invalid_form_body_reports_discords_field_errors(self):
+        # Discord answers 50035 with the reason only inside `errors`.
+        result = self.assert_failure(self.create("DiscordTester"), "http")
+        self.assertEqual(
+            result["error"], 'HTTP 400: Application name cannot contain "discord"'
+        )
+
     def test_rejected_user_token_is_unauthorized(self):
         proc = self.run_op({"op": "apps"}, user_token="wrong.token.value")
         self.assert_failure(proc, "unauthorized")

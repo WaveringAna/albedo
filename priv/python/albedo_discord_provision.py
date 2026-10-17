@@ -79,6 +79,28 @@ def read_line() -> dict[str, Any] | None:
     return value
 
 
+def field_errors(data: dict[str, Any]) -> list[str]:
+    """The messages in a 50035 "Invalid Form Body" answer's nested `errors`."""
+    found: list[str] = []
+
+    def walk(node: Any) -> None:
+        if isinstance(node, dict):
+            for item in node.get("_errors") or []:
+                if isinstance(item, dict) and item.get("message"):
+                    found.append(str(item["message"]))
+            for key, value in node.items():
+                if key != "_errors":
+                    walk(value)
+
+    walk(data.get("errors"))
+    return found
+
+
+def failure_text(status: int, data: dict[str, Any]) -> str:
+    detail = "; ".join(field_errors(data)) or str(data.get("message", ""))
+    return f"HTTP {status}: {detail}"
+
+
 def method_names(methods: Any) -> list[str]:
     names = []
     for method in methods if isinstance(methods, list) else []:
@@ -147,7 +169,7 @@ class Client:
             elif status == 400 and "captcha_key" in data:
                 raise Failure("captcha", "Discord asks for a captcha")
             else:
-                raise Failure("http", f"HTTP {status}: {data.get('message', '')}")
+                raise Failure("http", failure_text(status, data))
 
     def satisfy_mfa(self, ticket: Any, methods: Any) -> str:
         """Prompt for TOTP codes (three tries) and trade the ticket for an MFA token."""

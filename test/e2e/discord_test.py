@@ -419,10 +419,10 @@ class DiscordTests(unittest.TestCase):
             self.assertLess(time.monotonic(), deadline, f"never {states}: {found}")
             time.sleep(0.1)
 
-    def start_provision(self, session, guild=None):
+    def start_provision(self, session, guild=None, name="made"):
         with self.app.api(
             "/extensions/discord/provisions",
-            {"session_id": session, "name": "made", "guild_id": guild},
+            {"session_id": session, "name": name, "guild_id": guild},
         ) as response:
             self.assertEqual(response.status, 202)
             return json.load(response)
@@ -441,6 +441,11 @@ class DiscordTests(unittest.TestCase):
             self.start_provision(self.session)
         self.assertEqual(missing.exception.code, 412)
         self.assertEqual(json.load(missing.exception)["code"], "no_account")
+        # Discord refuses these names; the daemon says so before asking it.
+        with self.assertRaises(urllib.error.HTTPError) as named:
+            self.start_provision(self.session, name="DiscordTester")
+        self.assertEqual(named.exception.code, 400)
+        self.assertIn('"discord"', json.load(named.exception)["detail"])
         with self.assertRaises(urllib.error.HTTPError) as rejected:
             self.app.api(account, {"token": "not.a.token"}, method="PUT")
         self.assertEqual(json.load(rejected.exception)["code"], "invalid_token")

@@ -347,6 +347,14 @@ fn dispatch(
           decode.success(#(session, name, guild))
         }),
       )
+      // Discord refuses such an application only after the request is sent.
+      use _ <- result.try(
+        case string.contains(string.lowercase(name), "discord") {
+          True ->
+            Error(api.invalid("Discord refuses names that contain \"discord\""))
+          False -> Ok(Nil)
+        },
+      )
       use exists <- result.try(stored(ledger.session_exists(db, session)))
       use _ <- result.try(case exists {
         True -> Ok(Nil)

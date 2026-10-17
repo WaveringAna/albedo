@@ -733,6 +733,19 @@ class FakeDiscord:
         if (method, path) == ("GET", "/applications"):
             return 200, list(self.applications.values())
         if (method, path) == ("POST", "/applications"):
+            if "discord" in str(data.get("name", "")).lower():
+                return 400, {
+                    "message": "Invalid Form Body",
+                    "code": 50035,
+                    "errors": {
+                        "_errors": [
+                            {
+                                "code": "APPLICATION_NAME_INVALID_CONTAINS",
+                                "message": 'Application name cannot contain "discord"',
+                            }
+                        ]
+                    },
+                }
             app = self._new_application(data["name"], self.new_app_flags)
             return 200, app
         if parts[0] == "applications" and len(parts) >= 2:
