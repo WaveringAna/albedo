@@ -512,12 +512,19 @@ with backoff and `resume_kernels` treat an ssh drop as a bridge that exited.
   own ssh, colmena and git in `run` jobs: one sign-in (one hardware-key
   touch) per host. with none configured it is `/tmp/albedo-ssh-cm/%C` for
   600 s.
-- **clean stdout**: every remote command is `/bin/sh -c 'exec 3>&1 1>&2;
-  exec "$SHELL" -l -c "exec 1>&3 3>&-; <command>"'`, quoted with shlex in
-  `albedo_ssh.in_login_shell` only. whatever the login profile prints (a
-  motd, a greeting) goes to stderr, and the command gets the real stdout
-  back, so the bridge's frames, the remote plugin's kernel and the probe's
-  lines stay clean whatever the user's shell is.
+- **clean stdout**: every remote command is `/bin/sh -c '<outer>'`, quoted
+  with shlex in `albedo_ssh.in_login_shell` only. `<outer>` writes the
+  command to a temporary file, keeps the real stdout and stderr on fds 3 and
+  4, sends the login shell's own output to /dev/null, and asks `$SHELL -l -c
+  "/bin/sh <path>"`: whatever the login profile prints (a motd, a greeting)
+  is dropped, the command gets the real fds back, and the bridge's frames,
+  the remote plugin's kernel and the probe's lines stay clean. the shell is
+  only ever asked for that one quote-free command, so a login shell that is
+  not POSIX (`nu`, `fish`, `tcsh`) still runs it; the redirections and the
+  command itself stay POSIX, and stdin is never redirected (the bridge's
+  frames travel on it). the script unlinks itself before it runs and the
+  shell `exec`s the login shell, so no process is left whose command line
+  holds it (a test finds a host's bridge by its command line).
 - **fixed command lines**: the probe (and, with no network,
   `albedo_ssh.py commands <target> <home>`) answers the complete remote
   commands the daemon runs: `bridge` (`albedo_bridge.py --frame`), `signal`
@@ -583,7 +590,13 @@ with backoff and `resume_kernels` treat an ssh drop as a bridge that exited.
   call still in flight (resolved in order), `{"__bytes__": b64}` for byte
   data, decoded remotely by `albedo_values`, so `rem.run(..., stdin=b"...")`
   and byte-sized results work. `rem.write` takes text or bytes; either travels
-  on the stdin of one ssh command, never in the command line.
+  on the stdin of one ssh command, never in the command line. a connection
+  that dies stops the jobs it was mirroring as far as this side can tell: its
+  live jobs leave the `/jobs` list, and every one no reference here awaited or
+  read wakes the session once, naming the job and "connection lost, exit status
+  unknown" (a busy session is retried, as for a local wake). a reference on a
+  dead connection raises `RemoteLost` from `poll()`/`exit_code` instead of
+  reporting `None`, which reads as a job that never ends.
 - **the model** gets a context line (python extension, `place.gleam`):
   "your python kernel and run jobs execute on chernobog (Linux aarch64)…",
   with the remote home.

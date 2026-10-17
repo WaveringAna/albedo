@@ -550,6 +550,31 @@ class RemotePluginTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([e["live"] for e in job_events], [1, 0])
         self.assertEqual(job_events[-1]["items"], [])
         self.assertIsNone(await remote.stop_remote_job("ghost-job"))
+        for _ in range(100):
+            if notices:
+                break
+            await asyncio.sleep(0.01)
+        self.assertEqual(
+            len(notices), 1, "a job lost with its connection must wake the session"
+        )
+        [fact] = notices[0]["jobs"]
+        self.assertEqual(fact["id"], "ghost-job")
+        self.assertEqual(fact["summary"], "connection lost, exit status unknown")
+        self.assertEqual(fact["host"], "loopback")
+        self.assertIn("ghost-job", notices[0]["text"])
+
+    async def test_a_reference_on_a_lost_connection_says_so_instead_of_running(self):
+        connection, stream, call = self.reader_connection()
+        reference = remote.RemoteRef(connection, handle="h")
+        connection._mirrors["h"] = {
+            "handle": "h",
+            "job": "ghost-job",
+            "exit_code": None,
+        }
+        stream.feed_eof()
+        await self.assert_reader_lost(connection, call)
+        with self.assertRaises(remote.RemoteLost):
+            reference.poll()
 
     async def test_stop_remote_job_fallback_job_stops_locally(self):
         rem = await self.connect(modules=["definitely-not-a-module"])

@@ -37,7 +37,7 @@ from albedo_values import InvalidValue, decode
 import albedo_shell
 import albedo_ssh
 from albedo_plugins import hook
-from albedo_plugins.run import notice
+from albedo_plugins.run import NOTICE_RETRY, notice
 
 CONNECT_TIMEOUT = 60  # seconds before an unreachable target gives up
 HANDSHAKE_TIMEOUT = 60  # seconds for the remote kernel to say ready
@@ -341,8 +341,13 @@ class RemoteRef:
         return result
 
     def poll(self) -> int | None:
-        """The remote job's exit status so far, from the mirrored stream."""
+        """The remote job's exit status so far, from the mirrored stream. A job
+        whose connection died says so instead of running forever."""
         state = self._mirror()
+        if state is None or state.get("exit_code") is None:
+            lost = self._connection.lost
+            if lost:
+                raise RemoteLost(lost)
         return state.get("exit_code") if state else None
 
     @property
@@ -589,6 +594,9 @@ class RemoteConnection:
         self._reader: asyncio.Task[None] | None = None
         self._drain: asyncio.Task[None] | None = None
         self.closed = False
+        # Why the channel is gone, once it is: a dead connection's references
+        # say so rather than reporting a job that never ended.
+        self.lost: str | None = None
         self.degraded: RemoteBootError | None = None
 
     # --- boot ---
@@ -753,7 +761,9 @@ class RemoteConnection:
             await self._stdin.drain()
 
     def _lost(self) -> None:
-        """The channel died: every pending call and reference learns it once."""
+        """The channel died: every pending call and reference learns it once,
+        and the jobs nobody here claimed wake the session instead of running
+        forever in a supervisor that no longer has a connection."""
         if self._handshake is not None and not self._handshake.done():
             self._handshake.set_exception(
                 RemoteBootError(
@@ -767,9 +777,43 @@ class RemoteConnection:
                     RemoteLost(f"the connection to {self.host} was lost")
                 )
         self.closed = True
+        self.lost = self.lost or f"the connection to {self.host} was lost"
+        orphaned = [job for id, job in self._live.items() if not self._claimed_here(id)]
         if self._live:
             self._live.clear()
             _report_live()
+        if orphaned:
+            try:
+                loop.create_task(self._announce_lost(orphaned))
+            except RuntimeError:
+                pass  # the loop is closing; no turn is left to wake
+
+    async def _announce_lost(self, jobs: list[LiveJob]) -> None:
+        """Wake the session for the jobs a dead connection took with it; their
+        results are no longer readable, so this notice is all there is."""
+        facts = [
+            {
+                "id": job["id"],
+                "command": job["command"],
+                "where": f" on {self.host}",
+                "summary": "connection lost, exit status unknown",
+                "exit_code": None,
+                "timed_out": False,
+                "duration": None,
+                "host": self.host,
+            }
+            for job in jobs
+        ]
+        while True:
+            try:
+                await self._wake({"jobs": facts})
+                return
+            except Exception as error:
+                # A busy session refuses rather than queueing, as it does for a
+                # local job's wake, so this retries until the run ends.
+                if getattr(error, "code", "") != "busy":
+                    return  # the daemon is gone, or the session is shutting down
+                await asyncio.sleep(NOTICE_RETRY)
 
     # --- calls ---
 
@@ -1135,6 +1179,7 @@ class RemoteConnection:
                 except asyncio.TimeoutError:
                     self._process.kill()
         self.closed = True
+        self.lost = self.lost or f"the connection to {self.host} was closed"
         self._live.clear()
         _report_live()
         for future in self._pending.values():

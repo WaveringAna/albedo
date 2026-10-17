@@ -171,13 +171,25 @@ def in_login_shell(script: str) -> str:
     user's tools. Profiles often print (a motd, a greeting), which would
     corrupt a framed stdout and fill the daemon's log on every command, so
     the login shell starts with both on /dev/null and the real ones kept on
-    fds 3 and 4, and `script` gets them back. The outer `/bin/sh` makes the
-    redirections work whatever the user's shell is.
+    fds 3 and 4, and `script` gets them back.
+
+    `$SHELL` is not always a POSIX shell (`nu`, `fish` and `tcsh` are not),
+    so it never sees the script: `/bin/sh` writes it to a temporary file and
+    the login shell is asked for one quote-free command, `/bin/sh <path>`.
+    Both the redirections and the script stay POSIX, and stdin is never
+    touched, which the bridge's frames travel on.
     """
-    login = f"exec 1>&3 2>&4 3>&- 4>&-; {script}"
+    # The script deletes its own file before running: an unlinked script keeps
+    # reading from its open handle, and the exec below leaves no process behind
+    # whose command line still holds it.
+    login = f'rm -f "$0"; exec 1>&3 2>&4 3>&- 4>&-; {script}'
     outer = (
-        "exec 3>&1 4>&2 1>/dev/null 2>&1; "
-        f'exec "${{SHELL:-/bin/sh}}" -l -c {shlex.quote(login)}'
+        "f=$(mktemp /tmp/albedo-remote-XXXXXX 2>/dev/null) || exit 1\n"
+        "cat > \"$f\" <<'ALBEDO-REMOTE' || exit 1\n"
+        f"{login}\n"
+        "ALBEDO-REMOTE\n"
+        "exec 3>&1 4>&2 1>/dev/null 2>&1\n"
+        'exec "${SHELL:-/bin/sh}" -l -c "/bin/sh $f"\n'
     )
     return f"/bin/sh -c {shlex.quote(outer)}"
 
