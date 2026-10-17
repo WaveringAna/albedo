@@ -33,7 +33,7 @@ class MessagePage(Record):
 
 
 class MessageMatches(Record):
-    """matches.rows is a list of {seq, preview}; read one with messages(seq=...)."""
+    """matches.rows is a list of {seq, kind, preview}; read one with messages(seq=...)."""
 
     pattern: str
     offset: int

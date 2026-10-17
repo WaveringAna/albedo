@@ -234,7 +234,7 @@ fn dispatch(
         },
         "seq, offset and limit must be integers",
       ))
-      tool.transcript_read(db, target, seq, offset, limit)
+      tool.transcript_read(db, target, seq, None, offset, limit)
     }
     "agents.search_messages" -> {
       use target <- result.try(addressed(db, session, args))
@@ -248,7 +248,7 @@ fn dispatch(
         },
         "pattern must be a string; limit and offset integers",
       ))
-      search.transcript_grep(db, target, pattern, limit, offset)
+      search.transcript_grep(db, target, pattern, limit, offset, None, None)
     }
     "agents.sessions" -> {
       use #(query, cwd, limit, offset) <- result.try(rpc.args(

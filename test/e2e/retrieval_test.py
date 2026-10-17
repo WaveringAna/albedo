@@ -89,6 +89,46 @@ print('RETRIEVAL_PAGES_OK')
         )
         self.assertIn("RETRIEVAL_PAGES_OK", output)
 
+    def test_assistant_rows_read_as_text_and_reads_and_searches_take_bounds(self):
+        # The code has quotes and a newline, which a provider's JSON escapes.
+        self.code = 'print("ROWMARK")\nprint(2)'
+        self.turn(self.session, "run the marker")
+        self.code = None
+        pattern = 'print("ROWMARK")'
+        found = self.retrieve("transcript_grep", {"pattern": pattern})
+        called = [row for row in found["rows"] if "[call python]" in row["preview"]]
+        self.assertEqual(len(called), 1, found)
+        seq = called[0]["seq"]
+        self.assertEqual(called[0]["kind"], "assistant")
+        self.assertNotIn("\\", called[0]["preview"])
+        # through stops after the row; the text is the call, not provider JSON.
+        row = self.retrieve(
+            "transcript_read", {"seq": seq, "through": seq, "limit": 8000}
+        )
+        self.assertEqual(
+            row["content"],
+            f'[row #{seq}]\n[assistant]\n[call python]\ncode:\nprint("ROWMARK")\n'
+            "print(2)\ntimeout_ms: 60000",
+        )
+        self.assertIsNone(row["next_offset"])
+        # Without through the page runs on into the rows after it.
+        onward = self.retrieve("transcript_read", {"seq": seq, "limit": 8000})
+        self.assertIn(f"[row #{seq + 1}]", onward["content"])
+        after = self.retrieve(
+            "transcript_grep", {"pattern": "ROWMARK", "after_seq": seq}
+        )
+        self.assertTrue(after["rows"])
+        self.assertTrue(all(item["seq"] > seq for item in after["rows"]), after)
+        before = self.retrieve(
+            "transcript_grep", {"pattern": "ROWMARK", "before_seq": seq}
+        )
+        self.assertTrue(all(item["seq"] < seq for item in before["rows"]), before)
+        within = self.retrieve(
+            "transcript_grep",
+            {"pattern": "ROWMARK", "after_seq": seq - 1, "before_seq": seq + 1},
+        )
+        self.assertEqual([item["seq"] for item in within["rows"]], [seq], within)
+
     def test_lcm_search_pages_sources_and_nodes_independently_inside_selected_range(
         self,
     ):

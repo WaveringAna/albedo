@@ -85,7 +85,7 @@ pub fn definitions() -> List(extension.Tool) {
     ),
     tool.text(
       "lcm_expand",
-      "Read a bounded page of the original transcript rows covered by one LCM node. Use next_offset to continue; image payloads remain in the durable transcript.",
+      "Read the original transcript rows covered by one LCM node as text, each starting with a `[source #N]` header. limit and offset count characters, not rows (limit default 4000, at most 8000); next_offset continues the page. Image payloads remain in the durable transcript.",
       False,
       ["id"],
       [
@@ -203,6 +203,7 @@ fn grep_page(
       json.array(sources.matches, fn(match) {
         json.object([
           #("seq", json.int(match.seq)),
+          #("kind", json.string(search.kind(match.text))),
           #("node_id", case dict.get(covering, match.seq) {
             Ok(id) -> json.int(id)
             Error(_) -> json.null()

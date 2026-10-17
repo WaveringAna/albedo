@@ -15,7 +15,7 @@ import gleam/dynamic/decode
 import gleam/int
 import gleam/json
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import sqlight
@@ -232,13 +232,15 @@ fn visit(scan: Scan(a), acc: a, row: #(String, Int, BitArray)) -> a {
   }
 }
 
-/// The longest ASCII stretch of `needle`: every row that contains the needle
-/// contains it, and SQLite folds its case. "" (every row) when there is none.
+/// The longest ASCII stretch of `needle` that a stored row holds as it is
+/// written: every row that contains the needle contains it, and SQLite folds
+/// its case. A provider's JSON escapes quotes, backslashes and control
+/// characters, so those end a stretch. "" (every row) when there is none.
 fn probe(needle: String) -> String {
   let #(longest, _) =
     list.fold(string.to_graphemes(needle), #("", ""), fn(runs, grapheme) {
       let #(longest, current) = runs
-      case string.byte_size(grapheme) == 1 {
+      case string.byte_size(grapheme) == 1 && !escaped_in_json(grapheme) {
         False -> #(longest, "")
         True -> {
           let current = current <> grapheme
@@ -250,6 +252,32 @@ fn probe(needle: String) -> String {
       }
     })
   longest
+}
+
+fn escaped_in_json(grapheme: String) -> Bool {
+  case string.to_utf_codepoints(grapheme) {
+    [codepoint] -> {
+      let code = string.utf_codepoint_to_int(codepoint)
+      code < 32 || grapheme == "\"" || grapheme == "\\"
+    }
+    _ -> False
+  }
+}
+
+/// The label of a rendered row: `user`, `assistant`, or `tool`.
+pub fn kind(text: String) -> String {
+  case text {
+    "[" <> rest ->
+      case string.split_once(rest, "]") {
+        Ok(#(label, _)) ->
+          case string.split_once(label, " ") {
+            Ok(#(word, _)) -> word
+            Error(_) -> label
+          }
+        Error(_) -> ""
+      }
+    _ -> ""
+  }
 }
 
 /// Up to 400 graphemes of `text` from a little before the first place it
@@ -266,13 +294,16 @@ pub fn preview(text: String, needle: String) -> String {
 }
 
 /// The rows of `session`'s durable transcript whose text contains `pattern`,
-/// case-insensitively: a page of at most 20 seqs with previews, oldest first.
+/// case-insensitively: a page of at most 20 seqs with their kind and a
+/// preview, oldest first, among the rows after `after` and before `before`.
 pub fn transcript_grep(
   ledger: store.Store,
   session: String,
   pattern: String,
   limit: Int,
   offset: Int,
+  after: Option(Int),
+  before: Option(Int),
 ) -> Result(json.Json, String) {
   use needle <- result.try(needle(pattern))
   use _ <- result.try(compaction.require(
@@ -284,8 +315,9 @@ pub fn transcript_grep(
     ledger,
     session,
     needle,
-    0,
-    9_223_372_036_854_775_807,
+    option.map(after, fn(seq) { seq + 1 }) |> option.unwrap(0),
+    option.map(before, fn(seq) { seq - 1 })
+      |> option.unwrap(9_223_372_036_854_775_807),
     offset,
     limit,
   ))
@@ -301,6 +333,7 @@ pub fn transcript_grep(
         json.array(page.matches, fn(match) {
           json.object([
             #("seq", json.int(match.seq)),
+            #("kind", json.string(kind(match.text))),
             #("preview", json.string(preview(match.text, needle))),
           ])
         }),

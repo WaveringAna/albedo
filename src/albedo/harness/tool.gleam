@@ -4,15 +4,18 @@
 //// `albedo/harness/search`.
 
 import albedo/daemon/conversation
+import albedo/daemon/message_content
 import albedo/daemon/store
 import albedo/harness/compaction
 import albedo/harness/extension
 import albedo/openai_api/types
+import gleam/dict
 import gleam/dynamic/decode
+import gleam/float
 import gleam/int
 import gleam/json
 import gleam/list
-import gleam/option.{None}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 
@@ -83,8 +86,62 @@ pub fn row_text(input: types.Input) -> String {
       <> string.concat(
         list.map(images, fn(image) { "\n[" <> image_description(image) <> "]" }),
       )
-    types.Replay(item) ->
-      "[provider output]\n" <> json.to_string(types.replay_json(item))
+    types.Replay(item) -> "[assistant]\n" <> replay_text(input, item)
+  }
+}
+
+/// An assistant output as a person reads it: its text, its reasoning once,
+/// and each call with its arguments unescaped. The opaque fields a provider
+/// needs back (signatures, encrypted reasoning) and the copies of the same
+/// text it repeats them in are left out; the durable row keeps them.
+fn replay_text(input: types.Input, item: types.ReplayItem) -> String {
+  let text = case message_content.visible_assistant_text(input) {
+    Some(text) -> [text]
+    None -> []
+  }
+  let thinking = case string.trim(message_content.thinking_text(item)) {
+    "" -> []
+    reasoning -> ["[thinking]\n" <> reasoning]
+  }
+  let calls =
+    list.map(message_content.calls(input), fn(call) {
+      "[call " <> call.name <> "]\n" <> arguments_text(call.arguments)
+    })
+  case list.flatten([text, thinking, calls]) {
+    [] ->
+      "(provider data only, "
+      <> int.to_string(types.replay_bytes(item))
+      <> " bytes)"
+    parts -> string.join(parts, "\n\n")
+  }
+}
+
+/// A call's arguments with each value unescaped, so code reads as code; one
+/// that is not a flat object stays as the provider sent it.
+fn arguments_text(arguments: String) -> String {
+  let scalar =
+    decode.one_of(decode.string, [
+      decode.map(decode.int, int.to_string),
+      decode.map(decode.float, float.to_string),
+      decode.map(decode.bool, fn(flag) {
+        case flag {
+          True -> "true"
+          False -> "false"
+        }
+      }),
+    ])
+  case json.parse(arguments, decode.dict(decode.string, scalar)) {
+    Ok(fields) ->
+      dict.to_list(fields)
+      |> list.sort(fn(a, b) { string.compare(a.0, b.0) })
+      |> list.map(fn(field) {
+        case string.contains(field.1, "\n") {
+          True -> field.0 <> ":\n" <> field.1
+          False -> field.0 <> ": " <> field.1
+        }
+      })
+      |> string.join("\n")
+    Error(_) -> arguments
   }
 }
 
@@ -110,11 +167,13 @@ pub fn next_offset(next: Int, more: Bool) -> json.Json {
   }
 }
 
-/// One text page of `session`'s durable transcript rows from `seq` on.
+/// One text page of `session`'s durable transcript rows from `seq` on, or
+/// through `through` when given.
 pub fn transcript_read(
   ledger: store.Store,
   session: String,
   seq: Int,
+  through: Option(Int),
   offset: Int,
   limit: Int,
 ) -> Result(json.Json, String) {
@@ -122,12 +181,16 @@ pub fn transcript_read(
     offset >= 0,
     "transcript read offset must be nonnegative",
   ))
+  use _ <- result.try(compaction.require(
+    option.unwrap(through, seq) >= seq,
+    "transcript read through must not be before seq",
+  ))
   use snapshot <- result.try(conversation.snapshot(ledger, session))
   use #(page, next, more) <- result.try(source_page(
     ledger,
     snapshot,
     seq,
-    snapshot.upper,
+    int.min(option.unwrap(through, snapshot.upper), snapshot.upper),
     "row",
     offset,
     limit,
