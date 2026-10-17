@@ -8,20 +8,29 @@ forever on a wrong code), a closed stdin that leaves the process hanging, a
 captcha reported as a generic failure so the UI cannot fall back to the
 portal, guilds offered where the user cannot add bots, and a user or bot token
 leaking anywhere but the final create result.
+
+The second class runs the same protocol in browser mode, where the calls come
+from a Chrome tab on the fake's own page: the REST base is read from that
+page's client environment, every call carries its session cookie instead of a
+token, signing in is a person's job in the window, and MFA comes back over the
+page.
 """
 
 import json
 import os
 from pathlib import Path
 import queue
+import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "test" / "e2e"))
-from discord_fake_support import FakeDiscord  # noqa: E402
+from discord_fake_support import CHROME, FakeDiscord  # noqa: E402
 
 SCRIPT = ROOT / "priv" / "python" / "albedo_discord_provision.py"
 BOT = ROOT / "priv" / "python" / "albedo_discord.py"
@@ -32,10 +41,23 @@ CODE = "123456"
 
 
 class Provisioner:
-    def __init__(self, fake: FakeDiscord, user_token: str | None = None) -> None:
-        env = dict(os.environ)
-        env["ALBEDO_DISCORD_USER_TOKEN"] = user_token or fake.user_token
-        env["ALBEDO_DISCORD_API"] = fake.api_url
+    def __init__(
+        self,
+        fake: FakeDiscord,
+        user_token: str | None = None,
+        env: dict[str, str] | None = None,
+    ) -> None:
+        """`env` replaces the default token and API variables, for browser mode."""
+        merged = dict(os.environ)
+        merged.update(
+            env
+            if env is not None
+            else {
+                "ALBEDO_DISCORD_USER_TOKEN": user_token or fake.user_token,
+                "ALBEDO_DISCORD_API": fake.api_url,
+            }
+        )
+        env = merged
         self.proc = subprocess.Popen(
             [sys.executable, str(SCRIPT)],
             stdin=subprocess.PIPE,
@@ -98,19 +120,10 @@ class Provisioner:
                 stream.close()
 
 
-class DiscordProvisionTest(unittest.TestCase):
-    def setUp(self) -> None:
-        self.fake = FakeDiscord()
-        self.addCleanup(self.fake.stop)
+class ProvisionChecks(unittest.TestCase):
+    """What both provisioner suites assert about a run."""
 
-    def run_op(self, request: dict, user_token: str | None = None) -> Provisioner:
-        proc = Provisioner(self.fake, user_token)
-        self.addCleanup(proc.close)
-        proc.send(request)
-        return proc
-
-    def create(self, name: str = "albedo") -> Provisioner:
-        return self.run_op({"op": "create", "name": name, "avatar": None})
+    fake: FakeDiscord
 
     def assert_failure(self, proc: Provisioner, code: str) -> dict:
         result = proc.result()
@@ -125,6 +138,21 @@ class DiscordProvisionTest(unittest.TestCase):
         for token in self.fake.token_users:
             if token != allowed:
                 self.assertNotIn(token, text)
+
+
+class DiscordProvisionTest(ProvisionChecks):
+    def setUp(self) -> None:
+        self.fake = FakeDiscord()
+        self.addCleanup(self.fake.stop)
+
+    def run_op(self, request: dict, user_token: str | None = None) -> Provisioner:
+        proc = Provisioner(self.fake, user_token)
+        self.addCleanup(proc.close)
+        proc.send(request)
+        return proc
+
+    def create(self, name: str = "albedo") -> Provisioner:
+        return self.run_op({"op": "create", "name": name, "avatar": None})
 
     def test_create_walks_the_steps_and_returns_a_working_bot_token(self):
         proc = self.create("my bot")
@@ -363,6 +391,141 @@ class DiscordProvisionTest(unittest.TestCase):
         result = proc.result()
         self.assertEqual((result["ok"], result["result"]), (True, None))
         self.assertNotIn(app, self.fake.applications)
+
+
+@unittest.skipUnless(CHROME, "needs Chrome or Chromium")
+class DiscordBrowserProvisionTest(ProvisionChecks):
+    """Browser mode, against the page the fake serves in place of discord.com.
+
+    Nothing here reaches Discord: the page is local, so what these cases pin
+    down is that the calls really travel through it, that they carry the
+    window's session instead of a pasted token, where the REST base comes from,
+    and that a human signing in, a captcha and two-factor all surface over the
+    same lines the token path uses.
+    """
+
+    def setUp(self) -> None:
+        self.fake = FakeDiscord()
+        self.addCleanup(self.fake.stop)
+        # The gate exports ALBEDO_NO_BROWSER=1 so no test pops a window. Browser
+        # mode is the point of this suite, so drop it for the child and put the
+        # environment back afterwards.
+        environment = mock.patch.dict(os.environ)
+        environment.start()
+        self.addCleanup(environment.stop)
+        os.environ.pop("ALBEDO_NO_BROWSER", None)
+        self.profile = tempfile.mkdtemp(prefix="albedo-discord-browser-")
+        self.addCleanup(shutil.rmtree, self.profile, True)
+
+    def browser_env(self, **extra: str) -> dict[str, str]:
+        env = {
+            "ALBEDO_DISCORD_BROWSER": "1",
+            "ALBEDO_DISCORD_BROWSER_HEADLESS": "1",
+            "ALBEDO_DISCORD_BROWSER_PROFILE": self.profile,
+            "ALBEDO_DISCORD_APP_URL": self.fake.browser_url,
+            # Empty is "no override": the page's own client environment decides.
+            "ALBEDO_DISCORD_API": "",
+        }
+        env.update(extra)
+        return env
+
+    def run_op(self, request: dict, **extra: str) -> Provisioner:
+        proc = Provisioner(self.fake, env=self.browser_env(**extra))
+        self.addCleanup(proc.close)
+        proc.send(request)
+        return proc
+
+    def create(self, name: str = "albedo", **extra: str) -> Provisioner:
+        return self.run_op({"op": "create", "name": name, "avatar": None}, **extra)
+
+    def test_a_bot_is_created_from_the_page_without_a_token(self):
+        proc = self.create(ALBEDO_DISCORD_API=self.fake.api_url)
+        steps, result = proc.until("result")
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(
+            [line["step"] for line in steps if line["type"] == "progress"],
+            ["create", "bot", "intent", "token"],
+        )
+        self.assertEqual(proc.finish(), 0)
+        made = result["result"]
+        self.assertIn(made["token"], self.fake.token_users)
+        self.assertEqual(
+            made["bot_user_id"],
+            self.fake.applications[made["application_id"]]["bot"]["id"],
+        )
+        # Every call arrived from the page: cookie, no Authorization header.
+        calls = self.fake.browser_calls()
+        self.assertTrue(calls)
+        self.assertEqual(len(calls), len(self.fake.user_calls))
+        # It begins by asking the window which account it is signed in as, then
+        # makes the bot through that same window.
+        self.assertEqual(calls[0]["path"], "/users/@me")
+        paths = [call["path"] for call in calls]
+        self.assertIn("/applications", paths)
+        self.assertIn(f"/applications/{made['application_id']}/bot/reset", paths)
+        self.assert_no_leak(proc, allowed=made["token"])
+
+    def test_the_rest_base_comes_from_the_pages_client_environment(self):
+        result = self.run_op({"op": "me"}).result()
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["result"]["id"], self.fake.account["id"])
+
+    def test_browser_mode_invites_the_bot_to_a_guild(self):
+        app = self.fake.add_application("inviteme")
+        proc = self.run_op(
+            {"op": "authorize", "application_id": app, "guild_id": "200"},
+            ALBEDO_DISCORD_API=self.fake.api_url,
+        )
+        result = proc.result()
+        self.assertEqual((result["ok"], result["result"]), (True, None))
+        self.assertTrue(self.fake.browser_calls()[-1]["path"] == "/oauth2/authorize")
+
+    def test_a_signed_out_window_asks_for_a_login_then_works(self):
+        self.fake.sign_out()
+        proc = self.run_op(
+            {"op": "me"},
+            ALBEDO_DISCORD_API=self.fake.api_url,
+            ALBEDO_DISCORD_LOGIN_TIMEOUT="60",
+        )
+        _, step = proc.until("progress")
+        self.assertEqual(step["step"], "login")
+        self.fake.sign_in()
+        result = proc.result()
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["result"]["id"], self.fake.account["id"])
+
+    def test_nobody_signing_in_fails_with_the_portal_fallback(self):
+        self.fake.sign_out()
+        proc = self.run_op(
+            {"op": "me"},
+            ALBEDO_DISCORD_API=self.fake.api_url,
+            ALBEDO_DISCORD_LOGIN_TIMEOUT="1",
+        )
+        result = self.assert_failure(proc, "unauthorized")
+        self.assertIn("portal", result["error"])
+
+    def test_a_captcha_is_reported_and_leaves_no_application(self):
+        self.fake.require_captcha("POST", "/applications")
+        proc = self.create(ALBEDO_DISCORD_API=self.fake.api_url)
+        result = self.assert_failure(proc, "captcha")
+        self.assertIn("captcha", result["error"])
+        self.assertEqual(self.fake.applications, {})
+
+    def test_mfa_is_answered_through_the_page(self):
+        self.fake.require_mfa(CODE)
+        proc = self.create(ALBEDO_DISCORD_API=self.fake.api_url)
+        _, prompt = proc.until("mfa")
+        self.assertEqual(prompt["methods"], ["totp"])
+        proc.send({"code": CODE})
+        self.assertTrue(proc.result()["ok"])
+        resets = [
+            call
+            for call in self.fake.browser_calls()
+            if call["path"].endswith("/bot/reset")
+        ]
+        self.assertEqual(len(resets), 2)
+        self.assertIsNone(resets[0]["mfa"])
+        self.assertTrue(resets[1]["mfa"].startswith("mfa-token"))
 
 
 if __name__ == "__main__":

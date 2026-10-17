@@ -51,14 +51,14 @@ pub opaque type Message {
   Get(id: String, reply: Subject(Result(Provision, Failure)))
 }
 
-/// What a provision needs: the human's token and id become the bot's
-/// creator and owner.
+/// What a provision needs: how to reach Discord as the human, whose id becomes
+/// the bot's creator and owner.
 pub type Request {
   Request(
     session: String,
     name: String,
     guild: Option(String),
-    user_token: String,
+    login: ledger.Login,
     owner_id: String,
   )
 }
@@ -304,7 +304,7 @@ fn launch(state: State, item: Item, request: json.Json) -> State {
   case
     port.open(
       "albedo_discord_provision.py",
-      [#("ALBEDO_DISCORD_USER_TOKEN", item.request.user_token)],
+      provisioner_env(item.request.login),
       fn(line) { process.send(self, Line(id, generation, line)) },
     )
   {
@@ -521,7 +521,7 @@ fn describe(error: ledger.Error) -> String {
 /// One provisioner request answered at once (no two-factor prompt), for the
 /// account routes. The error is `#(code, message)`.
 pub fn run_once(
-  user_token: String,
+  login: ledger.Login,
   request: json.Json,
   decoder: decode.Decoder(a),
 ) -> Result(a, #(String, String)) {
@@ -529,15 +529,32 @@ pub fn run_once(
   use pid <- result.try(
     port.open(
       "albedo_discord_provision.py",
-      [#("ALBEDO_DISCORD_USER_TOKEN", user_token)],
+      provisioner_env(login),
       process.send(lines, _),
     )
     |> result.map_error(fn(reason) { #("http", reason) }),
   )
   port.write(pid, json.to_string(request))
-  let answer = await_result(lines, decoder, clock.monotonic_ms() + 30_000)
+  let answer =
+    await_result(lines, decoder, clock.monotonic_ms() + once_timeout(login))
   port.close(pid)
   answer
+}
+
+fn provisioner_env(login: ledger.Login) -> List(#(String, String)) {
+  case login {
+    ledger.Token(token) -> [#("ALBEDO_DISCORD_USER_TOKEN", token)]
+    ledger.Browser -> [#("ALBEDO_DISCORD_BROWSER", "1")]
+  }
+}
+
+/// Browser mode waits for a person to sign in in the window it opened; a token
+/// run is only as slow as Discord.
+fn once_timeout(login: ledger.Login) -> Int {
+  case login {
+    ledger.Token(_) -> 30_000
+    ledger.Browser -> 600_000
+  }
 }
 
 fn await_result(

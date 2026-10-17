@@ -20,8 +20,10 @@ import asyncio
 import base64
 import hashlib
 import json
+from pathlib import Path
 import re
 import struct
+import sys
 import threading
 import time
 import urllib.parse
@@ -29,6 +31,30 @@ from typing import Any, Callable
 
 GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 SNOWFLAKE_BASE = 110_000_000_000_000_000
+
+
+def chrome_installed() -> bool:
+    """Whether the browser plugin can find a Chrome or Chromium to drive.
+
+    Browser-mode provisioning opens a real browser, so suites that exercise it
+    skip where there is none. The plugin's own resolver decides, since it knows
+    about chrome-headless-shell and each platform's install locations.
+    """
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "priv" / "python"))
+    try:
+        from albedo_plugins.browser.launch import _executable
+    except ImportError:
+        return False
+    for headless in (True, False):
+        try:
+            _executable(None, headless=headless)
+            return True
+        except Exception:
+            continue
+    return False
+
+
+CHROME = chrome_installed()
 
 
 def b64url(text: str) -> str:
@@ -446,6 +472,15 @@ class FakeDiscord:
             body = b""
             if "content-length" in headers:
                 body = await reader.readexactly(int(headers["content-length"]))
+            if method == "GET" and urllib.parse.urlsplit(target).path == "/app":
+                page = self.app_page().encode()
+                writer.write(
+                    f"HTTP/1.1 200 X\r\nContent-Type: text/html; charset=utf-8\r\n"
+                    f"Content-Length: {len(page)}\r\nConnection: close\r\n\r\n".encode()
+                    + page
+                )
+                await writer.drain()
+                return
             status, payload = self._rest(method, target, headers, body)
             raw = b"" if payload is None else json.dumps(payload).encode()
             writer.write(
@@ -458,6 +493,24 @@ class FakeDiscord:
             pass
         finally:
             writer.close()
+
+    def app_page(self) -> str:
+        """The Discord web app as a page: a client environment and a session cookie.
+
+        Browser mode reads the REST base from `GLOBAL_ENV` and signs in with the
+        cookie, exactly as a real tab would, so this is what stands in for
+        `discord.com` without a browser reaching the network.
+        """
+        return (
+            '<!doctype html><html><head><meta charset="utf-8">'
+            "<title>Discord</title><script>"
+            "window.GLOBAL_ENV={"
+            'PROJECT_ENV:"production",BUILD_NUMBER:"641004",RELEASE_CHANNEL:"stable",'
+            f'API_PROTOCOL:"http:",API_ENDPOINT:"//127.0.0.1:{self.port}/api",API_VERSION:9'
+            "};"
+            f'document.cookie="{self.browser_cookie}={self.browser_session}; path=/";'
+            '</script></head><body><div id="app"></div></body></html>'
+        )
 
     async def _gateway_session(
         self,
@@ -557,6 +610,16 @@ class FakeDiscord:
         path = re.sub(r"^/api/v\d+", "", url.path)
         self.requests.append((method, path))
         authorization = headers.get("authorization", "")
+        if not authorization and self._browser_session(headers):
+            if not self.signed_in:
+                return 401, {"message": "401: Unauthorized", "code": 0}
+            if self._throttle > 0:
+                self._throttle -= 1
+                return 429, {
+                    "message": "rate limited",
+                    "retry_after": self._throttle_after,
+                }
+            return self._user_rest(method, path, query, headers, body, browser=True)
         if authorization == self.user_token:
             if self.user_unauthorized:
                 return 401, {"message": "401: Unauthorized", "code": 0}
@@ -607,6 +670,12 @@ class FakeDiscord:
             "global_name": "Owner",
         }
         self.user_unauthorized = False
+        # A signed-in web client: the cookie a Chrome tab carries, and whether
+        # that session is still valid. A browser-mode request has no
+        # Authorization header, only this cookie.
+        self.browser_cookie = "albedo-browser"
+        self.browser_session = "browser.fake.secret"
+        self.signed_in = True
         self.applications: dict[str, dict[str, Any]] = {}
         self.new_app_flags = 0
         self.user_guilds: list[dict[str, Any]] = []
@@ -629,6 +698,22 @@ class FakeDiscord:
             self.mfa_methods = methods or [{"type": "totp"}]
 
         self._call(apply)
+
+    @property
+    def browser_url(self) -> str:
+        """The page a browser-mode provisioner opens instead of a login screen."""
+        return f"http://127.0.0.1:{self.port}/app"
+
+    def sign_out(self) -> None:
+        """Make browser-mode calls answer 401 until `sign_in`."""
+        self._call(lambda: setattr(self, "signed_in", False))
+
+    def sign_in(self) -> None:
+        self._call(lambda: setattr(self, "signed_in", True))
+
+    def browser_calls(self) -> list[dict[str, Any]]:
+        """The user-API calls that arrived from the page rather than a token."""
+        return [call for call in self.user_calls if call.get("browser")]
 
     def require_captcha(self, method: str, path: str) -> None:
         """Answer `method` `path` (e.g. POST /applications) with a captcha challenge."""
@@ -686,6 +771,12 @@ class FakeDiscord:
         self.token_users[token] = app["bot"]
         return token
 
+    def _browser_session(self, headers: dict[str, str]) -> bool:
+        """Whether the request carries the signed-in web client's cookie."""
+        wanted = f"{self.browser_cookie}={self.browser_session}"
+        cookies = [part.strip() for part in headers.get("cookie", "").split(";")]
+        return wanted in cookies
+
     def _user_rest(
         self,
         method: str,
@@ -693,6 +784,7 @@ class FakeDiscord:
         query: dict[str, str],
         headers: dict[str, str],
         body: bytes,
+        browser: bool = False,
     ) -> tuple[int, Any]:
         data = json.loads(body) if body else {}
         mfa_header = headers.get("x-discord-mfa-authorization")
@@ -703,6 +795,7 @@ class FakeDiscord:
                 "query": query,
                 "body": data,
                 "mfa": mfa_header,
+                "browser": browser,
             }
         )
         if (method, path) in self._captcha:

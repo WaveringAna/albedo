@@ -10,7 +10,7 @@ import time
 import unittest
 import urllib.error
 
-from discord_fake_support import FakeDiscord
+from discord_fake_support import CHROME, FakeDiscord
 from harness import Albedo, Provider, exclusive, python, text, wait_until
 
 OWNER = "100000000000000010"
@@ -56,6 +56,10 @@ class DiscordTests(unittest.TestCase):
 
         def prepare(app):
             app.env["ALBEDO_DISCORD_API"] = self.fake.api_url
+            # Browser-mode provisioning drives a real Chrome on this fake's own
+            # page; headless keeps the gate from popping windows.
+            app.env["ALBEDO_DISCORD_APP_URL"] = self.fake.browser_url
+            app.env["ALBEDO_DISCORD_BROWSER_HEADLESS"] = "1"
             app.write_extensions({"enabled": {"discord": True}})
 
         self.app = Albedo(self.provider, protocol="responses", prepare=prepare)
@@ -517,6 +521,33 @@ class DiscordTests(unittest.TestCase):
         self.assertNotIn(
             self.fake.user_token, (self.app.home / "daemon.log").read_text()
         )
+
+    @unittest.skipUnless(CHROME, "needs Chrome or Chromium")
+    def test_browser_mode_connects_without_a_token_and_creates_a_bot(self):
+        """Browser mode: the account is a Chrome window, not a stored token."""
+        account = "/extensions/discord/account"
+        self.fake.add_user_guild(GUILD, "Lab", owner=True)
+        with self.app.api(account, {"browser": True}, method="PUT") as response:
+            connected = json.load(response)
+        self.assertEqual(
+            connected,
+            {
+                "connected": True,
+                "user": {"id": self.fake.account["id"], "username": "owner"},
+            },
+        )
+        started = self.start_provision(self.session, GUILD)
+        done = self.provision(started["id"], "done", "failed")
+        self.assertEqual(done["state"], "done", done)
+        # Every call Discord saw came from the page, and no token was stored.
+        self.assertTrue(self.fake.browser_calls())
+        self.assertEqual(len(self.fake.browser_calls()), len(self.fake.user_calls))
+        self.assertEqual(self.fake.authorized[-1]["body"]["guild_id"], GUILD)
+        with self.database() as database:
+            row = database.execute(
+                "SELECT token,browser FROM discord_account WHERE id=1"
+            ).fetchone()
+        self.assertEqual(row, ("", 1))
 
 
 if __name__ == "__main__":

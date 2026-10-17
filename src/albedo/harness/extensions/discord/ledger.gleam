@@ -80,6 +80,14 @@ pub type Account {
   Account(user_id: String, username: String)
 }
 
+/// How the daemon reaches Discord as that human. A pasted user token is one
+/// way; signing in to the Chrome window browser mode opens is another, and the
+/// one Discord's captcha reacts to less. Both are against Discord's terms.
+pub type Login {
+  Token(token: String)
+  Browser
+}
+
 pub type Error {
   Invalid(String)
   NotFound
@@ -135,6 +143,7 @@ CREATE TABLE IF NOT EXISTS discord_account (
  token TEXT NOT NULL,
  user_id TEXT NOT NULL,
  username TEXT NOT NULL,
+ browser INTEGER NOT NULL DEFAULT 0 CHECK(browser IN (0,1)),
  connected_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS discord_cursors (
@@ -150,7 +159,14 @@ const request_limit = 50
 
 pub fn initialise(db: store.Store) -> Result(Nil, String) {
   use _ <- result.try(mail.initialise(db))
-  store.query(db, store.exec(_, schema))
+  use _ <- result.try(store.query(db, store.exec(_, schema)))
+  // A store created before browser mode has no `discord_account.browser`; its
+  // rows were all pasted tokens.
+  store.query(db, fn(connection) {
+    store.add_columns(connection, "discord_account", [
+      #("browser", "INTEGER NOT NULL DEFAULT 0"),
+    ])
+  })
 }
 
 /// Session deletion cascades through the foreign keys; this covers a store
@@ -807,31 +823,41 @@ pub fn account(db: store.Store) -> Result(Option(Account), Error) {
   |> result.map(fn(rows) { list.first(rows) |> option.from_result })
 }
 
-/// The user token, for the provisioner's environment only.
-pub fn account_token(db: store.Store) -> Result(Option(String), Error) {
-  store.query(db, query(
-    _,
-    "SELECT token FROM discord_account WHERE id=1",
-    [],
-    decode.field(0, decode.string, decode.success),
-  ))
+/// The login the provisioner needs, for its environment only.
+pub fn login(db: store.Store) -> Result(Option(Login), Error) {
+  store.query(
+    db,
+    query(_, "SELECT browser,token FROM discord_account WHERE id=1", [], {
+      use browser <- decode.field(0, decode.int)
+      use token <- decode.field(1, decode.string)
+      decode.success(case browser {
+        0 -> Token(token)
+        _ -> Browser
+      })
+    }),
+  )
   |> result.map(fn(rows) { list.first(rows) |> option.from_result })
 }
 
 pub fn connect_account(
   db: store.Store,
-  token: String,
+  login: Login,
   account: Account,
 ) -> Result(Nil, Error) {
+  let #(browser, token) = case login {
+    Token(token) -> #(0, token)
+    Browser -> #(1, "")
+  }
   store.query(
     db,
     run(
       _,
-      "INSERT INTO discord_account(id,token,user_id,username,connected_at) VALUES(1,?,?,?,?) ON CONFLICT(id) DO UPDATE SET token=excluded.token,user_id=excluded.user_id,username=excluded.username,connected_at=excluded.connected_at",
+      "INSERT INTO discord_account(id,token,user_id,username,browser,connected_at) VALUES(1,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET token=excluded.token,user_id=excluded.user_id,username=excluded.username,browser=excluded.browser,connected_at=excluded.connected_at",
       [
         sqlight.text(token),
         sqlight.text(account.user_id),
         sqlight.text(account.username),
+        sqlight.int(browser),
         sqlight.int(usage.now()),
       ],
     ),

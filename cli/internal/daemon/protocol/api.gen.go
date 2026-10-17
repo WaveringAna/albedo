@@ -628,9 +628,10 @@ type DiscordAccountGuildList struct {
 	Guilds []DiscordAccountGuild `json:"guilds"`
 }
 
-// DiscordAccountToken defines model for DiscordAccountToken.
-type DiscordAccountToken struct {
-	Token string `json:"token"`
+// DiscordAccountLogin A pasted user token, or browser mode, where the Chrome window albedo opens carries the login instead.
+type DiscordAccountLogin struct {
+	Browser *bool   `json:"browser,omitempty"`
+	Token   *string `json:"token,omitempty"`
 }
 
 // DiscordAllow defines model for DiscordAllow.
@@ -3722,7 +3723,7 @@ type AnswerLoginApplicationMergePatchPlusJSONRequestBody = LoginPatch
 type CreateLoginJSONRequestBody = LoginRequest
 
 // PutDiscordAccountJSONRequestBody defines body for PutDiscordAccount for application/json ContentType.
-type PutDiscordAccountJSONRequestBody = DiscordAccountToken
+type PutDiscordAccountJSONRequestBody = DiscordAccountLogin
 
 // CreateDiscordBotJSONRequestBody defines body for CreateDiscordBot for application/json ContentType.
 type CreateDiscordBotJSONRequestBody = DiscordBotCreate
@@ -3973,7 +3974,7 @@ type ClientInterface interface {
 
 	// PutDiscordAccountWithBody Connect the Discord login that creates bots
 	//
-	// Validated against Discord before it is stored (400 invalid_token). The token is never returned and never reaches kernels or bot processes.
+	// Validated against Discord before it is stored (400 invalid_token, or invalid_login for browser mode). The token is never returned and never reaches kernels or bot processes.
 	//
 	// Takes any type of body and a specified content type.
 	//
@@ -3982,7 +3983,7 @@ type ClientInterface interface {
 
 	// PutDiscordAccount Connect the Discord login that creates bots
 	//
-	// Validated against Discord before it is stored (400 invalid_token). The token is never returned and never reaches kernels or bot processes.
+	// Validated against Discord before it is stored (400 invalid_token, or invalid_login for browser mode). The token is never returned and never reaches kernels or bot processes.
 	//
 	// Takes a body of the `application/json` content type.
 	//
@@ -5072,7 +5073,7 @@ func (c *Client) GetDiscordAccount(ctx context.Context, reqEditors ...RequestEdi
 
 // PutDiscordAccountWithBody Connect the Discord login that creates bots
 //
-// Validated against Discord before it is stored (400 invalid_token). The token is never returned and never reaches kernels or bot processes.
+// Validated against Discord before it is stored (400 invalid_token, or invalid_login for browser mode). The token is never returned and never reaches kernels or bot processes.
 //
 // Takes any type of body and a specified content type.
 //
@@ -5091,7 +5092,7 @@ func (c *Client) PutDiscordAccountWithBody(ctx context.Context, contentType stri
 
 // PutDiscordAccount Connect the Discord login that creates bots
 //
-// Validated against Discord before it is stored (400 invalid_token). The token is never returned and never reaches kernels or bot processes.
+// Validated against Discord before it is stored (400 invalid_token, or invalid_login for browser mode). The token is never returned and never reaches kernels or bot processes.
 //
 // Takes a body of the `application/json` content type.
 //

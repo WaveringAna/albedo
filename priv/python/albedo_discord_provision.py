@@ -1,4 +1,4 @@
-"""One-shot Discord bot provisioning with a *user* token (against Discord's ToS; opt-in).
+"""One-shot Discord bot provisioning, against Discord's ToS (opt-in).
 
 Creates a bot application without the developer portal, mirroring the calls in
 dolfies/discord.py-self (discord/http.py): POST /applications, POST
@@ -6,9 +6,23 @@ dolfies/discord.py-self (discord/http.py): POST /applications, POST
 GET /applications, POST /applications/{id}/delete, GET /users/@me/guilds and
 POST /oauth2/authorize. JSON lines on stdin and stdout, like albedo_discord.py.
 
+Two ways to reach Discord, both writing the same lines:
+
+  ALBEDO_DISCORD_USER_TOKEN   the human's user token, called from this process
+                              with a browser User-Agent and no other client
+                              headers, which is why Discord may answer with a
+                              captcha;
+  ALBEDO_DISCORD_BROWSER=1    browser mode: albedo_discord_browser.py opens
+                              Chrome on the web app and runs the same calls in
+                              that page, with the client's own fingerprint,
+                              cookies and headers. Nothing is pasted; the human
+                              signs in in the window, and Discord's captcha, if
+                              it comes, is answered there too.
+
 Environment:
-  ALBEDO_DISCORD_USER_TOKEN  the user's token (required; never printed)
-  ALBEDO_DISCORD_API         REST base, default https://discord.com/api/v9
+  ALBEDO_DISCORD_API              REST base; default https://discord.com/api/v9
+                                  (browser mode reads the page's own base instead)
+  ALBEDO_DISCORD_LOGIN_TIMEOUT    browser mode: seconds to wait for a sign-in, 300
 
 stdin: one request line, then (only after an "mfa" line) {"code": "123456"}.
   {"op":"create","name":s,"avatar":data-url|null}
@@ -17,20 +31,18 @@ stdin: one request line, then (only after an "mfa" line) {"code": "123456"}.
   {"op":"authorize","application_id":s,"guild_id":s}
   {"op":"apps"}
   {"op":"delete","application_id":s}
-stdout: {"type":"progress","step":"create"|"bot"|"intent"|"token"},
+stdout: {"type":"progress","step":"login"|"create"|"bot"|"intent"|"token"},
   {"type":"mfa","methods":[...],"error"?:s}, and one final
   {"type":"result","ok":true,"result":...} or
   {"type":"result","ok":false,"error":s,"code":"captcha"|"mfa_failed"|"unauthorized"|
    "rate_limited"|"http"} followed by exit 1.
 
-Sent: Authorization (the bare user token), a Chrome User-Agent (Discord's edge
-rejects urllib's default), Content-Type and Accept; X-Discord-MFA-Authorization
-once MFA has been satisfied. No X-Super-Properties. The only secret ever
-written to stdout is the new bot token in the create result.
+The only secret ever written to stdout is the new bot token in the create result.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import sys
@@ -52,6 +64,8 @@ BOT_PERMISSIONS = "274878024768"
 MFA_ATTEMPTS = 3
 MAX_RETRY_AFTER = 15.0
 MFA_REQUIRED = 60003
+DEFAULT_LOGIN_TIMEOUT = 300.0
+LOGIN_POLL = 2.0
 
 
 class Failure(Exception):
@@ -110,13 +124,16 @@ def method_names(methods: Any) -> list[str]:
     return names
 
 
-class Client:
+class Token:
+    """Discord as this process, with the human's token."""
+
+    rejected = "the user token was rejected"
+
     def __init__(self, token: str, api: str) -> None:
         self.token = token
         self.api = api.rstrip("/")
-        self.mfa_token: str | None = None
 
-    def raw(
+    async def raw(
         self, method: str, path: str, body: Any, extra: dict[str, str]
     ) -> tuple[int, Any]:
         headers = {
@@ -130,7 +147,7 @@ class Client:
             data = json.dumps(body).encode()
             headers["Content-Type"] = "application/json"
         request = urllib.request.Request(
-            self.api + path, data=data, headers=headers, method=method
+            self.api + path, data=data, headers=headers, method=method.upper()
         )
         try:
             with urllib.request.urlopen(request, timeout=30) as response:
@@ -144,14 +161,29 @@ class Client:
         except ValueError:
             return status, None
 
-    def call(self, method: str, path: str, body: Any = None) -> Any:
+    async def sign_in(self) -> None:
+        """Nothing to do: the token is the sign-in."""
+        return None
+
+    async def close(self) -> None:
+        return None
+
+
+class Discord:
+    """The provisioning calls, over either transport."""
+
+    def __init__(self, transport: Any) -> None:
+        self.transport = transport
+        self.mfa_token: str | None = None
+
+    async def call(self, method: str, path: str, body: Any = None) -> Any:
         """One API call; satisfies MFA and honours short rate limits."""
         throttled = 0
         while True:
             extra = {}
             if self.mfa_token:
                 extra["X-Discord-MFA-Authorization"] = self.mfa_token
-            status, payload = self.raw(method, path, body, extra)
+            status, payload = await self.transport.raw(method, path, body, extra)
             data = payload if isinstance(payload, dict) else {}
             if status < 300:
                 return payload
@@ -160,18 +192,20 @@ class Client:
                 throttled += 1
                 if throttled > 2 or wait > MAX_RETRY_AFTER:
                     raise Failure("rate_limited", f"rate limited, retry in {wait:g}s")
-                time.sleep(wait)
+                await asyncio.sleep(wait)
             elif status == 401 and data.get("code") == MFA_REQUIRED:
                 mfa = data.get("mfa") or {}
-                self.mfa_token = self.satisfy_mfa(mfa.get("ticket"), mfa.get("methods"))
+                self.mfa_token = await self.satisfy_mfa(
+                    mfa.get("ticket"), mfa.get("methods")
+                )
             elif status == 401:
-                raise Failure("unauthorized", "the user token was rejected")
+                raise Failure("unauthorized", self.transport.rejected)
             elif status == 400 and "captcha_key" in data:
                 raise Failure("captcha", "Discord asks for a captcha")
             else:
                 raise Failure("http", failure_text(status, data))
 
-    def satisfy_mfa(self, ticket: Any, methods: Any) -> str:
+    async def satisfy_mfa(self, ticket: Any, methods: Any) -> str:
         """Prompt for TOTP codes (three tries) and trade the ticket for an MFA token."""
         names = method_names(methods) or ["totp"]
         if not isinstance(ticket, str) or not {"totp", "backup"} & set(names):
@@ -187,8 +221,8 @@ class Client:
                 raise Failure("mfa_failed", "stdin closed while waiting for MFA code")
             code = str(reply.get("code", "")).strip()
             kind = "totp" if len(code) == 6 else "backup"
-            status, payload = self.raw(
-                "POST",
+            status, payload = await self.transport.raw(
+                "post",
                 "/mfa/finish",
                 {"ticket": ticket, "mfa_type": kind, "data": code},
                 {},
@@ -199,37 +233,37 @@ class Client:
             if status == 429:
                 raise Failure("rate_limited", "rate limited while verifying MFA")
             if status == 401 and data.get("code") != 60008:
-                raise Failure("unauthorized", "the user token was rejected")
+                raise Failure("unauthorized", self.transport.rejected)
             error = str(data.get("message") or "invalid code")
         raise Failure("mfa_failed", f"MFA failed after {MFA_ATTEMPTS} attempts")
 
 
-def create(client: Client, request: dict[str, Any]) -> dict[str, Any]:
+async def create(client: Discord, request: dict[str, Any]) -> dict[str, Any]:
     name = request.get("name")
     if not isinstance(name, str) or not name.strip():
         raise Failure("http", "name is required")
     emit({"type": "progress", "step": "create"})
-    app = client.call("POST", "/applications", {"name": name})
+    app = await client.call("post", "/applications", {"name": name})
     app_id = str(app["id"])
     path = f"/applications/{app_id}"
 
     emit({"type": "progress", "step": "bot"})
     if not app.get("bot"):
-        client.call("POST", f"{path}/bot", {})
+        await client.call("post", f"{path}/bot", {})
     avatar = request.get("avatar")
     if avatar:
-        client.call("PATCH", f"{path}/bot", {"avatar": avatar})
-    app = client.call("GET", path)
+        await client.call("patch", f"{path}/bot", {"avatar": avatar})
+    app = await client.call("get", path)
     bot = app.get("bot") or {}
     if not bot.get("id"):
         raise Failure("http", "the application has no bot user")
 
     emit({"type": "progress", "step": "intent"})
     flags = int(app.get("flags") or 0) | MESSAGE_CONTENT_FLAG
-    client.call("PATCH", path, {"flags": flags})
+    await client.call("patch", path, {"flags": flags})
 
     emit({"type": "progress", "step": "token"})
-    token = client.call("POST", f"{path}/bot/reset").get("token")
+    token = (await client.call("post", f"{path}/bot/reset")).get("token")
     if not isinstance(token, str):
         raise Failure("http", "Discord returned no bot token")
     return {
@@ -241,8 +275,8 @@ def create(client: Client, request: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def me(client: Client, _: dict[str, Any]) -> dict[str, Any]:
-    user = client.call("GET", "/users/@me")
+async def me(client: Discord, _: dict[str, Any]) -> dict[str, Any]:
+    user = await client.call("get", "/users/@me")
     return {
         "id": str(user["id"]),
         "username": user.get("username"),
@@ -256,8 +290,8 @@ def can_add_bots(guild: dict[str, Any]) -> bool:
     return bool(int(guild.get("permissions") or 0) & (ADMINISTRATOR | MANAGE_GUILD))
 
 
-def guilds(client: Client, _: dict[str, Any]) -> list[dict[str, Any]]:
-    found = client.call("GET", "/users/@me/guilds")
+async def guilds(client: Discord, _: dict[str, Any]) -> list[dict[str, Any]]:
+    found = await client.call("get", "/users/@me/guilds")
     return [
         {"id": str(g["id"]), "name": g.get("name"), "icon": g.get("icon")}
         for g in found
@@ -265,15 +299,15 @@ def guilds(client: Client, _: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
-def authorize(client: Client, request: dict[str, Any]) -> None:
+async def authorize(client: Discord, request: dict[str, Any]) -> None:
     app_id, guild_id = request.get("application_id"), request.get("guild_id")
     if not app_id or not guild_id:
         raise Failure("http", "application_id and guild_id are required")
     query = urllib.parse.urlencode(
         {"client_id": app_id, "scope": "bot", "permissions": BOT_PERMISSIONS}
     )
-    client.call(
-        "POST",
+    await client.call(
+        "post",
         f"/oauth2/authorize?{query}",
         {
             "guild_id": str(guild_id),
@@ -283,8 +317,8 @@ def authorize(client: Client, request: dict[str, Any]) -> None:
     )
 
 
-def apps(client: Client, _: dict[str, Any]) -> list[dict[str, Any]]:
-    found = client.call("GET", "/applications?with_team_applications=false")
+async def apps(client: Discord, _: dict[str, Any]) -> list[dict[str, Any]]:
+    found = await client.call("get", "/applications?with_team_applications=false")
     return [
         {"id": str(a["id"]), "name": a.get("name"), "bot_user_id": str(a["bot"]["id"])}
         for a in found
@@ -292,11 +326,11 @@ def apps(client: Client, _: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
-def delete(client: Client, request: dict[str, Any]) -> None:
+async def delete(client: Discord, request: dict[str, Any]) -> None:
     app_id = request.get("application_id")
     if not app_id:
         raise Failure("http", "application_id is required")
-    client.call("POST", f"/applications/{app_id}/delete")
+    await client.call("post", f"/applications/{app_id}/delete")
 
 
 OPS = {
@@ -309,23 +343,66 @@ OPS = {
 }
 
 
-def run() -> None:
+async def sign_in(transport: Any) -> None:
+    """Browser mode: wait for a human to sign in in the window we opened."""
+    if await transport.me() < 300:
+        return
+    emit({"type": "progress", "step": "login"})
+    timeout = float(
+        os.environ.get("ALBEDO_DISCORD_LOGIN_TIMEOUT") or DEFAULT_LOGIN_TIMEOUT
+    )
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        await asyncio.sleep(LOGIN_POLL)
+        if await transport.me() < 300:
+            return
+    raise Failure(
+        "unauthorized",
+        "nobody signed in to Discord in the browser window; the developer portal can still make the bot",
+    )
+
+
+async def transport() -> Any:
+    """The transport this run was asked for, signed in and ready."""
+    api = os.environ.get("ALBEDO_DISCORD_API")
+    if os.environ.get("ALBEDO_DISCORD_BROWSER") == "1":
+        from albedo_discord_browser import Browser, BrowserUnavailable
+
+        window = Browser(api)
+        try:
+            await window.open()
+            await sign_in(window)
+        except BrowserUnavailable as error:
+            await window.close()
+            raise Failure("http", str(error)) from None
+        except Failure:
+            await window.close()
+            raise
+        return window
     token = os.environ.get("ALBEDO_DISCORD_USER_TOKEN")
     if not token:
         raise Failure("unauthorized", "ALBEDO_DISCORD_USER_TOKEN is not set")
+    return Token(token, api or DEFAULT_API)
+
+
+async def run() -> None:
     request = read_line()
     if request is None:
         raise Failure("http", "no request on stdin")
     handler = OPS.get(str(request.get("op")))
     if handler is None:
         raise Failure("http", f"unknown op {request.get('op')!r}")
-    client = Client(token, os.environ.get("ALBEDO_DISCORD_API") or DEFAULT_API)
-    emit({"type": "result", "ok": True, "result": handler(client, request)})
+    where = await transport()
+    try:
+        result = await handler(Discord(where), request)
+    finally:
+        await where.close()
+    emit({"type": "result", "ok": True, "result": result})
 
 
 def main() -> None:
     try:
-        run()
+        asyncio.run(run())
     except Failure as failure:
         emit(
             {

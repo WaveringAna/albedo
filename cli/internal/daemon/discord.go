@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"slices"
+	"time"
 
 	"albedo/cli/internal/daemon/protocol"
 )
@@ -333,12 +334,28 @@ func GetDiscordAccount(ctx context.Context, conn *Connection) (DiscordAccount, e
 	}, Policy: readRecovery})
 }
 
+// browserSignInTimeout lets a person sign in to Discord in the window browser
+// mode opens before the request gives up. The daemon waits on its side, so a
+// shorter deadline here would only hide work that is still happening.
+const browserSignInTimeout = 6 * time.Minute
+
 // ConnectDiscordAccount stores the user's Discord token once Discord accepts it.
 func ConnectDiscordAccount(ctx context.Context, conn *Connection, token string) (DiscordAccount, error) {
-	request := protocol.DiscordAccountToken{Token: token}
-	return accountChange(ctx, conn, operation{Name: "connect discord account", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
-		return protocol.NewPutDiscordAccountRequest(base, request)
-	}, Body: request, Policy: noRecovery})
+	return connectDiscordAccount(ctx, conn, protocol.DiscordAccountLogin{Token: &token}, "connect discord account", 0)
+}
+
+// ConnectDiscordAccountInBrowser connects the account without a token: albedo
+// opens Chrome on Discord's web app, the human signs in there, and the browser
+// profile keeps that session. Nothing is pasted.
+func ConnectDiscordAccountInBrowser(ctx context.Context, conn *Connection) (DiscordAccount, error) {
+	browser := true
+	return connectDiscordAccount(ctx, conn, protocol.DiscordAccountLogin{Browser: &browser}, "connect discord account in a browser", browserSignInTimeout)
+}
+
+func connectDiscordAccount(ctx context.Context, conn *Connection, login protocol.DiscordAccountLogin, name string, timeout time.Duration) (DiscordAccount, error) {
+	return accountChange(ctx, conn, operation{Name: name, BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
+		return protocol.NewPutDiscordAccountRequest(base, login)
+	}, Body: login, Policy: noRecovery, Timeout: timeout})
 }
 
 // ForgetDiscordAccount drops the stored login; bots keep running.

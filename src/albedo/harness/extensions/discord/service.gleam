@@ -273,31 +273,23 @@ fn dispatch(
     }
     Get, ["account"] -> account_reply(db)
     Put, ["account"] -> {
-      use token <- result.try(api.body(
-        req,
-        ["token"],
-        decode.field("token", api.bounded_string(512, True), decode.success),
-      ))
-      use me <- result.try(
-        provision.run_once(
-          string.trim(token),
-          json.object([#("op", json.string("me"))]),
-          {
-            use id <- decode.field("id", decode.string)
-            use username <- decode.optional_field(
-              "username",
-              None,
-              decode.optional(decode.string),
-            )
-            decode.success(ledger.Account(id, option.unwrap(username, "")))
-          },
-        )
-        |> result.map_error(discord_failure),
+      use #(token, browser) <- result.try(
+        api.body(req, ["token", "browser"], {
+          use token <- decode.optional_field(
+            "token",
+            None,
+            decode.optional(api.bounded_string(512, True)),
+          )
+          use browser <- decode.optional_field("browser", False, decode.bool)
+          decode.success(#(token, browser))
+        }),
       )
-      use _ <- result.try(
-        stored(ledger.connect_account(db, string.trim(token), me)),
-      )
-      account_reply(db)
+      case token, browser {
+        Some(token), _ -> connect_login(db, ledger.Token(string.trim(token)))
+        None, True -> connect_login(db, ledger.Browser)
+        None, False ->
+          Error(api.invalid("a user token, or browser, is required"))
+      }
     }
     Delete, ["account"] -> {
       use _ <- result.try(api.empty_body(req))
@@ -305,10 +297,10 @@ fn dispatch(
       account_reply(db)
     }
     Get, ["account", "guilds"] -> {
-      use token <- result.try(account_token(db))
+      use login <- result.try(login_of(db))
       use guilds <- result.try(
         provision.run_once(
-          token,
+          login,
           json.object([#("op", json.string("guilds"))]),
           decode.list({
             use id <- decode.field("id", decode.string)
@@ -317,7 +309,7 @@ fn dispatch(
             decode.success(#(id, name, icon))
           }),
         )
-        |> result.map_error(discord_failure),
+        |> result.map_error(fn(failure) { login_failure(login, failure) }),
       )
       Ok(api.reply(
         200,
@@ -364,7 +356,7 @@ fn dispatch(
         Ok(_) -> Error(failure(ledger.Exists))
         Error(_) -> Ok(Nil)
       })
-      use token <- result.try(account_token(db))
+      use login <- result.try(login_of(db))
       use account <- result.try(stored(ledger.account(db)))
       use owner <- result.try(option.to_result(account, no_account()))
       use started <- result.try(
@@ -372,7 +364,7 @@ fn dispatch(
           session,
           name,
           guild,
-          token,
+          login,
           owner.user_id,
         ))
         |> result.map_error(provision_failure),
@@ -422,9 +414,31 @@ fn no_account() -> api.Failure {
   )
 }
 
-fn account_token(db: store.Store) -> Result(String, api.Failure) {
-  use token <- result.try(stored(ledger.account_token(db)))
-  option.to_result(token, no_account())
+fn login_of(db: store.Store) -> Result(ledger.Login, api.Failure) {
+  use login <- result.try(stored(ledger.login(db)))
+  option.to_result(login, no_account())
+}
+
+/// Checks the login with Discord once, then stores it: a pasted token, or the
+/// Chrome window a person signs in to.
+fn connect_login(
+  db: store.Store,
+  login: ledger.Login,
+) -> Result(response.Response(mist.ResponseData), api.Failure) {
+  use me <- result.try(
+    provision.run_once(login, json.object([#("op", json.string("me"))]), {
+      use id <- decode.field("id", decode.string)
+      use username <- decode.optional_field(
+        "username",
+        None,
+        decode.optional(decode.string),
+      )
+      decode.success(ledger.Account(id, option.unwrap(username, "")))
+    })
+    |> result.map_error(fn(failure) { login_failure(login, failure) }),
+  )
+  use _ <- result.try(stored(ledger.connect_account(db, login, me)))
+  account_reply(db)
 }
 
 fn account_reply(
@@ -445,11 +459,18 @@ fn account_reply(
   ))
 }
 
-/// A provisioner failure on the account routes.
-fn discord_failure(failure: #(String, String)) -> api.Failure {
+/// A provisioner failure on the account routes. The provisioner names what is
+/// wrong with the login itself, so its message is what the user reads.
+fn login_failure(
+  login: ledger.Login,
+  failure: #(String, String),
+) -> api.Failure {
   case failure {
-    #("unauthorized", _) ->
-      api.Failure(400, "invalid_token", "Discord rejected the user token")
+    #("unauthorized", detail) ->
+      case login {
+        ledger.Token(_) -> api.Failure(400, "invalid_token", detail)
+        ledger.Browser -> api.Failure(400, "not_signed_in", detail)
+      }
     #(_, detail) -> api.Failure(503, "discord_unavailable", detail)
   }
 }
