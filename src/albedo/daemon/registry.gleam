@@ -40,6 +40,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 import gleam/result
 import gleam/string
+import sqlight
 
 pub type Config {
   Config(
@@ -853,6 +854,97 @@ fn child_model(
   }
 }
 
+/// A root peer, owned by its starter and handed a request as its first letter.
+fn create_peer(
+  state: State,
+  caller: String,
+  task: String,
+  name: String,
+  model: String,
+  cwd: String,
+  role: String,
+) -> #(State, Result(conversation.Info, String)) {
+  let db = runtime.ledger(state.host)
+  let created = {
+    use #(cached, _) <- result.try(
+      dict.get(state.sessions, caller)
+      |> result.replace_error("session not found"),
+    )
+    let requested_cwd = case string.trim(cwd) {
+      "" -> cached.cwd
+      _ -> cwd
+    }
+    use workspace <- result.try(
+      location.workspace(requested_cwd)
+      |> result.map_error(fn(failure) { failure.detail }),
+    )
+    use #(provider, selected_model) <- result.try(child_model(
+      state,
+      cached,
+      model,
+    ))
+    let info =
+      conversation.Info(
+        ..cached,
+        id: new_id(),
+        title: name,
+        cwd: location.to_string(workspace),
+        provider: provider.name,
+        model: selected_model,
+        protocol: provider.protocol,
+        stage: conversation.Idle,
+        last_assistant_at: None,
+        effort: extension.default_effort(session_provider.model_efforts(
+          state.host,
+          state.config.home,
+          provider.name,
+          selected_model,
+        )),
+      )
+    use _ <- result.try(conversation.create(db, info))
+    use _ <- result.try(
+      store.write(db, "UPDATE sessions SET role=?,started_by=? WHERE id=?", [
+        sqlight.text(string.trim(role)),
+        sqlight.text(caller),
+        sqlight.text(info.id),
+      ]),
+    )
+    Ok(info)
+  }
+  case created {
+    Error(error) -> #(state, Error(error))
+    Ok(info) -> {
+      let state = holding(state, info.id, #(info, None))
+      let #(state, worker) = activate(state, info.id)
+      let _ = case
+        mail.post(
+          db,
+          mail.new_id(),
+          info.id,
+          Some(caller),
+          family.name_of(db, caller),
+          mail.RequestLetter,
+          task,
+        )
+      {
+        Ok(letter) ->
+          case worker {
+            Ok(active) -> {
+              let _ =
+                process.spawn_unlinked(fn() {
+                  session.submit_mail(active, letter)
+                })
+              Nil
+            }
+            Error(_) -> Nil
+          }
+        Error(_) -> Nil
+      }
+      #(state, Ok(info))
+    }
+  }
+}
+
 /// A child of `parent`, linked, running, and handed its task.
 fn create_child(
   state: State,
@@ -948,6 +1040,11 @@ fn agent_op(
     agents.Spawn(parent, name, task, model) -> {
       let #(state, created) = create_child(state, parent, name, task, model)
       #(state, result.map(created, fn(pair) { agents.Spawned(pair.1) }))
+    }
+    agents.Start(caller, task, name, model, cwd, role) -> {
+      let #(state, created) =
+        create_peer(state, caller, task, name, model, cwd, role)
+      #(state, result.map(created, agents.Started))
     }
     agents.Running(id) -> #(state, Ok(agents.RunningState(bus.is_running(id))))
     // The registry never waits on a session: interrupts and releases run in

@@ -137,52 +137,87 @@ type FrameRow {
   FrameRow(key: String, hash: String, width: Int, height: Int, bytes: Int)
 }
 
-fn default_config() -> Config {
-  Config(
-    None,
-    default_trigger_percent,
-    default_tail_percent,
-    default_archive_percent,
-    None,
-  )
-}
-
-fn config_decoder() -> decode.Decoder(Config) {
-  use capacity <- decode.optional_field(
+fn window() -> settings.Setting(Option(Int)) {
+  settings.optional_whole(
     "contextWindowTokens",
-    None,
-    decode.optional(decode.int),
+    "Context window",
+    "Tokens compaction measures against when the session sets no window of its own. Unset uses the model catalog's window.",
+    1,
+    100_000_000,
   )
-  use trigger <- decode.optional_field(
-    "triggerPercent",
-    default_trigger_percent,
-    decode.int,
-  )
-  use tail <- decode.optional_field(
-    "tailPercent",
-    default_tail_percent,
-    decode.int,
-  )
-  use archive <- decode.optional_field(
-    "archivePercent",
-    default_archive_percent,
-    decode.int,
-  )
-  use frames <- decode.optional_field(
-    "maxFrames",
-    None,
-    decode.optional(decode.int),
-  )
-  decode.success(Config(capacity, trigger, tail, archive, frames))
 }
 
-fn validated(loaded: Result(Config, String)) -> Result(Config, String) {
-  use config <- result.try(loaded)
-  validate_config(config)
+fn trigger() -> settings.Setting(Int) {
+  settings.whole(
+    "triggerPercent",
+    "Trigger",
+    "Compact when a request reaches this percent of the window.",
+    default_trigger_percent,
+    1,
+    99,
+  )
+}
+
+fn tail() -> settings.Setting(Int) {
+  settings.whole(
+    "tailPercent",
+    "Verbatim tail",
+    "Percent of the window kept word for word after a compaction. Must be below the trigger.",
+    default_tail_percent,
+    1,
+    98,
+  )
+}
+
+fn archive() -> settings.Setting(Int) {
+  settings.whole(
+    "archivePercent",
+    "Archive",
+    "Percent of the window the frame archive may take, at the estimated cost of a full frame.",
+    default_archive_percent,
+    1,
+    99,
+  )
+}
+
+fn frame_limit() -> settings.Setting(Option(Int)) {
+  settings.optional_whole(
+    "maxFrames",
+    "Frames",
+    "Frames the archive keeps at most. Unset keeps up to "
+      <> int.to_string(max_frames)
+      <> ".",
+    1,
+    10_000,
+  )
+}
+
+fn config_section() -> settings.Section(Config) {
+  settings.section(
+    "snapcompact",
+    "Image snapshot compaction",
+    settings.Context,
+    [
+      settings.field(window()),
+      settings.field(trigger()),
+      settings.field(tail()),
+      settings.field(archive()),
+      settings.field(frame_limit()),
+    ],
+    {
+      use capacity <- settings.value(window())
+      use trigger <- settings.value(trigger())
+      use tail <- settings.value(tail())
+      use archive <- settings.value(archive())
+      use frames <- settings.value(frame_limit())
+      decode.success(Config(capacity, trigger, tail, archive, frames))
+    },
+    validate_config,
+  )
 }
 
 fn load_config() -> Result(Config, String) {
-  validated(settings.load("snapcompact", config_decoder(), default_config()))
+  settings.load_section(config_section())
 }
 
 fn validate_config(config: Config) -> Result(Config, String) {
@@ -216,7 +251,11 @@ pub fn extension() -> extension.Extension {
     "snapcompact",
     description,
     ["snapcompact-memory"],
-    [clean_plugin(), ..compaction_plugins()],
+    [
+      extension.SettingsPlugin(settings.declaration(config_section())),
+      clean_plugin(),
+      ..compaction_plugins()
+    ],
     initialise,
   )
 }

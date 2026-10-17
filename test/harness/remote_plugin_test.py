@@ -109,13 +109,14 @@ class RemotePluginTest(unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self):
         self.loop = asyncio.get_running_loop()
+        self.events = []
         self.api = PythonApi(
             self.loop,
             daemon_host,
             FakeHostError,
             Capture,
             64 * 1024,
-            lambda event: None,
+            self.events.append,
             lambda close: None,
             lambda cls: None,
             2,
@@ -250,8 +251,12 @@ class RemotePluginTest(unittest.IsolatedAsyncioTestCase):
                 "python": "python-explicit",
             },
         )
-        settings.write_text(json.dumps({"remote": {}, "ssh": values}))
-        self.assertEqual(remote._settings(), {})
+        # A remote section saved with only some keys still takes the rest
+        # from ssh, so saving one setting never drops the others.
+        settings.write_text(
+            json.dumps({"remote": {"host": "remote-host"}, "ssh": values})
+        )
+        self.assertEqual(remote._settings(), {**values, "host": "remote-host"})
         # ssh takes a URI target with a port; its path is the remote cwd
         self.assertEqual(
             remote.parse_target("ssh://me@box:2222/srv/app"),
@@ -525,6 +530,26 @@ class RemotePluginTest(unittest.IsolatedAsyncioTestCase):
     async def test_stop_remote_job_unknown_returns_none(self):
         result = await remote.stop_remote_job("unknown-id")
         self.assertIsNone(result)
+
+    async def test_lost_connection_clears_live_jobs_and_connections(self):
+        connection, stream, call = self.reader_connection()
+        remote.connections.append(connection)
+        start = {
+            "type": "job_start",
+            "id": "ghost-job",
+            "command": "python3 /content/run.py",
+            "service": False,
+        }
+        data = json.dumps(start).encode()
+        stream.feed_data(struct.pack(">I", len(data)) + data)
+        stream.feed_eof()
+        await self.assert_reader_lost(connection, call)
+        self.assertEqual(connection._live, {})
+        self.assertEqual(list(self.remote.connections()), [])
+        job_events = [e for e in self.events if e.get("type") == "jobs"]
+        self.assertEqual([e["live"] for e in job_events], [1, 0])
+        self.assertEqual(job_events[-1]["items"], [])
+        self.assertIsNone(await remote.stop_remote_job("ghost-job"))
 
     async def test_stop_remote_job_fallback_job_stops_locally(self):
         rem = await self.connect(modules=["definitely-not-a-module"])

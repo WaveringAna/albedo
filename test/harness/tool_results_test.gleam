@@ -120,3 +120,30 @@ pub fn pairing_is_idempotent_test() -> Nil {
     #("user", "between"),
   ])
 }
+
+pub fn repeated_call_ids_across_turns_keep_each_turns_result_test() -> Nil {
+  let inputs = [
+    calls(["call_0"]),
+    types.ToolOutput("call_0", "first", []),
+    note("second prompt"),
+    calls(["call_0"]),
+    types.ToolOutput("call_0", "second", []),
+  ]
+  tool_results.pair(inputs) |> should.equal(inputs)
+  tool_results.unanswered(inputs) |> should.equal([])
+
+  let pending_tail = [
+    calls(["call_0"]),
+    types.ToolOutput("call_0", "first", []),
+    note("second prompt"),
+    calls(["call_0"]),
+  ]
+  tool_results.unanswered(pending_tail)
+  |> should.equal([types.ToolCall("call_0", "python", "{}")])
+  tool_results.pair(pending_tail)
+  |> should.equal(
+    list.append(pending_tail, [
+      types.ToolOutput("call_0", tool_results.unpaired_result, []),
+    ]),
+  )
+}

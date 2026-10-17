@@ -273,6 +273,7 @@ pub fn create_child_identified(
   ledger: store.Store,
   child: ChildCreation,
 ) -> Result(operations.Receipt, String) {
+  use limits <- result.try(family.limits())
   store.query(ledger, fn(db) {
     store.transaction(db, fn() {
       use _ <- result.try(creation_available_in(db, child.info.id))
@@ -314,6 +315,7 @@ pub fn create_child_identified(
             child.info.id,
             child.parent_id,
             child.name,
+            limits,
           ))
           use _ <- result.try(record_creation_in(db, child.info.id, creation))
           use inserted <- result.try(mail.insert(
@@ -1119,13 +1121,14 @@ pub fn create_child(
   parent: String,
   name: String,
 ) -> Result(#(Info, family.Member), String) {
+  use limits <- result.try(family.limits())
   store.query(ledger, fn(db) {
     store.transaction(db, fn() {
       use above <- result.try(session_configuration.read_in(db, parent))
       use _ <- result.try(family.available_in(db, parent))
       let info = Info(..info, cwd: above.workspace)
       use _ <- result.try(create_in(db, info))
-      use member <- result.try(family.link_in(db, info.id, parent, name))
+      use member <- result.try(family.link_in(db, info.id, parent, name, limits))
       Ok(#(info, member))
     })
   })

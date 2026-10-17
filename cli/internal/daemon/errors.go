@@ -76,6 +76,10 @@ func (e *UncertainOutcomeError) Error() string {
 	if e.Handle != nil {
 		return e.Operation + " admission is uncertain; operation " + e.Handle.ID() + " can be queried"
 	}
+	var apiErr *APIError
+	if errors.As(e.Cause, &apiErr) && apiErr.Message != "" {
+		return e.Operation + ": " + apiErr.Message + " (may have been accepted; check its result before trying again)"
+	}
 	return e.Operation + " may have been accepted; check its result before trying again"
 }
 

@@ -289,6 +289,11 @@ func sectionRule(label string, count, width int) string {
 	return DefaultStyles.Decor.Render(" ─") + DefaultStyles.Muted.Bold(true).Render(head) + DefaultStyles.Decor.Render(tail+rule)
 }
 
+// groupHeading heads a group of sections in a list, above their rules.
+func groupHeading(label string, width int) string {
+	return DefaultStyles.Bold.Render(ansi.Truncate(" "+label, width, "…"))
+}
+
 // promptMark is where you type.
 const promptMark = "› "
 const promptMarkWidth = 2

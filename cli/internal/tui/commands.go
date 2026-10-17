@@ -44,6 +44,7 @@ var AppCommands = []ChatCommand{
 	{Name: "/mcp", Description: "manage MCP servers and authentication"},
 	{Name: "/webhooks", Description: "manage signed webhooks and agent access"},
 	{Name: "/discord", Description: "give sessions Discord bots: channels, DMs and invites"},
+	{Name: "/config", Description: "edit settings"},
 	{Name: "/tree", Description: "rewind this session to before a user message"},
 	{Name: "/fork", Description: "branch this session from a history checkpoint"},
 	{Name: "/cd", Description: "move this session to another folder"},

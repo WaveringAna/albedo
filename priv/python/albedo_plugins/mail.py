@@ -41,6 +41,24 @@ class Mail:
             cast(dict, await host("mail.submit", {"to": target.strip(), "body": body}))
         )
 
+    @hook.reported("mail.request", {"to": "to", "body": "body"})
+    async def request(self, to: object, body: str) -> Receipt:
+        """Send a request; the recipient owes a reply until sending any letter back."""
+        target = getattr(to, "id", to)
+        if (
+            not isinstance(target, str)
+            or not target.strip()
+            or not isinstance(body, str)
+        ):
+            raise TypeError("mail.request(to, body) takes a target and string body")
+        return Receipt(
+            cast(dict, await host("mail.request", {"to": target.strip(), "body": body}))
+        )
+
+    async def open(self) -> Record:
+        """Return {owed, awaiting} open request summaries."""
+        return Record(cast(dict, await host("mail.open", {})))
+
     def read(self, *_: object, **__: object) -> None:
         raise AttributeError(
             "there is no mail.read: letters to you arrive in your conversation as <mail> blocks"

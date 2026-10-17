@@ -57,28 +57,60 @@ type Resumed {
 
 const cut_prefix = "users:"
 
-fn default_config() -> Config {
-  Config(None, 80, 25)
-}
-
-fn config_decoder() -> decode.Decoder(Config) {
-  use capacity <- decode.optional_field(
+fn window() -> settings.Setting(Option(Int)) {
+  settings.optional_whole(
     "contextWindowTokens",
-    None,
-    decode.optional(decode.int),
+    "Context window",
+    "Tokens compaction measures against when the session sets no window of its own. Unset uses the model catalog's window.",
+    1,
+    100_000_000,
   )
-  use trigger <- decode.optional_field("triggerPercent", 80, decode.int)
-  use tail <- decode.optional_field("tailPercent", 25, decode.int)
-  decode.success(Config(capacity, trigger, tail))
 }
 
-fn validated(loaded: Result(Config, String)) -> Result(Config, String) {
-  use config <- result.try(loaded)
-  validate_config(config)
+fn trigger() -> settings.Setting(Int) {
+  settings.whole(
+    "triggerPercent",
+    "Trigger",
+    "Compact when a request reaches this percent of the window.",
+    80,
+    1,
+    99,
+  )
+}
+
+fn tail() -> settings.Setting(Int) {
+  settings.whole(
+    "tailPercent",
+    "Verbatim tail",
+    "Percent of the window kept word for word after a compaction. Must be below the trigger.",
+    25,
+    1,
+    98,
+  )
+}
+
+fn config_section() -> settings.Section(Config) {
+  settings.section(
+    "rolling",
+    "Rolling summary compaction",
+    settings.Context,
+    [
+      settings.field(window()),
+      settings.field(trigger()),
+      settings.field(tail()),
+    ],
+    {
+      use capacity <- settings.value(window())
+      use trigger <- settings.value(trigger())
+      use tail <- settings.value(tail())
+      decode.success(Config(capacity, trigger, tail))
+    },
+    validate_config,
+  )
 }
 
 fn load_config() -> Result(Config, String) {
-  validated(settings.load("rolling", config_decoder(), default_config()))
+  settings.load_section(config_section())
 }
 
 fn bundle(strategy: compaction.Strategy) -> extension.Extension {
@@ -102,7 +134,11 @@ pub fn configured_extension(config: Config) -> extension.Extension {
 }
 
 pub fn extension() -> extension.Extension {
-  bundle(with_settings())
+  let bundled = bundle(with_settings())
+  extension.Extension(..bundled, plugins: [
+    extension.SettingsPlugin(settings.declaration(config_section())),
+    ..bundled.plugins
+  ])
 }
 
 /// The rolling strategy under the saved settings, for a strategy that falls

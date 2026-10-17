@@ -180,16 +180,29 @@ pub fn stream_decodes_text_thought_and_usage_test() -> Nil {
   assert usage.reasoning_tokens == Some(2)
 }
 
-pub fn stream_decodes_a_function_call_with_an_indexed_id_test() -> Nil {
+pub fn stream_decodes_a_function_call_with_a_unique_or_supplied_id_test() -> Nil {
   let chunks = [
     "{\"candidates\":[{\"content\":{\"parts\":[{\"functionCall\":{\"name\":\"bash\",\"args\":{\"cmd\":\"ls\"}}}]},\"finishReason\":\"STOP\"}]}",
   ]
-  let assert Ok(turn) = reduce(chunks)
-  assert turn.finish == types.ToolCalls
-  let assert [call] = turn.tool_calls
-  assert call.id == "call_0"
-  assert call.name == "bash"
-  assert call.arguments == "{\"cmd\":\"ls\"}"
+  let assert Ok(first_turn) = reduce(chunks)
+  let assert Ok(second_turn) = reduce(chunks)
+  assert first_turn.finish == types.ToolCalls
+  let assert [first] = first_turn.tool_calls
+  let assert [second] = second_turn.tool_calls
+  assert string.starts_with(first.id, "call_")
+  assert string.starts_with(second.id, "call_")
+  assert first.id != second.id
+  assert first.name == "bash"
+  assert first.arguments == "{\"cmd\":\"ls\"}"
+
+  let named_chunks = [
+    "{\"candidates\":[{\"content\":{\"parts\":[{\"functionCall\":{\"id\":\"call_953749\",\"name\":\"python\",\"args\":{\"code\":\"1+1\"}}}]},\"finishReason\":\"STOP\"}]}",
+  ]
+  let assert Ok(named_turn) = reduce(named_chunks)
+  let assert [named] = named_turn.tool_calls
+  assert named.id == "call_953749"
+  assert named.name == "python"
+  assert named.arguments == "{\"code\":\"1+1\"}"
 }
 
 pub fn stream_maps_finish_reasons_to_albedo_finish_values_test() -> Nil {

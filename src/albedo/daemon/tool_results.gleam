@@ -8,7 +8,6 @@ import gleam/int
 import gleam/list
 import gleam/option.{Some}
 import gleam/order
-import gleam/set
 
 /// Scan state: each row's sort key and index (newest first), the block of
 /// consecutive provider items being read and whether only its results have
@@ -122,50 +121,85 @@ fn step(scan: Scan, input: types.Input, index: Int) -> Scan {
   }
 }
 
+/// The calls in `inputs` that no following tool result has answered yet.
+pub fn unanswered(inputs: List(types.Input)) -> List(types.ToolCall) {
+  list.fold(inputs, [], fn(pending, input) {
+    case input {
+      types.Replay(_) ->
+        list.fold(message_content.calls(input), pending, fn(pending, call) {
+          [
+            call,
+            ..list.filter(pending, fn(open: types.ToolCall) {
+              open.id != call.id
+            })
+          ]
+        })
+      types.ToolOutput(id, _, _) ->
+        list.filter(pending, fn(open: types.ToolCall) { open.id != id })
+      _ -> pending
+    }
+  })
+  |> list.reverse
+}
+
 /// The result a request carries for a call whose output nothing carries.
 pub const unpaired_result = "interrupted, no output"
 
-/// Every call id the provider items in `inputs` make, once each, in order.
-fn declared_calls(inputs: List(types.Input)) -> List(String) {
-  let #(ids, _) =
-    list.flat_map(inputs, message_content.calls)
-    |> list.fold(#([], set.new()), fn(seen, call) {
-      case set.contains(seen.1, call.id) {
-        True -> seen
-        False -> #([call.id, ..seen.0], set.insert(seen.1, call.id))
-      }
-    })
-  list.reverse(ids)
+type Pair {
+  Pair(items: List(types.Input), pending: List(String), in_block: Bool)
 }
 
-/// `inputs` in chronological order, paired for a request: every call the
-/// provider items make carries exactly one tool result immediately after the
-/// block that made it. A late result moves there, a call no result answers
-/// gets `unpaired_result`, and results whose call nothing carries — dropped
-/// by a projection, or a second answer to one call — stay out of the request:
-/// providers reject a tool_use without its tool_result and a tool_result
-/// without its tool_use alike. `settle` is the order; this is the pairing.
+/// `inputs` in chronological order, paired for a request: every call a
+/// provider block makes carries its tool result immediately after the block
+/// that made it. A late result moves there, a call no result answers gets
+/// `unpaired_result`, and results whose call nothing in that block carries —
+/// dropped by a projection, or a second answer to one call — stay out of the
+/// request: providers reject a tool_use without its tool_result and a
+/// tool_result without its tool_use alike. Pairing per block keeps every
+/// turn's result even when two turns reuse a call id.
 pub fn pair(inputs: List(types.Input)) -> List(types.Input) {
-  let declared = declared_calls(inputs)
-  let known = set.from_list(declared)
-  let #(kept, answered_ids) =
-    list.fold(inputs, #([], set.new()), fn(scan, input) {
-      case input {
-        types.ToolOutput(id, _, _) ->
-          case set.contains(known, id) && !set.contains(scan.1, id) {
-            True -> #([input, ..scan.0], set.insert(scan.1, id))
-            False -> scan
-          }
-        _ -> #([input, ..scan.0], scan.1)
+  let paired =
+    settle(inputs, fn(input) { input })
+    |> list.fold(Pair([], [], False), pair_step)
+  flush_unpaired(paired.items, paired.pending)
+  |> list.reverse
+}
+
+fn pair_step(state: Pair, input: types.Input) -> Pair {
+  case input {
+    types.Replay(_) -> {
+      let #(items, pending) = case state.in_block {
+        True -> #(state.items, state.pending)
+        False -> #(flush_unpaired(state.items, state.pending), [])
       }
-    })
-  let missing =
-    list.filter(declared, fn(id) { !set.contains(answered_ids, id) })
-  settle(
-    list.append(
-      list.reverse(kept),
-      list.map(missing, fn(id) { types.ToolOutput(id, unpaired_result, []) }),
-    ),
-    fn(input) { input },
-  )
+      let pending =
+        list.fold(message_content.calls(input), pending, fn(acc, call) {
+          case list.contains(acc, call.id) {
+            True -> acc
+            False -> list.append(acc, [call.id])
+          }
+        })
+      Pair([input, ..items], pending, True)
+    }
+    types.ToolOutput(id, _, _) ->
+      case list.contains(state.pending, id) {
+        True ->
+          Pair(
+            [input, ..state.items],
+            list.filter(state.pending, fn(open) { open != id }),
+            False,
+          )
+        False -> Pair(..state, in_block: False)
+      }
+    _ -> Pair([input, ..flush_unpaired(state.items, state.pending)], [], False)
+  }
+}
+
+fn flush_unpaired(
+  items: List(types.Input),
+  pending: List(String),
+) -> List(types.Input) {
+  list.fold(pending, items, fn(acc, id) {
+    [types.ToolOutput(id, unpaired_result, []), ..acc]
+  })
 }

@@ -544,6 +544,7 @@ pub fn summaries(
             extension.MigrationPlugin(_) -> "migration"
             extension.CleanPlugin(_) -> "clean"
             extension.SearchPlugin(_) -> "search"
+            extension.SettingsPlugin(_) -> "settings"
           }
         }),
         None,

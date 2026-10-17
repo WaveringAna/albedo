@@ -16,6 +16,7 @@ Plugins are typed contribution points and an extension can provide several kinds
 - login: provide a browser-based sign-in flow, often depended on by model provider extensions.
 - service: mount daemon HTTP routes under the extension’s path.
 - migration: contribute schema setup or data upgrades.
+- settings: declare the values the extension reads from its section of `$ALBEDO_HOME/extensions.json` (key, label, description, default, and the range or kind it accepts). The daemon lists and saves them through the `extension_settings` settings group, checking a save with the extension's own rules first, and `/config` in the TUI edits them. See [extension settings](../robot-docs/extensions.md#extension-settings).
 
 On installation/startup the host calls each extension’s initializer and applies schema migrations. When a session’s enabled extensions are composed, their plugins supply the context, tools, commands, strategies, and other session-facing capabilities. Services and model-provider capabilities are used by daemon-level code rather than being ordinary per-session tools.
 

@@ -15,14 +15,35 @@ import gleam/option.{None}
 import gleam/result
 import gleam/string
 
-const default_endpoint = "https://api.exa.ai"
+fn endpoint() -> settings.Setting(String) {
+  settings.text(
+    "endpoint",
+    "Endpoint",
+    "Base URL of the Exa search API; searches POST to its /search.",
+    "https://api.exa.ai",
+  )
+}
+
+fn config_section() -> settings.Section(String) {
+  settings.section(
+    "exa",
+    "Exa web search",
+    settings.WebSearch,
+    [settings.field(endpoint())],
+    settings.value(endpoint(), decode.success),
+    Ok,
+  )
+}
 
 pub fn extension() -> extension.Extension {
   extension.Extension(
     "exa",
     "Exa web search with an API key from creds.json",
     [],
-    [extension.SearchPlugin(web_search.Provider("exa", "Exa", search))],
+    [
+      extension.SettingsPlugin(settings.declaration(config_section())),
+      extension.SearchPlugin(web_search.Provider("exa", "Exa", search)),
+    ],
     extension.no_initialise,
   )
 }
@@ -30,16 +51,7 @@ pub fn extension() -> extension.Extension {
 fn search(query: web_search.Query) -> Result(web_search.Answer, String) {
   let home = settings.home()
   use key <- result.try(api_key(home))
-  use endpoint <- result.try(settings.load(
-    "exa",
-    decode.optional_field(
-      "endpoint",
-      default_endpoint,
-      decode.string,
-      decode.success,
-    ),
-    default_endpoint,
-  ))
+  use endpoint <- result.try(settings.load_section(config_section()))
   let body =
     json.object([
       #("query", json.string(query.text)),

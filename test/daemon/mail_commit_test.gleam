@@ -4,6 +4,7 @@ import albedo/daemon/family
 import albedo/daemon/mail
 import albedo/daemon/store
 import albedo/harness/runtime
+import albedo/harness/settings
 import albedo/openai_api/types
 import gleam/dynamic/decode
 import gleam/option.{None, Some}
@@ -39,7 +40,13 @@ pub fn close_before_mail_commit_rolls_back_turn_and_preserves_letter_test() -> N
     conversation.create(ledger, conversation.Info(..parent, id: "child"))
   let assert Ok(_) =
     store.query(ledger, fn(connection) {
-      family.link_in(connection, "child", "parent", "child")
+      family.link_in(
+        connection,
+        "child",
+        "parent",
+        "child",
+        family.Limits(settings.Limited(12), settings.Limited(3)),
+      )
     })
   let assert Ok(_) =
     mail.post(

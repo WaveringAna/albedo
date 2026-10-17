@@ -44,8 +44,15 @@ pub fn settings(
     })
     case req.method {
       Get -> {
+        use host <- result.try(
+          registry.host(registry) |> result.map_error(http_api.failure),
+        )
         use observed <- result.try(
-          settings.observe_group(config.home, group)
+          settings.observe_group(
+            config.home,
+            group,
+            extension.declared_settings(runtime.installed(host)),
+          )
           |> result.map_error(http_api.native_failure),
         )
         let response = http_api.raw(200, observed.value)
@@ -59,6 +66,7 @@ pub fn settings(
           "providers" -> ["default_profile", "profiles"]
           "mcp" -> ["definitions", "validate_connection"]
           "extensions" -> ["defaults"]
+          "extension_settings" -> ["values"]
           "capabilities" -> [
             "catalog_session_id",
             "catalog_revision",
@@ -125,6 +133,7 @@ pub fn settings(
                 }
               })
             },
+            extension.declared_settings(runtime.installed(host)),
           )
           |> result.map_error(http_api.native_failure),
         )

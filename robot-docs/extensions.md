@@ -3,7 +3,7 @@
 Persisted preferences are owned by the daemon and changed through the [settings API](settings.md). The CLI refreshes them on use and never writes settings files.
 
 
-an extension is a named bundle of plugins. it can contribute any number of context, tool, command, managed (with an optional [hook](hooks.md)), models, provider, login, service, migration, compaction, notes, clean, fold, or [search](web-search.md) plugins. `python`, `run`, `work`, `mail`, `agents`, `schedule`, `paperclips`, `files`, `memory`, `links`, `instructions`, `commands`, `skills`, `models`, `openai`, `codex`, `antigravity`, `alibaba`, `opencode-go`, `opencode-zen`, `bedrock`, `claude`, `vertex`, `rolling`, `snapcompact-memory`, `lcm-memory`, `notes`, `remote`, `browser`, [`warm`](cache-warming.md), `exa`, and [`web-search`](web-search.md) are enabled by default; `cua` ([`cua.md`](cua.md)), `mcp`, `view`, [`proxy`](proxy.md), `webhooks`, [`discord`](discord.md), [`hooks`](hooks.md), and the `snapcompact` and `lcm` compaction strategies are installed and disabled until enabled. plugin contributions compose inside them.
+an extension is a named bundle of plugins. it can contribute any number of context, tool, command, managed (with an optional [hook](hooks.md)), models, provider, login, service, migration, compaction, notes, clean, fold, or [search](web-search.md) plugins, and one settings plugin. `python`, `run`, `work`, `mail`, `agents`, `schedule`, `paperclips`, `files`, `memory`, `links`, `instructions`, `commands`, `skills`, `models`, `openai`, `codex`, `antigravity`, `alibaba`, `opencode-go`, `opencode-zen`, `bedrock`, `claude`, `vertex`, `rolling`, `snapcompact-memory`, `lcm-memory`, `notes`, `remote`, `browser`, [`warm`](cache-warming.md), `exa`, and [`web-search`](web-search.md) are enabled by default; `cua` ([`cua.md`](cua.md)), `mcp`, `view`, [`proxy`](proxy.md), `webhooks`, [`discord`](discord.md), [`hooks`](hooks.md), and the `snapcompact` and `lcm` compaction strategies are installed and disabled until enabled. plugin contributions compose inside them.
 
 ## select extensions
 
@@ -75,7 +75,7 @@ a managed contribution may also set `hook`, which each turn asks before and afte
 
 ## broken extensions
 
-the daemon starts without an extension it cannot run and says so. `extension.install` quarantines one whose name is blank or already taken, whose requirement is not installed (cascading to what needed it), whose initialiser or schema callback fails or raises, or that the default selection cannot run (a requirement it does not enable, duplicate capabilities, a second compaction strategy). only storage the host owns stops the boot. a quarantined extension is in no session's selection, is listed by `/extensions` with its reason in the `quarantined` field, and any attempt to enable it is refused with that reason.
+the daemon starts without an extension it cannot run and says so. `extension.install` quarantines one whose name is blank or already taken, whose settings declaration it could not serve (more than one, under another extension's name, a key twice, or defaults its own rules refuse), whose requirement is not installed (cascading to what needed it), whose initialiser or schema callback fails or raises, or that the default selection cannot run (a requirement it does not enable, duplicate capabilities, a second compaction strategy). only storage the host owns stops the boot. a quarantined extension is in no session's selection, is listed by `/extensions` with its reason in the `quarantined` field, and any attempt to enable it is refused with that reason.
 
 An extension activates as a complete bundle. If its context fails, a managed plugin cannot prepare, or its capabilities collide, none of its contributions remain active. Dependents also become inactive until every requirement works. Unrelated extensions continue running. Registry order decides which complete bundle wins a collision; accepted contributions retain static-before-managed order.
 
@@ -146,7 +146,41 @@ plugins: [
 
 ## extension settings
 
-optional `$ALBEDO_HOME/extensions.json` (default `~/.albedo/extensions.json`) holds named extension settings separately from provider credentials and session selection. settings are read when preparing a worker; changing a file does not mutate an existing session composition. missing sections use extension defaults. invalid settings fail preparation without replacing the live worker.
+optional `$ALBEDO_HOME/extensions.json` (default `~/.albedo/extensions.json`) holds one section per extension, under its name, separately from provider credentials and session selection. an extension declares the settings it reads there with `SettingsPlugin(settings.declaration(section))`, built in [`harness/settings.gleam`](../src/albedo/harness/settings.gleam):
+
+```gleam
+fn trigger() -> settings.Setting(Int) {
+  settings.whole(
+    "triggerPercent",
+    "Trigger",
+    "Compact when a request reaches this percent of the window.",
+    80,
+    1,
+    99,
+  )
+}
+
+fn config_section() -> settings.Section(Config) {
+  settings.section(
+    "rolling",
+    "Rolling summary compaction",
+    settings.Context,
+    [settings.field(trigger())],
+    {
+      use trigger <- settings.value(trigger())
+      decode.success(Config(trigger))
+    },
+    validate_config,
+  )
+}
+
+// plugins: [extension.SettingsPlugin(settings.declaration(config_section())), ..]
+// reading: settings.load_section(config_section())
+```
+
+a `Setting` is one key with its label, description, default and kind (`whole`/`optional_whole` from a minimum to a maximum, `text`/`optional_text` not blank and at most 4096 bytes, `limit` from a minimum to a maximum or -1 for no limit, read as `Limited(n)` or `Unlimited`); the same value declares the field and decodes it, so the two cannot disagree. a `Section` names the section, labels it with what it configures (the heading `/config` shows, since an extension's name like `lcm` says little), puts it in a `Category` (`WebSearch`, `Context`, `Agents`, `ModelsAndCaching` or `Tools`, the heading `/config` groups it under), and adds the decoder into the extension's own config and a `check` for rules across fields (`tailPercent < triggerPercent`). `settings.load_section(section)` reads it: a missing section or key takes the default, null counts as unset, and a value outside its field or the check is an error naming the key and the rule. keys the declaration leaves out stay the extension's own (`mcp`'s `servers`, `web-search`'s `order`) and are kept by every save. an extension whose Python reads its section (`remote`, `cua`) declares the fields with a `decode.success(Nil)` decoder so the daemon can still list and check them.
+
+the daemon serves every installed declaration, after its own sections (`daemon/core_settings.gleam`, such as `subagents`), as the [`extension_settings` settings group](settings.md#extension-settings), and the TUI edits it in `/config`; a save is checked by the section owner's rules before anything is written. an extension named after one of the daemon's sections is quarantined, since the section would be both. extensions read their section when they use it (each request, compaction, search or warm ping), so a saved value applies without a reload; `mcp` reads `retryMs` when a session prepares. `settings.load(name, decoder, default)` remains for sections nothing declares, such as the daemon's own `quota` and `cacheTtl`.
 
 ## python bindings
 
@@ -258,7 +292,7 @@ the target resolves per call from a `host=` argument, then `remote.configure(hos
 
 the kernel bundle supports Python 3.11 and newer; remote boot uses `python3` unless the `python` setting selects another executable. the bundle-wide syntax check uses the minimum version in `pyrightconfig.json`. Ruff, ty, the Nix development shell, and the packaged runtime also target Python 3.11.
 
-`host`, `remoteCwd`, and `python` must be strings when present in settings; invalid values raise `RemoteError` naming the field. Missing settings files contribute no values. The `ssh` section remains the fallback when the `remote` section is absent. Unrelated settings are ignored.
+`host`, `remoteCwd`, and `python` must be strings when present in settings; invalid values raise `RemoteError` naming the field. Missing settings files contribute no values. A key the `remote` section leaves out is taken from the older `ssh` section, so saving one remote setting keeps the rest. Unrelated settings are ignored.
 
 a bare host asks the remote for its `pwd` once. if the host is reachable but its kernel cannot boot (no python, staging failed, bad handshake), `connect()` still returns and prints a warning: the connection is degraded to SSH command mode, where only `rem.run(program, *args, cwd=, env=, stdin=, timeout=300)`, `rem.shell(command, cwd=, env=, stdin=, timeout=300)`, `rem.read(path)`, `rem.write(path, content)`, and `rem.show_image(path_or_bytes)` answer and everything else raises. `rem.read` returns text, or bytes when the file is not UTF-8, so a binary file never comes back with its bytes replaced; `rem.write` takes either. here `stdin` accepts only text or bytes, not a file or another job, and `.pipe()` is unavailable. The connect warning shows the degraded-only escape hatch `rem.shell('git log --oneline | rg fix')`, which invokes `bash -c` on the host for pipes or other shell syntax. `rem.shell()` does not exist in kernel mode. Neither the quoted-argv `rem.run()` fallback nor `rem.shell()` can offer process-group supervision, so stopping or timing out an ssh client does not prove the remote program stopped. an unreachable host fails `connect()`. a host that needs a person to sign in (ssh's words: permission denied, a passphrase, a host key; `albedo_ssh.failure`) fails it with the command that signs in where ssh can ask, `ssh -M -fN -o ControlPath=<path> -o ControlPersist=<s> <target>` (`albedo_ssh.sign_in`), for the model to hand the user: the master it opens is the one the next `connect()` rides. connections are scoped: a lost SSH channel invalidates the connection rather than silently reconnecting, and `await rem.close()` ends it. connections run under `BatchMode=yes`, so key-based auth is required.
 

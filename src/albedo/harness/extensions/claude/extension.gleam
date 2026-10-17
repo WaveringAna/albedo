@@ -46,9 +46,14 @@ pub fn extension() -> extension.Extension {
         resolve,
       )),
       extension.SearchPlugin(web_search.Provider("claude", "Claude", search)),
+      extension.SettingsPlugin(settings.declaration(search_settings())),
     ],
     extension.no_initialise,
   )
+}
+
+fn search_settings() -> settings.Section(Option(String)) {
+  web_search.model_settings("claude", "Claude provider")
 }
 
 fn login() -> oauth.Login {
@@ -171,7 +176,7 @@ fn search(query: web_search.Query) -> Result(web_search.Answer, String) {
       None,
     )),
   )
-  use model <- result.try(case web_search.configured_model("claude") {
+  use model <- result.try(case web_search.configured_model(search_settings()) {
     Some(model) -> Ok(model)
     None ->
       list_models("anthropic", None)

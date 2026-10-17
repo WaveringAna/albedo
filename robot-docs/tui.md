@@ -9,13 +9,13 @@ every list screen is built from the same four parts. a new list screen composes 
 | part | file | owns |
 | --- | --- | --- |
 | `listFrame` | `frame.go` | the whole layout: indented title rule, filter line, list, detail pane, footer, one clip to the terminal height |
-| `listView` | `list_view.go` | the always-live filter, the cursor, sections, row drawing, the pane's contents (`listEntry`, `paneTitle`, `factRows`, `paneNote`) |
+| `listView` | `list_view.go` | the always-live filter, the cursor, groups and sections, row drawing, the pane's contents (`listEntry`, `paneTitle`, `factRows`, `paneNote`). a row's `group` puts its section under a bold heading (`/config`'s categories); a filter ranks sections within their group and groups by their best section, so a group never splits |
 | `confirm` | `confirm.go` | the one yes/no question |
 | `matchFields`, `searchWords` | `model_search.go` | the one fuzzy matcher every filter uses |
 
 `pageStatus` (`page.go`) is the small state every screen embeds beside those: width and height, the load or save in flight, the last error and notice, and the generation that makes a stale reply harmless (`settle`). every command carries the generation it started under.
 
-on the shared look: `/model`, `/sessions`, `/folders`, `/extensions`, `/skills`, `/instructions`, `/mcp`, `/webhooks`, `/discord`, `/tree`, `/quota`, `/context`, `/login`, and the daemon-driven pages (`/work`, `/paperclips`, `/schedule`, `/links`, run jobs, web-search order).
+on the shared look: `/model`, `/sessions`, `/folders`, `/extensions`, `/skills`, `/instructions`, `/mcp`, `/webhooks`, `/discord`, `/config` (`/settings`), `/tree`, `/quota`, `/context`, `/login`, and the daemon-driven pages (`/work`, `/paperclips`, `/schedule`, `/links`, run jobs, web-search order).
 
 not on it, on purpose: the chat (a transcript is not a list) and the agents canvas (a graph). the agents delete question still uses `confirm`.
 
@@ -49,7 +49,7 @@ these mean the same thing on every screen that has them:
 
 other chords belong to one screen and say so in their hint: `ctrl+t` (enable an extension on `/skills`, reply or toggle on pages, agent access on `/webhooks`), `ctrl+g` (enable an mcp server, new webhook secret, done or acknowledge on pages), `ctrl+l` (copy a webhook url, sign in on `/folders`), `ctrl+w` (webhooks or discord from `/extensions`), `ctrl+a` (actions menu on pages, archive on `/sessions`), `ctrl+s` (save a form, pin a session).
 
-known exceptions to the table: on `/sessions` `ctrl+r` renames (on `/folders` it retries), and on the agents canvas `ctrl+x` deletes. on `/discord` a bot's channels cycle their delivery on space (Discord channel names have no spaces, so the filter never needs one) and `ctrl+t` toggles mentions-only; `tab` switches between its channels and DMs. pages use `ctrl+x` for dismiss or stop. a terminal without the kitty keyboard protocol sends plain enter for shift+enter, so the confirm on `/extensions`, `/skills` and `/mcp` names its scope ("globally?" or "for this session only?") and a mixup is visible before enter.
+known exceptions to the table: on `/sessions` `ctrl+r` renames (on `/folders` it retries), and on the agents canvas `ctrl+x` deletes. on `/discord` a bot's channels cycle their delivery on space (Discord channel names have no spaces, so the filter never needs one) and `ctrl+t` toggles mentions-only; `tab` switches between its channels and DMs. pages use `ctrl+x` for dismiss or stop. on `/config` `ctrl+x` drops a setting's saved value so its default applies, and `enter` and `ctrl+e` both edit the highlighted field, which is the one save the screen has. a terminal without the kitty keyboard protocol sends plain enter for shift+enter, so the confirm on `/extensions`, `/skills` and `/mcp` names its scope ("globally?" or "for this session only?") and a mixup is visible before enter.
 
 ## confirms
 

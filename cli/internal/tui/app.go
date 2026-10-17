@@ -27,6 +27,7 @@ const (
 	AppStateCapabilityPage
 	AppStateWebhooksPage
 	AppStateDiscordPage
+	AppStateConfigPage
 	AppStateAgents
 	AppStateFolderPicker
 	AppStateQuota
@@ -57,6 +58,7 @@ type AppModel struct {
 	CapabilityPage   CapabilityPageModel
 	WebhooksPage     WebhooksPageModel
 	DiscordPage      DiscordPageModel
+	ConfigPage       ConfigPageModel
 	TreePicker       TreePickerModel
 	SessionPicker    SessionViewer
 	PageView         PageViewModel
@@ -214,6 +216,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.CapabilityPage.SetSize(msg.Width, msg.Height)
 		m.WebhooksPage.SetSize(msg.Width, msg.Height)
 		m.DiscordPage.SetSize(msg.Width, msg.Height)
+		m.ConfigPage.SetSize(msg.Width, msg.Height)
 		m.Agents.SetSize(msg.Width, msg.Height)
 		m.FolderPicker.SetSize(msg.Width, msg.Height)
 		m.Login.SetSize(msg.Width, msg.Height)
@@ -285,6 +288,8 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.DiscordPage = NewDiscordPageModel(m.Conn, m.ActiveSession.ID)
 			return m, m.openScreen(AppStateDiscordPage, &m.DiscordPage)
 		}
+	case ChatOpenConfigPageMsg:
+		return m, m.openConfigPage()
 
 	case ChatOpenAgentsMsg:
 		if m.ActiveSession != nil {
@@ -346,7 +351,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case WebhooksPageDoneMsg, DiscordPageDoneMsg, ExtensionPickerDoneMsg,
 		TreeCancelMsg, ContextDoneMsg, CapabilityPageDoneMsg, PageCancelMsg,
-		QuotaCancelMsg:
+		QuotaCancelMsg, ConfigPageDoneMsg:
 		m.State = AppStateChat
 		return m, nil
 
@@ -531,6 +536,8 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.WebhooksPage, cmd = m.WebhooksPage.Update(msg)
 	case AppStateDiscordPage:
 		m.DiscordPage, cmd = m.DiscordPage.Update(msg)
+	case AppStateConfigPage:
+		m.ConfigPage, cmd = m.ConfigPage.Update(msg)
 	case AppStateAgents:
 		m.Agents, cmd = m.Agents.Update(msg)
 	case AppStateFolderPicker:

@@ -191,6 +191,37 @@ class AgentsTests(unittest.TestCase):
         self.assertEqual(execution["status"], "error" if rejected else "ok", execution)
         return execution if rejected else json.loads(execution["output"])
 
+    def execute(self, session, source):
+        marker = "execute fixture python " + operation_id()
+        answer = self.provider.script
+
+        def dispatch(request):
+            if (
+                request["messages"][-1].get("role") == "user"
+                and latest_user(request) == marker
+            ):
+                return python(source)
+            return answer(request)
+
+        self.provider.script = dispatch
+        try:
+            self.send(session, marker)
+            self.app.idle(session)
+        finally:
+            self.provider.script = answer
+        result = [
+            entry
+            for entry in self.app.history(session)["items"]
+            if entry["kind"] == "tool_result"
+        ][-1]
+        execution = next(
+            json.loads(part["value"])
+            for part in result["content"]
+            if part["kind"] == "json" and part["field"] == "result"
+        )
+        self.assertEqual(execution["status"], "ok", execution)
+        return execution["output"]
+
     def send(self, session, message):
         return self.api(
             f"/sessions/{session}/inputs/{operation_id()}",
@@ -278,6 +309,33 @@ class AgentsTests(unittest.TestCase):
             ],
             ["coder"],
         )
+
+    # exclusive: saves extensions.json
+    @exclusive
+    def test_saved_subagent_limits_hold_for_the_next_child(self):
+        settings = self.app.home / "extensions.json"
+        settings.write_text(
+            json.dumps({"subagents": {"maxOpenChildren": 1, "maxDepth": 1}})
+        )
+        parent = self.app.session()
+        first = self.spawn(parent, "first")["id"]
+        for under, name in ((parent, "second"), (first, "deeper")):
+            with self.subTest(name=name):
+                with self.assertRaises(urllib.error.HTTPError):
+                    self.spawn(under, name)
+
+        # -1 takes both caps away for the next child, past the defaults of 12
+        # open children and 3 deep.
+        settings.write_text(
+            json.dumps({"subagents": {"maxOpenChildren": -1, "maxDepth": -1}})
+        )
+        self.spawn(parent, "second")
+        lineage = [first]
+        for depth in range(2, 5):
+            child = self.spawn(lineage[-1], f"depth{depth}")
+            self.assertEqual(child["depth"], depth)
+            lineage.append(child["id"])
+        self.assertEqual(self.snapshot(lineage[-1])["root_id"], parent)
 
     @exclusive
     def test_mail_attribution_and_agent_card_survive_reconnect_and_restart(self):
@@ -915,3 +973,214 @@ class AgentsTests(unittest.TestCase):
             (made["provider_profile"], made["model"]), (self.beta, "fixture-listed")
         )
         self.app.idle(made["id"])
+
+    def test_request_to_missing_session_is_rejected(self):
+        session = self.app.session()
+        marker = "missing request " + operation_id()
+        answer = self.provider.script
+
+        def dispatch(request):
+            if (
+                request["messages"][-1].get("role") == "user"
+                and latest_user(request) == marker
+            ):
+                return python(
+                    "try:\n"
+                    "    await mail.request('does-not-exist', 'body')\n"
+                    "except Exception as error:\n"
+                    "    print(type(error).__name__)\n"
+                )
+            return answer(request)
+
+        self.provider.script = dispatch
+        try:
+            self.send(session, marker)
+            self.app.idle(session)
+        finally:
+            self.provider.script = answer
+        result = [
+            entry
+            for entry in self.app.history(session)["items"]
+            if entry["kind"] == "tool_result"
+        ][-1]
+        execution = next(
+            json.loads(part["value"])
+            for part in result["content"]
+            if part["kind"] == "json" and part["field"] == "result"
+        )
+        self.assertEqual(execution["status"], "ok", execution)
+        self.assertIn("WorkError", execution["output"])
+
+    def test_start_peer_and_role_are_visible_in_sessions(self):
+        parent = self.app.session()
+        marker = "start peer " + operation_id()
+        answer = self.provider.script
+
+        def dispatch(request):
+            if (
+                request["messages"][-1].get("role") == "user"
+                and latest_user(request) == marker
+            ):
+                return python(
+                    "peer = await agents.start("
+                    + repr("peer task")
+                    + ", name="
+                    + repr("peer")
+                    + ", model="
+                    + repr(f"{self.alpha}/fixture-alpha-{self.provider.route}")
+                    + ", role="
+                    + repr("research")
+                    + ")\n"
+                )
+            return answer(request)
+
+        self.provider.script = dispatch
+        try:
+            self.send(parent, marker)
+            self.app.idle(parent)
+        finally:
+            self.provider.script = answer
+        peers = [
+            item
+            for item in self.api("/sessions?scope=all")["items"]
+            if item["name"] == "peer"
+        ]
+        self.assertEqual(len(peers), 1)
+        peer = peers[0]
+        self.assertEqual(peer["started_by"], parent)
+        self.assertEqual(peer["role"], "research")
+        self.app.idle(peer["id"])
+        task = next(
+            entry
+            for entry in self.app.history(peer["id"])["items"]
+            if (entry.get("mail") or {}).get("kind") == "request"
+        )
+        self.assertEqual(task["mail"]["sender_session_id"], parent)
+        self.assertEqual(task["content"][0]["text"], "peer task")
+        self.execute(
+            parent,
+            f"await agents.set_role('verification', id={peer['id']!r})",
+        )
+        self.assertEqual(self.snapshot(peer["id"])["role"], "verification")
+
+    def test_started_peer_unreviewed_forward_and_open_requests(self):
+        starter = self.app.session()
+        task = "peer obligation task " + operation_id()
+        answer = self.provider.script
+        peer_open_sent = threading.Event()
+        reviewed_sent = threading.Event()
+
+        def dispatch(request):
+            latest = latest_user(request)
+            if peer_open_sent.is_set() and task in latest:
+                return text("peer last words")
+            if reviewed_sent.is_set() and "review request" in latest:
+                return text("reviewed reply sent")
+            if "You owe a reply to" in latest:
+                return text("peer final words")
+            if task in latest:
+                peer_open_sent.set()
+                return python(
+                    "await asyncio.sleep(1)\n"
+                    "opened = await mail.open()\n"
+                    "assert len(opened['owed']) == 1, opened\n"
+                    f"assert opened['owed'][0]['session'] == {starter!r}, opened\n"
+                    "print('peer-open-ok')"
+                )
+            if "review request" in latest:
+                reviewed_sent.set()
+                return python(
+                    f"await mail.submit({starter!r}, 'reviewed response')\n"
+                    "print('reviewed-ok')"
+                )
+            return answer(request)
+
+        self.provider.script = dispatch
+        try:
+            output = self.execute(
+                starter,
+                "peer = await agents.start("
+                + repr(task)
+                + ", name='worker', model="
+                + repr(f"{self.alpha}/fixture-alpha-{self.provider.route}")
+                + ")\n"
+                "for _ in range(100):\n"
+                "    opened = await mail.open()\n"
+                "    if opened['awaiting']:\n"
+                "        break\n"
+                "    await asyncio.sleep(0.01)\n"
+                "assert len(opened['awaiting']) == 1, opened\n"
+                "assert opened['awaiting'][0]['session'] == peer.id, opened\n"
+                "print(peer.id)",
+            )
+            peer = output.strip()
+            self.app.idle(peer)
+            forwarded = wait_for(lambda: self.asked('kind="unreviewed"') or None)[0]
+            self.assertIn("peer final words", forwarded)
+            self.assertEqual(len(self.asked("You owe a reply to")), 1)
+
+            self.execute(starter, f"await mail.request({peer!r}, 'review request')")
+            self.app.idle(peer)
+            self.app.idle(starter)
+            for session in (starter, peer):
+                self.execute(
+                    session,
+                    "opened = await mail.open()\n"
+                    "assert opened == {'owed': [], 'awaiting': []}, opened\n"
+                    "print('open-clear')",
+                )
+        finally:
+            self.provider.script = answer
+
+    def test_only_starter_can_cancel_and_close_peer(self):
+        starter = self.app.session()
+        peer = self.execute(
+            starter,
+            "peer = await agents.start('authorization task', name='owned-peer', model="
+            + repr(f"{self.alpha}/fixture-alpha-{self.provider.route}")
+            + ")\n"
+            "print(peer.id)",
+        ).strip()
+        self.app.idle(peer)
+        stranger = self.app.session()
+        output = self.execute(
+            stranger,
+            "target = await agents.get(" + repr(peer) + ")\n"
+            "errors = []\n"
+            "for action in (target.cancel, target.close):\n"
+            "    try:\n"
+            "        await action()\n"
+            "    except Exception as error:\n"
+            "        errors.append(str(error))\n"
+            "assert len(errors) == 2, errors\n"
+            "print('refused')",
+        )
+        self.assertIn("refused", output)
+        self.execute(
+            starter,
+            "target = await agents.get(" + repr(peer) + ")\n"
+            "await target.cancel()\n"
+            "await target.close()",
+        )
+        self.assertTrue(self.snapshot(peer)["closed"])
+
+    def test_root_request_reminds_and_forwards_unreviewed(self):
+        sender = self.app.session()
+        recipient = self.app.session()
+        body = "plain root request " + operation_id()
+        answer = self.provider.script
+
+        def dispatch(request):
+            if "You owe a reply to" in latest_user(request):
+                return text("root final words: " + body)
+            return answer(request)
+
+        self.provider.script = dispatch
+        try:
+            self.execute(sender, f"await mail.request({recipient!r}, {body!r})")
+            self.app.idle(recipient)
+        finally:
+            self.provider.script = answer
+        forwarded = wait_for(lambda: self.asked('kind="unreviewed"') or None)[0]
+        self.assertIn("root final words: " + body, forwarded)
+        self.assertEqual(len(self.asked("You owe a reply to")), 1)

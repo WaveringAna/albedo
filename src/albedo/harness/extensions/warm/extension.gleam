@@ -31,7 +31,10 @@ pub fn extension() -> extension.Extension {
     "warm",
     "Keeps an idle session's prompt cache warm while its children or background jobs run",
     [],
-    [extension.ManagedPlugin(prepare)],
+    [
+      extension.SettingsPlugin(settings.declaration(config_section())),
+      extension.ManagedPlugin(prepare),
+    ],
     extension.no_initialise,
   )
 }
@@ -225,14 +228,32 @@ fn wanted(handle: extension.Session) -> Bool {
   handle.awaited()
 }
 
-/// The smallest cached prefix worth a round trip: `minCachedTokens` in
-/// `extensions.json` under `"warm"`, 1024 when unset or malformed.
+fn min_cached() -> settings.Setting(Int) {
+  settings.whole(
+    "minCachedTokens",
+    "Smallest cache",
+    "The smallest cached prompt prefix, in tokens, worth a ping to keep warm.",
+    1024,
+    0,
+    10_000_000,
+  )
+}
+
+fn config_section() -> settings.Section(Int) {
+  settings.section(
+    "warm",
+    "Prompt cache warming",
+    settings.ModelsAndCaching,
+    [settings.field(min_cached())],
+    settings.value(min_cached(), decode.success),
+    Ok,
+  )
+}
+
+/// The smallest cached prefix worth a round trip, the default when the
+/// saved one is unusable: a warmer never stops over a setting.
 fn min_cached_tokens() -> Int {
-  let decoder = {
-    use tokens <- decode.optional_field("minCachedTokens", 1024, decode.int)
-    decode.success(tokens)
-  }
-  settings.load("warm", decoder, 1024)
+  settings.load_section(config_section())
   |> result.unwrap(1024)
 }
 

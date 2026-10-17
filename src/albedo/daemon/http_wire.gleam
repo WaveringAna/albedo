@@ -69,6 +69,8 @@ pub fn summary_fields(capture: session.Capture) -> List(#(String, json.Json)) {
         json.string,
       ),
     ),
+    #("role", json.string(capture.family.role)),
+    #("started_by", json.nullable(capture.family.started_by, json.string)),
     #(
       "address",
       json.nullable(
@@ -87,7 +89,7 @@ pub fn summary_fields(capture: session.Capture) -> List(#(String, json.Json)) {
       "closed",
       json.bool(
         option.map(capture.family.member, fn(member) { member.closed })
-        |> option.unwrap(False),
+        |> option.unwrap(capture.family.closed),
       ),
     ),
     #(
@@ -172,6 +174,8 @@ pub fn summary(
         json.string,
       ),
     ),
+    #("role", json.string(durable.family.role)),
+    #("started_by", json.nullable(durable.family.started_by, json.string)),
     #(
       "address",
       json.nullable(
@@ -190,7 +194,7 @@ pub fn summary(
       "closed",
       json.bool(
         option.map(durable.family.member, fn(member) { member.closed })
-        |> option.unwrap(False),
+        |> option.unwrap(durable.family.closed),
       ),
     ),
     #(

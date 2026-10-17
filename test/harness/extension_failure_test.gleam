@@ -12,6 +12,7 @@ import albedo/harness/extension
 import albedo/harness/extension/composition
 import albedo/harness/extensions
 import albedo/harness/runtime
+import albedo/harness/settings
 import albedo/harness/tool
 import albedo/openai_api/types
 import gleam/dynamic/decode
@@ -283,6 +284,54 @@ pub fn an_extension_that_cannot_install_is_quarantined_test() -> Nil {
   let assert Ok(extension.Summary(quarantined: Some(crash), ..)) =
     summary(host, "exploding")
   string.contains(crash, "initialiser bug") |> should.be_true
+  runtime.stop(host)
+}
+
+/// An extension whose settings declaration the daemon could not serve: its
+/// defaults break its own rules, it declares another extension's section, or
+/// its section is one the daemon declares itself.
+fn misdeclared(
+  name: String,
+  section: String,
+  default: Int,
+) -> extension.Extension {
+  let limit = settings.whole("limit", "Limit", "a limit", default, 1, 9)
+  extension.Extension(
+    name,
+    "declares settings",
+    [],
+    [
+      extension.SettingsPlugin(
+        settings.declaration(settings.section(
+          section,
+          "Misdeclared",
+          settings.Tools,
+          [settings.field(limit)],
+          settings.value(limit, decode.success),
+          Ok,
+        )),
+      ),
+      extension.ToolPlugin("", [answering(name)], [], []),
+    ],
+    extension.no_initialise,
+  )
+}
+
+pub fn an_extension_that_misdeclares_its_settings_is_quarantined_test() -> Nil {
+  let #(host, session) =
+    host([
+      misdeclared("unreachable", "unreachable", 0),
+      misdeclared("squatter", "working", 5),
+      misdeclared("subagents", "subagents", 5),
+      misdeclared("working", "working", 5),
+    ])
+  tool_names(session) |> should.equal(["working"])
+  let assert Ok(extension.Summary(quarantined: Some(_), ..)) =
+    summary(host, "unreachable")
+  let assert Ok(extension.Summary(quarantined: Some(_), ..)) =
+    summary(host, "squatter")
+  let assert Ok(extension.Summary(quarantined: Some(_), ..)) =
+    summary(host, "subagents")
   runtime.stop(host)
 }
 

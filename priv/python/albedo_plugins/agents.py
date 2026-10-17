@@ -52,6 +52,8 @@ class Agent:
 
     id: str
     name: str
+    role: str | None
+    started_by: str | None
     depth: int
     parent: "Agent | None" = None
     running: bool | None = None
@@ -167,6 +169,8 @@ def _agent(raw: dict) -> Agent:
     return Agent(
         id=raw["id"],
         name=raw["name"],
+        role=raw.get("role"),
+        started_by=raw.get("started_by"),
         depth=raw["depth"],
         parent=_agent(parent) if isinstance(parent, dict) else None,
         running=raw.get("running"),
@@ -216,12 +220,49 @@ class Agents:
         _models_seen = True
         return list(cast(list, await host("agents.models", {})))
 
+    async def start(
+        self,
+        task: str,
+        name: str,
+        model: str,
+        *,
+        cwd: str | None = None,
+        role: str | None = None,
+    ) -> "Agent":
+        """Start a root peer owned by this session; its first letter is a request."""
+        if not all(
+            isinstance(value, str) and value.strip() for value in (task, name, model)
+        ):
+            raise TypeError("task, name, and model must be non-empty strings")
+        raw = cast(
+            dict,
+            await _act(
+                "agents.start",
+                {
+                    "task": task,
+                    "name": name,
+                    "model": model,
+                    "cwd": _directory(cwd),
+                    "role": role or "",
+                },
+            ),
+        )
+        return _agent(raw)
+
     async def cancel_all(self, *, tree: bool = True) -> list[str]:
         """Stop the running turn of every one of your children, and with
         `tree=True` (the default) everything beneath them. Returns the ids of the
         sessions that were running. They keep their sessions and work."""
         stopped = await _act("agents.cancel_all", {"tree": tree})
         return list(cast(list, stopped))
+
+    async def set_role(self, text: str, id: str | None = None) -> bool:
+        """Set trimmed free-form role metadata on self, a child, or started peer."""
+        if not isinstance(text, str) or len(text.strip()) > 512:
+            raise TypeError("role must be at most 512 characters")
+        return bool(
+            await _act("agents.set_role", {"role": text, "id": id or agents.self.id})
+        )
 
     async def progress(self, text: str) -> bool:
         """A short status (≤512 chars) the agents view shows without starting a

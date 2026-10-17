@@ -3,12 +3,22 @@
 //// Extensions reach the registry through this seam, so the harness never
 //// imports the server; the server registers the handler when it starts.
 
+import albedo/daemon/conversation
 import albedo/daemon/family
 
 pub type Op {
   /// `parent` starts a child named `name` on `model` ("" for its own) with
   /// `task` as its first letter.
   Spawn(parent: String, name: String, task: String, model: String)
+  /// Start a root peer owned by the caller.
+  Start(
+    caller: String,
+    task: String,
+    name: String,
+    model: String,
+    cwd: String,
+    role: String,
+  )
   /// Interrupt a running turn; the session and its work stay.
   Stop(session: String)
   /// Stop, mark closed, and release the kernel. Transcript and files stay.
@@ -21,6 +31,7 @@ pub type Op {
 
 pub type Reply {
   Spawned(member: family.Member)
+  Started(info: conversation.Info)
   RunningState(Bool)
   Stopped(Bool)
   Closed

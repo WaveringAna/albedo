@@ -36,26 +36,33 @@ type Saved {
   Saved(cut: compaction.Cut, text: String)
 }
 
-fn config_decoder() -> decode.Decoder(Config) {
-  use budget <- decode.optional_field(
+fn budget() -> settings.Setting(Int) {
+  settings.whole(
     "budgetTokens",
+    "Budget",
+    "Tokens the model's notes may take; it rewrites them within this at every compaction.",
     default_budget_tokens,
-    decode.int,
+    1,
+    1_000_000,
   )
-  decode.success(Config(budget))
+}
+
+fn config_section() -> settings.Section(Config) {
+  settings.section(
+    "notes",
+    "Compaction notes",
+    settings.Context,
+    [settings.field(budget())],
+    {
+      use budget <- settings.value(budget())
+      decode.success(Config(budget))
+    },
+    Ok,
+  )
 }
 
 fn load_config() -> Result(Config, String) {
-  use config <- result.try(settings.load(
-    "notes",
-    config_decoder(),
-    Config(default_budget_tokens),
-  ))
-  use _ <- result.try(compaction.require(
-    config.budget_tokens > 0,
-    "notes budgetTokens must be positive",
-  ))
-  Ok(config)
+  settings.load_section(config_section())
 }
 
 pub fn extension() -> extension.Extension {
@@ -64,6 +71,7 @@ pub fn extension() -> extension.Extension {
     "Notes the model writes for itself at every compaction",
     [],
     [
+      extension.SettingsPlugin(settings.declaration(config_section())),
       extension.NotesPlugin(
         compaction.Notes(
           "notes",

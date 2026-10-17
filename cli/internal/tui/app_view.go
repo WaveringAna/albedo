@@ -53,6 +53,8 @@ func (m *AppModel) content() string {
 		return m.WebhooksPage.View()
 	case AppStateDiscordPage:
 		return m.DiscordPage.View()
+	case AppStateConfigPage:
+		return m.ConfigPage.View()
 	case AppStateAgents:
 		return m.Agents.View()
 	case AppStateFolderPicker:

@@ -71,7 +71,8 @@ sessions; session selection and live reload never rerun migrations.
 
 1. `conversation.initialise` creates the core tables, then calls
    `conversation_columns.apply`: the existing session columns first, transcript
-   columns second. The same core initialization creates `operations`,
+   columns second. These columns include root-peer provenance, role, and close state.
+   The same core initialization creates `operations`,
    `pending_inputs`, `submission_events`, and `continuation_markers` through
    `operations.schema`.
    `operations.initialise` upgrades historical display and continuation metadata
@@ -79,7 +80,7 @@ sessions; session selection and live reload never rerun migrations.
    rowids. Admission receipts and pending inputs still require globally unique
    input identities. It then runs its existing domain-local session recovery
    (missing activity/title from transcript), then creates `sessions_activity`.
-2. quota, mail, and family initialise their tables, unchanged.
+2. quota, mail, and family initialise their tables. Mail also ensures its incoming and outgoing conversation indexes after upgrading an older kind constraint.
 3. `migrations.run(ledger, backup)` runs the core `image_store.run`, which first
    externalizes legacy transcript images, then converts image-table TEXT data
    to decoded BLOB. It then runs `transcript_classes.run` to classify old

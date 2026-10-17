@@ -24,9 +24,10 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import sqlight
 
 const instructions =
-  "Agents are sessions you spawn to work in parallel; every call is async. agents.self is your handle (id, name, depth, parent). Call await agents.models() once before spawning; other providers appear as provider/model, and selecting one routes the child through that provider. Then child = await agents.self.spawn(task, name=\"scout\", model=<one of models()>, deliverable=None, evidence_bar=None, falsifier=None): it returns as soon as the child exists, never with its answer. Answers arrive later as <mail> in your conversation and start your next turn, so spawn independent children back to back and end your turn instead of waiting; never sleep or poll. Talk with await mail.submit(child, text). await agents.self.children() and siblings() return live snapshots (running, closed). running=False means no active turn; a new child may still be waiting for its kernel and have no transcript yet. It does not prove spawn failed; wait for its mail rather than cancelling it on that snapshot. await child.cancel() stops its turn, and child.cancel(tree=True) the turns of everything beneath it; await agents.cancel_all(tree=True) stops every child you have, and their descendants, in one call, so use it when the user says to stop the swarm; await child.close() when you are done with it keeps its messages and files and frees its kernel. await agents.get(to) returns a live handle for \"parent\", a family name, or any session id. On any handle, await h.messages(seq=0, offset=0, limit=4000) reads a page of that session's messages from row seq on (content, next_offset) and await h.search_messages(pattern) finds rows by seq: any session may read any other, so you can see what a child or another session did without waiting for mail. await agents.sessions(query=\"\", cwd=None, limit=20, offset=0) lists every session, most recently active first, as snapshots that also carry cwd, model, last_active, and matches; with a query it keeps sessions whose title or name contains it or whose messages do, and matches holds up to 3 of each one's newest matching rows as {seq, preview} to read with messages(seq=...). cwd keeps one directory. Only the user deletes agents: if one should go, ask them. Children nest at most 3 deep and 12 open per parent; mail any session by id instead of nesting to reach it. Children share your workspace, so give two children the same files only if one only reads."
+  "Agents are sessions you spawn to work in parallel; every call is async. A lead session can keep a few long-lived peers for distinct areas, reusing useful context and starting fresh when context is unrelated; the right set depends on the project. agents.self is your handle (id, name, depth, parent). Call await agents.models() once before spawning; other providers appear as provider/model, and selecting one routes the child through that provider. Then child = await agents.self.spawn(task, name=\"scout\", model=<one of models()>, deliverable=None, evidence_bar=None, falsifier=None): it returns as soon as the child exists, never with its answer. Answers arrive later as <mail> in your conversation and start your next turn, so spawn independent children back to back and end your turn instead of waiting; never sleep or poll. Talk with await mail.submit(child, text). await agents.self.children() and siblings() return live snapshots (running, closed). running=False means no active turn; a new child may still be waiting for its kernel and have no transcript yet. It does not prove spawn failed; wait for its mail rather than cancelling it on that snapshot. await child.cancel() stops its turn, and child.cancel(tree=True) the turns of everything beneath it; await agents.cancel_all(tree=True) stops every child you have, and their descendants, in one call, so use it when the user says to stop the swarm; await child.close() when you are done with it keeps its messages and files and frees its kernel. await agents.get(to) returns a live handle for \"parent\", a family name, or any session id. On any handle, await h.messages(seq=0, offset=0, limit=4000) reads a page of that session's messages from row seq on (content, next_offset) and await h.search_messages(pattern) finds rows by seq: any session may read any other, so you can see what a child or another session did without waiting for mail. await agents.sessions(query=\"\", cwd=None, limit=20, offset=0) lists every session, most recently active first, as snapshots that also carry cwd, model, last_active, and matches; with a query it keeps sessions whose title or name contains it or whose messages do, and matches holds up to 3 of each one's newest matching rows as {seq, preview} to read with messages(seq=...). cwd keeps one directory. Only the user deletes agents: if one should go, ask them. Children nest at most 3 deep and 12 open per parent; mail any session by id instead of nesting to reach it. Children share your workspace, so give two children the same files only if one only reads."
 
 pub fn extension() -> extension.Extension {
   extension.Extension(
@@ -39,19 +40,19 @@ pub fn extension() -> extension.Extension {
           handle(context.store, context.session, method, args)
         }),
       ]),
-      // A child learns who it is and how to answer; a root needs nothing.
+      // The hook is cheap for roots with no requests and keeps prompt context stable.
       extension.ManagedPlugin(fn(db, session, _) {
-        case family.get(db, session) {
-          Ok(Some(member)) ->
-            Ok(
-              extension.Managed(
-                ..extension.empty(),
-                context: doctrine(db, member),
-                hook: Some(answered(db, session, member.parent, _)),
-              ),
-            )
-          _ -> Ok(extension.empty())
+        let context = case family.get(db, session) {
+          Ok(Some(member)) -> doctrine(db, member)
+          _ -> ""
         }
+        Ok(
+          extension.Managed(
+            ..extension.empty(),
+            context: context,
+            hook: Some(answered(db, session, _)),
+          ),
+        )
       }),
     ],
     // Its tables, whether or not the daemon made them first.
@@ -75,19 +76,22 @@ fn doctrine(db: store.Store, member: family.Member) -> String {
 fn answered(
   db: store.Store,
   session: String,
-  parent: String,
   event: hook.Event,
 ) -> hook.Verdict {
   case event {
     hook.Stopping(held: 0, ..) ->
-      case mail.owes_reply(db, session, parent) {
-        Ok(True) ->
-          hook.Verdict(
-            ..hook.proceed,
-            block: Some(
-              "You have not answered your parent yet. Send your result with await mail.submit(\"parent\", result) before you finish.",
-            ),
-          )
+      case mail.owed_requesters(db, session) {
+        Ok([first, ..rest] as requesters) -> {
+          let reminder = case requesters, family.get(db, session) {
+            [parent], Ok(Some(member)) if member.parent == parent ->
+              "You have not answered your parent yet. Send your result with await mail.submit(\"parent\", result) before you finish."
+            _, _ ->
+              "You owe a reply to "
+              <> string.join([first, ..rest], ", ")
+              <> ". Send it with await mail.submit(\"<id>\", result) before you finish."
+          }
+          hook.Verdict(..hook.proceed, block: Some(reminder))
+        }
         _ -> hook.proceed
       }
     _ -> hook.proceed
@@ -134,6 +138,30 @@ fn dispatch(
         Ok(_) -> Ok(json.array([], json.string))
         Error(error) -> Error(error)
       }
+    "agents.start" -> {
+      use task <- result.try(text(args, "task"))
+      use name <- result.try(text(args, "name"))
+      use model <- result.try(text(args, "model"))
+      let cwd =
+        decode.run(
+          args,
+          decode.optional_field("cwd", "", decode.string, decode.success),
+        )
+        |> result.unwrap("")
+      let role =
+        decode.run(
+          args,
+          decode.optional_field("role", "", decode.string, decode.success),
+        )
+        |> result.unwrap("")
+      use started <- result.try(
+        agents.call(agents.Start(session, task, name, model, cwd, role)),
+      )
+      case started {
+        agents.Started(info) -> Ok(handle_json(db, info.id, None))
+        _ -> Error("start answered unexpectedly")
+      }
+    }
     "agents.spawn" -> {
       use task <- result.try(text(args, "task"))
       use name <- result.try(text(args, "name"))
@@ -174,14 +202,20 @@ fn dispatch(
         _ -> Ok(json.array([], json.string))
       }
     "agents.close" -> {
-      use child <- result.try(own_child(db, session, args))
-      agents.call(agents.Close(child.session))
+      use child <- result.try(own_target(db, session, args))
+      agents.call(agents.Close(child))
       |> result.replace(json.bool(True))
     }
     "agents.cancel" -> {
-      use child <- result.try(own_child(db, session, args))
+      use child_id <- result.try(own_target(db, session, args))
       use tree <- result.try(tree_flag(args))
-      stop_all(db, [child], tree)
+      use child <- result.try(family.get(db, child_id))
+      case child {
+        Some(member) -> stop_all(db, [member], tree)
+        None ->
+          agents.call(agents.Stop(child_id))
+          |> result.replace(json.array([], json.string))
+      }
     }
     "agents.cancel_all" -> {
       use tree <- result.try(tree_flag(args))
@@ -239,6 +273,29 @@ fn dispatch(
       Error(
         "only the user deletes agents, because deleting loses the child's work. Ask them; they can delete it from the session browser. close() keeps everything and frees its kernel.",
       )
+    "agents.set_role" -> {
+      use role <- result.try(text(args, "role"))
+      let target =
+        decode.run(
+          args,
+          decode.optional_field(
+            "id",
+            None,
+            decode.optional(decode.string),
+            decode.success,
+          ),
+        )
+        |> result.unwrap(None)
+        |> option.unwrap(session)
+      use _ <- result.try(
+        case target == session || owns_target(db, session, target) {
+          True -> Ok(Nil)
+          False ->
+            Error("you can only set your own, a child, or a peer you started")
+        },
+      )
+      family.set_role(db, target, role) |> result.map(fn(_) { json.bool(True) })
+    }
     "agents.progress" -> {
       use note <- result.try(text(args, "text"))
       case string.trim(note), string.length(note) > 512 {
@@ -301,15 +358,23 @@ fn stop_each(
   })
 }
 
-fn own_child(
+fn owns_target(db: store.Store, caller: String, target: String) -> Bool {
+  case family.get(db, target), family.started_by(db, target) {
+    Ok(Some(member)), _ if member.parent == caller -> True
+    _, Ok(Some(owner)) if owner == caller -> True
+    _, _ -> False
+  }
+}
+
+fn own_target(
   db: store.Store,
   session: String,
   args: dynamic.Dynamic,
-) -> Result(family.Member, String) {
+) -> Result(String, String) {
   use id <- result.try(text(args, "id"))
-  case family.get(db, id) {
-    Ok(Some(member)) if member.parent == session -> Ok(member)
-    _ -> Error("you can only cancel or close your own children")
+  case owns_target(db, session, id) {
+    True -> Ok(id)
+    False -> Error("you can only cancel or close your own children or peers")
   }
 }
 
@@ -375,8 +440,7 @@ fn status_fields(
     Ok(agents.RunningState(running)) -> running
     _ -> False
   }
-  let closed =
-    option.map(member, fn(member) { member.closed }) |> option.unwrap(False)
+  let closed = family.closed(db, session) |> result.unwrap(False)
   list.append(handle_fields(db, session, member), [
     #("running", json.bool(running)),
     #("closed", json.bool(closed)),
@@ -388,22 +452,79 @@ fn status_fields(
 fn found_json(db: store.Store, found: sessions.Found) -> json.Json {
   let info = found.info
   let member = family.get(db, info.id) |> result.unwrap(None)
-  json.object(
-    list.append(status_fields(db, info.id, member), [
-      #("cwd", json.string(info.cwd)),
-      #("model", json.string(info.model)),
-      #("last_active", json.nullable(info.last_assistant_at, json.int)),
-      #(
-        "matches",
-        json.array(found.hits, fn(hit) {
-          json.object([
-            #("seq", json.int(hit.seq)),
-            #("preview", json.string(hit.preview)),
-          ])
-        }),
-      ),
-    ]),
-  )
+  json.object(list.append(
+    status_fields(db, info.id, member),
+    list.append(
+      [
+        #("cwd", json.string(info.cwd)),
+        #("role", json.string(family.role(db, info.id) |> result.unwrap(""))),
+        #(
+          "started_by",
+          json.nullable(
+            family.started_by(db, info.id) |> result.unwrap(None),
+            json.string,
+          ),
+        ),
+        #("model", json.string(info.model)),
+        #("last_active", json.nullable(info.last_assistant_at, json.int)),
+        #(
+          "matches",
+          json.array(found.hits, fn(hit) {
+            json.object([
+              #("seq", json.int(hit.seq)),
+              #("preview", json.string(hit.preview)),
+            ])
+          }),
+        ),
+      ],
+      snapshot_fields(db, info.id),
+    ),
+  ))
+}
+
+fn snapshot_fields(
+  db: store.Store,
+  session: String,
+) -> List(#(String, json.Json)) {
+  let owed = mail.owed_requesters(db, session) |> result.unwrap([])
+  let awaiting =
+    store.read(
+      db,
+      "SELECT DISTINCT recipient FROM mail WHERE sender=? AND kind IN ('task','request') AND delivered_at IS NOT NULL",
+      [sqlight.text(session)],
+      decode.field(0, decode.string, decode.success),
+    )
+    |> result.unwrap([])
+    |> list.filter(fn(target) {
+      mail.owes_reply(db, target, session) == Ok(True)
+    })
+  let context_tokens =
+    store.read(
+      db,
+      "SELECT usage_prompt_tokens FROM sessions WHERE id=?",
+      [sqlight.text(session)],
+      decode.field(0, decode.optional(decode.int), decode.success),
+    )
+    |> result.unwrap([])
+    |> list.first
+    |> result.unwrap(None)
+  let pinned =
+    store.read(
+      db,
+      "SELECT pinned FROM sessions WHERE id=?",
+      [sqlight.text(session)],
+      decode.field(0, decode.int, decode.success),
+    )
+    |> result.unwrap([])
+    |> list.first
+    |> result.unwrap(0)
+    == 1
+  [
+    #("pinned", json.bool(pinned)),
+    #("owed", json.int(list.length(owed))),
+    #("awaiting", json.int(list.length(awaiting))),
+    #("context_tokens", json.nullable(context_tokens, json.int)),
+  ]
 }
 
 fn member_status(db: store.Store, member: family.Member) -> json.Json {

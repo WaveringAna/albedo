@@ -26,7 +26,15 @@ await agents.progress("on turn.gleam now")    # shows in /agents, starts no turn
 - spawn never returns the child's answer: the answer arrives later as `<mail>` and starts the parent's next turn. a child about to end its turn without answering is reminded once (a [hook](hooks.md)); one that still ends without answering forwards its last message, marked `unreviewed`.
 - names resolve inside the family (children, siblings, parent); anything else takes a session id.
 - any session may look up and read any other: `get`, `messages`, and `search_messages` resolve names and ids the way mail does, and closed agents stay readable. cancel and close work on your own children only. `cancel(tree=True)` and `cancel_all()` stop parents before their children, so a stopped agent cannot answer by spawning, and answer the sessions that were running; they never close or delete anything. the model cannot delete an agent; it asks the user.
-- limits: 3 deep, 12 open children per parent, 1 MiB per letter, 1000 undelivered letters per session.
+- limits: 3 deep and 12 open children per parent by default, set in the daemon's `subagents` settings section (`maxDepth`, `maxOpenChildren`; -1 for no limit; see [settings](settings.md#extension-settings)), and fixed at 1 MiB per letter and 1000 undelivered letters per session.
+
+## root peers, roles, and snapshots
+
+`agents.start(task, name=None, model=None, cwd=None, role=None)` creates a root peer
+rather than a child. The task is delivered as a request, and only the starter may
+close or cancel that peer. `agents.set_role(text, id=None)` stores optional free-form
+role text (trimmed to 512 characters). `agents.sessions` reports `role`,
+`started_by`, `pinned`, and bounded `owed`/`awaiting` request counts.
 
 ## mail delivery
 
@@ -90,3 +98,9 @@ and their deadlines count wall time after the program starts.
 ## deletion failures
 
 Direct parent deletion requires a successful child lookup. Tree deletion collects the child-first walk before deleting any session. A failed lookup returns an error and leaves the sessions intact. A failure during deletion still reports how many sessions were already deleted.
+
+## requests, roles, and peers
+
+`await mail.request(to, body)` creates a request; the recipient owes the sender until it sends any letter. Peer messages do not create obligations; a child still owes its parent after a task or ordinary message. `await mail.open()` returns bounded `owed` and `awaiting` entries. `await agents.set_role(text, id=None)` stores optional trimmed metadata for workspace views; it is not prompt context.
+
+Peers are root sessions started with `await agents.start(task, name, model, cwd=None, role=None)`. They have no family parent and do not count against child limits. The starter alone may cancel or close its peers. Session snapshots expose role, provenance, pinned state, and open request counts.

@@ -1,6 +1,6 @@
-//// A mail table created before events checks its kind against a list without
-//// them; SQLite cannot change a CHECK in place, so the table is copied into
-//// the current schema once.
+//// A mail table created before requests or events checks its kind against a
+//// list without them; SQLite cannot change a CHECK in place, so the table is
+//// copied into the current schema once.
 
 import albedo/daemon/store
 import gleam/dynamic/decode
@@ -20,7 +20,8 @@ pub fn apply(db: sqlight.Connection, schema: String) -> Result(Nil, String) {
     decode.field(0, decode.string, decode.success),
   ))
   let current = case definition {
-    [sql] -> string.contains(sql, "'event_turn'")
+    [sql] ->
+      string.contains(sql, "'request'") && string.contains(sql, "'event_turn'")
     _ -> True
   }
   case current {
@@ -29,7 +30,7 @@ pub fn apply(db: sqlight.Connection, schema: String) -> Result(Nil, String) {
       store.transaction(db, fn() {
         use _ <- result.try(store.exec(
           db,
-          "ALTER TABLE mail RENAME TO mail_before_events",
+          "ALTER TABLE mail RENAME TO mail_old_kinds",
         ))
         use _ <- result.try(store.exec(db, schema))
         use _ <- result.try(store.exec(
@@ -38,9 +39,9 @@ pub fn apply(db: sqlight.Connection, schema: String) -> Result(Nil, String) {
             <> copied
             <> ") SELECT "
             <> copied
-            <> " FROM mail_before_events",
+            <> " FROM mail_old_kinds",
         ))
-        use _ <- result.try(store.exec(db, "DROP TABLE mail_before_events"))
+        use _ <- result.try(store.exec(db, "DROP TABLE mail_old_kinds"))
         // The renamed table kept the indexes, so they went with it.
         store.exec(db, schema)
       })

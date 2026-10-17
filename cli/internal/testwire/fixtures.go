@@ -14,7 +14,7 @@ func Session(id, generation string, sequence int64) map[string]any {
 	selection := map[string]any{"extensions": map[string]bool{}, "skills": map[string]bool{}, "instructions": map[string]bool{}, "mcp": map[string]bool{}}
 	config := map[string]any{"id": id, "name": "Session", "workspace": "/work", "provider_profile": nil, "model": nil, "effort": nil, "preferences": map[string]any{"pinned": false, "pin_order": nil, "archived": false}, "selection": selection, "revision": "revision-a", "family_revision": "family-a"}
 	return map[string]any{
-		"id": id, "name": "Session", "automatic_name": "Session", "location": map[string]any{"host": nil, "user": nil, "path": "/work", "label": nil}, "workspace": "/work", "parent_id": nil, "root_id": id, "address": nil, "depth": 0, "closed": false, "created_at": nil, "activity_at": nil, "provider_profile": nil, "model": nil, "effort": nil,
+		"id": id, "name": "Session", "automatic_name": "Session", "location": map[string]any{"host": nil, "user": nil, "path": "/work", "label": nil}, "workspace": "/work", "parent_id": nil, "root_id": id, "address": nil, "depth": 0, "closed": false, "created_at": nil, "activity_at": nil, "provider_profile": nil, "model": nil, "effort": nil, "role": "", "started_by": nil,
 		"status":  map[string]any{"phase": "idle", "run_id": nil, "interrupt_requested": false, "blocking_reason": nil},
 		"preview": map[string]any{"text": "", "transcript_count": 0, "truncated": false}, "preferences": map[string]any{"pinned": false, "pin_order": nil, "archived": false, "opens": 0}, "current_progress": []any{}, "active_output": []any{},
 		"activity": map[string]any{"lines": []any{}, "output_scalars": 0, "output_utf8_bytes": 0, "observed_at": "2026-10-03T00:00:00Z", "latest_input": nil, "latest_answer": nil},
@@ -50,9 +50,9 @@ func Progress(id string) map[string]any {
 }
 
 func Settings() map[string]any {
-	result := map[string]any{"providers": map[string]any{"default_profile": nil, "profiles": map[string]any{}}, "mcp": map[string]any{"definitions": map[string]any{}}, "extensions": map[string]any{"defaults": map[string]bool{}}, "capabilities": map[string]any{"preferences": map[string]bool{}}, "models": map[string]any{"raised_caps": map[string]bool{}, "cache_ttl_priors": []any{}}, "ui": map[string]any{"thinking": true, "tools": false, "dismissed_notices": []any{}}}
+	result := map[string]any{"providers": map[string]any{"default_profile": nil, "profiles": map[string]any{}}, "mcp": map[string]any{"definitions": map[string]any{}}, "extensions": map[string]any{"defaults": map[string]bool{}}, "extension_settings": map[string]any{"sections": []any{}}, "capabilities": map[string]any{"preferences": map[string]bool{}}, "models": map[string]any{"raised_caps": map[string]bool{}, "cache_ttl_priors": []any{}}, "ui": map[string]any{"thinking": true, "tools": false, "dismissed_notices": []any{}}}
 	resources := map[string]any{}
-	for _, group := range []string{"providers", "mcp", "extensions", "capabilities", "models", "ui"} {
+	for _, group := range []string{"providers", "mcp", "extensions", "extension_settings", "capabilities", "models", "ui"} {
 		resources[group] = map[string]any{"url": "/settings?group=" + group, "etag": "\"" + group + "-a\""}
 	}
 	result["group_resources"] = resources

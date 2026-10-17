@@ -151,7 +151,7 @@ class MigrationsTest(unittest.TestCase):
                 # Restore other fixtures' fields erased by the legacy schema seed.
                 app.restart(prepare=restore)
 
-    def test_mail_from_before_events_is_copied_into_the_current_kinds(self):
+    def test_mail_with_old_kinds_is_copied_into_the_current_schema(self):
         provider = Provider(lambda request: text("done"))
         self.addCleanup(provider.close)
         with Albedo(provider) as app:
@@ -190,6 +190,7 @@ CREATE INDEX mail_pending ON mail(created_at) WHERE delivered_at IS NULL;
                     "SELECT sql FROM sqlite_master WHERE type='table' AND name='mail'"
                 ).fetchone()[0]
                 self.assertIn("'event_turn'", schema)
+                self.assertIn("'request'", schema)
                 self.assertEqual(
                     db.execute(
                         "SELECT recipient,kind,body,delivered_at,delivery_owner FROM mail"
@@ -202,17 +203,20 @@ CREATE INDEX mail_pending ON mail(created_at) WHERE delivered_at IS NULL;
                         "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='mail'"
                     )
                 }
-                self.assertTrue({"mail_pending", "mail_conversation"} <= indexes)
+                self.assertTrue(
+                    {"mail_pending", "mail_conversation", "mail_outgoing"} <= indexes
+                )
                 self.assertIsNone(
                     db.execute(
-                        "SELECT name FROM sqlite_master WHERE name='mail_before_events'"
+                        "SELECT name FROM sqlite_master WHERE name='mail_old_kinds'"
                     ).fetchone()
                 )
-                db.execute(
-                    "INSERT INTO mail(id,recipient,sender_name,kind,body,created_at,delivered_at)"
-                    " VALUES('new-event',?,'discord','event_turn','hi',3,4)",
-                    (session,),
-                )
+                for kind in ("event_turn", "request"):
+                    db.execute(
+                        "INSERT INTO mail(id,recipient,sender_name,kind,body,created_at)"
+                        " VALUES(?,?,'new','" + kind + "','hi',3)",
+                        (f"new-{kind}", session),
+                    )
 
     def test_startup_migrates_legacy_images_once_with_a_consistent_backup(self):
         probe = ""

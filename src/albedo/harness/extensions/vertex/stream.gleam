@@ -6,9 +6,10 @@ import albedo/openai_api/fields
 import albedo/openai_api/replay
 import albedo/openai_api/stream as reducer
 import albedo/openai_api/types
+import gleam/bit_array
+import gleam/crypto
 import gleam/dynamic
 import gleam/dynamic/decode
-import gleam/int
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -35,7 +36,7 @@ type Chunk {
 }
 
 type Part {
-  Part(text: String, thought: Bool, call: Option(#(String, String)))
+  Part(text: String, thought: Bool, call: Option(#(String, String, String)))
 }
 
 pub fn reducer() -> reducer.Reducer {
@@ -137,9 +138,13 @@ fn apply(
 
 fn add(blocks: List(Block), part: Part) -> #(List(Block), List(types.Event)) {
   case part {
-    Part(call: Some(#(name, arguments)), ..) -> {
-      let index = list.length(calls(blocks))
-      let id = "call_" <> int.to_string(index)
+    Part(call: Some(#(id, name, arguments)), ..) -> {
+      let existing = calls(blocks)
+      let index = list.length(existing)
+      let id = case id == "" || list.any(existing, fn(call) { call.id == id }) {
+        True -> call_id()
+        False -> id
+      }
       #([Call(types.ToolCall(id, name, arguments)), ..blocks], [
         types.ArgumentsDelta(index, name, arguments),
       ])
@@ -248,6 +253,15 @@ fn message(
 
 fn flat(chunks: List(String)) -> String {
   chunks |> list.reverse |> string.concat
+}
+
+fn call_id() -> String {
+  "call_"
+  <> {
+    crypto.strong_random_bytes(9)
+    |> bit_array.base16_encode
+    |> string.lowercase
+  }
 }
 
 // Validate object containers too: optional fields alone would accept a
@@ -374,12 +388,13 @@ fn part_decoder() -> decode.Decoder(Part) {
       None,
       present(
         object({
+          use id <- decode.optional_field("id", "", decode.string)
           use name <- decode.field("name", decode.string)
           use args <- decode.optional_field("args", dynamic.properties([]), {
             use _ <- decode.then(decode.dict(decode.string, decode.dynamic))
             decode.dynamic
           })
-          decode.success(#(name, json.to_string(types.encode_value(args))))
+          decode.success(#(id, name, json.to_string(types.encode_value(args))))
         }),
       ),
     )
