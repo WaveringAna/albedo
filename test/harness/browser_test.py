@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "priv" / "python"))
 
 from albedo_plugins.browser import spawn, render, one  # noqa: E402
+from albedo_plugins.browser.errors import NotActionable  # noqa: E402
 from albedo_plugins.browser.launch import _command  # noqa: E402
 
 
@@ -42,6 +43,12 @@ class BrowserIntegrationTest(unittest.IsolatedAsyncioTestCase):
                 "<h1>Header</h1>"
                 "<label for='name'>Name</label><input id='name' value='initial'>"
                 "<button id='save' onclick='window.clicked=true'>Save</button>"
+                "<label for='pick'>Pick</label>"
+                "<select id='pick' onchange='window.picked=this.value'>"
+                "<option value='a'>Alpha</option>"
+                "<option value='b'>Beta</option>"
+                "<option value='c' disabled>Gamma</option>"
+                "</select>"
                 "</body></html>"
             )
             await page.goto(html)
@@ -68,6 +75,24 @@ class BrowserIntegrationTest(unittest.IsolatedAsyncioTestCase):
 
             await page.click(btn)
             self.assertTrue(await page.evaluate("window.clicked"))
+
+            # Select takes an option's value or its label
+            picker = one(obs, role="combobox", name="Pick")
+            self.assertIsNotNone(picker)
+            await page.select(picker, "b")
+            self.assertEqual(
+                await page.evaluate(
+                    "[window.picked, document.querySelector('#pick').value]"
+                ),
+                ["b", "b"],
+            )
+            await page.select(picker, "Alpha")
+            self.assertEqual(
+                await page.evaluate("document.querySelector('#pick').value"), "a"
+            )
+            with self.assertRaises(NotActionable) as refused:
+                await page.select(picker, "Gamma")
+            self.assertEqual(refused.exception.details["found"], False)
 
             # Close page
             await page.close()

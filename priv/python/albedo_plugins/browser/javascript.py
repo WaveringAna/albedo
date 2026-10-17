@@ -33,3 +33,18 @@ SELECT_TEXT = r"""function() {
 READ_VALUE = (
     r"""function() { return this.isContentEditable ? this.textContent : this.value; }"""
 )
+
+SELECT_OPTION = r"""function(want) {
+  const options = Array.from(this.options || []);
+  const option = options.find(o => o.value === want)
+    || options.find(o => o.label.trim() === want || o.text.trim() === want);
+  if (!option || option.disabled)
+    return {found: false, available: options.map(o => o.value).slice(0, 20)};
+  if (this.multiple) { for (const o of options) o.selected = o === option; }
+  else { this.value = option.value; }
+  if (!option.selected)
+    return {found: false, available: options.map(o => o.value).slice(0, 20)};
+  this.dispatchEvent(new Event('input', {bubbles: true}));
+  this.dispatchEvent(new Event('change', {bubbles: true}));
+  return {found: true, value: option.value, label: option.label.trim()};
+}"""

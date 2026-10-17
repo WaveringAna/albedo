@@ -1067,6 +1067,35 @@ class Page:
                     )
         return copy.deepcopy(receipt)
 
+    @reported("browser.select", {"ref": "ref", "value": "value"})
+    async def select(self, ref: str | Node, value: str) -> JSON:
+        """Choose the option whose value, or failing that label, is `value`."""
+        if not isinstance(value, str):
+            raise TypeError("value must be a string")
+        async with self._action("select", ref) as receipt:
+            async with self._resolved(ref) as (key, record, state, obj, status):
+                if status["tag"] != "select":
+                    raise UnsupportedOperation(
+                        "select works on a <select> element only.", tag=status["tag"]
+                    )
+                if status["disabled"] or not status["visible"]:
+                    raise NotActionable(
+                        "Select is disabled."
+                        if status["disabled"]
+                        else "Select is not visible.",
+                        ref=key,
+                    )
+                chosen = await self._call(
+                    state.cdp, obj, js.SELECT_OPTION, arguments=[{"value": value}]
+                )
+                if not chosen.get("found"):
+                    raise NotActionable(
+                        "No option has that value or label.", ref=key, **chosen
+                    )
+                receipt["may_have_executed"] = True
+                receipt["selected"] = chosen
+        return copy.deepcopy(receipt)
+
     async def _key(self, cdp: CDPSession, key: str) -> None:
         special = {
             "Enter": ("Enter", 13, "\r"),
