@@ -46,6 +46,12 @@ attachment: <filename> <url>
 
 DMs start with `[discord dm] @<username> (<global name>)`. The parenthesis is left out when there is no display name and says `bot` only for bots. Content past 16,384 characters is cut.
 
+## Incoming reactions
+
+Reaction additions arrive as inbox events with the reactor's user ID, emoji, target message ID, and a Discord message link. The bot's own reactions are ignored. In DMs, only the owner and allowed users reach the session; refused reactions do not create DM requests. Configured channels and their threads use the same delivery setting as messages. In a mentions-only channel, a reaction reaches the session only when its target was written by the bot or was already delivered to this session.
+
+Reactions do not advance message cursors. Their letter IDs include the Gateway session ID and dispatch sequence, so a replay during RESUME does not deliver twice. No message text is fetched for a reaction; the session uses the target ID and its conversation or `discord.history()` for context. Reaction removals and additions missed while the bot process was stopped are not backfilled.
+
 ## Kernel binding
 
 `discord` acts only through the session's own bot; failures raise `DiscordError`.
@@ -61,9 +67,9 @@ DMs start with `[discord dm] @<username> (<global name>)`. The parenthesis is le
 
 ## Bot process
 
-`src/albedo/harness/extensions/discord/manager.gleam` owns the bot processes. The extension's initialiser starts it once per daemon, under its own supervisor; every two seconds, and at once after an HTTP change, it rereads the bots and the global selection. Each enabled bot runs `python3 -u priv/python/albedo_discord.py` as an Erlang port (`albedo_discord.erl` owns the port, line framing and request ids) with `ALBEDO_DISCORD_TOKEN` in its environment; `ALBEDO_DISCORD_API` (default `https://discord.com/api/v10`) passes through from the daemon's environment, which tests point at a fake Discord. The process connects with intents 37377 (guilds, guild messages, direct messages, message content), heartbeats, resumes after socket loss with 1–60 s backoff, and exits on stdin EOF.
+`src/albedo/harness/extensions/discord/manager.gleam` owns the bot processes. The extension's initialiser starts it once per daemon, under its own supervisor; every two seconds, and at once after an HTTP change, it rereads the bots and the global selection. Each enabled bot runs `python3 -u priv/python/albedo_discord.py` as an Erlang port (`albedo_discord.erl` owns the port, line framing and request ids) with `ALBEDO_DISCORD_TOKEN` in its environment; `ALBEDO_DISCORD_API` (default `https://discord.com/api/v10`) passes through from the daemon's environment, which tests point at a fake Discord. The process connects with intents 46593 (guilds, guild messages and reactions, direct messages and reactions, message content), heartbeats, resumes after socket loss with 1–60 s backoff, and exits on stdin EOF.
 
-Every line is one JSON object. The process sends `status` (`connecting`, `online`, `reconnecting`, with the bot `user` and `application_id`), `fatal` (then exits 2), `message` (every MESSAGE_CREATE, normalized), and `reply`. The daemon sends requests with an integer `id`: `send`, `dm`, `history`, `react`, `guilds` (from the process's cache), `user`, and `catch_up`. A request waits at most 15 s; a process that exits fails its pending requests. After each `online` the daemon sends `catch_up` with its stored cursors, and the process replays up to 50 newer messages per channel as `backfill` messages.
+Every line is one JSON object. The process sends `status` (`connecting`, `online`, `reconnecting`, with the bot `user` and `application_id`), `fatal` (then exits 2), `message` (every MESSAGE_CREATE, normalized), `reaction` (MESSAGE_REACTION_ADD with actor, emoji and target message IDs), and `reply`. The daemon sends requests with an integer `id`: `send`, `dm`, `history`, `react`, `guilds` (from the process's cache), `user`, and `catch_up`. A request waits at most 15 s; a process that exits fails its pending requests. After each `online` the daemon sends `catch_up` with its stored cursors, and the process replays up to 50 newer messages per channel as `backfill` messages.
 
 ## States and failures
 

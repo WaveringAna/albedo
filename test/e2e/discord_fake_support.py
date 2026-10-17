@@ -341,6 +341,48 @@ class FakeDiscord:
         self._dispatch("MESSAGE_CREATE", event)
         return message["id"]
 
+    def react(
+        self,
+        channel: str,
+        message: str,
+        user: str,
+        emoji: str | dict[str, Any] = "👍",
+    ) -> str:
+        """Send a reaction-add event and return its gateway-session/sequence ID."""
+
+        def add() -> str:
+            assert self._gateway and self._gateway.session_id
+            target = self._find(channel, message)
+            guild = self.channels[channel].get("guild_id")
+            data = {
+                "user_id": user,
+                "channel_id": channel,
+                "message_id": message,
+                "message_author_id": target["author"]["id"],
+                "emoji": {"id": None, "name": emoji}
+                if isinstance(emoji, str)
+                else emoji,
+                "burst": False,
+                "type": 0,
+            }
+            if guild:
+                data.update(guild_id=guild, member={"user": self.users[user]})
+            self._dispatch("MESSAGE_REACTION_ADD", data)
+            return f"{self._gateway.session_id}:{self._seq}"
+
+        return self._call(add)
+
+    def replay(self, event_id: str) -> None:
+        """Resend one dispatch with its original sequence."""
+
+        def send() -> None:
+            assert self._gateway
+            seq = int(event_id.rsplit(":", 1)[1])
+            _, name, data = next(event for event in self._events if event[0] == seq)
+            self._gateway.send({"op": 0, "t": name, "s": seq, "d": data})
+
+        self._call(send)
+
     # -- gateway control ------------------------------------------------
 
     def _live(self) -> bool:

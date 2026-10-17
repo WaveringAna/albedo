@@ -113,7 +113,7 @@ class DiscordGatewayTest(unittest.TestCase):
         self.assertEqual(status["user"]["id"], self.fake.bot["id"])
         self.assertEqual(status["user"]["username"], "albedo-bot")
         self.assertEqual(status["application_id"], self.fake.application_id)
-        self.assertEqual(self.fake.identifies[0]["intents"], 37377)
+        self.assertEqual(self.fake.identifies[0]["intents"], 46593)
         self.fake.wait_for(lambda: self.fake.heartbeats > 0, 5, "a heartbeat")
 
     def test_guild_message_is_normalized_from_the_cache(self):

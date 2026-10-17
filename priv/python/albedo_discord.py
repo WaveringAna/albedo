@@ -21,8 +21,8 @@ from typing import Any, Callable
 from albedo_plugins.ws import ConnectionClosed, SimpleWebSocketClient
 
 DEFAULT_API = "https://discord.com/api/v10"
-# GUILDS | GUILD_MESSAGES | DIRECT_MESSAGES | MESSAGE_CONTENT
-INTENTS = (1 << 0) | (1 << 9) | (1 << 12) | (1 << 15)
+# Guilds, messages, reactions, DMs, DM reactions, and message content.
+INTENTS = (1 << 0) | (1 << 9) | (1 << 10) | (1 << 12) | (1 << 13) | (1 << 15)
 MAX_CONTENT = 2000
 THREAD_TYPES = (10, 11, 12)
 LISTED_TYPES = (0, 2, 4, 5, 15)
@@ -394,7 +394,44 @@ class Bot:
             emit(
                 {"type": "message", "backfill": False, "message": self.normalize(data)}
             )
+        elif name == "MESSAGE_REACTION_ADD":
+            self.reaction(data)
         return False
+
+    def reaction(self, data: dict[str, Any]) -> None:
+        user_id = str(data["user_id"])
+        if self.user and user_id == str(self.user["id"]):
+            return
+        member = data.get("member") or {}
+        author = {"username": user_id, **(member.get("user") or {}), "id": user_id}
+        channel_id = str(data["channel_id"])
+        channel = self.cache.channels.get(channel_id) or {}
+        guild_id = data.get("guild_id")
+        guild = self.cache.guilds.get(str(guild_id)) or {}
+        emoji = data["emoji"]
+        symbol = emoji.get("name") or "unknown emoji"
+        if emoji.get("id"):
+            prefix = "a" if emoji.get("animated") else ""
+            symbol = f"<{prefix}:{symbol}:{emoji['id']}>"
+        emit(
+            {
+                "type": "reaction",
+                "reaction": {
+                    "id": f"{self.session_id}:{self.seq}",
+                    "message_id": str(data["message_id"]),
+                    "channel_id": channel_id,
+                    "guild_id": str(guild_id) if guild_id else None,
+                    "guild_name": guild.get("name"),
+                    "channel_name": channel.get("name"),
+                    "parent_id": channel.get("parent_id")
+                    if channel.get("type") in THREAD_TYPES
+                    else None,
+                    "author": user_view(author),
+                    "emoji": symbol,
+                    "message_author_id": data.get("message_author_id"),
+                },
+            }
+        )
 
     # -- messages -------------------------------------------------------
 

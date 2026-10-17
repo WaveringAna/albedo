@@ -368,6 +368,7 @@ type Event {
   Reported(Status)
   Fatal(String)
   Seen(ingest.Message)
+  Reacted(ingest.Reaction)
   Exited(Int)
 }
 
@@ -404,6 +405,10 @@ fn event_decoder() -> decode.Decoder(Event) {
     "message" -> {
       use message <- decode.field("message", ingest.decoder())
       decode.success(Seen(message))
+    }
+    "reaction" -> {
+      use reaction <- decode.field("reaction", ingest.reaction_decoder())
+      decode.success(Reacted(reaction))
     }
     "exited" -> {
       use status <- decode.field("status", decode.int)
@@ -472,6 +477,21 @@ fn line_from(state: State, bot: String, live: Live, line: String) -> State {
           }
         Error(reason) ->
           io.println_error("discord: message " <> message.id <> ": " <> reason)
+      }
+      state
+    }
+    Ok(Reacted(reaction)) -> {
+      let self_id = option.map(live.status.user, fn(user) { user.id })
+      case ingest.ingest_reaction(state.db, bot, self_id, reaction) {
+        Ok(Some(letter)) -> {
+          let _ = mail.deliver(letter)
+          Nil
+        }
+        Ok(None) -> Nil
+        Error(reason) ->
+          io.println_error(
+            "discord: reaction " <> reaction.id <> ": " <> reason,
+          )
       }
       state
     }

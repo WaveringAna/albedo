@@ -365,6 +365,120 @@ class DiscordTests(unittest.TestCase):
         )
         self.assertNotIn("first queued", visible(self.requests()[steered]))
 
+    def test_reactions_to_bot_replies_reach_the_session_once(self):
+        bot = self.create_bot()
+        channel = self.fake.dm_channel(OWNER)
+        self.post(channel, OWNER_PING)
+        self.wait_seen(OWNER_PING)
+        sent = self.fake.wait_for_sent(1, timeout=40)[0]
+        self.app.idle(self.session, timeout=40)
+
+        event = self.fake.react(channel, sent["id"], OWNER)
+        self.wait_seen("👍")
+        self.app.idle(self.session, timeout=40)
+        received = visible(self.requests()[self.first_seen("👍")])
+        self.assertIn(OWNER, received)
+        self.assertIn(sent["id"], received)
+        self.assertIn(
+            f"https://discord.com/channels/@me/{channel}/{sent['id']}", received
+        )
+        self.fake.drop_connection()
+        self.fake.wait_for_resumes(1, timeout=30)
+        self.fake.replay(event)
+        self.fake.replay(event)
+        barrier = self.fake.react(channel, sent["id"], OWNER, "✅")
+        self.wait_seen("✅")
+        self.app.idle(self.session, timeout=40)
+        with self.database() as database:
+            rows = database.execute(
+                "SELECT id FROM mail WHERE id LIKE ? ORDER BY id",
+                (f"discord-{bot['id']}-reaction-%",),
+            ).fetchall()
+        self.assertEqual(
+            sorted(row[0] for row in rows),
+            sorted(f"discord-{bot['id']}-reaction-{key}" for key in (event, barrier)),
+        )
+        self.assertEqual(visible(self.requests()[-1]).count("👍"), 1)
+
+    def test_reactions_keep_channel_delivery_and_dm_permissions(self):
+        bot = self.create_bot()
+        self.put_channel(TURN, "turn")
+        self.put_channel(TOOL, "tool")
+        self.put_channel(MENTIONS, "tool", mentions_only=True)
+        own = self.fake.bot
+        targets = {
+            channel: self.post(channel, "bot proposal", author=own)
+            for channel in (TURN, TOOL, QUIET, MENTIONS, THREAD)
+        }
+        unrelated = self.post(MENTIONS, "not addressed to the bot")
+        mentioned = self.post(MENTIONS, "addressed to the bot", mentions=[own["id"]])
+        self.wait_seen("addressed to the bot")
+        self.app.idle(self.session, timeout=40)
+        with self.database() as database:
+            cursors = database.execute(
+                "SELECT channel_id,last_seen FROM discord_cursors WHERE bot=? ORDER BY channel_id",
+                (bot["id"],),
+            ).fetchall()
+        stranger_dm = self.fake.dm_channel(STRANGER)
+        stranger_target = self.post(stranger_dm, "unapproved DM target", author=own)
+        ignored = [
+            self.fake.react(QUIET, targets[QUIET], OWNER),
+            self.fake.react(TOOL, targets[TOOL], own["id"]),
+            self.fake.react(MENTIONS, unrelated, OWNER),
+            self.fake.react(stranger_dm, stranger_target, STRANGER),
+        ]
+        self.app.prompt(self.session, HOLD).close()
+        wait_until(self.started.exists, 30, "the held cell never started")
+        steering = [
+            self.fake.react(THREAD, targets[THREAD], OWNER, "👍"),
+            self.fake.react(MENTIONS, targets[MENTIONS], OWNER, "✅"),
+            self.fake.react(MENTIONS, mentioned, OWNER, {"id": "456", "name": "yes"}),
+        ]
+        queued = self.fake.react(TURN, targets[TURN], OWNER, "🎉")
+        accepted = steering + [queued]
+
+        def reaction_rows():
+            with self.database() as database:
+                return dict(
+                    database.execute(
+                        "SELECT id,kind FROM mail WHERE id LIKE ?",
+                        (f"discord-{bot['id']}-reaction-%",),
+                    )
+                )
+
+        wait_until(
+            lambda: len(reaction_rows()) == len(accepted), 20, "missing reactions"
+        )
+        rows = reaction_rows()
+        for event in steering:
+            self.assertEqual(
+                rows[f"discord-{bot['id']}-reaction-{event}"], "event_tool"
+            )
+        self.assertEqual(rows[f"discord-{bot['id']}-reaction-{queued}"], "event_turn")
+        for event in ignored:
+            self.assertNotIn(f"discord-{bot['id']}-reaction-{event}", rows)
+        with self.database() as database:
+            self.assertEqual(
+                database.execute("SELECT count(*) FROM discord_requests").fetchone()[0],
+                0,
+            )
+            self.assertEqual(
+                database.execute(
+                    "SELECT channel_id,last_seen FROM discord_cursors WHERE bot=? ORDER BY channel_id",
+                    (bot["id"],),
+                ).fetchall(),
+                cursors,
+            )
+        self.gate.write_text("go")
+        self.wait_seen("👍")
+        self.wait_seen("🎉")
+        self.app.idle(self.session, timeout=40)
+        first = visible(self.requests()[self.first_seen("👍")])
+        self.assertIn("released", first)
+        self.assertIn("<:yes:456>", first)
+        self.assertNotIn("🎉", first)
+        self.assertGreater(self.first_seen("🎉"), self.first_seen("👍"))
+
     def test_catch_up_after_a_reconnect_delivers_once(self):
         bot = self.create_bot()
         self.put_channel(TOOL, "tool")
