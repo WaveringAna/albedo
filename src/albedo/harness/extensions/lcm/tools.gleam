@@ -40,7 +40,7 @@ pub fn definitions() -> List(extension.Tool) {
     ),
     tool.text(
       "lcm_grep",
-      "Find a case-insensitive literal term in this session's durable conversation and LCM summaries. Results are paged; source matches name their covering summary node.",
+      "Find a case-insensitive literal term in this session's durable conversation and LCM summaries. The call that runs the search is not counted. Results are paged; source matches name their covering summary node.",
       False,
       ["pattern"],
       [
@@ -166,7 +166,8 @@ fn grep_page(
     None -> #(0, 9_223_372_036_854_775_807)
     Some(node) -> #(node.first_seq, node.last_seq)
   }
-  use sources <- result.try(search.page(
+  use skip <- result.try(search.running_call(ledger, session))
+  use sources <- result.try(search.page_without(
     ledger,
     session,
     needle,
@@ -174,6 +175,7 @@ fn grep_page(
     last,
     offset,
     limit,
+    skip,
   ))
   use summaries <- result.try(graph.search_page(
     ledger,

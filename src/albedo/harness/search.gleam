@@ -193,6 +193,20 @@ pub fn page(
   offset: Int,
   limit: Int,
 ) -> Result(Page, String) {
+  page_without(ledger, session, needle, first, last, offset, limit, None)
+}
+
+/// `page` that leaves row `skip` out of the matches and the count.
+pub fn page_without(
+  ledger: store.Store,
+  session: String,
+  needle: String,
+  first: Int,
+  last: Int,
+  offset: Int,
+  limit: Int,
+  skip: Option(Int),
+) -> Result(Page, String) {
   use snapshot <- result.try(conversation.snapshot(ledger, session))
   let scan =
     Scan(
@@ -205,6 +219,7 @@ pub fn page(
       True,
       fn(_, _) { True },
       fn(page: Page, match) {
+        use <- bool.guard(skip == Some(match.seq), page)
         let matches = case page.count >= offset && page.count - offset < limit {
           True -> [match, ..page.matches]
           False -> page.matches
@@ -214,6 +229,43 @@ pub fn page(
     )
   pages(scan, first - 1, Page(0, []))
   |> result.map(fn(page) { Page(page.count, list.reverse(page.matches)) })
+}
+
+/// The seq of the row that issues the call `session` is running now: its
+/// newest assistant row, if that one holds calls. A running call's row is
+/// committed before the call runs and only results follow it, so a search the
+/// session runs on itself would otherwise find the call that runs it.
+pub fn running_call(
+  ledger: store.Store,
+  session: String,
+) -> Result(Option(Int), String) {
+  use rows <- result.try(
+    store.read(
+      ledger,
+      "SELECT seq,payload FROM transcript WHERE session=? ORDER BY seq DESC LIMIT 32",
+      [sqlight.text(session)],
+      {
+        use seq <- decode.field(0, decode.int)
+        use payload <- decode.field(1, decode.bit_array)
+        decode.success(#(seq, payload))
+      },
+    ),
+  )
+  let assistant =
+    list.find_map(rows, fn(row) {
+      let text =
+        conversation.read_input(ledger, row.1)
+        |> result.map(tool.row_text)
+        |> result.unwrap("")
+      case string.starts_with(text, "[assistant]\n") {
+        True -> Ok(#(row.0, string.contains(text, "\n[call ")))
+        False -> Error(Nil)
+      }
+    })
+  case assistant {
+    Ok(#(seq, True)) -> Ok(Some(seq))
+    _ -> Ok(None)
+  }
 }
 
 /// `acc` stepped with `row` when its session is wanted and its text holds
@@ -296,6 +348,8 @@ pub fn preview(text: String, needle: String) -> String {
 /// The rows of `session`'s durable transcript whose text contains `pattern`,
 /// case-insensitively: a page of at most 20 seqs with their kind and a
 /// preview, oldest first, among the rows after `after` and before `before`.
+/// A search of the session's own transcript (`own`) leaves out the call that
+/// runs it.
 pub fn transcript_grep(
   ledger: store.Store,
   session: String,
@@ -304,6 +358,7 @@ pub fn transcript_grep(
   offset: Int,
   after: Option(Int),
   before: Option(Int),
+  own: Bool,
 ) -> Result(json.Json, String) {
   use needle <- result.try(needle(pattern))
   use _ <- result.try(compaction.require(
@@ -311,7 +366,11 @@ pub fn transcript_grep(
     "transcript search offset must be nonnegative",
   ))
   let limit = int.clamp(limit, 1, 20)
-  use page <- result.try(page(
+  use skip <- result.try(case own {
+    True -> running_call(ledger, session)
+    False -> Ok(None)
+  })
+  use page <- result.try(page_without(
     ledger,
     session,
     needle,
@@ -320,6 +379,7 @@ pub fn transcript_grep(
       |> option.unwrap(9_223_372_036_854_775_807),
     offset,
     limit,
+    skip,
   ))
   let next = offset + limit
   Ok(

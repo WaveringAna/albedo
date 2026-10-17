@@ -96,6 +96,8 @@ print('RETRIEVAL_PAGES_OK')
         self.code = None
         pattern = 'print("ROWMARK")'
         found = self.retrieve("transcript_grep", {"pattern": pattern})
+        # The search's own call row also holds the pattern; it is not counted.
+        self.assertEqual(found["count"], 1, found)
         called = [row for row in found["rows"] if "[call python]" in row["preview"]]
         self.assertEqual(len(called), 1, found)
         seq = called[0]["seq"]
@@ -134,6 +136,8 @@ print('RETRIEVAL_PAGES_OK')
         for prompt in ["first marker", "second marker", "third marker"]:
             self.turn(target, prompt)
         self.code = f"""
+mine = await agents.self.search_messages('SELFECHO')
+assert mine.count == 0, mine
 agent = await agents.get({target!r})
 found = await agent.search_messages('marker')
 users = [row['seq'] for row in found.rows if row['kind'] == 'user']

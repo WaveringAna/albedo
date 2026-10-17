@@ -251,7 +251,16 @@ fn dispatch(
         },
         "pattern must be a string; limit and offset integers; after_seq and before_seq integers or null",
       ))
-      search.transcript_grep(db, target, pattern, limit, offset, after, before)
+      search.transcript_grep(
+        db,
+        target,
+        pattern,
+        limit,
+        offset,
+        after,
+        before,
+        target == session,
+      )
     }
     "agents.sessions" -> {
       use #(query, cwd, limit, offset) <- result.try(rpc.args(

@@ -165,7 +165,8 @@ class Agent:
     ) -> MessageMatches:
         """This session's message rows containing `pattern`, case-insensitively,
         oldest first; `after_seq` and `before_seq` search only the rows after and
-        before a seq."""
+        before a seq. A search of your own session does not count the call that
+        runs it."""
         return MessageMatches(
             cast(
                 dict,

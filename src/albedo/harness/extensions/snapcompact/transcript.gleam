@@ -13,7 +13,7 @@ pub fn definitions() -> List(extension.Tool) {
   [
     tool.text(
       "transcript_grep",
-      "Find a case-insensitive literal term in this session's full durable transcript, including history archived out of the request. It matches the text of messages, reasoning and tool calls, not a row's label. Results are oldest first and paged (limit 1..20, default 10); each names the row's seq and kind for transcript_read. after_seq and before_seq restrict the rows searched to those after and before a seq.",
+      "Find a case-insensitive literal term in this session's full durable transcript, including history archived out of the request. It matches the text of messages, reasoning and tool calls, not a row's label. The call that runs the search is not counted. Results are oldest first and paged (limit 1..20, default 10); each names the row's seq and kind for transcript_read. after_seq and before_seq restrict the rows searched to those after and before a seq.",
       False,
       ["pattern"],
       [
@@ -50,6 +50,7 @@ pub fn definitions() -> List(extension.Tool) {
           offset,
           after,
           before,
+          True,
         )
         |> result.map(json.to_string)
       },
