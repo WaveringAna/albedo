@@ -223,7 +223,7 @@ func (m DiscordPageModel) status() (string, bool) {
 	case m.Error != "":
 		return DefaultStyles.Error.Render(m.Error), true
 	case m.Saving:
-		return DefaultStyles.Busy.Render("saving…"), true
+		return DefaultStyles.Busy.Render(m.savingLabel()), true
 	case m.Loading:
 		return DefaultStyles.Faint.Render("loading…"), false
 	case m.Notice != "":
@@ -273,12 +273,21 @@ func (m DiscordPageModel) hints() []hint {
 }
 
 // formFooter is a form's keys, with a failure or the save in flight above them.
+// savingLabel says what a long save waits on. Connecting a login in browser
+// mode waits for a person to sign in, which is not the same as saving.
+func (m DiscordPageModel) savingLabel() string {
+	if m.Login != nil && m.Login.browser {
+		return "waiting for Discord — sign in in the Chrome window…"
+	}
+	return "saving…"
+}
+
 func (m DiscordPageModel) formFooter(width int, line string) string {
 	switch {
 	case m.Error != "":
 		return footerLine(width, nil, DefaultStyles.Error.Render(m.Error), true) + "\n" + line
 	case m.Saving:
-		return footerLine(width, nil, DefaultStyles.Busy.Render("saving…"), true) + "\n" + line
+		return footerLine(width, nil, DefaultStyles.Busy.Render(m.savingLabel()), true) + "\n" + line
 	}
 	return line
 }

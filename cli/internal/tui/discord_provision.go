@@ -20,9 +20,13 @@ import (
 // is stored, the form, and the progress view that answers two-factor
 // prompts and falls back to the developer portal on a captcha.
 
-// discordLoginForm asks once for the user's own Discord token.
+// discordLoginForm asks once for the user's own Discord login: a pasted token,
+// or a Chrome window a human signs in to (ctrl+b).
 type discordLoginForm struct {
 	form
+	// browser takes the login from Discord's own web page in a window albedo
+	// opens, instead of a pasted token.
+	browser bool
 }
 
 func newDiscordLoginForm() *discordLoginForm {
@@ -52,9 +56,18 @@ func (f *discordLoginForm) view(width int) []string {
 	}
 	wrap(DefaultStyles.Warning.Render, "This lets albedo act as your Discord account to create applications and add bots to servers. Automating a user account is against Discord's terms and can get the account limited; use it only if you accept that.")
 	rows = append(rows, "")
-	rows = append(rows, formRow(true, discordFieldLabels[discordFieldLogin], 14, f.Inputs[discordFieldLogin].View(), width))
+	if f.browser {
+		rows = append(rows, formRow(true, discordFieldLabels[discordFieldLogin], 14, "a Chrome window", width))
+	} else {
+		rows = append(rows, formRow(true, discordFieldLabels[discordFieldLogin], 14, f.Inputs[discordFieldLogin].View(), width))
+	}
 	rows = append(rows, "")
-	wrap(DefaultStyles.Faint.Render, "In Discord in a browser: DevTools → Network → any request to discord.com/api → copy the Authorization header. The daemon keeps it; kernels and bots never see it, and ctrl+u on the bot list forgets it.")
+	if f.browser {
+		wrap(DefaultStyles.Faint.Render, "albedo opens Chrome on Discord's own web app and waits while you sign in there. The window keeps that session, no token is stored anywhere, and ctrl+b goes back to pasting one.")
+	} else {
+		wrap(DefaultStyles.Faint.Render, "In Discord in a browser: DevTools → Network → any request to discord.com/api → copy the Authorization header. The daemon keeps it; kernels and bots never see it, and ctrl+u on the bot list forgets it.")
+		wrap(DefaultStyles.Faint.Render, "Or press ctrl+b and sign in to a Chrome window instead, which needs no token at all.")
+	}
 	return rows
 }
 
@@ -255,7 +268,9 @@ const provisionPoll = 500 * time.Millisecond
 var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
 // provisionSteps are the steps in the order they run, with what each does.
+// "login" only exists in browser mode, and is shown only while it runs.
 var provisionSteps = []struct{ key, label string }{
+	{"login", "sign in to Discord in the Chrome window"},
 	{"create", "create the application"},
 	{"bot", "add its bot user"},
 	{"intent", "turn on Message Content Intent"},
@@ -293,8 +308,8 @@ func (m DiscordPageModel) openAuto(name string) (DiscordPageModel, tea.Cmd) {
 	}
 }
 
-// accountCmd connects (token set) or forgets the login.
-func (m DiscordPageModel) accountCmd(token string, then bool) (DiscordPageModel, tea.Cmd) {
+// accountCmd connects (a token, or browser mode) or forgets the login.
+func (m DiscordPageModel) accountCmd(token string, browser, then bool) (DiscordPageModel, tea.Cmd) {
 	m.Error, m.Notice, m.Saving = "", "", true
 	m.Generation = nextPageGeneration()
 	conn, gen := m.Conn, m.Generation
@@ -304,9 +319,12 @@ func (m DiscordPageModel) accountCmd(token string, then bool) (DiscordPageModel,
 		}
 		var account daemon.DiscordAccount
 		var err error
-		if token != "" {
+		switch {
+		case browser:
+			account, err = daemon.ConnectDiscordAccountInBrowser(context.Background(), conn)
+		case token != "":
 			account, err = daemon.ConnectDiscordAccount(context.Background(), conn, token)
-		} else {
+		default:
 			account, err = daemon.ForgetDiscordAccount(context.Background(), conn)
 		}
 		return discordAccountMsg{Gen: gen, Account: account, Err: err, Then: then}
@@ -411,16 +429,24 @@ func (m DiscordPageModel) loginKey(msg tea.KeyPressMsg) (DiscordPageModel, tea.C
 	if m.Saving {
 		return m, nil
 	}
+	if msg.String() == "ctrl+b" {
+		m.Login.browser = !m.Login.browser
+		m.Error = ""
+		return m, nil
+	}
 	submit, cmd := m.Login.update(msg)
 	if !submit {
 		return m, cmd
 	}
+	if m.Login.browser {
+		return m.accountCmd("", true, true)
+	}
 	token := m.Login.value(discordFieldLogin)
 	if token == "" {
-		m.Error = "paste your Discord user token first"
+		m.Error = "paste your Discord user token first, or press ctrl+b to sign in with a browser"
 		return m, nil
 	}
-	return m.accountCmd(token, true)
+	return m.accountCmd(token, false, true)
 }
 
 func (m DiscordPageModel) autoKey(msg tea.KeyPressMsg) (DiscordPageModel, tea.Cmd) {
@@ -554,6 +580,11 @@ func (m DiscordPageModel) provisionRows(width int) []string {
 	current := slices.IndexFunc(provisionSteps, func(s struct{ key, label string }) bool { return s.key == p.Step })
 	for i, step := range provisionSteps {
 		label := step.label
+		if step.key == "login" && i != current {
+			// Signing in happens in the window, not in the step list; a run
+			// that never needed it should not show it at all.
+			continue
+		}
 		if step.key == "authorize" {
 			if m.provisionServer == "" {
 				continue
@@ -608,7 +639,7 @@ func (m DiscordPageModel) provisionRows(width int) []string {
 		case p.Code == "captcha":
 			wrap(DefaultStyles.Faint.Render, "Discord wants a captcha, which albedo can't solve. Make the bot in the developer portal (ctrl+l copies the link), then paste its token with ctrl+o.")
 		case p.Code == "unauthorized":
-			wrap(DefaultStyles.Faint.Render, "Your Discord login was refused. Forget it with ctrl+u on the bot list and sign in again.")
+			wrap(DefaultStyles.Faint.Render, "albedo could not use your Discord login. Sign in to Discord in the browser window, or forget the login with ctrl+u on the bot list and connect it again.")
 		}
 	case "cancelled":
 		wrap(DefaultStyles.Faint.Render, "Cancelled. Nothing more will be created.")

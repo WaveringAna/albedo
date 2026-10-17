@@ -522,7 +522,7 @@ func (m DiscordPageModel) confirmKey(msg tea.KeyPressMsg) (DiscordPageModel, tea
 			return daemon.DeleteDiscordBot(ctx, conn, bot.ID, bot.Revision)
 		})
 	case "forget":
-		return m.accountCmd("", false)
+		return m.accountCmd("", false, false)
 	case "remove":
 		bot := m.Open
 		return m.begin("Removed. Their DMs will show up as requests again.", true, func(ctx context.Context, conn *daemon.Connection) error {
