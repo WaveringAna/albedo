@@ -127,24 +127,45 @@ class Agent:
         return bool(await _act("agents.close", {"id": self.id}))
 
     async def messages(
-        self, seq: int = 0, *, offset: int = 0, limit: int = 4000
+        self,
+        seq: int = 0,
+        *,
+        through: int | None = None,
+        offset: int = 0,
+        limit: int = 4000,
     ) -> MessagePage:
-        """A page of this session's messages from row `seq` on (at most 8000 chars).
-        Any session may read any other."""
+        """A page of this session's messages as text from row `seq` on, or through
+        row `through`, so `messages(n, through=n)` reads exactly row n. `offset` and
+        `limit` count characters, not rows (at most 8000). Any session may read any
+        other."""
         return MessagePage(
             cast(
                 dict,
                 await host(
                     "agents.messages",
-                    {"id": self.id, "seq": seq, "offset": offset, "limit": limit},
+                    {
+                        "id": self.id,
+                        "seq": seq,
+                        "through": through,
+                        "offset": offset,
+                        "limit": limit,
+                    },
                 ),
             )
         )
 
     async def search_messages(
-        self, pattern: str, *, limit: int = 10, offset: int = 0
+        self,
+        pattern: str,
+        *,
+        limit: int = 10,
+        offset: int = 0,
+        after_seq: int | None = None,
+        before_seq: int | None = None,
     ) -> MessageMatches:
-        """This session's message rows containing `pattern`, case-insensitively."""
+        """This session's message rows containing `pattern`, case-insensitively,
+        oldest first; `after_seq` and `before_seq` search only the rows after and
+        before a seq."""
         return MessageMatches(
             cast(
                 dict,
@@ -155,6 +176,8 @@ class Agent:
                         "pattern": pattern,
                         "limit": limit,
                         "offset": offset,
+                        "after_seq": after_seq,
+                        "before_seq": before_seq,
                     },
                 ),
             )

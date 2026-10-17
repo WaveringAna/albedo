@@ -224,31 +224,34 @@ fn dispatch(
     }
     "agents.messages" -> {
       use target <- result.try(addressed(db, session, args))
-      use #(seq, offset, limit) <- result.try(rpc.args(
+      use #(seq, through, offset, limit) <- result.try(rpc.args(
         args,
         {
           use seq <- decode.field("seq", decode.int)
+          use through <- decode.field("through", decode.optional(decode.int))
           use offset <- decode.field("offset", decode.int)
           use limit <- decode.field("limit", decode.int)
-          decode.success(#(seq, offset, limit))
+          decode.success(#(seq, through, offset, limit))
         },
-        "seq, offset and limit must be integers",
+        "seq, offset and limit must be integers; through an integer or null",
       ))
-      tool.transcript_read(db, target, seq, None, offset, limit)
+      tool.transcript_read(db, target, seq, through, offset, limit)
     }
     "agents.search_messages" -> {
       use target <- result.try(addressed(db, session, args))
-      use #(pattern, limit, offset) <- result.try(rpc.args(
+      use #(pattern, limit, offset, after, before) <- result.try(rpc.args(
         args,
         {
           use pattern <- decode.field("pattern", decode.string)
           use limit <- decode.field("limit", decode.int)
           use offset <- decode.field("offset", decode.int)
-          decode.success(#(pattern, limit, offset))
+          use after <- decode.field("after_seq", decode.optional(decode.int))
+          use before <- decode.field("before_seq", decode.optional(decode.int))
+          decode.success(#(pattern, limit, offset, after, before))
         },
-        "pattern must be a string; limit and offset integers",
+        "pattern must be a string; limit and offset integers; after_seq and before_seq integers or null",
       ))
-      search.transcript_grep(db, target, pattern, limit, offset, None, None)
+      search.transcript_grep(db, target, pattern, limit, offset, after, before)
     }
     "agents.sessions" -> {
       use #(query, cwd, limit, offset) <- result.try(rpc.args(

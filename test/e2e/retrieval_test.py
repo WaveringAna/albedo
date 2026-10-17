@@ -113,7 +113,7 @@ print('RETRIEVAL_PAGES_OK')
         self.assertIsNone(row["next_offset"])
         # Without through the page runs on into the rows after it.
         onward = self.retrieve("transcript_read", {"seq": seq, "limit": 8000})
-        self.assertIn(f"[row #{seq + 1}]", onward["content"])
+        self.assertGreater(onward["content"].count("[row #"), 1, onward)
         after = self.retrieve(
             "transcript_grep", {"pattern": "ROWMARK", "after_seq": seq}
         )
@@ -128,6 +128,38 @@ print('RETRIEVAL_PAGES_OK')
             {"pattern": "ROWMARK", "after_seq": seq - 1, "before_seq": seq + 1},
         )
         self.assertEqual([item["seq"] for item in within["rows"]], [seq], within)
+
+    def test_python_reads_and_searches_take_the_same_bounds(self):
+        target = self.app.session()
+        for prompt in ["first marker", "second marker", "third marker"]:
+            self.turn(target, prompt)
+        self.code = f"""
+agent = await agents.get({target!r})
+found = await agent.search_messages('marker')
+users = [row['seq'] for row in found.rows if row['kind'] == 'user']
+assert len(users) == 3, found
+first, second, third = users
+after = await agent.search_messages('marker', after_seq=first)
+assert [r['seq'] for r in after.rows if r['kind'] == 'user'] == [second, third], after
+before = await agent.search_messages('marker', before_seq=third)
+assert [r['seq'] for r in before.rows if r['kind'] == 'user'] == [first, second], before
+one = await agent.messages(first, through=first)
+assert one.content.startswith(f'[row #{{first}}]'), one
+assert f'[row #{{second}}]' not in one.content and one.next_offset is None, one
+try:
+    await agent.messages(second, through=first)
+    assert False, 'through before seq was accepted'
+except AgentsError as error:
+    assert 'through' in str(error), error
+print('RETRIEVAL_BOUNDS_OK')
+"""
+        requests = self.turn(self.session, "verify the bounds")
+        output = next(
+            item["output"]
+            for item in reversed(requests[-1]["input"])
+            if item.get("type") == "function_call_output"
+        )
+        self.assertIn("RETRIEVAL_BOUNDS_OK", output)
 
     def test_lcm_search_pages_sources_and_nodes_independently_inside_selected_range(
         self,

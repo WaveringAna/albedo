@@ -16,7 +16,9 @@ await agents.cancel_all()                     # every child and descendant (tree
 await kid.close()                             # done: keep messages + files, free the kernel
 other = await agents.get("a1b2c3")            # "parent", a family name, or any session id
 page = await other.messages(seq=0)            # page of its rows: content, next_offset
-hits = await kid.search_messages("error")     # rows by seq, with previews
+one = await other.messages(7, through=7)      # exactly row 7; limit/offset count characters
+hits = await kid.search_messages("error")     # rows by seq, kind and preview
+older = await kid.search_messages("error", before_seq=7)  # also after_seq
 await agents.progress("on turn.gleam now")    # shows in /agents, starts no turn
 ```
 
