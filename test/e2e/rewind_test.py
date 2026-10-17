@@ -6,6 +6,7 @@ indexes, the registry and the actor lifecycle."""
 import json
 import sqlite3
 import urllib.error
+import urllib.parse
 
 from harness import Provider, operation_id, text
 
@@ -56,7 +57,12 @@ class RewindTest(IntegrationScenario):
         return raised.exception.code, json.load(raised.exception)["code"]
 
     def session_ids(self, app):
-        return {item["id"] for item in self.read(app, "/sessions?scope=all")["items"]}
+        # Only this app's workspace: every other test shares this daemon's home,
+        # so a scope=all listing is a shifting page of their sessions.
+        query = urllib.parse.urlencode(
+            {"scope": "all", "workspace": str(app.workspace)}
+        )
+        return {item["id"] for item in self.read(app, f"/sessions?{query}")["items"]}
 
     def user_texts(self, entries):
         return [self.entry_text(e) for e in entries if e["kind"] == "user"]
@@ -203,7 +209,9 @@ class RewindTest(IntegrationScenario):
         self.send(app, session, "continue from branch one")
         self.send(app, session, "continue from branch two")
         before = self.history(app, session)
+        # Scoped to this workspace, so the page cannot hide an archive either.
         sessions = self.session_ids(app)
+        self.assertEqual(sessions, {session})
 
         self.written = ""
         with self.assertRaises(urllib.error.HTTPError) as raised:
