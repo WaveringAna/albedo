@@ -8,7 +8,6 @@ import (
 	"slices"
 	"time"
 
-	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 )
 
@@ -51,23 +50,6 @@ type DiscordPageModel struct {
 	ticker int
 	now    func() time.Time
 
-	// Account is the user's Discord login that creates bots automatically.
-	Account daemon.DiscordAccount
-	// Login asks for that login, Auto is the automatic add form, and
-	// Provision is a bot being created, shown in the list's place.
-	Login     *discordLoginForm
-	Auto      *discordAutoForm
-	Provision *daemon.DiscordProvision
-	// mfa is the two-factor code field while a provision waits for one.
-	mfa *textinput.Model
-	// spin turns the running step's spinner.
-	spin int
-	// autoName carries the typed name through the login step.
-	autoName string
-	// provisionServer names the server the bot is being added to; empty
-	// when you invite it yourself. provisionRetry starts it again.
-	provisionServer string
-	provisionRetry  [3]string
 	// selected is the bot to put the cursor on once it is listed.
 	selected string
 }
@@ -91,7 +73,6 @@ type discordLoadedMsg struct {
 	Mounted    bool
 	SessionOff bool
 	Missing    bool
-	Account    *daemon.DiscordAccount
 }
 
 type discordSavedMsg struct {
@@ -181,14 +162,6 @@ func (m DiscordPageModel) loadCmd(gen int, quiet bool) tea.Cmd {
 				}
 			}
 		}
-		if !quiet {
-			account, err := daemon.GetDiscordAccount(ctx, conn)
-			if err != nil {
-				msg.Err = err
-				return msg
-			}
-			msg.Account = &account
-		}
 		if msg.Bots, msg.Err = daemon.ListDiscordBots(ctx, conn); msg.Err != nil || open == "" {
 			return msg
 		}
@@ -228,9 +201,6 @@ func (m DiscordPageModel) begin(notice string, reload bool, change func(context.
 }
 
 func (m DiscordPageModel) Update(msg tea.Msg) (DiscordPageModel, tea.Cmd) {
-	if next, cmd, handled := m.updateProvision(msg); handled {
-		return next, cmd
-	}
 	switch msg := msg.(type) {
 	case discordLoadedMsg:
 		return m.loaded(msg), nil
@@ -272,12 +242,6 @@ func (m DiscordPageModel) Update(msg tea.Msg) (DiscordPageModel, tea.Cmd) {
 			_, cmd = m.Form.update(msg)
 		case m.Person != nil:
 			_, cmd = m.Person.update(msg)
-		case m.Login != nil:
-			_, cmd = m.Login.update(msg)
-		case m.Auto != nil:
-			_, cmd = m.Auto.update(msg)
-		case m.mfa != nil:
-			*m.mfa, cmd = m.mfa.Update(msg)
 		}
 		return m, cmd
 	}
@@ -306,9 +270,6 @@ func (m DiscordPageModel) loaded(msg discordLoadedMsg) DiscordPageModel {
 	m.Mounted, m.SessionOff, m.Missing = msg.Mounted, msg.SessionOff, msg.Missing
 	if msg.Sessions != nil {
 		m.Sessions = msg.Sessions
-	}
-	if msg.Account != nil {
-		m.Account = *msg.Account
 	}
 	m.setBots(msg.Bots)
 	if m.selected != "" && slices.ContainsFunc(m.Bots, func(b daemon.DiscordBot) bool { return b.ID == m.selected }) {
@@ -404,12 +365,6 @@ func (m DiscordPageModel) freeSessions() sessionChoice {
 func (m DiscordPageModel) handleKey(msg tea.KeyPressMsg) (DiscordPageModel, tea.Cmd) {
 	key := msg.String()
 	switch {
-	case m.Provision != nil:
-		return m.provisionKey(msg)
-	case m.Login != nil:
-		return m.loginKey(msg)
-	case m.Auto != nil:
-		return m.autoKey(msg)
 	case m.Form != nil:
 		return m.formKey(msg)
 	case m.Person != nil:
@@ -442,9 +397,6 @@ func (m DiscordPageModel) formKey(msg tea.KeyPressMsg) (DiscordPageModel, tea.Cm
 	}
 	if m.Saving {
 		return m, nil
-	}
-	if msg.String() == "ctrl+n" && m.Form.Editing == nil {
-		return m.startAuto()
 	}
 	submit, cmd := m.Form.update(msg)
 	if !submit {
@@ -521,8 +473,6 @@ func (m DiscordPageModel) confirmKey(msg tea.KeyPressMsg) (DiscordPageModel, tea
 		return m.begin("Deleted "+bot.Name+".", true, func(ctx context.Context, conn *daemon.Connection) error {
 			return daemon.DeleteDiscordBot(ctx, conn, bot.ID, bot.Revision)
 		})
-	case "forget":
-		return m.accountCmd("", false, false)
 	case "remove":
 		bot := m.Open
 		return m.begin("Removed. Their DMs will show up as requests again.", true, func(ctx context.Context, conn *daemon.Connection) error {
@@ -564,11 +514,6 @@ func (m DiscordPageModel) browseKey(msg tea.KeyPressMsg) (DiscordPageModel, tea.
 	case "ctrl+l":
 		if selected {
 			return m.copyInvite(bot)
-		}
-	case "ctrl+u":
-		if m.Account.Connected {
-			m.Error = ""
-			m.confirm.ask("forget", "", "forget", "albedo stops being able to create bots as @"+m.Account.Username+"; your bots keep running. Forget your Discord login?")
 		}
 	default:
 		cmd := m.listView.update(msg)
@@ -727,4 +672,15 @@ func nextDelivery(delivery string) string {
 		return "tool"
 	}
 	return "off"
+}
+
+// selectRow puts the list's cursor on a bot, clearing a filter that hides it.
+func (m *DiscordPageModel) selectRow(id string) {
+	m.selected = id
+	if i := slices.IndexFunc(m.shown, func(s listShown) bool { return m.rows[s.row].key == id }); i >= 0 {
+		m.Cursor = i
+		return
+	}
+	m.input.SetValue("")
+	m.refilter(id)
 }

@@ -6,7 +6,6 @@ import albedo/daemon/store
 import albedo/harness/extension
 import albedo/harness/extensions/discord/ledger
 import albedo/harness/extensions/discord/manager
-import albedo/harness/extensions/discord/provision
 import gleam/dict
 import gleam/dynamic/decode
 import gleam/http.{type Method, Delete, Get, Patch, Post, Put}
@@ -17,7 +16,6 @@ import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
-import gleam/string
 import mist
 
 pub fn admission(_path: List(String), _method: Method) -> extension.Admission {
@@ -271,125 +269,7 @@ fn dispatch(
       manager.changed(id)
       Ok(api.reply(200, json.object([#("deleted", json.string(user))])))
     }
-    Get, ["account"] -> account_reply(db)
-    Put, ["account"] -> {
-      use #(token, browser) <- result.try(
-        api.body(req, ["token", "browser"], {
-          use token <- decode.optional_field(
-            "token",
-            None,
-            decode.optional(api.bounded_string(512, True)),
-          )
-          use browser <- decode.optional_field("browser", False, decode.bool)
-          decode.success(#(token, browser))
-        }),
-      )
-      case token, browser {
-        Some(token), _ -> connect_login(db, ledger.Token(string.trim(token)))
-        None, True -> connect_login(db, ledger.Browser)
-        None, False ->
-          Error(api.invalid("a user token, or browser, is required"))
-      }
-    }
-    Delete, ["account"] -> {
-      use _ <- result.try(api.empty_body(req))
-      use _ <- result.try(stored(ledger.forget_account(db)))
-      account_reply(db)
-    }
-    Get, ["account", "guilds"] -> {
-      use login <- result.try(login_of(db))
-      use guilds <- result.try(
-        provision.run_once(
-          login,
-          json.object([#("op", json.string("guilds"))]),
-          decode.list({
-            use id <- decode.field("id", decode.string)
-            use name <- decode.optional_field("name", "", decode.string)
-            use icon <- nullable("icon")
-            decode.success(#(id, name, icon))
-          }),
-        )
-        |> result.map_error(fn(failure) { login_failure(login, failure) }),
-      )
-      Ok(api.reply(
-        200,
-        json.object([
-          #(
-            "guilds",
-            json.array(guilds, fn(guild) {
-              json.object([
-                #("id", json.string(guild.0)),
-                #("name", json.string(guild.1)),
-                #("icon", json.nullable(guild.2, json.string)),
-              ])
-            }),
-          ),
-        ]),
-      ))
-    }
-    Post, ["provisions"] -> {
-      use #(session, name, guild) <- result.try(
-        api.body(req, ["session_id", "name", "guild_id"], {
-          use session <- decode.field(
-            "session_id",
-            api.bounded_string(256, True),
-          )
-          use name <- decode.field("name", api.bounded_string(64, True))
-          use guild <- nullable("guild_id")
-          decode.success(#(session, name, guild))
-        }),
-      )
-      // Discord refuses such an application only after the request is sent.
-      use _ <- result.try(
-        case string.contains(string.lowercase(name), "discord") {
-          True ->
-            Error(api.invalid("Discord refuses names that contain \"discord\""))
-          False -> Ok(Nil)
-        },
-      )
-      use exists <- result.try(stored(ledger.session_exists(db, session)))
-      use _ <- result.try(case exists {
-        True -> Ok(Nil)
-        False -> Error(failure(ledger.SessionNotFound))
-      })
-      use _ <- result.try(case ledger.for_session(db, session) {
-        Ok(_) -> Error(failure(ledger.Exists))
-        Error(_) -> Ok(Nil)
-      })
-      use login <- result.try(login_of(db))
-      use account <- result.try(stored(ledger.account(db)))
-      use owner <- result.try(option.to_result(account, no_account()))
-      use started <- result.try(
-        provision.begin(provision.Request(
-          session,
-          name,
-          guild,
-          login,
-          owner.user_id,
-        ))
-        |> result.map_error(provision_failure),
-      )
-      Ok(api.reply(202, provision_json(db, started)))
-    }
-    Get, ["provisions", id] -> provision_reply(db, provision.get(id))
-    Post, ["provisions", id, "mfa"] -> {
-      use code <- result.try(api.body(
-        req,
-        ["code"],
-        decode.field("code", api.bounded_string(64, True), decode.success),
-      ))
-      provision_reply(db, provision.mfa(id, string.trim(code)))
-    }
-    Delete, ["provisions", id] -> {
-      use _ <- result.try(api.empty_body(req))
-      provision_reply(db, provision.cancel(id))
-    }
     _, ["bots"]
-    | _, ["account"]
-    | _, ["account", "guilds"]
-    | _, ["provisions"]
-    | _, ["provisions", _]
-    | _, ["provisions", _, "mfa"]
     | _, ["bots", _]
     | _, ["bots", _, "guilds"]
     | _, ["bots", _, "channels", _]
@@ -404,121 +284,6 @@ fn dispatch(
       ))
     _, _ -> Error(api.Failure(404, "not_found", "discord route not found"))
   }
-}
-
-fn no_account() -> api.Failure {
-  api.Failure(
-    412,
-    "no_account",
-    "connect your Discord account on the Discord page first",
-  )
-}
-
-fn login_of(db: store.Store) -> Result(ledger.Login, api.Failure) {
-  use login <- result.try(stored(ledger.login(db)))
-  option.to_result(login, no_account())
-}
-
-/// Checks the login with Discord once, then stores it: a pasted token, or the
-/// Chrome window a person signs in to.
-fn connect_login(
-  db: store.Store,
-  login: ledger.Login,
-) -> Result(response.Response(mist.ResponseData), api.Failure) {
-  use me <- result.try(
-    provision.run_once(login, json.object([#("op", json.string("me"))]), {
-      use id <- decode.field("id", decode.string)
-      use username <- decode.optional_field(
-        "username",
-        None,
-        decode.optional(decode.string),
-      )
-      decode.success(ledger.Account(id, option.unwrap(username, "")))
-    })
-    |> result.map_error(fn(failure) { login_failure(login, failure) }),
-  )
-  use _ <- result.try(stored(ledger.connect_account(db, login, me)))
-  account_reply(db)
-}
-
-fn account_reply(
-  db: store.Store,
-) -> Result(response.Response(mist.ResponseData), api.Failure) {
-  use account <- result.try(stored(ledger.account(db)))
-  Ok(api.reply(
-    200,
-    json.object([
-      #("connected", json.bool(option.is_some(account))),
-      #(
-        "user",
-        json.nullable(account, fn(account) {
-          user_json(manager.User(account.user_id, account.username))
-        }),
-      ),
-    ]),
-  ))
-}
-
-/// A provisioner failure on the account routes. The provisioner names what is
-/// wrong with the login itself, so its message is what the user reads.
-fn login_failure(
-  login: ledger.Login,
-  failure: #(String, String),
-) -> api.Failure {
-  case failure {
-    #("unauthorized", detail) ->
-      case login {
-        ledger.Token(_) -> api.Failure(400, "invalid_token", detail)
-        ledger.Browser -> api.Failure(400, "not_signed_in", detail)
-      }
-    #(_, detail) -> api.Failure(503, "discord_unavailable", detail)
-  }
-}
-
-fn provision_failure(failure: provision.Failure) -> api.Failure {
-  case failure {
-    provision.NotFound ->
-      api.Failure(404, "not_found", "provision not found or expired")
-    provision.NotWaiting ->
-      api.Failure(409, "not_waiting", "the provision is not waiting for a code")
-    provision.Unavailable ->
-      api.Failure(503, "daemon_unavailable", "provisioning is not running")
-  }
-}
-
-fn provision_reply(
-  db: store.Store,
-  outcome: Result(provision.Provision, provision.Failure),
-) -> Result(response.Response(mist.ResponseData), api.Failure) {
-  use found <- result.try(outcome |> result.map_error(provision_failure))
-  Ok(api.reply(200, provision_json(db, found)))
-}
-
-fn provision_json(db: store.Store, item: provision.Provision) -> json.Json {
-  let bot =
-    option.to_result(item.bot, Nil)
-    |> result.try(fn(id) {
-      ledger.overview(db, id) |> result.replace_error(Nil)
-    })
-    |> option.from_result
-  json.object([
-    #("id", json.string(item.id)),
-    #("session_id", json.string(item.session)),
-    #("name", json.string(item.name)),
-    #("state", json.string(item.state)),
-    #("step", json.nullable(item.step, json.string)),
-    #("methods", json.array(item.methods, json.string)),
-    #("mfa_error", json.nullable(item.mfa_error, json.string)),
-    #("error", json.nullable(item.error, json.string)),
-    #("code", json.nullable(item.code, json.string)),
-    #(
-      "bot",
-      json.nullable(bot, fn(overview) {
-        bot_json(overview, manager.status(overview.bot.id))
-      }),
-    ),
-    #("portal_url", json.string(provision.portal_url)),
-  ])
 }
 
 fn optional(

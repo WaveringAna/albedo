@@ -608,32 +608,6 @@ type DeliveryPage struct {
 	Next  *PageToken `json:"next" nullable:"true"`
 }
 
-// DiscordAccount The user's own Discord login that creates bots. Its token is never returned.
-type DiscordAccount struct {
-	Connected bool            `json:"connected"`
-	User      *DiscordBotUser `json:"user" nullable:"true"`
-}
-
-// DiscordAccountGuild defines model for DiscordAccountGuild.
-type DiscordAccountGuild struct {
-	Icon *string `json:"icon" nullable:"true"`
-
-	// ID Discord snowflake as decimal text.
-	ID   DiscordID `json:"id"`
-	Name string    `json:"name"`
-}
-
-// DiscordAccountGuildList defines model for DiscordAccountGuildList.
-type DiscordAccountGuildList struct {
-	Guilds []DiscordAccountGuild `json:"guilds"`
-}
-
-// DiscordAccountLogin A pasted user token, or browser mode, where the Chrome window albedo opens carries the login instead.
-type DiscordAccountLogin struct {
-	Browser *bool   `json:"browser,omitempty"`
-	Token   *string `json:"token,omitempty"`
-}
-
 // DiscordAllow defines model for DiscordAllow.
 type DiscordAllow struct {
 	Name *string `json:"name" nullable:"true"`
@@ -776,45 +750,12 @@ type DiscordGuildList struct {
 // DiscordID Discord snowflake as decimal text.
 type DiscordID = string
 
-// DiscordMFACode defines model for DiscordMFACode.
-type DiscordMFACode struct {
-	Code string `json:"code"`
-}
-
 // DiscordOwner defines model for DiscordOwner.
 type DiscordOwner struct {
 	Name *string `json:"name" nullable:"true"`
 
 	// UserID Discord snowflake as decimal text.
 	UserID DiscordID `json:"user_id"`
-}
-
-// DiscordProvision A bot application being created with the user's login. mfa waits for a two-factor code; a captcha code means Discord wants a human, so the bot is made in the developer portal instead.
-type DiscordProvision struct {
-	Bot   *DiscordBot `json:"bot" nullable:"true"`
-	Code  *string     `json:"code" nullable:"true"`
-	Error *string     `json:"error" nullable:"true"`
-
-	// ID Opaque identity. Never infer a resource type or route from its contents.
-	ID        ID       `json:"id"`
-	Methods   []string `json:"methods"`
-	MfaError  *string  `json:"mfa_error" nullable:"true"`
-	Name      string   `json:"name"`
-	PortalURL string   `json:"portal_url"`
-
-	// SessionID Opaque identity. Never infer a resource type or route from its contents.
-	SessionID ID      `json:"session_id"`
-	State     string  `json:"state"`
-	Step      *string `json:"step" nullable:"true"`
-}
-
-// DiscordProvisionCreate defines model for DiscordProvisionCreate.
-type DiscordProvisionCreate struct {
-	GuildID *DiscordID `json:"guild_id" nullable:"true"`
-	Name    string     `json:"name"`
-
-	// SessionID Opaque identity. Never infer a resource type or route from its contents.
-	SessionID ID `json:"session_id"`
 }
 
 // DiscordRequest Someone whose DMs were refused because they are not on the allow list.
@@ -3722,9 +3663,6 @@ type AnswerLoginApplicationMergePatchPlusJSONRequestBody = LoginPatch
 // CreateLoginJSONRequestBody defines body for CreateLogin for application/json ContentType.
 type CreateLoginJSONRequestBody = LoginRequest
 
-// PutDiscordAccountJSONRequestBody defines body for PutDiscordAccount for application/json ContentType.
-type PutDiscordAccountJSONRequestBody = DiscordAccountLogin
-
 // CreateDiscordBotJSONRequestBody defines body for CreateDiscordBot for application/json ContentType.
 type CreateDiscordBotJSONRequestBody = DiscordBotCreate
 
@@ -3736,12 +3674,6 @@ type PutDiscordChannelJSONRequestBody = DiscordChannelSetting
 
 // PutDiscordDMJSONRequestBody defines body for PutDiscordDM for application/json ContentType.
 type PutDiscordDMJSONRequestBody = DiscordAllow
-
-// CreateDiscordProvisionJSONRequestBody defines body for CreateDiscordProvision for application/json ContentType.
-type CreateDiscordProvisionJSONRequestBody = DiscordProvisionCreate
-
-// AnswerDiscordProvisionMFAJSONRequestBody defines body for AnswerDiscordProvisionMFA for application/json ContentType.
-type AnswerDiscordProvisionMFAJSONRequestBody = DiscordMFACode
 
 // MergeLinkGroupsJSONRequestBody defines body for MergeLinkGroups for application/json ContentType.
 type MergeLinkGroupsJSONRequestBody = LinkMerge
@@ -3962,41 +3894,6 @@ type ClientInterface interface {
 	// Corresponds with PUT /auth/logins/{login_id} (the `CreateLogin` operationId).
 	CreateLogin(ctx context.Context, loginID UUIDv7, body CreateLoginJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// DeleteDiscordAccount Forget the Discord login; bots stay
-	//
-	// Corresponds with DELETE /extensions/discord/account (the `DeleteDiscordAccount` operationId).
-	DeleteDiscordAccount(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
-
-	// GetDiscordAccount Read whether a Discord login is connected for creating bots
-	//
-	// Corresponds with GET /extensions/discord/account (the `GetDiscordAccount` operationId).
-	GetDiscordAccount(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
-
-	// PutDiscordAccountWithBody Connect the Discord login that creates bots
-	//
-	// Validated against Discord before it is stored (400 invalid_token, or invalid_login for browser mode). The token is never returned and never reaches kernels or bot processes.
-	//
-	// Takes any type of body and a specified content type.
-	//
-	// Corresponds with PUT /extensions/discord/account (the `PutDiscordAccount` operationId).
-	PutDiscordAccountWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
-
-	// PutDiscordAccount Connect the Discord login that creates bots
-	//
-	// Validated against Discord before it is stored (400 invalid_token, or invalid_login for browser mode). The token is never returned and never reaches kernels or bot processes.
-	//
-	// Takes a body of the `application/json` content type.
-	//
-	// Corresponds with PUT /extensions/discord/account (the `PutDiscordAccount` operationId).
-	PutDiscordAccount(ctx context.Context, body PutDiscordAccountJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
-
-	// ListDiscordAccountGuilds List the servers the connected login can add bots to
-	//
-	// 412 no_account when no login is connected.
-	//
-	// Corresponds with GET /extensions/discord/account/guilds (the `ListDiscordAccountGuilds` operationId).
-	ListDiscordAccountGuilds(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
-
 	// ListDiscordBots List Discord bots of every session without tokens
 	//
 	// Corresponds with GET /extensions/discord/bots (the `ListDiscordBots` operationId).
@@ -4107,54 +4004,6 @@ type ClientInterface interface {
 	//
 	// Corresponds with DELETE /extensions/discord/bots/{bot_id}/requests/{user_id} (the `DeleteDiscordRequest` operationId).
 	DeleteDiscordRequest(ctx context.Context, botID ID, userID ID, reqEditors ...RequestEditorFn) (*http.Response, error)
-
-	// CreateDiscordProvisionWithBody Create a bot application for a session with the connected login
-	//
-	// 409 bot_exists when the session has a bot; 412 no_account without a login. On success the bot is created like POST /bots with the login as owner, then added to guild_id when one is given.
-	//
-	// Takes any type of body and a specified content type.
-	//
-	// Corresponds with POST /extensions/discord/provisions (the `CreateDiscordProvision` operationId).
-	CreateDiscordProvisionWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
-
-	// CreateDiscordProvision Create a bot application for a session with the connected login
-	//
-	// 409 bot_exists when the session has a bot; 412 no_account without a login. On success the bot is created like POST /bots with the login as owner, then added to guild_id when one is given.
-	//
-	// Takes a body of the `application/json` content type.
-	//
-	// Corresponds with POST /extensions/discord/provisions (the `CreateDiscordProvision` operationId).
-	CreateDiscordProvision(ctx context.Context, body CreateDiscordProvisionJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
-
-	// CancelDiscordProvision Cancel a provision in progress
-	//
-	// Corresponds with DELETE /extensions/discord/provisions/{provision_id} (the `CancelDiscordProvision` operationId).
-	CancelDiscordProvision(ctx context.Context, provisionID ID, reqEditors ...RequestEditorFn) (*http.Response, error)
-
-	// GetDiscordProvision Read a provision in progress or finished
-	//
-	// Finished provisions expire after 10 minutes (404).
-	//
-	// Corresponds with GET /extensions/discord/provisions/{provision_id} (the `GetDiscordProvision` operationId).
-	GetDiscordProvision(ctx context.Context, provisionID ID, reqEditors ...RequestEditorFn) (*http.Response, error)
-
-	// AnswerDiscordProvisionMFAWithBody Answer the two-factor code a provision waits for
-	//
-	// 409 not_waiting unless the provision is in state mfa.
-	//
-	// Takes any type of body and a specified content type.
-	//
-	// Corresponds with POST /extensions/discord/provisions/{provision_id}/mfa (the `AnswerDiscordProvisionMFA` operationId).
-	AnswerDiscordProvisionMFAWithBody(ctx context.Context, provisionID ID, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
-
-	// AnswerDiscordProvisionMFA Answer the two-factor code a provision waits for
-	//
-	// 409 not_waiting unless the provision is in state mfa.
-	//
-	// Takes a body of the `application/json` content type.
-	//
-	// Corresponds with POST /extensions/discord/provisions/{provision_id}/mfa (the `AnswerDiscordProvisionMFA` operationId).
-	AnswerDiscordProvisionMFA(ctx context.Context, provisionID ID, body AnswerDiscordProvisionMFAJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// UnlinkWorkspace Remove a member from the observed group
 	//
@@ -5041,91 +4890,6 @@ func (c *Client) CreateLogin(ctx context.Context, loginID UUIDv7, body CreateLog
 	return c.Client.Do(req)
 }
 
-// DeleteDiscordAccount Forget the Discord login; bots stay
-//
-// Corresponds with DELETE /extensions/discord/account (the `DeleteDiscordAccount` operationId).
-func (c *Client) DeleteDiscordAccount(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewDeleteDiscordAccountRequest(c.Server)
-	if err != nil {
-		return nil, err
-	}
-	req = req.WithContext(ctx)
-	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
-		return nil, err
-	}
-	return c.Client.Do(req)
-}
-
-// GetDiscordAccount Read whether a Discord login is connected for creating bots
-//
-// Corresponds with GET /extensions/discord/account (the `GetDiscordAccount` operationId).
-func (c *Client) GetDiscordAccount(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewGetDiscordAccountRequest(c.Server)
-	if err != nil {
-		return nil, err
-	}
-	req = req.WithContext(ctx)
-	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
-		return nil, err
-	}
-	return c.Client.Do(req)
-}
-
-// PutDiscordAccountWithBody Connect the Discord login that creates bots
-//
-// Validated against Discord before it is stored (400 invalid_token, or invalid_login for browser mode). The token is never returned and never reaches kernels or bot processes.
-//
-// Takes any type of body and a specified content type.
-//
-// Corresponds with PUT /extensions/discord/account (the `PutDiscordAccount` operationId).
-func (c *Client) PutDiscordAccountWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewPutDiscordAccountRequestWithBody(c.Server, contentType, body)
-	if err != nil {
-		return nil, err
-	}
-	req = req.WithContext(ctx)
-	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
-		return nil, err
-	}
-	return c.Client.Do(req)
-}
-
-// PutDiscordAccount Connect the Discord login that creates bots
-//
-// Validated against Discord before it is stored (400 invalid_token, or invalid_login for browser mode). The token is never returned and never reaches kernels or bot processes.
-//
-// Takes a body of the `application/json` content type.
-//
-// Corresponds with PUT /extensions/discord/account (the `PutDiscordAccount` operationId).
-func (c *Client) PutDiscordAccount(ctx context.Context, body PutDiscordAccountJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewPutDiscordAccountRequest(c.Server, body)
-	if err != nil {
-		return nil, err
-	}
-	req = req.WithContext(ctx)
-	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
-		return nil, err
-	}
-	return c.Client.Do(req)
-}
-
-// ListDiscordAccountGuilds List the servers the connected login can add bots to
-//
-// 412 no_account when no login is connected.
-//
-// Corresponds with GET /extensions/discord/account/guilds (the `ListDiscordAccountGuilds` operationId).
-func (c *Client) ListDiscordAccountGuilds(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewListDiscordAccountGuildsRequest(c.Server)
-	if err != nil {
-		return nil, err
-	}
-	req = req.WithContext(ctx)
-	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
-		return nil, err
-	}
-	return c.Client.Do(req)
-}
-
 // ListDiscordBots List Discord bots of every session without tokens
 //
 // Corresponds with GET /extensions/discord/bots (the `ListDiscordBots` operationId).
@@ -5377,114 +5141,6 @@ func (c *Client) ListDiscordGuilds(ctx context.Context, botID ID, reqEditors ...
 // Corresponds with DELETE /extensions/discord/bots/{bot_id}/requests/{user_id} (the `DeleteDiscordRequest` operationId).
 func (c *Client) DeleteDiscordRequest(ctx context.Context, botID ID, userID ID, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewDeleteDiscordRequestRequest(c.Server, botID, userID)
-	if err != nil {
-		return nil, err
-	}
-	req = req.WithContext(ctx)
-	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
-		return nil, err
-	}
-	return c.Client.Do(req)
-}
-
-// CreateDiscordProvisionWithBody Create a bot application for a session with the connected login
-//
-// 409 bot_exists when the session has a bot; 412 no_account without a login. On success the bot is created like POST /bots with the login as owner, then added to guild_id when one is given.
-//
-// Takes any type of body and a specified content type.
-//
-// Corresponds with POST /extensions/discord/provisions (the `CreateDiscordProvision` operationId).
-func (c *Client) CreateDiscordProvisionWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewCreateDiscordProvisionRequestWithBody(c.Server, contentType, body)
-	if err != nil {
-		return nil, err
-	}
-	req = req.WithContext(ctx)
-	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
-		return nil, err
-	}
-	return c.Client.Do(req)
-}
-
-// CreateDiscordProvision Create a bot application for a session with the connected login
-//
-// 409 bot_exists when the session has a bot; 412 no_account without a login. On success the bot is created like POST /bots with the login as owner, then added to guild_id when one is given.
-//
-// Takes a body of the `application/json` content type.
-//
-// Corresponds with POST /extensions/discord/provisions (the `CreateDiscordProvision` operationId).
-func (c *Client) CreateDiscordProvision(ctx context.Context, body CreateDiscordProvisionJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewCreateDiscordProvisionRequest(c.Server, body)
-	if err != nil {
-		return nil, err
-	}
-	req = req.WithContext(ctx)
-	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
-		return nil, err
-	}
-	return c.Client.Do(req)
-}
-
-// CancelDiscordProvision Cancel a provision in progress
-//
-// Corresponds with DELETE /extensions/discord/provisions/{provision_id} (the `CancelDiscordProvision` operationId).
-func (c *Client) CancelDiscordProvision(ctx context.Context, provisionID ID, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewCancelDiscordProvisionRequest(c.Server, provisionID)
-	if err != nil {
-		return nil, err
-	}
-	req = req.WithContext(ctx)
-	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
-		return nil, err
-	}
-	return c.Client.Do(req)
-}
-
-// GetDiscordProvision Read a provision in progress or finished
-//
-// Finished provisions expire after 10 minutes (404).
-//
-// Corresponds with GET /extensions/discord/provisions/{provision_id} (the `GetDiscordProvision` operationId).
-func (c *Client) GetDiscordProvision(ctx context.Context, provisionID ID, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewGetDiscordProvisionRequest(c.Server, provisionID)
-	if err != nil {
-		return nil, err
-	}
-	req = req.WithContext(ctx)
-	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
-		return nil, err
-	}
-	return c.Client.Do(req)
-}
-
-// AnswerDiscordProvisionMFAWithBody Answer the two-factor code a provision waits for
-//
-// 409 not_waiting unless the provision is in state mfa.
-//
-// Takes any type of body and a specified content type.
-//
-// Corresponds with POST /extensions/discord/provisions/{provision_id}/mfa (the `AnswerDiscordProvisionMFA` operationId).
-func (c *Client) AnswerDiscordProvisionMFAWithBody(ctx context.Context, provisionID ID, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewAnswerDiscordProvisionMFARequestWithBody(c.Server, provisionID, contentType, body)
-	if err != nil {
-		return nil, err
-	}
-	req = req.WithContext(ctx)
-	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
-		return nil, err
-	}
-	return c.Client.Do(req)
-}
-
-// AnswerDiscordProvisionMFA Answer the two-factor code a provision waits for
-//
-// 409 not_waiting unless the provision is in state mfa.
-//
-// Takes a body of the `application/json` content type.
-//
-// Corresponds with POST /extensions/discord/provisions/{provision_id}/mfa (the `AnswerDiscordProvisionMFA` operationId).
-func (c *Client) AnswerDiscordProvisionMFA(ctx context.Context, provisionID ID, body AnswerDiscordProvisionMFAJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewAnswerDiscordProvisionMFARequest(c.Server, provisionID, body)
 	if err != nil {
 		return nil, err
 	}
@@ -7391,127 +7047,6 @@ func NewCreateLoginRequestWithBody(server string, loginID UUIDv7, contentType st
 	return req, nil
 }
 
-// NewDeleteDiscordAccountRequest constructs an http.Request for the DeleteDiscordAccount method
-func NewDeleteDiscordAccountRequest(server string) (*http.Request, error) {
-	var err error
-
-	serverURL, err := url.Parse(server)
-	if err != nil {
-		return nil, err
-	}
-
-	operationPath := fmt.Sprintf("/extensions/discord/account")
-	if operationPath[0] == '/' {
-		operationPath = "." + operationPath
-	}
-
-	queryURL, err := serverURL.Parse(operationPath)
-	if err != nil {
-		return nil, err
-	}
-
-	req, err := http.NewRequest(http.MethodDelete, queryURL.String(), nil)
-	if err != nil {
-		return nil, err
-	}
-
-	return req, nil
-}
-
-// NewGetDiscordAccountRequest constructs an http.Request for the GetDiscordAccount method
-func NewGetDiscordAccountRequest(server string) (*http.Request, error) {
-	var err error
-
-	serverURL, err := url.Parse(server)
-	if err != nil {
-		return nil, err
-	}
-
-	operationPath := fmt.Sprintf("/extensions/discord/account")
-	if operationPath[0] == '/' {
-		operationPath = "." + operationPath
-	}
-
-	queryURL, err := serverURL.Parse(operationPath)
-	if err != nil {
-		return nil, err
-	}
-
-	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
-	if err != nil {
-		return nil, err
-	}
-
-	return req, nil
-}
-
-// NewPutDiscordAccountRequest calls the generic PutDiscordAccount builder with application/json body
-func NewPutDiscordAccountRequest(server string, body PutDiscordAccountJSONRequestBody) (*http.Request, error) {
-	var bodyReader io.Reader
-	buf, err := json.Marshal(body)
-	if err != nil {
-		return nil, err
-	}
-	bodyReader = bytes.NewReader(buf)
-	return NewPutDiscordAccountRequestWithBody(server, "application/json", bodyReader)
-}
-
-// NewPutDiscordAccountRequestWithBody constructs an http.Request for the PutDiscordAccount method, with any body, and a specified content type
-func NewPutDiscordAccountRequestWithBody(server string, contentType string, body io.Reader) (*http.Request, error) {
-	var err error
-
-	serverURL, err := url.Parse(server)
-	if err != nil {
-		return nil, err
-	}
-
-	operationPath := fmt.Sprintf("/extensions/discord/account")
-	if operationPath[0] == '/' {
-		operationPath = "." + operationPath
-	}
-
-	queryURL, err := serverURL.Parse(operationPath)
-	if err != nil {
-		return nil, err
-	}
-
-	req, err := http.NewRequest(http.MethodPut, queryURL.String(), body)
-	if err != nil {
-		return nil, err
-	}
-
-	req.Header.Add("Content-Type", contentType)
-
-	return req, nil
-}
-
-// NewListDiscordAccountGuildsRequest constructs an http.Request for the ListDiscordAccountGuilds method
-func NewListDiscordAccountGuildsRequest(server string) (*http.Request, error) {
-	var err error
-
-	serverURL, err := url.Parse(server)
-	if err != nil {
-		return nil, err
-	}
-
-	operationPath := fmt.Sprintf("/extensions/discord/account/guilds")
-	if operationPath[0] == '/' {
-		operationPath = "." + operationPath
-	}
-
-	queryURL, err := serverURL.Parse(operationPath)
-	if err != nil {
-		return nil, err
-	}
-
-	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
-	if err != nil {
-		return nil, err
-	}
-
-	return req, nil
-}
-
 // NewListDiscordBotsRequest constructs an http.Request for the ListDiscordBots method
 func NewListDiscordBotsRequest(server string) (*http.Request, error) {
 	var err error
@@ -7971,161 +7506,6 @@ func NewDeleteDiscordRequestRequest(server string, botID ID, userID ID) (*http.R
 	if err != nil {
 		return nil, err
 	}
-
-	return req, nil
-}
-
-// NewCreateDiscordProvisionRequest calls the generic CreateDiscordProvision builder with application/json body
-func NewCreateDiscordProvisionRequest(server string, body CreateDiscordProvisionJSONRequestBody) (*http.Request, error) {
-	var bodyReader io.Reader
-	buf, err := json.Marshal(body)
-	if err != nil {
-		return nil, err
-	}
-	bodyReader = bytes.NewReader(buf)
-	return NewCreateDiscordProvisionRequestWithBody(server, "application/json", bodyReader)
-}
-
-// NewCreateDiscordProvisionRequestWithBody constructs an http.Request for the CreateDiscordProvision method, with any body, and a specified content type
-func NewCreateDiscordProvisionRequestWithBody(server string, contentType string, body io.Reader) (*http.Request, error) {
-	var err error
-
-	serverURL, err := url.Parse(server)
-	if err != nil {
-		return nil, err
-	}
-
-	operationPath := fmt.Sprintf("/extensions/discord/provisions")
-	if operationPath[0] == '/' {
-		operationPath = "." + operationPath
-	}
-
-	queryURL, err := serverURL.Parse(operationPath)
-	if err != nil {
-		return nil, err
-	}
-
-	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
-	if err != nil {
-		return nil, err
-	}
-
-	req.Header.Add("Content-Type", contentType)
-
-	return req, nil
-}
-
-// NewCancelDiscordProvisionRequest constructs an http.Request for the CancelDiscordProvision method
-func NewCancelDiscordProvisionRequest(server string, provisionID ID) (*http.Request, error) {
-	var err error
-
-	var pathParam0 string
-
-	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "provision_id", provisionID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
-	if err != nil {
-		return nil, err
-	}
-
-	serverURL, err := url.Parse(server)
-	if err != nil {
-		return nil, err
-	}
-
-	operationPath := fmt.Sprintf("/extensions/discord/provisions/%s", pathParam0)
-	if operationPath[0] == '/' {
-		operationPath = "." + operationPath
-	}
-
-	queryURL, err := serverURL.Parse(operationPath)
-	if err != nil {
-		return nil, err
-	}
-
-	req, err := http.NewRequest(http.MethodDelete, queryURL.String(), nil)
-	if err != nil {
-		return nil, err
-	}
-
-	return req, nil
-}
-
-// NewGetDiscordProvisionRequest constructs an http.Request for the GetDiscordProvision method
-func NewGetDiscordProvisionRequest(server string, provisionID ID) (*http.Request, error) {
-	var err error
-
-	var pathParam0 string
-
-	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "provision_id", provisionID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
-	if err != nil {
-		return nil, err
-	}
-
-	serverURL, err := url.Parse(server)
-	if err != nil {
-		return nil, err
-	}
-
-	operationPath := fmt.Sprintf("/extensions/discord/provisions/%s", pathParam0)
-	if operationPath[0] == '/' {
-		operationPath = "." + operationPath
-	}
-
-	queryURL, err := serverURL.Parse(operationPath)
-	if err != nil {
-		return nil, err
-	}
-
-	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
-	if err != nil {
-		return nil, err
-	}
-
-	return req, nil
-}
-
-// NewAnswerDiscordProvisionMFARequest calls the generic AnswerDiscordProvisionMFA builder with application/json body
-func NewAnswerDiscordProvisionMFARequest(server string, provisionID ID, body AnswerDiscordProvisionMFAJSONRequestBody) (*http.Request, error) {
-	var bodyReader io.Reader
-	buf, err := json.Marshal(body)
-	if err != nil {
-		return nil, err
-	}
-	bodyReader = bytes.NewReader(buf)
-	return NewAnswerDiscordProvisionMFARequestWithBody(server, provisionID, "application/json", bodyReader)
-}
-
-// NewAnswerDiscordProvisionMFARequestWithBody constructs an http.Request for the AnswerDiscordProvisionMFA method, with any body, and a specified content type
-func NewAnswerDiscordProvisionMFARequestWithBody(server string, provisionID ID, contentType string, body io.Reader) (*http.Request, error) {
-	var err error
-
-	var pathParam0 string
-
-	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "provision_id", provisionID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
-	if err != nil {
-		return nil, err
-	}
-
-	serverURL, err := url.Parse(server)
-	if err != nil {
-		return nil, err
-	}
-
-	operationPath := fmt.Sprintf("/extensions/discord/provisions/%s/mfa", pathParam0)
-	if operationPath[0] == '/' {
-		operationPath = "." + operationPath
-	}
-
-	queryURL, err := serverURL.Parse(operationPath)
-	if err != nil {
-		return nil, err
-	}
-
-	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
-	if err != nil {
-		return nil, err
-	}
-
-	req.Header.Add("Content-Type", contentType)
 
 	return req, nil
 }

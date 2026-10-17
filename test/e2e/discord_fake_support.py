@@ -20,10 +20,8 @@ import asyncio
 import base64
 import hashlib
 import json
-from pathlib import Path
 import re
 import struct
-import sys
 import threading
 import time
 import urllib.parse
@@ -31,30 +29,6 @@ from typing import Any, Callable
 
 GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 SNOWFLAKE_BASE = 110_000_000_000_000_000
-
-
-def chrome_installed() -> bool:
-    """Whether the browser plugin can find a Chrome or Chromium to drive.
-
-    Browser-mode provisioning opens a real browser, so suites that exercise it
-    skip where there is none. The plugin's own resolver decides, since it knows
-    about chrome-headless-shell and each platform's install locations.
-    """
-    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "priv" / "python"))
-    try:
-        from albedo_plugins.browser.launch import _executable
-    except ImportError:
-        return False
-    for headless in (True, False):
-        try:
-            _executable(None, headless=headless)
-            return True
-        except Exception:
-            continue
-    return False
-
-
-CHROME = chrome_installed()
 
 
 def b64url(text: str) -> str:
@@ -135,8 +109,6 @@ class FakeDiscord:
         self.token = f"{b64url(bot_id)}.fake.secret"
         self.heartbeat_interval_ms = heartbeat_interval_ms
         self.users: dict[str, dict[str, Any]] = {bot_id: self.bot}
-        # Bot tokens the REST API and gateway accept, and the bot user each logs in as.
-        self.token_users: dict[str, dict[str, Any]] = {self.token: self.bot}
         self.guilds: dict[str, dict[str, Any]] = {}
         self.channels: dict[str, dict[str, Any]] = {}
         self.messages: dict[str, list[dict[str, Any]]] = {}
@@ -149,7 +121,6 @@ class FakeDiscord:
         self.heartbeats = 0
         self.connections = 0
         self.reject_code: int | None = None
-        self._init_user_api()
         self._throttle = 0
         self._throttle_after = 0.1
         self._counter = 0
@@ -472,15 +443,6 @@ class FakeDiscord:
             body = b""
             if "content-length" in headers:
                 body = await reader.readexactly(int(headers["content-length"]))
-            if method == "GET" and urllib.parse.urlsplit(target).path == "/app":
-                page = self.app_page().encode()
-                writer.write(
-                    f"HTTP/1.1 200 X\r\nContent-Type: text/html; charset=utf-8\r\n"
-                    f"Content-Length: {len(page)}\r\nConnection: close\r\n\r\n".encode()
-                    + page
-                )
-                await writer.drain()
-                return
             status, payload = self._rest(method, target, headers, body)
             raw = b"" if payload is None else json.dumps(payload).encode()
             writer.write(
@@ -493,24 +455,6 @@ class FakeDiscord:
             pass
         finally:
             writer.close()
-
-    def app_page(self) -> str:
-        """The Discord web app as a page: a client environment and a session cookie.
-
-        Browser mode reads the REST base from `GLOBAL_ENV` and signs in with the
-        cookie, exactly as a real tab would, so this is what stands in for
-        `discord.com` without a browser reaching the network.
-        """
-        return (
-            '<!doctype html><html><head><meta charset="utf-8">'
-            "<title>Discord</title><script>"
-            "window.GLOBAL_ENV={"
-            'PROJECT_ENV:"production",BUILD_NUMBER:"641004",RELEASE_CHANNEL:"stable",'
-            f'API_PROTOCOL:"http:",API_ENDPOINT:"//127.0.0.1:{self.port}/api",API_VERSION:9'
-            "};"
-            f'document.cookie="{self.browser_cookie}={self.browser_session}; path=/";'
-            '</script></head><body><div id="app"></div></body></html>'
-        )
 
     async def _gateway_session(
         self,
@@ -560,7 +504,7 @@ class FakeDiscord:
             if self.reject_code:
                 gateway.close(self.reject_code)
                 return
-            if gateway.token not in self.token_users:
+            if gateway.token != self.token:
                 gateway.close(4004)
                 return
             gateway.session_id = f"session-{len(self.identifies)}"
@@ -588,7 +532,7 @@ class FakeDiscord:
                 "s": self._seq,
                 "d": {
                     "v": 10,
-                    "user": self.token_users.get(gateway.token or "", self.bot),
+                    "user": self.bot,
                     "session_id": gateway.session_id,
                     "resume_gateway_url": self.gateway_url,
                     "application": {"id": self.application_id},
@@ -610,28 +554,8 @@ class FakeDiscord:
         path = re.sub(r"^/api/v\d+", "", url.path)
         self.requests.append((method, path))
         authorization = headers.get("authorization", "")
-        if not authorization and self._browser_session(headers):
-            if not self.signed_in:
-                return 401, {"message": "401: Unauthorized", "code": 0}
-            if self._throttle > 0:
-                self._throttle -= 1
-                return 429, {
-                    "message": "rate limited",
-                    "retry_after": self._throttle_after,
-                }
-            return self._user_rest(method, path, query, headers, body, browser=True)
-        if authorization == self.user_token:
-            if self.user_unauthorized:
-                return 401, {"message": "401: Unauthorized", "code": 0}
-            if self._throttle > 0:
-                self._throttle -= 1
-                return 429, {
-                    "message": "rate limited",
-                    "retry_after": self._throttle_after,
-                }
-            return self._user_rest(method, path, query, headers, body)
         if not authorization.startswith("Bot ") or (
-            authorization.removeprefix("Bot ") not in self.token_users
+            authorization.removeprefix("Bot ") != self.token
         ):
             return 401, {"message": "401: Unauthorized", "code": 0}
         if self._throttle > 0:
@@ -657,233 +581,6 @@ class FakeDiscord:
             if channel_id not in self.channels:
                 return 404, {"message": "Unknown Channel", "code": 10003}
             return self._channel_route(method, parts, query, data)
-        return 404, {"message": "404: Not Found", "code": 0}
-
-    # -- user-token API (bot provisioning) --------------------------------
-
-    def _init_user_api(self) -> None:
-        self.user_token = "user.fake.secret"
-        # The human the user token belongs to (GET /users/@me).
-        self.account = {
-            "id": "100000000000000090",
-            "username": "owner",
-            "global_name": "Owner",
-        }
-        self.user_unauthorized = False
-        # A signed-in web client: the cookie a Chrome tab carries, and whether
-        # that session is still valid. A browser-mode request has no
-        # Authorization header, only this cookie.
-        self.browser_cookie = "albedo-browser"
-        self.browser_session = "browser.fake.secret"
-        self.signed_in = True
-        self.applications: dict[str, dict[str, Any]] = {}
-        self.new_app_flags = 0
-        self.user_guilds: list[dict[str, Any]] = []
-        self.authorized: list[dict[str, Any]] = []
-        self.user_calls: list[dict[str, Any]] = []
-        self.mfa_code: str | None = None
-        self.mfa_methods: list[Any] = [{"type": "totp"}]
-        self.mfa_attempts: list[dict[str, Any]] = []
-        self._mfa_ticket = "mfa-ticket"
-        self._mfa_tokens: set[str] = set()
-        self._captcha: set[tuple[str, str]] = set()
-
-    def require_mfa(
-        self, code: str = "123456", methods: list[Any] | None = None
-    ) -> None:
-        """Sensitive user calls answer 401 / 60003 until /mfa/finish is given `code`."""
-
-        def apply() -> None:
-            self.mfa_code = code
-            self.mfa_methods = methods or [{"type": "totp"}]
-
-        self._call(apply)
-
-    @property
-    def browser_url(self) -> str:
-        """The page a browser-mode provisioner opens instead of a login screen."""
-        return f"http://127.0.0.1:{self.port}/app"
-
-    def sign_out(self) -> None:
-        """Make browser-mode calls answer 401 until `sign_in`."""
-        self._call(lambda: setattr(self, "signed_in", False))
-
-    def sign_in(self) -> None:
-        self._call(lambda: setattr(self, "signed_in", True))
-
-    def browser_calls(self) -> list[dict[str, Any]]:
-        """The user-API calls that arrived from the page rather than a token."""
-        return [call for call in self.user_calls if call.get("browser")]
-
-    def require_captcha(self, method: str, path: str) -> None:
-        """Answer `method` `path` (e.g. POST /applications) with a captcha challenge."""
-        self._call(lambda: self._captcha.add((method, path)))
-
-    def revoke_user_token(self) -> None:
-        self._call(lambda: setattr(self, "user_unauthorized", True))
-
-    def add_user_guild(
-        self,
-        guild_id: str,
-        name: str,
-        permissions: int = 0,
-        owner: bool = False,
-        icon: str | None = None,
-    ) -> None:
-        """A guild listed by GET /users/@me/guilds."""
-        guild = {
-            "id": guild_id,
-            "name": name,
-            "icon": icon,
-            "owner": owner,
-            "permissions": str(permissions),
-        }
-        self._call(lambda: self.user_guilds.append(guild))
-
-    def add_application(self, name: str, flags: int = 0, bot: bool = True) -> str:
-        """An application owned by the user, with a bot user when `bot`."""
-
-        def add() -> str:
-            app = self._new_application(name, flags)
-            if bot:
-                self._botify(app)
-            return app["id"]
-
-        return self._call(add)
-
-    def _new_application(self, name: str, flags: int) -> dict[str, Any]:
-        app = {"id": self._next_id(), "name": name, "flags": flags}
-        self.applications[app["id"]] = app
-        return app
-
-    def _botify(self, app: dict[str, Any]) -> None:
-        bot_id = self._next_id()
-        app["bot"] = {
-            "id": bot_id,
-            "username": app["name"],
-            "global_name": None,
-            "bot": True,
-        }
-        self.users[bot_id] = app["bot"]
-
-    def _mint_bot_token(self, app: dict[str, Any]) -> str:
-        token = f"{b64url(app['bot']['id'])}.fake.{self._next_id()}"
-        self.token_users[token] = app["bot"]
-        return token
-
-    def _browser_session(self, headers: dict[str, str]) -> bool:
-        """Whether the request carries the signed-in web client's cookie."""
-        wanted = f"{self.browser_cookie}={self.browser_session}"
-        cookies = [part.strip() for part in headers.get("cookie", "").split(";")]
-        return wanted in cookies
-
-    def _user_rest(
-        self,
-        method: str,
-        path: str,
-        query: dict[str, str],
-        headers: dict[str, str],
-        body: bytes,
-        browser: bool = False,
-    ) -> tuple[int, Any]:
-        data = json.loads(body) if body else {}
-        mfa_header = headers.get("x-discord-mfa-authorization")
-        self.user_calls.append(
-            {
-                "method": method,
-                "path": path,
-                "query": query,
-                "body": data,
-                "mfa": mfa_header,
-                "browser": browser,
-            }
-        )
-        if (method, path) in self._captcha:
-            return 400, {
-                "captcha_key": ["captcha-required"],
-                "captcha_service": "hcaptcha",
-            }
-        parts = path.strip("/").split("/")
-        sensitive = (
-            parts[-2:] == ["bot", "reset"]
-            or parts[-1:] == ["delete"]
-            or path == "/oauth2/authorize"
-        )
-        if sensitive and self.mfa_code and mfa_header not in self._mfa_tokens:
-            return 401, {
-                "message": "Two factor is required for this operation",
-                "code": 60003,
-                "mfa": {"ticket": self._mfa_ticket, "methods": self.mfa_methods},
-            }
-        if (method, path) == ("POST", "/mfa/finish"):
-            return self._mfa_finish(data)
-        if (method, path) == ("GET", "/users/@me"):
-            return 200, self.account
-        if (method, path) == ("GET", "/users/@me/guilds"):
-            return 200, self.user_guilds
-        if (method, path) == ("POST", "/oauth2/authorize"):
-            return self._authorize(query, data)
-        if (method, path) == ("GET", "/applications"):
-            return 200, list(self.applications.values())
-        if (method, path) == ("POST", "/applications"):
-            if "discord" in str(data.get("name", "")).lower():
-                return 400, {
-                    "message": "Invalid Form Body",
-                    "code": 50035,
-                    "errors": {
-                        "_errors": [
-                            {
-                                "code": "APPLICATION_NAME_INVALID_CONTAINS",
-                                "message": 'Application name cannot contain "discord"',
-                            }
-                        ]
-                    },
-                }
-            app = self._new_application(data["name"], self.new_app_flags)
-            return 200, app
-        if parts[0] == "applications" and len(parts) >= 2:
-            app = self.applications.get(parts[1])
-            if app is None:
-                return 404, {"message": "Unknown Application", "code": 10002}
-            return self._application_route(method, parts[2:], app, data)
-        return 404, {"message": "404: Not Found", "code": 0}
-
-    def _mfa_finish(self, data: dict[str, Any]) -> tuple[int, Any]:
-        self.mfa_attempts.append(data)
-        if data.get("ticket") != self._mfa_ticket or data.get("data") != self.mfa_code:
-            return 400, {"message": "Invalid two-factor code", "code": 60008}
-        token = f"mfa-token-{len(self._mfa_tokens) + 1}"
-        self._mfa_tokens.add(token)
-        return 200, {"token": token}
-
-    def _authorize(
-        self, query: dict[str, str], data: dict[str, Any]
-    ) -> tuple[int, Any]:
-        if query.get("client_id") not in self.applications:
-            return 404, {"message": "Unknown Application", "code": 10002}
-        self.authorized.append({"query": query, "body": data})
-        return 200, {"location": "https://discord.com/oauth2/authorized"}
-
-    def _application_route(
-        self, method: str, rest: list[str], app: dict[str, Any], data: dict[str, Any]
-    ) -> tuple[int, Any]:
-        if (method, rest) == ("GET", []):
-            return 200, app
-        if (method, rest) == ("PATCH", []):
-            app.update({k: v for k, v in data.items() if k in ("flags", "name")})
-            return 200, app
-        if (method, rest) == ("POST", ["bot"]):
-            if "bot" not in app:
-                self._botify(app)
-            return 200, {}
-        if (method, rest) == ("PATCH", ["bot"]) and "bot" in app:
-            app["bot"].update({k: v for k, v in data.items() if k == "avatar"})
-            return 200, app["bot"]
-        if (method, rest) == ("POST", ["bot", "reset"]) and "bot" in app:
-            return 200, {"token": self._mint_bot_token(app)}
-        if (method, rest) == ("POST", ["delete"]):
-            del self.applications[app["id"]]
-            return 204, None
         return 404, {"message": "404: Not Found", "code": 0}
 
     def _open_dm(self, user_id: str) -> dict[str, Any]:

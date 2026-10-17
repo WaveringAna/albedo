@@ -319,11 +319,9 @@ fn launch(state: State, bot: String, live: Live) -> State {
   let self = state.self
   let state = State(..state, generation: generation)
   case
-    port.open(
-      "albedo_discord.py",
-      [#("ALBEDO_DISCORD_TOKEN", live.token)],
-      fn(line) { process.send(self, Line(bot, generation, line)) },
-    )
+    port.open([#("ALBEDO_DISCORD_TOKEN", live.token)], fn(line) {
+      process.send(self, Line(bot, generation, line))
+    })
   {
     Ok(pid) -> {
       let _ = process.monitor(pid)

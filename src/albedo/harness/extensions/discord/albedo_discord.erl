@@ -1,22 +1,19 @@
 -module(albedo_discord).
--export([open/3, call/3, write/2, close/1, manager_name/0, provisions_name/0, token_user/1]).
+-export([open/2, call/3, close/1, manager_name/0, token_user/1]).
 
-%% A Python helper under priv/python as a port: albedo_discord.py (one per
-%% enabled bot) or albedo_discord_provision.py (one per provisioning step).
+%% The Python bot helper under priv/python runs as one port per enabled bot.
 %% This owns the port, its line framing, and the request ids a bot's replies
 %% answer. Every other line goes to `OnLine`, raw, for Gleam to decode.
 
 -define(MAX_LINE, 65536).
 
 manager_name() -> albedo_discord_manager.
-provisions_name() -> albedo_discord_provisions.
-
 %% Starts the process and answers once the port is open, so a missing python
 %% or script is reported instead of a silent exit. The process closes its port
 %% when the caller (the manager) goes away.
-open(Script, Env, OnLine) ->
+open(Env, OnLine) ->
     Parent = self(),
-    Pid = spawn(fun() -> start(Parent, Script, Env, OnLine) end),
+    Pid = spawn(fun() -> start(Parent, Env, OnLine) end),
     receive
         {Pid, opened} -> {ok, Pid};
         {Pid, {failed, Reason}} -> {error, Reason}
@@ -25,9 +22,9 @@ open(Script, Env, OnLine) ->
         {error, <<"the bot process did not start">>}
     end.
 
-start(Parent, Script0, Env, OnLine) ->
+start(Parent, Env, OnLine) ->
     Owner = erlang:monitor(process, Parent),
-    case paths(Script0) of
+    case paths() of
         {ok, Python, Script} ->
             try open_port({spawn_executable, Python},
                           [binary, exit_status, use_stdio, hide, {line, ?MAX_LINE},
@@ -44,11 +41,11 @@ start(Parent, Script0, Env, OnLine) ->
         {error, Reason} -> Parent ! {self(), {failed, Reason}}
     end.
 
-paths(Script) ->
+paths() ->
     case {os:find_executable("python3"), code:priv_dir(albedo)} of
         {false, _} -> {error, <<"python3 not found on PATH">>};
         {_, {error, _}} -> {error, <<"albedo priv directory not found">>};
-        {Python, Priv} -> {ok, Python, filename:absname(filename:join([Priv, "python", Script]))}
+        {Python, Priv} -> {ok, Python, filename:absname(filename:join([Priv, "python", "albedo_discord.py"]))}
     end.
 
 loop(S = #{port := Port, owner := Owner}) ->
@@ -64,9 +61,6 @@ loop(S = #{port := Port, owner := Owner}) ->
             finish(S, Status);
         {call, From, Ref, Request} ->
             loop(request(S, From, Ref, Request));
-        {write, Line} ->
-            _ = try port_command(Port, [Line, $\n]) catch _:_ -> ok end,
-            loop(S);
         {cancel, Ref} ->
             Pending = maps:filter(fun(_, {_, R}) -> R =/= Ref end, maps:get(pending, S)),
             loop(S#{pending := Pending});
@@ -141,9 +135,6 @@ call(Pid, Request, Timeout) ->
         receive {Ref, _} -> ok after 0 -> ok end,
         {error, <<"timed out waiting for the bot process">>}
     end.
-
-%% One raw line to the process's stdin.
-write(Pid, Line) -> Pid ! {write, Line}, nil.
 
 close(Pid) -> Pid ! close, nil.
 

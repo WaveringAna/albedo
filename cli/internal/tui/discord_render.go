@@ -15,9 +15,6 @@ import (
 func (m DiscordPageModel) View() string {
 	title := brand("albedo") + " " + DefaultStyles.Muted.Render("/discord")
 	lv, right := m.listView, DefaultStyles.Faint.Render("all sessions")
-	if m.Account.Connected {
-		right = DefaultStyles.Faint.Render("signed in as @" + m.Account.Username)
-	}
 	bot, open := m.bot(m.Open)
 	if open {
 		title += DefaultStyles.Muted.Render(" › " + bot.Name)
@@ -28,15 +25,6 @@ func (m DiscordPageModel) View() string {
 	}
 	frame := lv.frame(title, right, m.footer(max(1, m.Width)))
 	switch {
-	case m.Provision != nil:
-		frame.filter, frame.pane = "", nil
-		frame.list = func(width, _ int) []string { return m.provisionRows(width) }
-	case m.Login != nil:
-		frame.filter, frame.pane = "", nil
-		frame.list = func(width, _ int) []string { return m.Login.view(width) }
-	case m.Auto != nil:
-		frame.filter, frame.pane = "", nil
-		frame.list = func(width, height int) []string { return scrolled(m.Auto.view(width), 1+m.Auto.Focus, height) }
 	case m.Form != nil:
 		frame.filter, frame.pane = "", nil
 		frame.list = func(width, height int) []string { return scrolled(m.Form.view(width), 1+m.Form.Focus, height) }
@@ -124,7 +112,7 @@ func (m DiscordPageModel) guide(width int) []string {
 	}
 	rows = append(rows, "")
 	rows = append(rows, step("1", "Create the bot in Discord", "discord.com/developers/applications → New Application → Bot → Reset Token, and turn on Message Content Intent on the same page.")...)
-	rows = append(rows, step("2", "Add it here with ctrl+o", "Paste the token and your Discord user ID (Settings → Advanced → Developer Mode, then right-click yourself → Copy User ID). You can always DM it. Or press ctrl+n in that form and albedo does steps 1 to 3 with your Discord login.")...)
+	rows = append(rows, step("2", "Add it here with ctrl+o", "Paste the token and your Discord user ID (Settings → Advanced → Developer Mode, then right-click yourself → Copy User ID). You can always DM it.")...)
 	rows = append(rows, step("3", "Invite it with ctrl+l", "Copy the invite link, open it, pick a server; then press enter on the bot to choose the channels it reads.")...)
 	return rows
 }
@@ -199,13 +187,6 @@ func prefixed(prefix, text string) string {
 // footer is the keys for what is open and one status.
 func (m DiscordPageModel) footer(width int) string {
 	switch {
-	case m.Provision != nil:
-		status, urgent := m.status()
-		return footerLine(width, m.provisionHints(), status, urgent)
-	case m.Login != nil:
-		return m.formFooter(width, footerLine(width, []hint{{"ctrl+s", "sign in"}, {"esc", "cancel"}}, "", false))
-	case m.Auto != nil:
-		return m.formFooter(width, m.Auto.footer(width))
 	case m.Form != nil:
 		return m.formFooter(width, m.Form.footer(width))
 	case m.Person != nil:
@@ -223,7 +204,7 @@ func (m DiscordPageModel) status() (string, bool) {
 	case m.Error != "":
 		return DefaultStyles.Error.Render(m.Error), true
 	case m.Saving:
-		return DefaultStyles.Busy.Render(m.savingLabel()), true
+		return DefaultStyles.Busy.Render("saving…"), true
 	case m.Loading:
 		return DefaultStyles.Faint.Render("loading…"), false
 	case m.Notice != "":
@@ -266,28 +247,16 @@ func (m DiscordPageModel) hints() []hint {
 	if selected {
 		hints = append(hints, hint{"ctrl+t", "turn " + onOff(!bot.Enabled)}, hint{"ctrl+e", "edit"}, hint{"ctrl+d", "delete"})
 	}
-	if m.Account.Connected {
-		hints = append(hints, hint{"ctrl+u", "forget discord login"})
-	}
 	return append(hints, hint{"ctrl+r", "refresh"}, hint{"esc", "back"})
 }
 
 // formFooter is a form's keys, with a failure or the save in flight above them.
-// savingLabel says what a long save waits on. Connecting a login in browser
-// mode waits for a person to sign in, which is not the same as saving.
-func (m DiscordPageModel) savingLabel() string {
-	if m.Login != nil && m.Login.browser {
-		return "waiting for Discord — sign in in the Chrome window…"
-	}
-	return "saving…"
-}
-
 func (m DiscordPageModel) formFooter(width int, line string) string {
 	switch {
 	case m.Error != "":
 		return footerLine(width, nil, DefaultStyles.Error.Render(m.Error), true) + "\n" + line
 	case m.Saving:
-		return footerLine(width, nil, DefaultStyles.Busy.Render(m.savingLabel()), true) + "\n" + line
+		return footerLine(width, nil, DefaultStyles.Busy.Render("saving…"), true) + "\n" + line
 	}
 	return line
 }

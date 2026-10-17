@@ -10,7 +10,7 @@ import time
 import unittest
 import urllib.error
 
-from discord_fake_support import CHROME, FakeDiscord
+from discord_fake_support import FakeDiscord
 from harness import Albedo, Provider, exclusive, python, text, wait_until
 
 OWNER = "100000000000000010"
@@ -56,10 +56,6 @@ class DiscordTests(unittest.TestCase):
 
         def prepare(app):
             app.env["ALBEDO_DISCORD_API"] = self.fake.api_url
-            # Browser-mode provisioning drives a real Chrome on this fake's own
-            # page; headless keeps the gate from popping windows.
-            app.env["ALBEDO_DISCORD_APP_URL"] = self.fake.browser_url
-            app.env["ALBEDO_DISCORD_BROWSER_HEADLESS"] = "1"
             app.write_extensions({"enabled": {"discord": True}})
 
         self.app = Albedo(self.provider, protocol="responses", prepare=prepare)
@@ -174,6 +170,26 @@ class DiscordTests(unittest.TestCase):
         return self.fake.post(channel, content, author=author, **extra)
 
     # -- scenarios ------------------------------------------------------
+
+    def test_removed_automated_creation_endpoints_are_not_found(self):
+        requests = [
+            ("/extensions/discord/account", None, "GET"),
+            ("/extensions/discord/account", {"token": "unused"}, "PUT"),
+            (
+                "/extensions/discord/provisions",
+                {"session_id": self.session, "name": "unused", "guild_id": None},
+                "POST",
+            ),
+        ]
+        for path, body, method in requests:
+            with self.assertRaises(urllib.error.HTTPError) as missing:
+                self.app.api(path, body, method=method)
+            self.assertEqual(missing.exception.code, 404)
+            self.assertEqual(json.load(missing.exception)["code"], "not_found")
+
+        # The supported manual path still creates and connects a bot.
+        bot = self.create_bot()
+        self.assertEqual(bot["state"], "online")
 
     def test_dms_are_whitelisted_and_the_owner_wakes_the_session(self):
         bot = self.create_bot()
@@ -409,145 +425,6 @@ class DiscordTests(unittest.TestCase):
         ) as response:
             patched = json.load(response)
         self.assertEqual((patched["enabled"], patched["state"]), (False, "disabled"))
-
-    def provision(self, provision_id, *states):
-        """Polls a provision until it reaches one of `states`."""
-        deadline = time.monotonic() + 30
-        while True:
-            with self.app.api(
-                f"/extensions/discord/provisions/{provision_id}"
-            ) as response:
-                found = json.load(response)
-            if found["state"] in states:
-                return found
-            self.assertLess(time.monotonic(), deadline, f"never {states}: {found}")
-            time.sleep(0.1)
-
-    def start_provision(self, session, guild=None, name="made"):
-        with self.app.api(
-            "/extensions/discord/provisions",
-            {"session_id": session, "name": name, "guild_id": guild},
-        ) as response:
-            self.assertEqual(response.status, 202)
-            return json.load(response)
-
-    def answer(self, provision_id, code):
-        with self.app.api(
-            f"/extensions/discord/provisions/{provision_id}/mfa", {"code": code}
-        ) as response:
-            return json.load(response)
-
-    def test_provisioning_with_the_account_creates_and_invites_a_bot(self):
-        account = "/extensions/discord/account"
-        with self.app.api(account) as response:
-            self.assertEqual(json.load(response), {"connected": False, "user": None})
-        with self.assertRaises(urllib.error.HTTPError) as missing:
-            self.start_provision(self.session)
-        self.assertEqual(missing.exception.code, 412)
-        self.assertEqual(json.load(missing.exception)["code"], "no_account")
-        # Discord refuses these names; the daemon says so before asking it.
-        with self.assertRaises(urllib.error.HTTPError) as named:
-            self.start_provision(self.session, name="DiscordTester")
-        self.assertEqual(named.exception.code, 400)
-        self.assertIn('"discord"', json.load(named.exception)["detail"])
-        with self.assertRaises(urllib.error.HTTPError) as rejected:
-            self.app.api(account, {"token": "not.a.token"}, method="PUT")
-        self.assertEqual(json.load(rejected.exception)["code"], "invalid_token")
-        with self.app.api(
-            account, {"token": self.fake.user_token}, method="PUT"
-        ) as response:
-            connected = json.load(response)
-        owner = self.fake.account["id"]
-        self.assertEqual(
-            connected, {"connected": True, "user": {"id": owner, "username": "owner"}}
-        )
-        self.fake.add_user_guild(GUILD, "Lab", owner=True)
-        self.fake.add_user_guild("200000000000000009", "Elsewhere")
-        with self.app.api(account + "/guilds") as response:
-            self.assertEqual(
-                json.load(response),
-                {"guilds": [{"id": GUILD, "name": "Lab", "icon": None}]},
-            )
-
-        self.fake.require_mfa("123456")
-        started = self.start_provision(self.session, GUILD)
-        self.assertEqual(
-            (started["state"], started["bot"], started["portal_url"]),
-            ("running", None, "https://discord.com/developers/applications"),
-        )
-        asked = self.provision(started["id"], "mfa")
-        self.assertEqual((asked["step"], asked["methods"]), ("token", ["totp"]))
-        self.answer(started["id"], "000000")
-        retry = self.provision(started["id"], "mfa", "failed")
-        self.assertEqual(retry["state"], "mfa")
-        self.assertIsNotNone(retry["mfa_error"])
-        self.answer(started["id"], "123456")
-        invite = self.provision(started["id"], "mfa")
-        self.assertEqual(invite["step"], "authorize")
-        self.assertEqual(invite["bot"]["owner_id"], owner)
-        self.answer(started["id"], "123456")
-        done = self.provision(started["id"], "done", "failed")
-        self.assertEqual(done["state"], "done", done)
-        invited = self.fake.authorized[-1]
-        self.assertEqual(invited["body"]["guild_id"], GUILD)
-        made = self.fake.applications[invited["query"]["client_id"]]
-        self.assertTrue(made["flags"] & (1 << 19))
-        self.route = "/extensions/discord/bots/" + done["bot"]["id"]
-        self.wait_state("online")
-        self.assertEqual(self.bot()["user"]["id"], made["bot"]["id"])
-        with self.assertRaises(urllib.error.HTTPError) as exists:
-            self.start_provision(self.session)
-        self.assertEqual(exists.exception.code, 409)
-
-        waiting = self.start_provision(self.app.session())
-        self.provision(waiting["id"], "mfa")
-        with self.app.api(
-            f"/extensions/discord/provisions/{waiting['id']}", method="DELETE"
-        ) as response:
-            self.assertEqual(json.load(response)["state"], "cancelled")
-        with self.assertRaises(urllib.error.HTTPError) as late:
-            self.answer(waiting["id"], "123456")
-        self.assertEqual(json.load(late.exception)["code"], "not_waiting")
-
-        self.fake.require_captcha("POST", "/applications")
-        blocked = self.start_provision(self.app.session())
-        failed = self.provision(blocked["id"], "failed")
-        self.assertEqual((failed["code"], failed["bot"]), ("captcha", None))
-
-        with self.app.api(account, method="DELETE") as response:
-            self.assertEqual(json.load(response), {"connected": False, "user": None})
-        with self.app.api("/extensions/discord/bots") as response:
-            self.assertEqual(len(json.load(response)["items"]), 1)
-        self.assertNotIn(
-            self.fake.user_token, (self.app.home / "daemon.log").read_text()
-        )
-
-    @unittest.skipUnless(CHROME, "needs Chrome or Chromium")
-    def test_browser_mode_connects_without_a_token_and_creates_a_bot(self):
-        """Browser mode: the account is a Chrome window, not a stored token."""
-        account = "/extensions/discord/account"
-        self.fake.add_user_guild(GUILD, "Lab", owner=True)
-        with self.app.api(account, {"browser": True}, method="PUT") as response:
-            connected = json.load(response)
-        self.assertEqual(
-            connected,
-            {
-                "connected": True,
-                "user": {"id": self.fake.account["id"], "username": "owner"},
-            },
-        )
-        started = self.start_provision(self.session, GUILD)
-        done = self.provision(started["id"], "done", "failed")
-        self.assertEqual(done["state"], "done", done)
-        # Every call Discord saw came from the page, and no token was stored.
-        self.assertTrue(self.fake.browser_calls())
-        self.assertEqual(len(self.fake.browser_calls()), len(self.fake.user_calls))
-        self.assertEqual(self.fake.authorized[-1]["body"]["guild_id"], GUILD)
-        with self.database() as database:
-            row = database.execute(
-                "SELECT token,browser FROM discord_account WHERE id=1"
-            ).fetchone()
-        self.assertEqual(row, ("", 1))
 
 
 if __name__ == "__main__":

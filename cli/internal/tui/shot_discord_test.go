@@ -113,15 +113,6 @@ func init() {
 		shotState{"dms-request", discordOpenShot(nil, tab, down, down)},
 		shotState{"dms-confirm-remove", discordOpenShot(nil, tab, down, ctrl('d'))},
 		shotState{"dms-add", discordOpenShot(nil, tab, ctrl('o'))},
-		shotState{"auto-login", discordShot(nil, ctrl('o'), ctrl('n'))},
-		shotState{"auto-form", discordAutoShot(nil, ctrl('o'), ctrl('n'))},
-		shotState{"auto-form-server", discordAutoShot(nil, keys([]tea.Msg{ctrl('o'), ctrl('n')}, typed("lab-helper"), []tea.Msg{tab, tab}, typed("lab"))...)},
-		shotState{"confirm-forget-login", discordShot(signedIn, ctrl('u'))},
-		shotState{"provision-running", discordProvisionShot(daemon.DiscordProvision{State: "running", Step: "intent"})},
-		shotState{"provision-mfa", discordProvisionShot(daemon.DiscordProvision{State: "mfa", Step: "token", Methods: []string{"totp"}, MFAError: "That code didn't work. Try the newest one."})},
-		shotState{"provision-captcha", discordProvisionShot(daemon.DiscordProvision{State: "failed", Step: "create", Code: "captcha", Error: "Discord asked for a captcha."})},
-		shotState{"provision-authorize-failed", discordProvisionShot(daemon.DiscordProvision{State: "failed", Step: "authorize", Code: "http", Error: "HTTP 403: Missing Permissions", Bot: &galleryBots[0]})},
-		shotState{"provision-done", discordProvisionShot(daemon.DiscordProvision{State: "done", Step: "authorize", Bot: &galleryBots[0]})},
 		shotState{"save-failed", func(w, h int) string {
 			m := discordOpenModel(w, h)
 			m, _ = m.Update(space)
@@ -171,46 +162,6 @@ func discordOpenShot(setup func(*DiscordPageModel), keys ...tea.Msg) func(width,
 		for _, key := range keys {
 			m, _ = m.Update(key)
 		}
-		return m.View()
-	}
-}
-
-// signedIn has a Discord login connected.
-func signedIn(m *DiscordPageModel) {
-	m.Account = daemon.DiscordAccount{Connected: true, UserID: "80351110224678912", Username: "ana"}
-}
-
-var galleryServers = []daemon.DiscordAccountGuild{{ID: "g1", Name: "albedo lab"}, {ID: "g2", Name: "ana's garden"}, {ID: "g3", Name: "rust gamedev"}}
-
-// discordAutoShot is the automatic form with the servers loaded.
-func discordAutoShot(setup func(*DiscordPageModel), keys ...tea.Msg) func(width, height int) string {
-	return func(width, height int) string {
-		m := discordModel(width, height, signedIn)
-		if setup != nil {
-			setup(&m)
-		}
-		for i, key := range keys {
-			m, _ = m.Update(key)
-			if i == 1 {
-				m, _ = m.Update(discordServersMsg{Servers: galleryServers})
-			}
-		}
-		return m.View()
-	}
-}
-
-// discordProvisionShot is the progress view at p, creating "albedo" for this
-// session and adding it to albedo lab.
-func discordProvisionShot(p daemon.DiscordProvision) func(width, height int) string {
-	return func(width, height int) string {
-		m := discordModel(width, height, signedIn)
-		m, _ = m.startProvision("v", "albedo", "g1", "albedo lab")
-		p.ID, p.SessionID, p.Name, p.PortalURL = "p1", "v", "albedo", "https://discord.com/developers/applications"
-		if p.Methods == nil {
-			p.Methods = []string{}
-		}
-		m, _ = m.Update(discordProvisionMsg{Gen: m.Generation, Provision: p})
-		m.spin = 3
 		return m.View()
 	}
 }

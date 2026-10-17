@@ -164,9 +164,6 @@ func (f *discordForm) footer(width int) string {
 		own = []hint{{"←→", "choose"}}
 	}
 	keys := append(own, hint{"ctrl+s", "save"})
-	if f.Editing == nil {
-		keys = append(keys, hint{"ctrl+n", "create automatically"})
-	}
 	keys = append(keys, hint{"enter", "next"}, hint{"tab/↑↓", "move"}, hint{"esc", "cancel"})
 	return footerLine(width, keys, "", false)
 }
@@ -239,8 +236,6 @@ const (
 	discordFieldOwner   = "owner"
 	discordFieldUser    = "user"
 	discordFieldNick    = "nick"
-	discordFieldLogin   = "login"
-	discordFieldServer  = "server"
 )
 
 var discordFieldLabels = map[string]string{
@@ -250,8 +245,6 @@ var discordFieldLabels = map[string]string{
 	discordFieldOwner:   "your user ID",
 	discordFieldUser:    "user ID",
 	discordFieldNick:    "name",
-	discordFieldLogin:   "user token",
-	discordFieldServer:  "server",
 }
 
 var (

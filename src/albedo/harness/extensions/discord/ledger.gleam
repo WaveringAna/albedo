@@ -74,20 +74,6 @@ pub type Patch {
   )
 }
 
-/// The human's own Discord login, used only to provision bots. Its token
-/// stays in this table and in the provisioner's environment.
-pub type Account {
-  Account(user_id: String, username: String)
-}
-
-/// How the daemon reaches Discord as that human. A pasted user token is one
-/// way; signing in to the Chrome window browser mode opens is another, and the
-/// one Discord's captcha reacts to less. Both are against Discord's terms.
-pub type Login {
-  Token(token: String)
-  Browser
-}
-
 pub type Error {
   Invalid(String)
   NotFound
@@ -138,14 +124,6 @@ CREATE TABLE IF NOT EXISTS discord_requests (
  count INTEGER NOT NULL DEFAULT 1,
  PRIMARY KEY(bot,user_id)
 );
-CREATE TABLE IF NOT EXISTS discord_account (
- id INTEGER PRIMARY KEY CHECK(id=1),
- token TEXT NOT NULL,
- user_id TEXT NOT NULL,
- username TEXT NOT NULL,
- browser INTEGER NOT NULL DEFAULT 0 CHECK(browser IN (0,1)),
- connected_at INTEGER NOT NULL
-);
 CREATE TABLE IF NOT EXISTS discord_cursors (
  bot TEXT NOT NULL REFERENCES discord_bots(id) ON DELETE CASCADE,
  channel_id TEXT NOT NULL,
@@ -159,14 +137,7 @@ const request_limit = 50
 
 pub fn initialise(db: store.Store) -> Result(Nil, String) {
   use _ <- result.try(mail.initialise(db))
-  use _ <- result.try(store.query(db, store.exec(_, schema)))
-  // A store created before browser mode has no `discord_account.browser`; its
-  // rows were all pasted tokens.
-  store.query(db, fn(connection) {
-    store.add_columns(connection, "discord_account", [
-      #("browser", "INTEGER NOT NULL DEFAULT 0"),
-    ])
-  })
+  store.query(db, store.exec(_, schema))
 }
 
 /// Session deletion cascades through the foreign keys; this covers a store
@@ -807,74 +778,6 @@ pub fn visible(
         sqlight.text(channel),
       ],
     ),
-  )
-  |> result.map(fn(found) { found > 0 })
-}
-
-pub fn account(db: store.Store) -> Result(Option(Account), Error) {
-  store.query(
-    db,
-    query(_, "SELECT user_id,username FROM discord_account WHERE id=1", [], {
-      use user <- decode.field(0, decode.string)
-      use username <- decode.field(1, decode.string)
-      decode.success(Account(user, username))
-    }),
-  )
-  |> result.map(fn(rows) { list.first(rows) |> option.from_result })
-}
-
-/// The login the provisioner needs, for its environment only.
-pub fn login(db: store.Store) -> Result(Option(Login), Error) {
-  store.query(
-    db,
-    query(_, "SELECT browser,token FROM discord_account WHERE id=1", [], {
-      use browser <- decode.field(0, decode.int)
-      use token <- decode.field(1, decode.string)
-      decode.success(case browser {
-        0 -> Token(token)
-        _ -> Browser
-      })
-    }),
-  )
-  |> result.map(fn(rows) { list.first(rows) |> option.from_result })
-}
-
-pub fn connect_account(
-  db: store.Store,
-  login: Login,
-  account: Account,
-) -> Result(Nil, Error) {
-  let #(browser, token) = case login {
-    Token(token) -> #(0, token)
-    Browser -> #(1, "")
-  }
-  store.query(
-    db,
-    run(
-      _,
-      "INSERT INTO discord_account(id,token,user_id,username,browser,connected_at) VALUES(1,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET token=excluded.token,user_id=excluded.user_id,username=excluded.username,browser=excluded.browser,connected_at=excluded.connected_at",
-      [
-        sqlight.text(token),
-        sqlight.text(account.user_id),
-        sqlight.text(account.username),
-        sqlight.int(browser),
-        sqlight.int(usage.now()),
-      ],
-    ),
-  )
-}
-
-/// Forgetting the login leaves every bot it created alone.
-pub fn forget_account(db: store.Store) -> Result(Nil, Error) {
-  store.query(db, run(_, "DELETE FROM discord_account", []))
-}
-
-pub fn session_exists(db: store.Store, session: String) -> Result(Bool, Error) {
-  store.query(
-    db,
-    count(_, "SELECT count(*) FROM sessions WHERE id=?", [
-      sqlight.text(session),
-    ]),
   )
   |> result.map(fn(found) { found > 0 })
 }

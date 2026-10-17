@@ -2,7 +2,6 @@ import albedo/daemon/store
 import albedo/harness/extension
 import albedo/harness/extensions/discord/ledger
 import albedo/harness/extensions/discord/manager
-import albedo/harness/extensions/discord/provision
 import albedo/harness/extensions/discord/rpc
 import albedo/harness/extensions/discord/service
 import albedo/harness/host
@@ -41,9 +40,8 @@ pub fn extension() -> extension.Extension {
   )
 }
 
-/// The bot manager and the provisions live as long as the daemon: they start
-/// with the storage they read, once per VM, under their own supervisor, and
-/// idle while no bot is enabled.
+/// The bot manager lives as long as the daemon: it starts with the storage it
+/// reads, once per VM, under its own supervisor, and idles while no bot is enabled.
 fn initialise(db: store.Store) -> Result(Nil, String) {
   use _ <- result.map(ledger.initialise(db))
   case manager.running() {
@@ -54,7 +52,6 @@ fn initialise(db: store.Store) -> Result(Nil, String) {
           supervisor.new(supervisor.OneForOne)
           |> supervisor.restart_tolerance(intensity: 10, period: 60)
           |> supervisor.add(supervision.worker(fn() { manager.start(db) }))
-          |> supervisor.add(supervision.worker(fn() { provision.start(db) }))
           |> supervisor.start
         case started {
           Ok(_) -> process.sleep_forever()
