@@ -1,8 +1,6 @@
 package tui
 
 import (
-	"albedo/cli/internal/daemon"
-
 	tea "charm.land/bubbletea/v2"
 )
 
@@ -106,7 +104,7 @@ func (m *AppModel) openFolderPicker(retry *WorkspaceRetry) tea.Cmd {
 		return nil
 	}
 	m.FolderPicker.Close()
-	m.FolderPicker = NewFolderPicker(daemonFolders{conn: m.Conn, condition: daemon.SessionCondition{ETag: m.ActiveSession.ETag, FamilyRevision: m.ActiveSession.FamilyRevision}}, *m.ActiveSession, retry)
+	m.FolderPicker = NewFolderPicker(daemonFolders{conn: m.Conn, condition: m.sessionCondition}, *m.ActiveSession, retry)
 	m.folderReturn = AppStateChat
 	return m.openScreen(AppStateFolderPicker, &m.FolderPicker)
 }
@@ -130,7 +128,7 @@ func (m *AppModel) moved(msg FolderMovedMsg) tea.Cmd {
 		} else {
 			m.AddError(operationError(msg.Err, "Could not move this session: ", "Session may have moved; check its folder before trying again."))
 		}
-		return nil
+		return m.refusedConfigurationCmd(msg.Err)
 	}
 	if msg.Session != nil && msg.Session.ETag != "" {
 		captured := *msg.Session

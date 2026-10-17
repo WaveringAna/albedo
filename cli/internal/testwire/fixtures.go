@@ -12,7 +12,7 @@ const GenerationB = "N73vTuOSKGHtrN6EsYnLbQ"
 
 func Session(id, generation string, sequence int64) map[string]any {
 	selection := map[string]any{"extensions": map[string]bool{}, "skills": map[string]bool{}, "instructions": map[string]bool{}, "mcp": map[string]bool{}}
-	config := map[string]any{"id": id, "name": "Session", "workspace": "/work", "provider_profile": nil, "model": nil, "effort": nil, "preferences": map[string]any{"pinned": false, "pin_order": nil, "archived": false}, "selection": selection, "revision": "revision-a", "family_revision": "family-a"}
+	config := map[string]any{"id": id, "name": "Session", "workspace": "/work", "provider_profile": nil, "model": nil, "effort": nil, "preferences": map[string]any{"pinned": false, "pin_order": nil, "archived": false}, "selection": selection, "revision": "revision-a"}
 	return map[string]any{
 		"id": id, "name": "Session", "automatic_name": "Session", "location": map[string]any{"host": nil, "user": nil, "path": "/work", "label": nil}, "workspace": "/work", "parent_id": nil, "root_id": id, "address": nil, "depth": 0, "closed": false, "created_at": nil, "activity_at": nil, "provider_profile": nil, "model": nil, "effort": nil, "role": "", "started_by": nil,
 		"status":  map[string]any{"phase": "idle", "run_id": nil, "interrupt_requested": false, "blocking_reason": nil},

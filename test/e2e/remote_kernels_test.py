@@ -738,13 +738,13 @@ print('live spill pages, disk failures, atomic saves, and pruning verified')
         elsewhere = self.remote_home / "elsewhere"
         elsewhere.mkdir()
         with self.app.api(f"/sessions/{session}?view=configuration") as response:
-            configuration = json.load(response)
+            response.read()
             revision = response.headers["ETag"]
         self.app.api(
             f"/sessions/{session}?view=configuration",
             {
                 "workspace": f"fakehost:{elsewhere}",
-                "family_revision": configuration["family_revision"],
+                "family_revision": self.app.family_revision(session),
             },
             method="PATCH",
             headers={"If-Match": revision},

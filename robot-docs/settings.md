@@ -38,7 +38,11 @@ The daemon's own `subagents` section holds the limits `daemon/family.gleam` chec
 
 ## Session configuration and catalog
 
-Configuration contains explicit nullable `name`, workspace, provider profile, model, effort, preferences, selection overrides, configuration revision, and family revision. Name overrides preserve the automatic title. The automatic title follows every prompt, so it lives on the session and summary representations (`name`, `automatic_name`) and stays out of the configuration and its `ETag`: a prompt never makes a client's observed configuration stale. Preferences contain `pinned`, nullable `pin_order`, and `archived`; summaries also include shared opening counts.
+Configuration contains explicit nullable `name`, workspace, provider profile, model, effort, preferences, selection overrides, and configuration revision. Name overrides preserve the automatic title. The automatic title follows every prompt, so it lives on the session and summary representations (`name`, `automatic_name`) and stays out of the configuration and its `ETag`: a prompt never makes a client's observed configuration stale. Preferences contain `pinned`, nullable `pin_order`, and `archived`; summaries also include shared opening counts.
+
+Family membership is not configuration either. The family revision lives only on the session representation, and a child spawning, closing, or being deleted bumps it without touching the configuration `ETag`, so a model change stays conditional on configuration the client really saw rather than on an agent's arrival. A workspace move and a subtree deletion carry the family revision that same read observed with the configuration `ETag`, and are refused with `family_changed` when it moved.
+
+A session's configuration reaches clients on the session stream as `invalidate` events with the `session` and `settings` kinds, on a reset snapshot, and in the configuration resource itself. The TUI reads the session again when either kind arrives, when it opens a session from a listing (which carries no validator), and after a `412` refusal, so a change made elsewhere never leaves it holding a validator the daemon no longer accepts; the same read brings the family revision a move or subtree deletion needs.
 
 Selection has separate `extensions`, `skills`, `instructions`, and `mcp` maps. Session overrides precede global preferences and defaults. MCP configured enablement also applies: a disabled definition remains unavailable.
 

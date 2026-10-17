@@ -452,6 +452,41 @@ class AgentsTests(unittest.TestCase):
             next(entry for entry in replayed if entry["id"] == followup["id"]), followup
         )
 
+    def test_spawning_or_deleting_a_child_keeps_the_parent_validator(self):
+        """A family's membership is not its configuration: a client holding the
+        configuration it displayed may still change the model after agents come
+        and go."""
+        parent = self.app.session()
+        with self.app.api(f"/sessions/{parent}?view=configuration") as response:
+            observed = response.headers["ETag"]
+            response.read()
+        before = self.app.family_revision(parent)
+        child = self.spawn(parent)["id"]
+        self.app.idle(child)
+        self.app.idle(parent)
+        with self.app.api(f"/sessions/{parent}?view=configuration") as response:
+            self.assertEqual(response.headers["ETag"], observed)
+            response.read()
+        self.assertNotEqual(self.app.family_revision(parent), before)
+        with self.app.api(
+            f"/sessions/{parent}?view=configuration",
+            {"model": "changed-model"},
+            method="PATCH",
+            headers={"If-Match": observed},
+        ) as response:
+            self.assertEqual(json.load(response)["session"]["model"], "changed-model")
+            edited = response.headers["ETag"]
+        with self.app.api(f"/sessions/{child}?view=configuration") as response:
+            child_etag = response.headers["ETag"]
+        self.api(
+            f"/sessions/{child}?view=configuration",
+            method="DELETE",
+            headers={"If-Match": child_etag},
+        )
+        with self.app.api(f"/sessions/{parent}?view=configuration") as response:
+            self.assertEqual(response.headers["ETag"], edited)
+            self.assertEqual(json.load(response)["model"], "changed-model")
+
     def test_tree_snapshot_and_event_stream(self):
         parent = self.app.session()
         heard = self.listen()
@@ -573,8 +608,9 @@ class AgentsTests(unittest.TestCase):
         wait_for(lambda: self.asked('kind="unreviewed"'))
         self.app.idle(parent)
         with self.app.api(f"/sessions/{parent}?view=configuration") as response:
-            configuration = json.load(response)
+            response.read()
             revision = response.headers["ETag"]
+        family = self.app.family_revision(parent)
         with self.assertRaises(urllib.error.HTTPError) as caught:
             self.api(
                 f"/sessions/{parent}?view=configuration",
@@ -590,7 +626,7 @@ class AgentsTests(unittest.TestCase):
         self.app.idle(parent)
         with self.assertRaises(urllib.error.HTTPError) as caught:
             self.api(
-                f"/sessions/{parent}?view=configuration&scope=subtree&family_revision={configuration['family_revision']}",
+                f"/sessions/{parent}?view=configuration&scope=subtree&family_revision={family}",
                 method="DELETE",
                 headers={"If-Match": revision},
             )
@@ -612,10 +648,11 @@ class AgentsTests(unittest.TestCase):
         receipt = self.send(child, "hold subtree deletion")
         self.assertTrue(entered.wait(30))
         with self.app.api(f"/sessions/{parent}?view=configuration") as response:
-            configuration = json.load(response)
+            response.read()
             revision = response.headers["ETag"]
+        family = self.app.family_revision(parent)
         outcome = self.api(
-            f"/sessions/{parent}?view=configuration&scope=subtree&family_revision={configuration['family_revision']}",
+            f"/sessions/{parent}?view=configuration&scope=subtree&family_revision={family}",
             method="DELETE",
             headers={"If-Match": revision},
         )
@@ -645,8 +682,9 @@ class AgentsTests(unittest.TestCase):
         wait_for(lambda: self.asked('kind="unreviewed"'))
         self.app.idle(parent)
         with self.app.api(f"/sessions/{parent}?view=configuration") as response:
-            configuration = json.load(response)
+            response.read()
             revision = response.headers["ETag"]
+        family = self.app.family_revision(parent)
         probe = StreamProbe(self.app)
         self.assertEqual(
             probe.call("suspend_session_json", f"[<<{json.dumps(child)}>>]"),
@@ -658,7 +696,7 @@ class AgentsTests(unittest.TestCase):
             try:
                 outcomes.append(
                     self.api(
-                        f"/sessions/{parent}?view=configuration&scope=subtree&family_revision={configuration['family_revision']}",
+                        f"/sessions/{parent}?view=configuration&scope=subtree&family_revision={family}",
                         method="DELETE",
                         headers={"If-Match": revision},
                     )
@@ -718,8 +756,9 @@ class AgentsTests(unittest.TestCase):
         wait_for(lambda: self.asked('from="failed"') and self.asked('from="removed"'))
         self.app.idle(parent)
         with self.app.api(f"/sessions/{parent}?view=configuration") as response:
-            configuration = json.load(response)
+            response.read()
             revision = response.headers["ETag"]
+        family = self.app.family_revision(parent)
         with sqlite3.connect(self.app.home / "albedo.sqlite") as db:
             db.execute(
                 "CREATE TRIGGER fail_observed_deletion BEFORE DELETE ON sessions "
@@ -727,7 +766,7 @@ class AgentsTests(unittest.TestCase):
             )
         self.addCleanup(self._remove_deletion_failure)
         outcome = self.api(
-            f"/sessions/{parent}?view=configuration&scope=subtree&family_revision={configuration['family_revision']}",
+            f"/sessions/{parent}?view=configuration&scope=subtree&family_revision={family}",
             method="DELETE",
             headers={"If-Match": revision},
         )
@@ -747,7 +786,7 @@ class AgentsTests(unittest.TestCase):
             )
         with self.assertRaises(urllib.error.HTTPError) as caught:
             self.api(
-                f"/sessions/{parent}?view=configuration&scope=subtree&family_revision={configuration['family_revision']}",
+                f"/sessions/{parent}?view=configuration&scope=subtree&family_revision={family}",
                 method="DELETE",
                 headers={"If-Match": revision},
             )

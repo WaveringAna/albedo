@@ -87,6 +87,10 @@ func (m *AppModel) handleChatLifecycle(msg tea.Msg) (tea.Cmd, bool) {
 			if event.Event.Invalidation.Settings {
 				cmd = tea.Batch(cmd, m.refreshSettingsCmd())
 			}
+			// The configuration resource is what a change is conditional on.
+			if event.Event.Invalidation.Settings || event.Event.Invalidation.Session {
+				cmd = tea.Batch(cmd, m.refreshSessionFactsCmd())
+			}
 		}
 		return cmd, true
 	}

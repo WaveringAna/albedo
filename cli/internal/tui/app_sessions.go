@@ -13,6 +13,18 @@ import (
 
 func (m *AppModel) handleSessionResults(msg tea.Msg) (tea.Cmd, bool) {
 	switch msg := msg.(type) {
+	case sessionFactsMsg:
+		if msg.Gen != m.SessionFactsGen {
+			return nil, true
+		}
+		m.refreshingSession = false
+		m.applySessionFacts(msg)
+		if m.sessionRefreshPending {
+			m.sessionRefreshPending = false
+			return m.refreshSessionFactsCmd(), true
+		}
+		return nil, true
+
 	case SessionPreviewMsg:
 		if msg.Err == nil && msg.Preview.Session != nil {
 			current, known := m.session(msg.ID)
@@ -60,7 +72,7 @@ func (m *AppModel) handleSessionResults(msg tea.Msg) (tea.Cmd, bool) {
 		}
 		if msg.Err != nil {
 			m.SessionPicker.notice = operationError(msg.Err, "Could not rename the session: ", "Session may have been renamed; refresh the session list before trying again.")
-			return cmd, true
+			return tea.Batch(cmd, m.refusedConfigurationCmd(msg.Err)), true
 		}
 		m.updateSession(msg.Session)
 		m.SessionPicker.notice = ""
@@ -197,8 +209,8 @@ func (m *AppModel) deleteSessionCmd(id string, condition daemon.SessionCondition
 
 // currentCondition reads validators missing from a selected session row.
 func currentCondition(conn *daemon.Connection, id string) (daemon.SessionCondition, error) {
-	current, err := daemon.GetSessionConfiguration(context.Background(), conn, id)
-	return daemon.SessionCondition{ETag: current.ETag, FamilyRevision: current.Value.FamilyRevision}, err
+	current, err := daemon.GetSession(context.Background(), conn, id)
+	return daemon.SessionCondition{ETag: current.ETag, FamilyRevision: current.FamilyRevision}, err
 }
 
 func sessionPreviewCmd(conn *daemon.Connection, id, etag string) tea.Cmd {
@@ -251,6 +263,8 @@ func (m *AppModel) setChatSession(s daemon.Session, prepend bool) tea.Cmd {
 		}
 	}
 	m.Chat.Close()
+	// A read in flight answers for the session that is going away.
+	m.refreshingSession, m.sessionRefreshPending = false, false
 	session := s
 	m.ActiveSession = &session
 	if prepend && !slices.ContainsFunc(m.Sessions, func(listed daemon.Session) bool { return listed.ID == s.ID }) {
@@ -261,7 +275,9 @@ func (m *AppModel) setChatSession(s daemon.Session, prepend bool) tea.Cmd {
 	m.Chat.SetSize(m.Width, m.Height)
 	m.State = AppStateChat
 	m.CatalogGen++
-	return tea.Batch(m.Chat.Init(), m.loadCommandCatalogCmd(m.CatalogGen))
+	// A listing carries no configuration validator, and a change is only
+	// conditional on the one the client observed.
+	return tea.Batch(m.Chat.Init(), m.loadCommandCatalogCmd(m.CatalogGen), m.refreshSessionFactsCmd())
 }
 
 // openSession makes session the chat on screen.

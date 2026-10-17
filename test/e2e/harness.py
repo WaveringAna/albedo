@@ -970,6 +970,13 @@ class Albedo:
         with self.api(f"/sessions/{session_id}/history") as response:
             return json.load(response)
 
+    def family_revision(self, session_id):
+        """The family revision a workspace move or subtree deletion is
+        conditional on. The configuration resource carries none; the session
+        representation does."""
+        with self.api(f"/sessions/{session_id}?tail=0") as response:
+            return json.load(response)["family_revision"]
+
     def __exit__(self, *_exc):
         if self._owns_provider:
             self.provider.close()

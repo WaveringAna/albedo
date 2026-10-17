@@ -60,8 +60,9 @@ class IntegrationTest(IntegrationScenario):
         app = self.app_for("chat_completions")
         session = app.session()
         with app.api(f"/sessions/{session}?view=configuration") as response:
-            configuration = json.load(response)
+            response.read()
             etag = response.headers["ETag"]
+        family = app.family_revision(session)
         with sqlite3.connect(app.home / "albedo.sqlite") as db:
             db.execute("ALTER TABLE session_family RENAME TO unavailable_family")
         for scope in ("leaf", "subtree"):
@@ -69,7 +70,7 @@ class IntegrationTest(IntegrationScenario):
                 with self.assertRaises(urllib.error.HTTPError) as caught:
                     app.api(
                         f"/sessions/{session}?view=configuration&scope={scope}"
-                        f"&family_revision={configuration['family_revision']}",
+                        f"&family_revision={family}",
                         method="DELETE",
                         headers={"If-Match": etag},
                     ).close()
@@ -84,7 +85,7 @@ class IntegrationTest(IntegrationScenario):
             db.execute("ALTER TABLE unavailable_family RENAME TO session_family")
         with app.api(
             f"/sessions/{session}?view=configuration&scope=subtree"
-            f"&family_revision={configuration['family_revision']}",
+            f"&family_revision={family}",
             method="DELETE",
             headers={"If-Match": etag},
         ) as response:

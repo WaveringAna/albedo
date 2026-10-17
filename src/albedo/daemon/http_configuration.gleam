@@ -186,10 +186,14 @@ pub fn encode(value: session_configuration.Configuration) -> json.Json {
     #("preferences", preferences(value.preferences, False)),
     #("selection", selection(value.selection)),
     #("revision", json.string(revision(value))),
-    #("family_revision", json.string(family_revision(value))),
   ])
 }
 
+/// Family membership is not configuration, so it stays out of this
+/// representation and its validator: a child spawning, closing, or being
+/// deleted bumps the family revision without making a client's observed
+/// configuration stale, exactly as the automatic title may not. Family reads
+/// and family changes use the session representation's own revision.
 pub fn etag(value: session_configuration.Configuration) -> String {
   http_api.etag(encode(value) |> json.to_string)
 }

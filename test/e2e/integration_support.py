@@ -81,10 +81,10 @@ class IntegrationScenario(unittest.TestCase):
 
     def change(self, app, session, fields):
         with app.api(f"/sessions/{session}?view=configuration") as response:
-            configuration = json.load(response)
+            response.read()
             etag = response.headers["ETag"]
         if "workspace" in fields:
-            fields = {**fields, "family_revision": configuration["family_revision"]}
+            fields = {**fields, "family_revision": app.family_revision(session)}
         with app.api(
             f"/sessions/{session}?view=configuration",
             fields,

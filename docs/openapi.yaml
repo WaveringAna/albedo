@@ -564,7 +564,6 @@ paths:
                           instructions: {}
                           mcp: {}
                         revision: config-1
-                        family_revision: family-1
                     workspace_change: null
                     selection:
                       overrides:
@@ -767,7 +766,6 @@ paths:
                           instructions: {}
                           mcp: {}
                         revision: config-1
-                        family_revision: family-1
                     workspace_change: null
                     selection:
                       overrides:
@@ -902,8 +900,9 @@ paths:
         '428':
           $ref: '#/components/responses/Problem428'
       description: Use the observed configuration URL and validator. Workspace is a standalone change
-        with family_revision. Busy target fails before commit; busy descendants follow a committed parent
-        move at idle. Other configuration fields commit together. No automatic lost-response retry.
+        carrying the observed session family revision. Busy target fails before commit; busy descendants follow
+        a committed parent move at idle. Other configuration fields commit together. No automatic lost-response
+        retry.
       parameters:
       - name: session_id
         in: path
@@ -968,7 +967,8 @@ paths:
           $ref: '#/components/responses/Problem412'
         '428':
           $ref: '#/components/responses/Problem428'
-      description: Leaf requires idle and no children. Subtree requires family_revision, gates new children,
+      description: Leaf requires idle and no children. Subtree requires the session's observed family revision
+        and gates new children,
         interrupts captured members and deletes deepest first. Partial outcomes are explicit. Refresh
         before confirming a new attempt; never automatically replay after transport loss.
       parameters:
@@ -6442,10 +6442,7 @@ components:
           $ref: '#/components/schemas/SelectionOverrides'
         revision:
           $ref: '#/components/schemas/ID'
-        family_revision:
-          $ref: '#/components/schemas/ID'
-      required: [id, name, workspace, provider_profile, model, effort, preferences, selection, revision,
-        family_revision]
+      required: [id, name, workspace, provider_profile, model, effort, preferences, selection, revision]
       additionalProperties: false
       examples:
       - id: 01a0fcea-2b00-7000-8000-000000000001
@@ -6464,7 +6461,6 @@ components:
           instructions: {}
           mcp: {}
         revision: config-1
-        family_revision: family-1
     SessionConfigurationResource:
       type: object
       properties:
@@ -7158,7 +7154,6 @@ components:
               instructions: {}
               mcp: {}
             revision: config-1
-            family_revision: family-1
         workspace_change: null
         selection:
           overrides:
@@ -10157,7 +10152,6 @@ components:
                 instructions: {}
                 mcp: {}
               revision: config-1
-              family_revision: family-1
           workspace_change: null
           selection:
             overrides:
@@ -10410,7 +10404,7 @@ components:
       examples:
       - data: '{"generation":"J6kYj6IGcXyP3eMIp-WL3A","cursor":0,"events":[{"type":"reset","data":{"reason":"initial"}}],"snapshot":{"id":"01a0fcea-2b00-7000-8000-000000000001","name":"New
           session","automatic_name":"New session","workspace":"/workspace/project","location":{"host":null,"user":null,"path":"/workspace/project","label":null},"parent_id":null,"root_id":"01a0fcea-2b00-7000-8000-000000000001","address":null,"depth":0,"closed":false,"created_at":"2026-10-02T14:00:00Z","activity_at":"2026-10-02T14:00:00Z","provider_profile":"personal","model":"example-model","effort":null,"status":{"phase":"idle","run_id":null,"interrupt_requested":false,"blocking_reason":null},"preview":{"text":"","transcript_count":0,"truncated":false},"preferences":{"pinned":false,"pin_order":null,"archived":false,"opens":0},"current_progress":[],"activity":{"lines":[],"output_scalars":0,"output_utf8_bytes":0,"observed_at":"2026-10-02T14:00:00Z","latest_input":null,"latest_answer":null},"cursor":{"generation":"J6kYj6IGcXyP3eMIp-WL3A","sequence":0},"creation":{"submitted":{"kind":"new","workspace":"/workspace/project","name":null,"provider_profile":null,"model":null,"effort":null},"resolved":{"workspace":"/workspace/project","provider_profile":"personal","model":"example-model","effort":null}},"revision":"config-1","family_revision":"family-1","configuration_resource":{"url":"/sessions/01a0fcea-2b00-7000-8000-000000000001?view=configuration","etag":"\"session-config-1\"","value":{"id":"01a0fcea-2b00-7000-8000-000000000001","name":"New
-          session","workspace":"/workspace/project","provider_profile":"personal","model":"example-model","effort":null,"preferences":{"pinned":false,"pin_order":null,"archived":false},"selection":{"extensions":{},"skills":{},"instructions":{},"mcp":{}},"revision":"config-1","family_revision":"family-1"}},"workspace_change":null,"selection":{"overrides":{"extensions":{},"skills":{},"instructions":{},"mcp":{}},"effective":{"extensions":{},"skills":{},"instructions":{},"mcp":{}}},"composition":{"desired_revision":"composition-1","loaded_revision":null,"needs_reload":true,"dependencies":{},"quarantine":[],"availability":{}},"kernel":{"instance_id":null,"state":"none","stage":null,"build":null,"stale":false,"staleness_reasons":[],"live_job_count":0,"running_jobs":[]},"pending_inputs":[],"input_order":0,"usage":{"model":null,"observed_at":null,"prompt_tokens":null,"cached_prompt_tokens":null,"cache_write_tokens":null,"completion_tokens":null,"total_tokens":null,"elapsed_ms":null,"tokens_per_second":null,"context_window_tokens":null,"cache_ttl_seconds":null,"cache_fade":[]},"history":{"items":[],"older":null,"newer":null,"high_water":0},"glances":[]}}'
+          session","workspace":"/workspace/project","provider_profile":"personal","model":"example-model","effort":null,"preferences":{"pinned":false,"pin_order":null,"archived":false},"selection":{"extensions":{},"skills":{},"instructions":{},"mcp":{}},"revision":"config-1"}},"workspace_change":null,"selection":{"overrides":{"extensions":{},"skills":{},"instructions":{},"mcp":{}},"effective":{"extensions":{},"skills":{},"instructions":{},"mcp":{}}},"composition":{"desired_revision":"composition-1","loaded_revision":null,"needs_reload":true,"dependencies":{},"quarantine":[],"availability":{}},"kernel":{"instance_id":null,"state":"none","stage":null,"build":null,"stale":false,"staleness_reasons":[],"live_job_count":0,"running_jobs":[]},"pending_inputs":[],"input_order":0,"usage":{"model":null,"observed_at":null,"prompt_tokens":null,"cached_prompt_tokens":null,"cache_write_tokens":null,"completion_tokens":null,"total_tokens":null,"elapsed_ms":null,"tokens_per_second":null,"context_window_tokens":null,"cache_ttl_seconds":null,"cache_fade":[]},"history":{"items":[],"older":null,"newer":null,"high_water":0},"glances":[]}}'
       - data: '{"generation":"J6kYj6IGcXyP3eMIp-WL3A","cursor":1,"events":[{"type":"input","sequence":1,"data":{"input":{"id":"01a0fcea-2b00-7000-8000-000000000002","session_id":"01a0fcea-2b00-7000-8000-000000000001","kind":"message","admission":"accepted","http_status":202,"problem":null,"accepted_at":"2026-10-02T14:00:00Z","acceptance_order":1,"delivery":"pending","blocking_reason":null,"transcript_position":null,"turn":null,"client_id":"draft-1"}}}]}'
     CollectionSSE:
       type: object

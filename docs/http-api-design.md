@@ -644,7 +644,12 @@ The configuration view does not accept `tail` or stream cursor parameters.
 ### Changes, visits, and deletion
 
 `GET /sessions/{session_id}?view=configuration` returns only editable metadata,
-preferences, overrides, revision, and family revision, with a strong `ETag`.
+preferences, overrides, and revision, with a strong `ETag`.
+Family membership is not configuration: the family revision appears only on the
+session representation (and its summary), so a child spawning, closing, or being
+deleted never makes a client's observed configuration stale. A workspace move and
+a subtree deletion send the family revision that read observed alongside the
+configuration `ETag`.
 The full session read embeds this same value and validator for an edit.
 `PATCH /sessions/{session_id}?view=configuration` accepts `name`, `provider_profile`,
 `model`, `effort`, `preferences`, and `selection`. An empty or null name restores
@@ -715,7 +720,7 @@ change opens. Deleted sessions cannot be revived by a visit.
 `DELETE /sessions/{session_id}?view=configuration` defaults to `scope=leaf`.
 It requires the configuration `If-Match`, an idle session, and no children.
 `scope=subtree` also requires
-the `family_revision` query parameter from the family read. The daemon captures exactly that
+the `family_revision` query parameter from the session read. The daemon captures exactly that
 membership, prevents new child admission during this operation, interrupts
 members, cancels pending inputs, and deletes deepest first.
 

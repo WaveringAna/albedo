@@ -55,11 +55,11 @@ class RunningMarksTest(unittest.TestCase):
                         else:
                             path = f"/sessions/{session}?view=configuration"
                             with app.api(path) as response:
-                                configuration = json.load(response)
+                                response.read()
                                 revision = response.headers["ETag"]
                             path += (
                                 "&scope=subtree&family_revision="
-                                + configuration["family_revision"]
+                                + app.family_revision(session)
                             )
                             app.api(
                                 path, method="DELETE", headers={"If-Match": revision}

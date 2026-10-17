@@ -54,12 +54,16 @@ func (m *AppModel) handleCommandResults(msg tea.Msg) (tea.Cmd, bool) {
 		}
 		if msg.Err != nil {
 			message := operationError(msg.Err, "Model settings error: ", "Model settings may have changed; check them before trying again.")
+			if refusedConfiguration(msg.Err) {
+				message += " Re-read the settings; try again."
+			}
 			if m.State == AppStateModelPicker {
 				m.ModelPicker.Saving = false
 				m.ModelPicker.Error = message
 			} else {
 				m.AddError(message)
 			}
+			return m.refusedConfigurationCmd(msg.Err), true
 		}
 		return nil, true
 	case commandExecutedMsg:
@@ -79,7 +83,7 @@ func (m *AppModel) handleCommandResults(msg tea.Msg) (tea.Cmd, bool) {
 		}
 		if msg.Err != nil {
 			m.AddError(operationError(msg.Err, "Command error: ", msg.Name+" may have run; check its result before running it again."))
-			return nil, true
+			return m.refusedConfigurationCmd(msg.Err), true
 		}
 		if msg.Page != nil && m.State == AppStateChat && m.ActiveSession != nil {
 			m.PageView = NewPageViewModel(m.Conn, m.ActiveSession.ID, msg.Name)
@@ -433,7 +437,7 @@ func (m *AppModel) handleCommandInvocation(msg tea.Msg) (tea.Cmd, bool) {
 			if msg.Args == "" || m.ActiveSession == nil {
 				return m.openFolderPicker(nil), true
 			}
-			return moveCmd(daemonFolders{conn: m.Conn, condition: daemon.SessionCondition{ETag: m.ActiveSession.ETag, FamilyRevision: m.ActiveSession.FamilyRevision}}, m.ActiveSession.ID, m.ActiveSession.Workspace, msg.Args, nil), true
+			return moveCmd(daemonFolders{conn: m.Conn, condition: m.sessionCondition}, m.ActiveSession.ID, m.ActiveSession.Workspace, msg.Args, nil), true
 		case "/context":
 			return m.openContextInspector(), true
 		default:

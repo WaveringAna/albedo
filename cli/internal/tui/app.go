@@ -87,6 +87,12 @@ type AppModel struct {
 	StandaloneLogin bool
 	// listingSessions says a session listing is in flight.
 	listingSessions bool
+	// refreshingSession says a session read is in flight, and SessionFactsGen
+	// dates the reply. A read asked for meanwhile is read once more when the
+	// answer arrives.
+	refreshingSession     bool
+	sessionRefreshPending bool
+	SessionFactsGen       int
 
 	// Graphemes says the terminal measures grapheme clusters; see ChatModel.
 	Graphemes bool

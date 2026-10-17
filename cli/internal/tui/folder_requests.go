@@ -27,8 +27,10 @@ type folderSource interface {
 
 // daemonFolders is a folderSource over a daemon connection.
 type daemonFolders struct {
-	conn      *daemon.Connection
-	condition daemon.SessionCondition
+	conn *daemon.Connection
+	// condition is read when a move is dispatched: a family can change while
+	// the picker is open.
+	condition func() daemon.SessionCondition
 }
 
 func (d daemonFolders) List(ctx context.Context, p string) (daemon.FolderList, error) {
@@ -48,7 +50,11 @@ func (d daemonFolders) Sessions(ctx context.Context) ([]daemon.Session, error) {
 }
 
 func (d daemonFolders) Move(ctx context.Context, id, workspace string) (daemon.Session, error) {
-	return daemon.MoveSession(ctx, d.conn, id, workspace, d.condition)
+	var condition daemon.SessionCondition
+	if d.condition != nil {
+		condition = d.condition()
+	}
+	return daemon.MoveSession(ctx, d.conn, id, workspace, condition)
 }
 
 func (d daemonFolders) Hosts(ctx context.Context) ([]daemon.KnownHost, error) {
