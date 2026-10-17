@@ -22,17 +22,158 @@ func (m *ChatModel) syncViewportHeight() {
 	m.refreshViewportContent()
 }
 
-func (m *ChatModel) rebuildSettledLines() {
-	// Re-rendering retained history must not move the reading position. Keep
-	// the content row under the viewport rather than anchoring to the tail.
-	readingOffset := m.scrollOffset
-	var readingRow string
-	if readingOffset >= 0 && readingOffset < len(m.frameLines) {
-		readingRow = m.frameLines[readingOffset]
+// settledSpan is how many settled rows an entry contributed to the transcript,
+// and where its own first row starts after any burst or separator before it.
+type settledSpan struct {
+	rows int
+	head int
+}
+
+// readingAnchor records which transcript row sits at screenRow of the viewport
+// before a rebuild, so rebuildSettledLines can place that same row back at
+// screenRow after entries are prepended, replaced, retired, or re-wrapped.
+type readingAnchor struct {
+	row       string
+	entry     int
+	burst     int
+	offset    int
+	oldRows   int
+	screenRow int
+	hasRow    bool
+	inHead    bool
+	tail      bool
+}
+
+func (m ChatModel) captureAnchor() readingAnchor {
+	contentOffset := m.scrollOffset - m.settledOffset
+	screenRow := 0
+	if contentOffset < 0 {
+		screenRow = -contentOffset
+		contentOffset = 0
 	}
+	var row string
+	var hasRow bool
+	if at := m.scrollOffset + screenRow; at >= 0 && at < len(m.frameLines) {
+		row, hasRow = m.frameLines[at], true
+	} else if contentOffset < len(m.settledLines) {
+		row, hasRow = m.settledLines[contentOffset], true
+	}
+	target := m.droppedSettledLines + contentOffset
+	entries := m.History.Entries()
+	pos := 0
+	for i, span := range m.settledSpans {
+		if target < pos+span.rows {
+			inBlock := target - pos
+			if inBlock < span.head {
+				burst := i
+				for burst > 0 && Compact(entries[burst-1], m.Flags) {
+					burst--
+				}
+				return readingAnchor{
+					row:       row,
+					hasRow:    hasRow,
+					entry:     i,
+					burst:     burst,
+					inHead:    true,
+					offset:    inBlock,
+					oldRows:   span.head,
+					screenRow: screenRow,
+				}
+			}
+			return readingAnchor{
+				row:       row,
+				hasRow:    hasRow,
+				entry:     i,
+				offset:    inBlock - span.head,
+				oldRows:   span.rows - span.head,
+				screenRow: screenRow,
+			}
+		}
+		pos += span.rows
+	}
+	return readingAnchor{
+		row:       row,
+		hasRow:    hasRow,
+		entry:     len(m.settledSpans),
+		tail:      true,
+		offset:    target - pos,
+		screenRow: screenRow,
+	}
+}
+
+func placeWithin(rows []string, offset, oldRows int, want string, hasWant bool) int {
+	if len(rows) == 0 {
+		return 0
+	}
+	if len(rows) == oldRows {
+		return max(0, min(offset, len(rows)-1))
+	}
+	if hasWant && offset >= 0 && offset < len(rows) && rows[offset] == want {
+		return offset
+	}
+	if fromEnd := len(rows) - (oldRows - offset); hasWant && fromEnd >= 0 && fromEnd < len(rows) && rows[fromEnd] == want {
+		return fromEnd
+	}
+	scaled := max(0, min(len(rows)-1, offset*len(rows)/max(1, oldRows)))
+	if hasWant {
+		best, bestDist := -1, len(rows)+1
+		for i, row := range rows {
+			if row == want {
+				dist := i - scaled
+				if dist < 0 {
+					dist = -dist
+				}
+				if dist < bestDist {
+					best, bestDist = i, dist
+				}
+			}
+		}
+		if best >= 0 {
+			return best
+		}
+	}
+	return scaled
+}
+
+func (m ChatModel) anchorForRetire(firstRetired int) readingAnchor {
+	anchor := m.captureAnchor()
+	if anchor.entry < firstRetired {
+		return anchor
+	}
+	var prefixRows int
+	for _, span := range m.settledSpans[:min(firstRetired, len(m.settledSpans))] {
+		prefixRows += span.rows
+	}
+	target := m.droppedSettledLines + max(0, m.scrollOffset-m.settledOffset)
+	return readingAnchor{
+		entry:     firstRetired,
+		tail:      true,
+		offset:    max(0, target-prefixRows),
+		screenRow: anchor.screenRow,
+	}
+}
+
+func (m *ChatModel) replaceHistory(anchor readingAnchor, mutate func()) {
+	m.History.SetReading(!m.Follow)
+	beforeEvicted := m.History.EvictedCount()
+	mutate()
+	if evicted := m.History.EvictedCount() - beforeEvicted; evicted > 0 {
+		anchor.entry = max(0, anchor.entry-evicted)
+		anchor.burst = max(0, anchor.burst-evicted)
+	}
+	m.burstEpoch++
+	m.rebuildSettledLinesWith(anchor)
+}
+
+func (m *ChatModel) rebuildSettledLines() {
+	m.rebuildSettledLinesWith(m.captureAnchor())
+}
+
+func (m *ChatModel) rebuildSettledLinesWith(anchor readingAnchor) {
 	m.settledLines = nil
 	m.settledLinesBytes = 0
 	m.droppedSettledLines = 0
+	m.settledSpans = nil
 	m.userRows = nil
 	m.rebuilding = true
 	entries := m.History.Entries()
@@ -42,7 +183,9 @@ func (m *ChatModel) rebuildSettledLines() {
 	if !m.Follow {
 		kept = make(map[settledKey]settledBlock, len(entries))
 	}
+	newTarget := -1
 	for i := range entries {
+		blockStart := len(m.settledLines)
 		key, named := m.settledKey(entries[:i], entries[i])
 		block, ok := m.settled[key]
 		if !named || !ok {
@@ -52,23 +195,39 @@ func (m *ChatModel) rebuildSettledLines() {
 			kept[key] = block
 		}
 		m.appendRows(entries[i], block)
-	}
-	m.settled = kept
-	m.rebuilding = false
-	m.settledOffset = len(m.headerLines())
-	m.scrollOffset = readingOffset
-	if readingRow != "" {
-		rows := append(m.headerLines(), m.settledLines...)
-		if readingOffset >= len(rows) || rows[readingOffset] != readingRow {
-			for i, row := range rows {
-				if row == readingRow {
-					m.scrollOffset = i
-					break
+		if newTarget < 0 {
+			switch {
+			case anchor.tail && i == anchor.entry:
+				newTarget = blockStart + anchor.offset
+			case anchor.inHead && i == anchor.entry && block.head > 0:
+				if anchor.oldRows == 1 {
+					newTarget = max(0, blockStart+block.head-1)
+				} else {
+					newTarget = blockStart + placeWithin(block.rows[:block.head], anchor.offset, anchor.oldRows, anchor.row, anchor.hasRow)
+				}
+			case anchor.inHead && i >= anchor.burst && i <= anchor.entry && len(block.rows) > 0:
+				newTarget = blockStart + block.head
+			case !anchor.tail && !anchor.inHead && i == anchor.entry:
+				if len(block.rows) > block.head {
+					newTarget = blockStart + block.head + placeWithin(block.rows[block.head:], anchor.offset, anchor.oldRows, anchor.row, anchor.hasRow)
+				} else {
+					newTarget = blockStart
 				}
 			}
 		}
 	}
+	if newTarget < 0 {
+		newTarget = len(m.settledLines) + anchor.offset
+	}
+	m.settled = kept
+	m.rebuilding = false
+	m.settledOffset = 0
+	m.scrollOffset = max(0, newTarget)
 	m.trimSettledLines()
+	m.settledOffset = len(m.headerLines())
+	if !m.Follow {
+		m.scrollOffset = max(0, m.settledOffset+m.scrollOffset-anchor.screenRow)
+	}
 }
 
 // headerLines lead the transcript: where older history stands. Their count
@@ -162,6 +321,7 @@ func (m *ChatModel) appendRows(entry HistoryEntry, block settledBlock) {
 	if entry.Kind == EntryUser && (entry.Source == "" || entry.Source == "chat") {
 		m.userRows = append(m.userRows, len(m.settledLines)+block.head)
 	}
+	m.settledSpans = append(m.settledSpans, settledSpan{rows: len(block.rows), head: block.head})
 	for _, row := range block.rows {
 		m.settledLines = append(m.settledLines, row)
 		m.settledLinesBytes += int64(len(row))
@@ -182,39 +342,82 @@ func (m *ChatModel) trimSettledLines() {
 		maxLines, maxBytes = maxLines*readingSlack, maxBytes*readingSlack
 	}
 	dropped := 0
-	for len(m.settledLines) > maxLines || m.settledLinesBytes > maxBytes {
-		if len(m.settledLines) == 0 || !m.Follow && dropped >= m.scrollOffset-m.settledOffset {
+	for len(m.settledLines)-dropped > maxLines || m.settledLinesBytes > maxBytes {
+		if dropped >= len(m.settledLines) || !m.Follow && dropped >= m.scrollOffset-m.settledOffset-MaxSettledLines {
 			break
 		}
-		removed := m.settledLines[0]
-		m.settledLinesBytes -= int64(len(removed))
-		m.settledLines[0] = ""
-		m.settledLines = m.settledLines[1:]
+		m.settledLinesBytes -= int64(len(m.settledLines[dropped]))
 		dropped++
 	}
 
 	if dropped > 0 {
 		m.droppedSettledLines += dropped
-		m.scrollOffset = max(0, m.scrollOffset-dropped)
-		kept := m.userRows[:0]
-		for _, row := range m.userRows {
-			if row >= dropped {
-				kept = append(kept, row-dropped)
-			}
-		}
-		m.userRows = kept
-		// Rendered rows own their text: body chunks are concatenated with a
-		// nonempty rail; separators retain only small rail strings or empty text.
-		fresh := make([]string, len(m.settledLines))
-		copy(fresh, m.settledLines)
-		clear(m.settledLines)
-		m.settledLines = fresh
+		m.dropLeadingSettled(dropped)
 	}
+}
+
+func (m *ChatModel) dropLeadingSettled(dropped int) {
+	if dropped <= 0 {
+		return
+	}
+	dropped = min(dropped, len(m.settledLines))
+	clear(m.settledLines[:dropped])
+	m.settledLines = m.settledLines[dropped:]
+	m.scrollOffset = max(0, m.scrollOffset-dropped)
+	kept := m.userRows[:0]
+	for _, row := range m.userRows {
+		if row >= dropped {
+			kept = append(kept, row-dropped)
+		}
+	}
+	m.userRows = kept
+	// Rendered rows own their text: body chunks are concatenated with a
+	// nonempty rail; separators retain only small rail strings or empty text.
+	fresh := make([]string, len(m.settledLines))
+	copy(fresh, m.settledLines)
+	clear(m.settledLines)
+	m.settledLines = fresh
+}
+
+// syncHistoryEviction drops settled spans and rows for entries evicted from the
+// front of m.History, keeping settledSpans and settledLines aligned with History.
+func (m *ChatModel) syncHistoryEviction(beforeEvicted int) {
+	evicted := m.History.EvictedCount() - beforeEvicted
+	if evicted <= 0 {
+		return
+	}
+	evicted = min(evicted, len(m.settledSpans))
+	var rows int
+	for _, span := range m.settledSpans[:evicted] {
+		rows += span.rows
+	}
+	m.settledSpans = slices.Delete(m.settledSpans, 0, evicted)
+	if rows <= m.droppedSettledLines {
+		m.droppedSettledLines -= rows
+		return
+	}
+	drop := min(len(m.settledLines), rows-m.droppedSettledLines)
+	m.droppedSettledLines = 0
+	m.settledLinesBytes -= rowBytes(m.settledLines[:drop])
+	m.dropLeadingSettled(drop)
 }
 
 // replaceSettled swaps the n settled rows at from for rows, and returns how
 // many rows the caps then dropped from the top.
 func (m *ChatModel) replaceSettled(from, n int, rows []string) int {
+	target := m.droppedSettledLines + from
+	pos := 0
+	for i, span := range m.settledSpans {
+		if target >= pos && target < pos+span.rows {
+			delta := len(rows) - n
+			if target+n <= pos+span.head {
+				m.settledSpans[i].head += delta
+			}
+			m.settledSpans[i].rows += delta
+			break
+		}
+		pos += span.rows
+	}
 	m.settledLinesBytes += rowBytes(rows) - rowBytes(m.settledLines[from:from+n])
 	m.settledLines = slices.Replace(m.settledLines, from, from+n, rows...)
 	for i, at := range m.userRows {
@@ -240,13 +443,15 @@ func (m *ChatModel) appendSettledEntry(entry HistoryEntry) {
 		facts := factsOf(entry)
 		entry.facts = &facts
 	}
-	if m.History.Replace(entry) {
-		m.burstEpoch++
-		m.rebuildSettledLines()
+	if m.History.Find(entry.ID) >= 0 {
+		m.replaceHistory(m.captureAnchor(), func() { m.History.Replace(entry) })
 		return
 	}
+	m.History.SetReading(!m.Follow)
+	beforeEvicted := m.History.EvictedCount()
 	m.appendBlock(m.History.Entries(), entry)
 	m.History.Append(entry)
+	m.syncHistoryEviction(beforeEvicted)
 }
 
 // settleActiveStream appends assembled text and retains a live thought's last
@@ -268,9 +473,13 @@ func (m *ChatModel) refreshViewportContent() int {
 	}
 	if m.Follow {
 		// Reading older history stretched both caps; at the end they return.
+		beforeEvicted := m.History.EvictedCount()
 		m.History.Trim()
+		m.syncHistoryEviction(beforeEvicted)
 		m.trimSettledLines()
 		m.settled = nil
+	} else {
+		m.History.SetReading(true)
 	}
 	allLines := m.headerLines()
 	if !m.Follow {
@@ -421,6 +630,24 @@ func (m *ChatModel) jumpToYou(back bool) {
 			break
 		}
 	}
+	if back && target < 0 && m.droppedSettledLines > 0 {
+		wasFollow := m.Follow
+		if wasFollow {
+			m.scrollOffset = m.scrollLimit
+		}
+		m.Follow = false
+		m.rebuildSettledLines()
+		at = m.scrollOffset
+		for _, row := range m.userRows {
+			row += m.settledOffset
+			if row < at {
+				target = row
+			}
+		}
+		if target < 0 {
+			m.Follow = wasFollow
+		}
+	}
 	switch {
 	case target >= 0 && target < m.scrollLimit:
 		m.Follow = false
@@ -435,6 +662,9 @@ func (m *ChatModel) jumpToYou(back bool) {
 func (m *ChatModel) scrollBy(rows int) {
 	if rows < 0 {
 		m.Follow = false
+		if m.droppedSettledLines > 0 && m.scrollOffset+rows <= m.settledOffset {
+			m.rebuildSettledLines()
+		}
 	} else if m.Follow {
 		return
 	}
@@ -494,11 +724,14 @@ func (m *ChatModel) showOlder(msg ChatOlderLoadedMsg) ChatModel {
 			older[i].facts = &facts
 		}
 	}
-	fromEnd := m.settledOffset + len(m.settledLines) - m.scrollOffset
+	anchor := m.captureAnchor()
+	beforeLen := m.History.Len()
 	m.History.Prepend(older)
+	prepended := m.History.Len() - beforeLen
+	anchor.entry += prepended
+	anchor.burst += prepended
 	m.olderBefore, m.olderMore = msg.Page.Before, msg.Page.More && msg.Page.Before > 0
-	m.rebuildSettledLines()
-	m.scrollOffset = max(0, m.settledOffset+len(m.settledLines)-fromEnd)
+	m.rebuildSettledLinesWith(anchor)
 	m.refreshViewportContent()
 	return *m
 }

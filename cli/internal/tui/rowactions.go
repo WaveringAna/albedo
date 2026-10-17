@@ -96,7 +96,7 @@ func (m *ChatModel) toggleFold(key string, row int) bool {
 		clicked = slices.Index(old, m.settledLines[line])
 	}
 	from := line - clicked
-	if clicked < 0 || from+len(old) > len(m.settledLines) {
+	if clicked < 0 || from < 0 || from+len(old) > len(m.settledLines) {
 		m.rebuildSettledLines()
 		m.refreshViewportContent()
 		return true

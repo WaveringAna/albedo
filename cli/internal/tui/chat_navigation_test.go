@@ -221,7 +221,8 @@ func TestReadingPositionSurvivesOutputPastTheLineCap(t *testing.T) {
 			t.Fatalf("after %d blocks the view moved: offset %d → %d", i+1, offset, m.scrollOffset)
 		}
 	}
-	m.SetSize(80, 20)
+	m.rebuildSettledLines()
+	m.refreshViewportContent()
 	if m.Viewport.View() != view {
 		t.Fatal("re-rendering moved the reading position")
 	}
@@ -274,10 +275,85 @@ func TestReturningToTheEndTrimsHistoryLoadedWhileReading(t *testing.T) {
 	if m.History.Len() <= 10 {
 		t.Fatalf("an older page was not kept while reading: %d entries", m.History.Len())
 	}
+	view := m.Viewport.View()
+	m.appendSettledEntry(HistoryEntry{ID: "incoming", Seq: 200, Kind: EntryAssistant, Text: "arrived while reading"})
+	m.refreshViewportContent()
+	if m.History.Len() <= 10 || m.Viewport.View() != view {
+		t.Fatalf("incoming output evicted or moved older history while reading: %d entries", m.History.Len())
+	}
 	for !m.Follow {
 		m.scrollBy(20)
 	}
 	if m.History.Len() != 10 {
 		t.Fatalf("back at the end, history kept %d entries past its cap of 10", m.History.Len())
+	}
+}
+
+func TestSlightScrollUpSurvivesMessageAddedAfterTrimmedHistory(t *testing.T) {
+	// When settledLines has trimmed ~3000 rows from retained History, a slight
+	// scroll up followed by a committed message rebuilds settledLines; the view
+	// must stay on the rows being read rather than jumping ~3000 rows up.
+	m := newTestChatModel(t, &daemon.Session{ID: "s"})
+	m.SetSize(80, 20)
+	for i := range 250 {
+		m.appendSettledEntry(HistoryEntry{
+			ID:   fmt.Sprintf("e-%d", i),
+			Seq:  int64(i + 1),
+			Kind: EntryAssistant,
+			Text: fmt.Sprintf("section %d\n\n", i) + strings.Repeat("shared line\n", 14),
+		})
+	}
+	m.refreshViewportContent()
+	if m.droppedSettledLines < 3000 {
+		t.Fatalf("expected >= 3000 dropped settled rows, got %d", m.droppedSettledLines)
+	}
+
+	// Scroll up slightly (one wheel tick = 3 rows), landing on a repeated line.
+	m, _ = m.Update(tea.MouseWheelMsg{Button: tea.MouseWheelUp})
+	if m.Follow || m.scrollLimit-m.scrollOffset != 3 {
+		t.Fatalf("expected 3 rows below, got follow=%v below=%d", m.Follow, m.scrollLimit-m.scrollOffset)
+	}
+	wantView := m.Viewport.View()
+
+	// Stream and commit a new message through the real event sequence.
+	for _, evt := range []daemon.StreamEvent{
+		{Type: daemon.EventThinking, Text: "thinking about reply", MessageID: "run:1:thinking"},
+		{Type: daemon.EventText, Text: "new assistant reply\nsecond line", MessageID: "run:1:0:0"},
+		{Type: daemon.EventUsage},
+		{Type: daemon.EventThinking, EntryID: "e-250-t", Position: 251, Text: "thinking about reply"},
+		{Type: daemon.EventMessage, EntryID: "e-250-m", Position: 252, Text: "new assistant reply\nsecond line"},
+		{Type: daemon.EventCommitted, Seq: 252, ReplacesLiveIDs: []string{"run:1:thinking", "run:1:0:0"}, ReplacesAllLive: true},
+		{Type: daemon.EventTurnCompleted, Source: "completed"},
+	} {
+		m, _ = m.Update(ChatStreamEventMsg{SessionID: m.SessionID, Generation: m.Generation, Event: evt})
+		if got := m.Viewport.View(); got != wantView {
+			t.Fatalf("after %s, viewport jumped (below=%d):\ngot:\n%s\nwant:\n%s",
+				evt.Type, m.scrollLimit-m.scrollOffset, ansi.Strip(got), ansi.Strip(wantView))
+		}
+	}
+	if below := m.scrollLimit - m.scrollOffset; below <= 3 || below > 20 {
+		t.Fatalf("expected only the new message's rows below, got %d", below)
+	}
+
+	// Scroll up into a live streaming reply itself and verify committing it
+	// keeps the viewport on the reply's rows.
+	m.scrollBy(1 << 20)
+	streamText := strings.Repeat("streaming paragraph\n\n", 15) + "tail line"
+	m, _ = m.Update(ChatStreamEventMsg{
+		SessionID: m.SessionID, Generation: m.Generation,
+		Event: daemon.StreamEvent{Type: daemon.EventText, Text: streamText, MessageID: "run:2:0:0"},
+	})
+	m, _ = m.Update(tea.MouseWheelMsg{Button: tea.MouseWheelUp})
+	wantLiveView := m.Viewport.View()
+	for _, evt := range []daemon.StreamEvent{
+		{Type: daemon.EventUsage},
+		{Type: daemon.EventMessage, EntryID: "e-251-m", Position: 253, Text: streamText},
+		{Type: daemon.EventCommitted, Seq: 253, ReplacesLiveIDs: []string{"run:2:0:0"}, ReplacesAllLive: true},
+	} {
+		m, _ = m.Update(ChatStreamEventMsg{SessionID: m.SessionID, Generation: m.Generation, Event: evt})
+		if got := m.Viewport.View(); got != wantLiveView {
+			t.Fatalf("committing live reply under viewport moved reading position on %s:\ngot:\n%s\nwant:\n%s",
+				evt.Type, ansi.Strip(got), ansi.Strip(wantLiveView))
+		}
 	}
 }

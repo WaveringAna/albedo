@@ -109,6 +109,9 @@ type BoundedHistory struct {
 	// evictedThrough is the newest transcript row among evicted entries: the
 	// daemon holds everything up to it, and older pages resume after it.
 	evictedThrough int64
+	// reading stretches the caps while scrolled up so incoming events do not
+	// evict history above the viewport; Trim restores the normal caps.
+	reading bool
 }
 
 func NewBoundedHistory(maxEntries int, maxBytes int64) *BoundedHistory {
@@ -196,15 +199,29 @@ func (h *BoundedHistory) Prepend(older []HistoryEntry) {
 	}
 	h.entries = slices.Concat(unique, h.entries)
 	h.evictedThrough = 0
+	h.reading = true
 }
 
-// Trim evicts the oldest entries past the bounds Prepend stretched.
+// SetReading stretches or restores the retention caps while scrolling.
+func (h *BoundedHistory) SetReading(reading bool) {
+	h.reading = reading
+	if !reading {
+		h.enforceBounds()
+	}
+}
+
+// Trim evicts the oldest entries past the bounds Prepend or reading stretched.
 func (h *BoundedHistory) Trim() {
+	h.reading = false
 	h.enforceBounds()
 }
 
 func (h *BoundedHistory) enforceBounds() {
-	for len(h.entries) > 0 && (len(h.entries) > h.MaxEntries || h.totalBytes > h.MaxBytes) {
+	maxEntries, maxBytes := h.MaxEntries, h.MaxBytes
+	if h.reading {
+		maxEntries, maxBytes = maxEntries*readingSlack, maxBytes*readingSlack
+	}
+	for len(h.entries) > 0 && (len(h.entries) > maxEntries || h.totalBytes > maxBytes) {
 		h.evictFirst()
 		// A row's entries leave together, so re-reading from the next row
 		// never repeats what is still shown.
@@ -234,6 +251,12 @@ func (h *BoundedHistory) Append(entry HistoryEntry) {
 func (h *BoundedHistory) Clear() {
 	clear(h.entries)
 	*h = BoundedHistory{MaxEntries: h.MaxEntries, MaxBytes: h.MaxBytes, entries: h.entries[:0]}
+}
+
+func (h *BoundedHistory) firstLiveIndex(ids []string, all bool) int {
+	return slices.IndexFunc(h.entries, func(entry HistoryEntry) bool {
+		return entry.MessageID != "" && (all || slices.Contains(ids, entry.MessageID))
+	})
 }
 
 // Retire provisional chunks without counting them as hidden durable history.

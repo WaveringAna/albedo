@@ -155,6 +155,7 @@ type ChatModel struct {
 	liveDue      bool
 	Notices      Notices
 	settledLines []string
+	settledSpans []settledSpan
 
 	pendingUsers         []PendingUserTurn
 	pendingContinuations map[string]pendingOperation

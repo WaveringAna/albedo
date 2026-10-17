@@ -124,6 +124,9 @@ func (m *ChatModel) handleInput(msg tea.Msg) (tea.Cmd, bool) {
 		case "ctrl+home", "ctrl+end":
 			m.Follow = msg.String() == "ctrl+end"
 			if !m.Follow {
+				if m.droppedSettledLines > 0 {
+					m.rebuildSettledLines()
+				}
 				m.scrollOffset = 0
 			}
 			m.refreshViewportContent()

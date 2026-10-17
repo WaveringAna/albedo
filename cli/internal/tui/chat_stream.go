@@ -109,21 +109,17 @@ func (m *ChatModel) handleStreamEvent(evt daemon.StreamEvent) {
 			}
 			entry.Seq = evt.Position
 			entry.facts = nil
-			if Compact(entry, m.Flags) {
-				facts := factsOf(entry)
-				entry.facts = &facts
-			}
-			m.History.Replace(entry)
-			m.burstEpoch++
-			m.rebuildSettledLines()
+			m.appendSettledEntry(entry)
 			return
 		}
 	}
 	retireAll := evt.Type == daemon.EventRetry || evt.Type == daemon.EventError || evt.Type == daemon.EventInterrupted || evt.Type == daemon.EventTurnCompleted && evt.Source != ""
+	var anchor readingAnchor
+	retired := false
 	if len(evt.ReplacesLiveIDs) > 0 || retireAll || evt.ReplacesAllLive {
-		if m.History.retireLive(evt.ReplacesLiveIDs, retireAll || evt.ReplacesAllLive) {
-			m.burstEpoch++
-			m.rebuildSettledLines()
+		if firstRetired := m.History.firstLiveIndex(evt.ReplacesLiveIDs, retireAll || evt.ReplacesAllLive); firstRetired >= 0 {
+			anchor = m.anchorForRetire(firstRetired)
+			retired = m.History.retireLive(evt.ReplacesLiveIDs, retireAll || evt.ReplacesAllLive)
 		}
 		if retireAll {
 			m.transcript.resetStream()
@@ -135,8 +131,22 @@ func (m *ChatModel) handleStreamEvent(evt daemon.StreamEvent) {
 	}
 	watchedThought := !m.transcript.thinkingSince.IsZero()
 	entries := m.transcript.apply(evt, m.AgentName)
-	for _, entry := range entries {
-		m.appendSettledEntry(entry)
+	if retired {
+		m.replaceHistory(anchor, func() {
+			for _, entry := range entries {
+				if Compact(entry, m.Flags) {
+					facts := factsOf(entry)
+					entry.facts = &facts
+				}
+				if !m.History.Replace(entry) {
+					m.History.Append(entry)
+				}
+			}
+		})
+	} else {
+		for _, entry := range entries {
+			m.appendSettledEntry(entry)
+		}
 	}
 
 	switch evt.Type {
@@ -153,6 +163,7 @@ func (m *ChatModel) handleStreamEvent(evt daemon.StreamEvent) {
 		m.History.Clear()
 		m.burstEpoch++
 		m.settledLines = nil
+		m.settledSpans = nil
 		m.settledLinesBytes, m.droppedSettledLines = 0, 0
 		m.clearAction()
 		m.Usage = nil
