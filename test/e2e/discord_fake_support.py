@@ -347,6 +347,7 @@ class FakeDiscord:
         message: str,
         user: str,
         emoji: str | dict[str, Any] = "👍",
+        nick: str | None = None,
     ) -> str:
         """Send a reaction-add event and return its gateway-session/sequence ID."""
 
@@ -366,7 +367,9 @@ class FakeDiscord:
                 "type": 0,
             }
             if guild:
-                data.update(guild_id=guild, member={"user": self.users[user]})
+                data.update(
+                    guild_id=guild, member={"user": self.users[user], "nick": nick}
+                )
             self._dispatch("MESSAGE_REACTION_ADD", data)
             return f"{self._gateway.session_id}:{self._seq}"
 

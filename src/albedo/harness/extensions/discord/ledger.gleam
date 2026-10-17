@@ -1,11 +1,13 @@
 //// Durable Discord bots: one per session, the channels each one sees, the
 //// people allowed to DM it, refused DMs, and the newest message seen in each
 //// channel. Tokens leave this module only through `runnable`, for the bot
-//// process environment.
+//// process environment. The handles and message numbers the session uses
+//// are in `refs`.
 
 import albedo/daemon/mail
 import albedo/daemon/store
 import albedo/daemon/usage
+import albedo/harness/extensions/discord/refs
 import albedo/text_scalars
 import gleam/dynamic/decode
 import gleam/list
@@ -137,7 +139,7 @@ const request_limit = 50
 
 pub fn initialise(db: store.Store) -> Result(Nil, String) {
   use _ <- result.try(mail.initialise(db))
-  store.query(db, store.exec(_, schema))
+  store.query(db, store.exec(_, schema <> refs.schema))
 }
 
 /// Session deletion cascades through the foreign keys; this covers a store

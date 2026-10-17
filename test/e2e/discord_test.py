@@ -24,10 +24,16 @@ MENTIONS = "300000000000000004"
 THREAD = "300000000000000005"
 HOLD = "hold the turn open"
 OWNER_PING = "ping from owner"
+NAMES = "use names and numbers"
 
 
 def visible(item):
     return json.dumps(item, ensure_ascii=False)
+
+
+def shown(text):
+    """`text` as it reads inside a JSON string, which `visible` produces."""
+    return json.dumps(text, ensure_ascii=False)[1:-1]
 
 
 # exclusive: the daemon's bot processes must reach this test's fake Discord
@@ -79,7 +85,7 @@ class DiscordTests(unittest.TestCase):
                 "print('released')"
             )
         if OWNER_PING in seen:
-            found = re.search(r"channel (\d+) · message (\d+)", seen)
+            found = re.search(r"· (c\d+)\] @\w+ \(\w+\) · message (\d+)", seen)
             assert found, seen
             channel, message = found.groups()
             return python(
@@ -90,6 +96,26 @@ class DiscordTests(unittest.TestCase):
                 "except DiscordError as refused:\n"
                 "    print('DM_REFUSED', refused)\n"
                 "print('SENT', sent.channel, state.state, state.user['username'])"
+            )
+        if NAMES in seen:
+            return python(
+                "listed = await discord.channels()\n"
+                "print('CHANNELS', ' ; '.join(\n"
+                "    f'{c.handle}|{c.name}|{c.guild}|{c.delivery}' for c in listed))\n"
+                "reply = await discord.send('tool', 'by name', reply_to=1)\n"
+                "await discord.react('c1', reply.messages[0], '✅')\n"
+                "rows = await discord.history('#tool', limit=10)\n"
+                "print('HISTORY', ' ; '.join(\n"
+                "    f'{r.number}|{r.author}|{r.content}|{r.reply_to}' for r in rows))\n"
+                "print('SENT', reply.messages, reply.channel)\n"
+                "for call in (\n"
+                "    lambda: discord.react('tool', 99, '👍'),\n"
+                "    lambda: discord.send('nowhere', 'x'),\n"
+                "):\n"
+                "    try:\n"
+                "        await call()\n"
+                "    except DiscordError as refused:\n"
+                "        print('REFUSED', refused)"
             )
         return text("noted")
 
@@ -218,7 +244,7 @@ class DiscordTests(unittest.TestCase):
         ping = self.post(owner_dm, OWNER_PING)
         self.wait_seen(OWNER_PING)
         self.assertIn(
-            f"[discord dm] @ana (Ana) · channel {owner_dm} · message {ping}",
+            "[discord dm · c1] @ana (Ana) · message 1",
             visible(self.requests()[self.first_seen(OWNER_PING)]),
         )
         sent = self.fake.wait_for_sent(1, timeout=40)
@@ -227,7 +253,7 @@ class DiscordTests(unittest.TestCase):
         self.app.idle(self.session, timeout=40)
         outputs = visible(self.requests()[-1])
         self.assertIn("DM_REFUSED", outputs)
-        self.assertIn(f"SENT {owner_dm} online albedo-bot", outputs)
+        self.assertIn("SENT c1 online albedo-bot", outputs)
 
         stranger_dm = self.fake.dm_channel(STRANGER)
         stranger = {"id": STRANGER, "username": "bob", "global_name": "Bob"}
@@ -336,9 +362,9 @@ class DiscordTests(unittest.TestCase):
         self.assertEqual(self.letters(bot["id"], *ignored), 0)
         self.wait_seen("hello from another albedo")
         self.wait_seen("a thread under tool")
-        self.assertIn(
-            f"[discord #tool in Lab] @otherbot (Other, bot) · channel {TOOL} · message {delivered[1]}",
+        self.assertRegex(
             visible(self.requests()),
+            r"\[discord #tool in Lab · c\d+\] @otherbot \(Other, bot\) · message 1\b",
         )
         self.app.idle(self.session, timeout=40)
         for words in ("nobody configured this", "my own words", "no mention here"):
@@ -377,11 +403,15 @@ class DiscordTests(unittest.TestCase):
         self.wait_seen("👍")
         self.app.idle(self.session, timeout=40)
         received = visible(self.requests()[self.first_seen("👍")])
-        self.assertIn(OWNER, received)
-        self.assertIn(sent["id"], received)
         self.assertIn(
-            f"https://discord.com/channels/@me/{channel}/{sent['id']}", received
+            shown(
+                '[discord dm reaction · c1] @ana (Ana) reacted 👍 to your message 2: "pong"'
+            ),
+            received,
         )
+        for snowflake in (sent["id"], channel):
+            self.assertNotIn(snowflake, received)
+        self.assertNotIn("discord.com/channels", received)
         self.fake.drop_connection()
         self.fake.wait_for_resumes(1, timeout=30)
         self.fake.replay(event)
@@ -478,6 +508,47 @@ class DiscordTests(unittest.TestCase):
         self.assertIn("<:yes:456>", first)
         self.assertNotIn("🎉", first)
         self.assertGreater(self.first_seen("🎉"), self.first_seen("👍"))
+
+    def test_channels_and_messages_are_named_by_handle_and_number(self):
+        self.create_bot()
+        self.put_channel(TOOL, "tool")
+        hello = self.post(TOOL, "hello there", nick="Annie")
+        self.wait_seen("hello there")
+        self.assertRegex(
+            visible(self.requests()[self.first_seen("hello there")]),
+            r"\[discord #tool in Lab · c1\] @ana \(Annie\) · message 1\b",
+        )
+        self.app.idle(self.session, timeout=40)
+
+        self.app.prompt(self.session, NAMES).close()
+        sent = self.fake.wait_for_sent(1, timeout=40)[0]
+        self.app.idle(self.session, timeout=40)
+        self.assertEqual(sent["content"], "by name")
+        self.assertEqual(sent["message_reference"]["message_id"], hello)
+        self.assertEqual(
+            self.fake.wait_for_reaction(),
+            [{"channel_id": TOOL, "message_id": sent["id"], "emoji": "✅"}],
+        )
+        output = visible(self.requests()[-1])
+        for line in (
+            "CHANNELS c1|tool|Lab|tool",
+            "HISTORY 1|Annie|hello there|None ; 2|albedo-bot|by name|1",
+            "SENT [2] c1",
+            "REFUSED no message 99 in that channel",
+            "REFUSED no channel is called nowhere",
+        ):
+            self.assertIn(line, output)
+
+        # A person who reacts to the bot's message is named by their server
+        # nickname, and the message by its number and the start of its text.
+        self.fake.react(TOOL, sent["id"], OWNER, "👍", nick="Annie")
+        self.wait_seen("reacted 👍")
+        self.assertIn(
+            shown(
+                '[discord reaction #tool in Lab · c1] @ana (Annie) reacted 👍 to your message 2: "by name"'
+            ),
+            visible(self.requests()[self.first_seen("reacted 👍")]),
+        )
 
     def test_catch_up_after_a_reconnect_delivers_once(self):
         bot = self.create_bot()

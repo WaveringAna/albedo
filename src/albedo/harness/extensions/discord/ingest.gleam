@@ -7,9 +7,11 @@ import albedo/daemon/mail
 import albedo/daemon/store
 import albedo/daemon/usage
 import albedo/harness/extensions/discord/ledger
+import albedo/harness/extensions/discord/refs
 import albedo/text_scalars
 import gleam/bool
 import gleam/dynamic/decode
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -34,6 +36,7 @@ pub type Reaction {
     channel_name: Option(String),
     parent_id: Option(String),
     author: Author,
+    nick: Option(String),
     emoji: String,
     message_author_id: Option(String),
   )
@@ -49,6 +52,7 @@ pub type Message {
     parent_id: Option(String),
     is_dm: Bool,
     content: String,
+    timestamp: Option(String),
     author: Author,
     nick: Option(String),
     mentions_me: Bool,
@@ -81,6 +85,7 @@ pub fn reaction_decoder() -> decode.Decoder(Reaction) {
   use channel_name <- optional_text("channel_name")
   use parent_id <- optional_text("parent_id")
   use author <- decode.field("author", author_decoder())
+  use nick <- optional_text("nick")
   use emoji <- decode.field("emoji", decode.string)
   use message_author_id <- optional_text("message_author_id")
   decode.success(Reaction(
@@ -92,6 +97,7 @@ pub fn reaction_decoder() -> decode.Decoder(Reaction) {
     channel_name,
     parent_id,
     author,
+    nick,
     emoji,
     message_author_id,
   ))
@@ -106,6 +112,7 @@ pub fn decoder() -> decode.Decoder(Message) {
   use parent <- optional_text("parent_id")
   use is_dm <- decode.optional_field("is_dm", False, decode.bool)
   use content <- decode.optional_field("content", "", decode.string)
+  use timestamp <- optional_text("timestamp")
   use author <- decode.field("author", author_decoder())
   use nick <- optional_text("nick")
   use mentions_me <- decode.optional_field("mentions_me", False, decode.bool)
@@ -128,6 +135,7 @@ pub fn decoder() -> decode.Decoder(Message) {
     parent,
     is_dm,
     content,
+    timestamp,
     author,
     nick,
     mentions_me,
@@ -168,14 +176,31 @@ pub fn ingest_reaction(
           ))
           case delivery {
             None -> Ok(None)
-            Some(delivery) ->
+            Some(delivery) -> {
+              use channel <- result.try(refs.channel(
+                connection,
+                bot,
+                reaction.channel_id,
+                reaction.channel_name,
+                reaction.guild_name,
+              ))
+              use target <- result.try(refs.message(
+                connection,
+                bot,
+                reaction.channel_id,
+                reaction.message_id,
+                reaction.message_author_id,
+                None,
+                None,
+              ))
               store_event_letter(
                 connection,
                 reaction_letter_id(bot, reaction.id),
                 session,
                 delivery,
-                reaction_body(reaction),
+                reaction_body(reaction, self_id, channel.ref, target),
               )
+            }
           }
         }
       }
@@ -419,12 +444,45 @@ fn store_letter(
   delivery: mail.Delivery,
   message: Message,
 ) -> Result(Option(mail.Letter), String) {
+  use channel <- result.try(refs.channel(
+    connection,
+    bot,
+    message.channel_id,
+    message.channel_name,
+    message.guild_name,
+  ))
+  use number <- result.try(
+    refs.message(
+      connection,
+      bot,
+      message.channel_id,
+      message.id,
+      Some(message.author.id),
+      Some(author_name(message)),
+      excerpt(message),
+    )
+    |> result.map(fn(met) { met.number }),
+  )
+  use reply <- result.try(case message.is_dm, message.reply_to {
+    False, Some(target) ->
+      refs.message(
+        connection,
+        bot,
+        message.channel_id,
+        target,
+        None,
+        None,
+        None,
+      )
+      |> result.map(fn(met) { Some(met.number) })
+    _, _ -> Ok(None)
+  })
   store_event_letter(
     connection,
     letter_id(bot, message.id),
     session,
     delivery,
-    body(message),
+    body(message, channel.ref, number, reply),
   )
 }
 
@@ -463,81 +521,160 @@ fn store_event_letter(
   }
 }
 
-fn reaction_body(reaction: Reaction) -> String {
-  let place = case reaction.guild_id {
-    Some(guild) ->
-      "[discord reaction #"
-      <> option.unwrap(reaction.channel_name, reaction.channel_id)
-      <> " in "
-      <> option.unwrap(reaction.guild_name, guild)
-      <> "]"
-    None -> "[discord dm reaction]"
+fn reaction_body(
+  reaction: Reaction,
+  self_id: Option(String),
+  channel: Int,
+  target: refs.Message,
+) -> String {
+  let in_guild = option.is_some(reaction.guild_id)
+  let name = display_name(reaction.author, reaction.nick, !in_guild)
+  let mine = case self_id {
+    Some(bot) -> target.author_id == Some(bot)
+    None -> False
   }
-  let link_guild = option.unwrap(reaction.guild_id, "@me")
-  let link =
-    "https://discord.com/channels/"
-    <> link_guild
-    <> "/"
-    <> reaction.channel_id
-    <> "/"
-    <> reaction.message_id
-  place
-  <> " @"
-  <> reaction.author.username
-  <> " (user "
-  <> reaction.author.id
-  <> ") reacted "
+  let whose = case mine, target.author {
+    True, _ -> "your message"
+    False, Some(author) -> author <> "'s message"
+    False, None -> "message"
+  }
+  let quoted = case target.excerpt {
+    Some(text) -> ": \"" <> text <> "\""
+    None -> ""
+  }
+  place(True, in_guild, reaction.channel_name, reaction.guild_name, channel)
+  <> " "
+  <> person(reaction.author, name)
+  <> " reacted "
   <> reaction.emoji
-  <> " to message "
-  <> reaction.message_id
-  <> " in channel "
-  <> reaction.channel_id
-  <> " ("
-  <> link
-  <> ")"
+  <> " to "
+  <> whose
+  <> " "
+  <> int.to_string(target.number)
+  <> quoted
 }
 
-/// Content past this many scalars is cut, well inside mail's body limit.
-const content_limit = 16_384
-
-/// The text the session reads inside its `<event>` block.
-pub fn body(message: Message) -> String {
-  let author = message.author
-  let display = case message.is_dm {
-    True -> author.global_name
-    False -> option.or(message.nick, author.global_name)
+/// The leading `[discord …]` of an event: where it happened, and the
+/// channel's handle for answering there.
+fn place(
+  reaction: Bool,
+  in_guild: Bool,
+  name: Option(String),
+  guild: Option(String),
+  channel: Int,
+) -> String {
+  let handle = refs.handle(channel)
+  case in_guild, reaction {
+    False, False -> "[discord dm · " <> handle <> "]"
+    False, True -> "[discord dm reaction · " <> handle <> "]"
+    True, _ ->
+      "[discord "
+      <> case reaction {
+        True -> "reaction "
+        False -> ""
+      }
+      <> case name {
+        Some(name) -> "#" <> name
+        None -> "a channel"
+      }
+      <> " in "
+      <> option.unwrap(guild, "a server")
+      <> " · "
+      <> handle
+      <> "]"
   }
-  let parenthesis = case display, author.bot {
+}
+
+/// The name a person goes by where they spoke: their server nickname, else
+/// the account's display name. Nothing in a DM but the display name.
+fn display_name(
+  author: Author,
+  nick: Option(String),
+  dm: Bool,
+) -> Option(String) {
+  case dm {
+    True -> author.global_name
+    False -> option.or(nick, author.global_name)
+  }
+}
+
+/// `@username (name, bot)`; the parenthesis holds only what there is.
+fn person(author: Author, name: Option(String)) -> String {
+  let parenthesis = case name, author.bot {
     None, False -> ""
     None, True -> " (bot)"
     Some(name), False -> " (" <> name <> ")"
     Some(name), True -> " (" <> name <> ", bot)"
   }
-  let place = case message.is_dm {
-    True -> "[discord dm]"
-    False ->
-      "[discord #"
-      <> option.unwrap(message.channel_name, message.channel_id)
-      <> " in "
-      <> option.unwrap(
-        message.guild_name,
-        option.unwrap(message.guild_id, "a server"),
-      )
-      <> "]"
+  "@" <> author.username <> parenthesis
+}
+
+/// What a message's author is called in the session's view: the name they go
+/// by in that place, else their username.
+pub fn author_name(message: Message) -> String {
+  display_name(message.author, message.nick, message.is_dm)
+  |> option.unwrap(message.author.username)
+}
+
+const excerpt_limit = 80
+
+/// A line of at most `excerpt_limit` scalars standing for `text`; None when
+/// there is nothing to show.
+pub fn preview(text: String) -> Option(String) {
+  let line =
+    text
+    |> string.replace("\n", " ")
+    |> string.replace("\r", " ")
+    |> string.replace("\t", " ")
+    |> string.split(" ")
+    |> list.filter(fn(word) { word != "" })
+    |> string.join(" ")
+  case line {
+    "" -> None
+    _ ->
+      case text_scalars.length(line) > excerpt_limit {
+        True -> Some(text_scalars.take(line, excerpt_limit) <> "…")
+        False -> Some(line)
+      }
   }
-  let reply = case message.is_dm, message.reply_to {
-    False, Some(reply) -> " · reply to " <> reply
-    _, _ -> ""
+}
+
+pub fn excerpt(message: Message) -> Option(String) {
+  case preview(message.content), message.attachments {
+    None, [first, ..] -> Some("[" <> first.filename <> "]")
+    shown, _ -> shown
+  }
+}
+
+/// Content past this many scalars is cut, well inside mail's body limit.
+const content_limit = 16_384
+
+/// The text the session reads inside its `<event>` block. `channel` is the
+/// channel's handle, `number` the message's number there, and `reply` the
+/// number of the message it answers.
+pub fn body(
+  message: Message,
+  channel: Int,
+  number: Int,
+  reply: Option(Int),
+) -> String {
+  let name = display_name(message.author, message.nick, message.is_dm)
+  let reply = case reply {
+    Some(target) -> " · reply to " <> int.to_string(target)
+    None -> ""
   }
   let header =
-    place
-    <> " @"
-    <> author.username
-    <> parenthesis
-    <> " · channel "
-    <> message.channel_id
+    place(
+      False,
+      !message.is_dm,
+      message.channel_name,
+      message.guild_name,
+      channel,
+    )
+    <> " "
+    <> person(message.author, name)
     <> " · message "
-    <> message.id
+    <> int.to_string(number)
     <> reply
   let content = case message.content {
     "" -> "(no text)"

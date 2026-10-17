@@ -204,6 +204,7 @@ class Bot:
         self.state = "connecting"
         self.fatal = False
         self.dm_channels: set[str] = set()
+        self.people: dict[str, dict[str, Any]] = {}
         self.ws: SimpleWebSocketClient | None = None
 
     # -- status ---------------------------------------------------------
@@ -395,15 +396,33 @@ class Bot:
                 {"type": "message", "backfill": False, "message": self.normalize(data)}
             )
         elif name == "MESSAGE_REACTION_ADD":
-            self.reaction(data)
+            await self.reaction(data)
         return False
 
-    def reaction(self, data: dict[str, Any]) -> None:
+    async def reactor(self, user_id: str, member: dict[str, Any]) -> dict[str, Any]:
+        """Who reacted: a server event says, a DM event does not, so ask once."""
+        if member.get("user"):
+            return member["user"]
+        if user_id not in self.people:
+            try:
+                self.people[user_id] = await asyncio.wait_for(
+                    self.rest.call("GET", f"/users/{user_id}"), 5
+                )
+            except (RestError, OSError, TimeoutError) as error:
+                log(f"reactor {user_id}: {error}")
+                return {}
+        return self.people[user_id]
+
+    async def reaction(self, data: dict[str, Any]) -> None:
         user_id = str(data["user_id"])
         if self.user and user_id == str(self.user["id"]):
             return
         member = data.get("member") or {}
-        author = {"username": user_id, **(member.get("user") or {}), "id": user_id}
+        author = {
+            "username": user_id,
+            **await self.reactor(user_id, member),
+            "id": user_id,
+        }
         channel_id = str(data["channel_id"])
         channel = self.cache.channels.get(channel_id) or {}
         guild_id = data.get("guild_id")
@@ -427,6 +446,7 @@ class Bot:
                     if channel.get("type") in THREAD_TYPES
                     else None,
                     "author": user_view(author),
+                    "nick": member.get("nick"),
                     "emoji": symbol,
                     "message_author_id": data.get("message_author_id"),
                 },
