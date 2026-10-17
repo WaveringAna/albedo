@@ -23,7 +23,7 @@ Every brief carries:
 3. Ownership: the files this child owns, and a roster of siblings with the files they own. Siblings can be mailed by name, and a blocker in someone else's file goes to its owner, not to you.
 4. The shared contract, if children depend on each other: exact names, fields, and defaults, written once, in every brief.
 5. Rules: no commits unless you say so, no branch switching, stash, or reset, and leave anything unexpected alone. Name the heavy commands they must not run.
-6. The finish line: which commands must pass, the real output to paste, and an itemised account of what changed. Say that required tests are part of done, that partial replies are for named blockers only, and that "no time" is not a blocker. End with how to report back (`mail.submit("parent", ...)`).
+6. The finish line: which commands must pass, the real output to paste, and an itemised account of what changed. Say that required tests are part of done, that partial replies are for named blockers only, and that "no time" is not a blocker. End with how to report back: the report is the body of `mail.submit("parent", ...)` itself, every section written out. A file path instead of a report is a failed report.
 
 ## Supervise
 
