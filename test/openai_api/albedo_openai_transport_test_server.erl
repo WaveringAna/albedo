@@ -210,12 +210,9 @@ respond(Socket, keep_alive, Owner) ->
     ok = send(Socket, length_response()),
     next_request(Socket, keep_alive, Owner);
 respond(Socket, slow_end, Owner) ->
-    ok = send(Socket, <<"HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n10\r\nhello world, all\r\n">>),
-    receive after 10 -> ok end,
-    case send(Socket, <<"0\r\n\r\n">>) of
-        ok -> next_request(Socket, slow_end, Owner);
-        {error, closed} -> Owner ! {fixture_closed, self()}
-    end;
+    respond_slow(Socket, Owner, slow_end, 10);
+respond(Socket, late_end, Owner) ->
+    respond_slow(Socket, Owner, late_end, 300);
 respond(Socket, keepalive_comments, Owner) ->
     ok = send(Socket, <<"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n"
         "transfer-encoding: chunked\r\n\r\n">>),
@@ -239,6 +236,16 @@ ping(Socket, Owner) ->
     case send(Socket, <<"8\r\n: ping\n\n\r\n">>) of
         ok -> receive after 50 -> ping(Socket, Owner) end;
         {error, _} -> Owner ! {fixture_closed, self()}
+    end.
+
+%% The last body chunk lands Delay ms after the response's data, past the
+%% pool's wait for a connection that is still ending in the late_end mode.
+respond_slow(Socket, Owner, Mode, Delay) ->
+    ok = send(Socket, <<"HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n10\r\nhello world, all\r\n">>),
+    receive after Delay -> ok end,
+    case send(Socket, <<"0\r\n\r\n">>) of
+        ok -> next_request(Socket, Mode, Owner);
+        {error, closed} -> Owner ! {fixture_closed, self()}
     end.
 
 next_request(Socket, Mode, Owner) ->

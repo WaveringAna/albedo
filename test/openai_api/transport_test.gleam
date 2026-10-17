@@ -8,6 +8,7 @@ import albedo/openai_api/stream as reducer
 import albedo/openai_api/transport
 import albedo/openai_api/types
 import gleam/bit_array
+import gleam/erlang/process
 import gleam/list
 import gleam/option.{Some}
 import gleam/string
@@ -25,6 +26,7 @@ type Mode {
   KeepAlive
   DropSecond
   SlowEnd
+  LateEnd
   KeepaliveComments
   SilentHead
   SilentBody
@@ -119,6 +121,15 @@ pub fn a_finished_exchange_keeps_its_connection_before_the_response_ends_test() 
   stop(fixture)
 }
 
+/// The same request, with the terminator arriving past the pool's wait for
+/// it: the retry reuses the connection once the response has ended.
+pub fn a_connection_that_ends_after_the_wait_is_still_reused_test() -> Nil {
+  let fixture = start(LateEnd)
+  first_chunk(url(fixture), Ok) |> should.equal(Ok(<<"hello world, all">>))
+  first_chunk(url(fixture), Ok) |> should.equal(Ok(<<"hello world, all">>))
+  stop(fixture)
+}
+
 pub fn a_failed_exchange_closes_its_connection_test() -> Nil {
   let fixture = start(SlowEnd)
   first_chunk(url(fixture), fn(_) { Error(Nil) }) |> should.equal(Error(Nil))
@@ -166,7 +177,7 @@ pub fn the_first_event_deadline_outlasts_keepalives_test() -> Nil {
 
 /// One request read to its end and closed.
 fn get(url: String) -> Result(BitArray, transport.Error) {
-  let assert Ok(connection) = transport.open(url, [], string_tree.new(), 2000)
+  let assert Ok(connection) = opened(url, 5)
   let read = {
     let assert Ok(transport.Headers(200, _, False)) =
       transport.receive(connection)
@@ -182,12 +193,35 @@ fn first_chunk(
   url: String,
   finish: fn(BitArray) -> Result(BitArray, Nil),
 ) -> Result(BitArray, Nil) {
-  let assert Ok(connection) = transport.open(url, [], string_tree.new(), 2000)
+  let assert Ok(connection) = opened(url, 5)
   use <- transport.with_connection(connection)
   let assert Ok(transport.Headers(200, _, False)) =
     transport.receive(connection)
   let assert Ok(transport.Data(bytes, False)) = transport.receive(connection)
   finish(bytes)
+}
+
+/// Every fixture but DropSecond takes one connection and closes its listener,
+/// so a request can only follow the previous one on the connection it left.
+/// A loaded machine can outlast the pool's wait for a connection that is
+/// still ending, and the server refuses the new one it would open instead;
+/// a fresh attempt finds the kept connection idle by then and reuses it.
+fn opened(
+  url: String,
+  attempts: Int,
+) -> Result(transport.Connection, transport.Error) {
+  case transport.open(url, [], string_tree.new(), 2000) {
+    Ok(connection) -> Ok(connection)
+    Error(transport.TransportError(reason)) ->
+      case attempts > 1 && string.contains(reason, "econnrefused") {
+        True -> {
+          process.sleep(100)
+          opened(url, attempts - 1)
+        }
+        False -> Error(transport.TransportError(reason))
+      }
+    Error(error) -> Error(error)
+  }
 }
 
 fn body(
