@@ -383,6 +383,22 @@ class PythonToolsTests(unittest.TestCase):
         )
         self.assertEqual(float(info["output"]), slept["duration"])
 
+    def test_parallel_awaits_handles_that_do_not_hash(self):
+        # A remote reference compares by value and is unhashable, so
+        # asyncio.gather's own dict of arguments refused it outright.
+        output = self.execute(
+            "class Ref:\n"
+            "    __hash__ = None\n"
+            "    def __init__(self, value):\n"
+            "        self.value = value\n"
+            "    async def _wait(self):\n"
+            "        return self.value\n"
+            "    def __await__(self):\n"
+            "        return self._wait().__await__()\n"
+            "print(await parallel(Ref(1), [Ref(2), Ref(3)]))"
+        )
+        self.assertEqual(output.strip(), "[1, 2, 3]")
+
     def call(self, arguments, session):
         """The result of one python call made with exactly these arguments."""
         self.arguments = arguments

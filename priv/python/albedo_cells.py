@@ -442,7 +442,18 @@ async def parallel(*items: object, return_exceptions: bool = False) -> list[obje
             "parallel takes awaitables or an iterable of them, not "
             f"{type(item).__name__}"
         )
-    return list(await asyncio.gather(*calls, return_exceptions=return_exceptions))
+    return list(
+        await asyncio.gather(
+            *(_awaited(call) for call in calls), return_exceptions=return_exceptions
+        )
+    )
+
+
+async def _awaited(item: Awaitable[object]) -> object:
+    """Await one item from inside its own coroutine. asyncio.gather keys its
+    arguments in a dict, so it needs them hashable; a handle like a remote
+    reference compares by value and is not."""
+    return await item
 
 
 NATIVE = Capture("native", "native")
