@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "priv" / "python"))
 
 from albedo_plugins.browser import spawn, render, one  # noqa: E402
+from albedo_plugins.browser.launch import _command  # noqa: E402
 
 
 class BrowserIntegrationTest(unittest.IsolatedAsyncioTestCase):
@@ -72,6 +73,36 @@ class BrowserIntegrationTest(unittest.IsolatedAsyncioTestCase):
             await page.close()
         finally:
             await b.close()
+
+
+PROFILE = Path("/tmp/profile")
+
+
+class LaunchCommandTest(unittest.TestCase):
+    """The argv albedo hands Chrome, read without starting one."""
+
+    def test_macos_launches_stay_out_of_the_login_keychain(self):
+        # Chrome raises a blocking "Keychain Not Found" panel when it cannot
+        # resolve a default keychain for its own process.
+        command = _command(
+            "/opt/chrome", PROFILE, headless=False, sandbox=True, args=[]
+        )
+        self.assertEqual("--use-mock-keychain" in command, sys.platform == "darwin")
+
+    def test_the_owned_options_are_the_ones_asked_for(self):
+        command = _command(
+            "/opt/chrome", PROFILE, headless=False, sandbox=False, args=["--lang=en"]
+        )
+        self.assertEqual(command[0], "/opt/chrome")
+        self.assertIn("--user-data-dir=/tmp/profile", command)
+        self.assertIn("--remote-debugging-port=0", command)
+        self.assertNotIn("--headless=new", command)
+        self.assertIn("--no-sandbox", command)
+        self.assertEqual(command[-2:], ["--lang=en", "about:blank"])
+        headless = _command(
+            "/opt/chrome", PROFILE, headless=True, sandbox=True, args=[]
+        )
+        self.assertIn("--headless=new", headless)
 
 
 if __name__ == "__main__":

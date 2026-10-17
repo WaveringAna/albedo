@@ -11,6 +11,7 @@ import re
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 from typing import BinaryIO, TYPE_CHECKING, TypeVar
 
@@ -146,6 +147,37 @@ def _extra_args(args: Sequence[str]) -> list[str]:
     return result
 
 
+def _command(
+    executable: str,
+    profile: Path,
+    *,
+    headless: bool,
+    sandbox: bool,
+    args: Sequence[str],
+) -> list[str]:
+    """The exact argv for one owned Chrome, kept apart so tests can read it."""
+    command = [
+        executable,
+        f"--user-data-dir={profile}",
+        "--remote-debugging-address=127.0.0.1",
+        "--remote-debugging-port=0",
+        "--no-first-run",
+        "--no-default-browser-check",
+    ]
+    if sys.platform == "darwin":
+        # Otherwise Chrome resolves no default keychain for its own process and
+        # puts up a blocking "Keychain Not Found" panel before it can store its
+        # cookie key. A profile albedo owns has no business in the keychain.
+        command.append("--use-mock-keychain")
+    if headless:
+        command.extend(["--headless=new", "--disable-dev-shm-usage"])
+    if not sandbox:
+        command.append("--no-sandbox")
+    command.extend(args)
+    command.append("about:blank")
+    return command
+
+
 class OwnedChrome:
     """Internal lifecycle object; Browser delegates to it only after successful spawn."""
 
@@ -207,20 +239,9 @@ class OwnedChrome:
     def start(
         self, executable: str, *, headless: bool, sandbox: bool, args: list[str]
     ) -> None:
-        command = [
-            executable,
-            f"--user-data-dir={self.profile}",
-            "--remote-debugging-address=127.0.0.1",
-            "--remote-debugging-port=0",
-            "--no-first-run",
-            "--no-default-browser-check",
-        ]
-        if headless:
-            command.extend(["--headless=new", "--disable-dev-shm-usage"])
-        if not sandbox:
-            command.append("--no-sandbox")
-        command.extend(args)
-        command.append("about:blank")
+        command = _command(
+            executable, self.profile, headless=headless, sandbox=sandbox, args=args
+        )
         # Intentionally no await between process creation and taking ownership. A
         # cancelled create_subprocess_exec() can otherwise lose its returned handle.
         # Output goes to a temporary file: no pipe backpressure or kernel-stdout noise.
@@ -380,10 +401,12 @@ async def spawn(
     Auto-detects an installed executable; headless launches prefer an installed
     chrome-headless-shell to avoid macOS Dock tiles. Uses a temporary profile, loopback
     CDP and an OS-assigned port by default; never downloads a browser or
-    silently disables its sandbox. A supplied profile must be empty or previously
-    created by albedo and is preserved on close. ``Browser.close()`` or
-    ``async with await spawn()`` stops owned Chrome and removes temporary data.
-    ``disconnect()`` deliberately leaves it running until close or normal exit.
+    silently disables its sandbox. On macOS it is kept off the login keychain
+    entirely, so it cannot raise the system Keychain panel. A supplied profile
+    must be empty or previously created by albedo and is preserved on close.
+    ``Browser.close()`` or ``async with await spawn()`` stops owned Chrome and
+    removes temporary data. ``disconnect()`` deliberately leaves it running until
+    close or normal exit.
 
     timeout bounds startup and CDP initialization; bounded cleanup may take extra
     time. Exceptions include a diagnostic log tail. Cancelled startup is cleaned
