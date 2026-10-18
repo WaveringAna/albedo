@@ -24,10 +24,11 @@ host: Host
 
 
 class Mail:
-    @hook.reported("mail.submit", {"to": "to", "body": "body"})
-    async def submit(self, to: object, body: str) -> Receipt:
+    @hook.reported("mail.submit", {"to": "to", "body": "body", "blocker": "blocker"})
+    async def submit(self, to: object, body: str, *, blocker: bool = False) -> Receipt:
         """Send `body` to "parent", a child or sibling by name, an agent
-        handle, or any session id."""
+        handle, or any session id. Pass blocker=True to report an unavoidable
+        blocker to your parent when a verifier gate cannot be satisfied."""
         target = getattr(to, "id", to)
         if not isinstance(target, str) or not target.strip():
             raise TypeError(
@@ -37,9 +38,10 @@ class Mail:
             raise TypeError(
                 f"mail.submit(to, body): body must be str, got {type(body).__name__}"
             )
-        return Receipt(
-            cast(dict, await host("mail.submit", {"to": target.strip(), "body": body}))
-        )
+        payload: dict[str, object] = {"to": target.strip(), "body": body}
+        if blocker:
+            payload["blocker"] = True
+        return Receipt(cast(dict, await host("mail.submit", payload)))
 
     @hook.reported("mail.request", {"to": "to", "body": "body"})
     async def request(self, to: object, body: str) -> Receipt:

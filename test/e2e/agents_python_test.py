@@ -1,6 +1,7 @@
 """Python agent API: spawn, family identity, refusals, progress, explicit mail,
 agents.get, reading messages across sessions, and listing and searching them."""
 
+import json
 import re
 import time
 import unittest
@@ -83,14 +84,14 @@ except AgentsError as error:
 """
 
 
-def wait_for(predicate):
-    deadline = time.monotonic() + 60
+def wait_for(predicate, timeout=60):
+    deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         result = predicate()
         if result:
             return result
-        time.sleep(0.1)
-    raise AssertionError("agent Python turn never arrived")
+        time.sleep(0.05)
+    raise AssertionError(f"agent Python turn never arrived within {timeout}s")
 
 
 class AgentsPythonTests(unittest.TestCase):
@@ -128,16 +129,17 @@ class AgentsPythonTests(unittest.TestCase):
                     records = []
                     for item in provider.requests:
                         messages = item["request"]["messages"]
-                        last = messages[-1]
                         records.append(
                             {
                                 "user": latest_user(item["request"]),
                                 "context": " ".join(
                                     str(m.get("content", "")) for m in messages
                                 ),
-                                "tool": str(last.get("content", ""))
-                                if last.get("role") == "tool"
-                                else "",
+                                "tool": " ".join(
+                                    str(m.get("content", ""))
+                                    for m in messages
+                                    if m.get("role") == "tool"
+                                ),
                             }
                         )
                     return records
@@ -211,5 +213,138 @@ class AgentsPythonTests(unittest.TestCase):
                 self.assertFalse(
                     any('kind="unreviewed"' in r["user"] for r in observed())
                 )
+        finally:
+            provider.close()
+
+    def test_spawn_verifier_gates_parent_mail_and_stopping_until_command_exits_zero(
+        self,
+    ):
+        lead_code = (
+            "models = await agents.models()\n"
+            "buddy = await agents.self.spawn('wait', name='buddy', model=models[0])\n"
+            "try:\n"
+            "    await agents.self.spawn('bad', name='bad', model=models[0], verifier='   ')\n"
+            "except TypeError as error:\n"
+            "    print('EMPTY_VERIFIER', error)\n"
+            "worker = await agents.self.spawn(\n"
+            "    'create gate-passed',\n"
+            "    name='worker',\n"
+            "    model=models[0],\n"
+            "    verifier='test -f gate-passed && grep -q ready gate-passed || { echo MISSING_GATE >&2; exit 1; }',\n"
+            ")\n"
+            "print('SPAWNED_VERIFIED', worker.name, buddy.name)\n"
+        )
+        worker_first = (
+            "peer_receipt = await mail.submit('buddy', 'hello sibling')\n"
+            "print('PEER_MAIL', peer_receipt.status)\n"
+            "try:\n"
+            "    await mail.submit('parent', 'premature done')\n"
+            "except PermissionError as error:\n"
+            "    print('GATE_BLOCKED', error)\n"
+        )
+        worker_fix = (
+            "q = await mail.request('parent', 'need clarification')\n"
+            "print('QUESTION_MAIL', q.status)\n"
+            "b = await mail.submit('parent', 'unavoidable issue', blocker=True)\n"
+            "print('BLOCKER_MAIL', b.status)\n"
+            "files.write('gate-passed', 'ready\\n')\n"
+            "receipt = await mail.submit('parent', 'verified done')\n"
+            "print('GATE_PASSED', receipt.status)\n"
+        )
+
+        def script(request):
+            last = request["messages"][-1]
+            user = latest_user(request)
+            if last.get("role") == "user" and user == "verify worker":
+                return python(lead_code)
+            if (
+                last.get("role") == "user"
+                and 'kind="task"' in user
+                and "create gate-passed" in user
+            ):
+                return python(worker_first)
+            if last.get("role") == "tool" and "GATE_BLOCKED" in str(
+                last.get("content", "")
+            ):
+                return text("stopping without fixing yet")
+            if last.get("role") == "user" and "MISSING_GATE" in user:
+                return python(worker_fix)
+            if last.get("role") == "user" and 'kind="task"' in user and "wait" in user:
+                return python("await mail.submit('parent', 'buddy done')")
+            return text("ok")
+
+        provider = Provider(script)
+        try:
+            with Albedo(provider) as app:
+                lead = app.session()
+                app.prompt(lead, "verify worker").close()
+
+                def observed():
+                    records = []
+                    for item in provider.requests:
+                        messages = item["request"]["messages"]
+                        records.append(
+                            {
+                                "user": latest_user(item["request"]),
+                                "tool": " ".join(
+                                    str(m.get("content", ""))
+                                    for m in messages
+                                    if m.get("role") == "tool"
+                                ),
+                            }
+                        )
+                    return records
+
+                try:
+                    spawned = wait_for(
+                        lambda: next(
+                            (
+                                r["tool"]
+                                for r in observed()
+                                if "SPAWNED_VERIFIED" in r["tool"]
+                            ),
+                            None,
+                        ),
+                    )
+                    self.assertIn("EMPTY_VERIFIER", spawned)
+                    self.assertIn("SPAWNED_VERIFIED worker buddy", spawned)
+                    blocked = wait_for(
+                        lambda: next(
+                            (
+                                r["tool"]
+                                for r in observed()
+                                if "GATE_BLOCKED" in r["tool"]
+                            ),
+                            None,
+                        ),
+                    )
+                    self.assertIn("PEER_MAIL", blocked)
+                    self.assertIn("MISSING_GATE", blocked)
+                    passed = wait_for(
+                        lambda: next(
+                            (
+                                r["tool"]
+                                for r in observed()
+                                if "GATE_PASSED" in r["tool"]
+                            ),
+                            None,
+                        ),
+                    )
+                    self.assertIn("QUESTION_MAIL", passed)
+                    self.assertIn("BLOCKER_MAIL", passed)
+                    self.assertIn("GATE_PASSED", passed)
+                    wait_for(
+                        lambda: any(
+                            'from="worker"' in r["user"]
+                            and "verified done" in r["user"]
+                            for r in observed()
+                        ),
+                    )
+                    self.assertFalse(
+                        any("premature done" in r["user"] for r in observed())
+                    )
+                except Exception:
+                    print("DEBUG_OBSERVED:", json.dumps(observed(), indent=2))
+                    raise
         finally:
             provider.close()

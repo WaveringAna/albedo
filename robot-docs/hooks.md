@@ -86,8 +86,12 @@ extension.ManagedPlugin(fn(_, session, _) {
 
 `agents` hooks a child session: when it is about to stop while it still owes
 its parent an answer (`mail.owes_reply`), it keeps the turn going once with a
-reminder to `mail.submit("parent", ...)`. The unreviewed forward of its last
-words stays the fallback.
+reminder to `mail.submit("parent", ...)`. If the child was spawned with a
+`verifier` command, `agents` also runs that command in the child's workspace
+when the child calls `mail.submit` to its parent or tries to stop while owing
+a reply, blocking with the command's failure output until it exits 0. The
+unreviewed forward of its last words stays the fallback once `Stopping` holds
+reach their cap.
 
 ## command hooks
 

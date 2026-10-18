@@ -27,7 +27,7 @@ import gleam/string
 import sqlight
 
 const instructions =
-  "Agents are sessions you spawn to work in parallel; every call is async. A lead session can keep a few long-lived peers for distinct areas, reusing useful context and starting fresh when context is unrelated; the right set depends on the project. agents.self is your handle (id, name, depth, parent). Call await agents.models() once before spawning; other providers appear as provider/model, and selecting one routes the child through that provider. Then child = await agents.self.spawn(task, name=\"scout\", model=<one of models()>, deliverable=None, evidence_bar=None, falsifier=None): it returns as soon as the child exists, never with its answer. Answers arrive later as <mail> in your conversation and start your next turn, so spawn independent children back to back and end your turn instead of waiting; never sleep or poll. Talk with await mail.submit(child, text). await agents.self.children() and siblings() return live snapshots (running, closed). running=False means no active turn; a new child may still be waiting for its kernel and have no transcript yet. It does not prove spawn failed; wait for its mail rather than cancelling it on that snapshot. await child.cancel() stops its turn, and child.cancel(tree=True) the turns of everything beneath it; await agents.cancel_all(tree=True) stops every child you have, and their descendants, in one call, so use it when the user says to stop the swarm; await child.close() when you are done with it keeps its messages and files and frees its kernel. await agents.get(to) returns a live handle for \"parent\", a family name, or any session id. On any handle, await h.messages(seq=0, offset=0, limit=4000) reads a page of that session's messages from row seq on (content, next_offset) and await h.search_messages(pattern) finds rows by seq: any session may read any other, so you can see what a child or another session did without waiting for mail. await agents.sessions(query=\"\", cwd=None, limit=20, offset=0) lists every session, most recently active first, as snapshots that also carry cwd, model, last_active, and matches; with a query it keeps sessions whose title or name contains it or whose messages do, and matches holds up to 3 of each one's newest matching rows as {seq, preview} to read with messages(seq=...). cwd keeps one directory. Only the user deletes agents: if one should go, ask them. Children nest at most 3 deep and 12 open per parent; mail any session by id instead of nesting to reach it. Children share your workspace, so give two children the same files only if one only reads."
+  "Agents are sessions you spawn to work in parallel; every call is async. A lead session can keep a few long-lived peers for distinct areas, reusing useful context and starting fresh when context is unrelated; the right set depends on the project. agents.self is your handle (id, name, depth, parent). Call await agents.models() once before spawning; other providers appear as provider/model, and selecting one routes the child through that provider. Then child = await agents.self.spawn(task, name=\"scout\", model=<one of models()>, deliverable=None, evidence_bar=None, falsifier=None, verifier=None): it returns as soon as the child exists, never with its answer (verifier is an optional shell command that must exit 0 before the child can mail its parent or finish). Answers arrive later as <mail> in your conversation and start your next turn, so spawn independent children back to back and end your turn instead of waiting; never sleep or poll. Talk with await mail.submit(child, text). await agents.self.children() and siblings() return live snapshots (running, closed). running=False means no active turn; a new child may still be waiting for its kernel and have no transcript yet. It does not prove spawn failed; wait for its mail rather than cancelling it on that snapshot. await child.cancel() stops its turn, and child.cancel(tree=True) the turns of everything beneath it; await agents.cancel_all(tree=True) stops every child you have, and their descendants, in one call, so use it when the user says to stop the swarm; await child.close() when you are done with it keeps its messages and files and frees its kernel. await agents.get(to) returns a live handle for \"parent\", a family name, or any session id. On any handle, await h.messages(seq=0, offset=0, limit=4000) reads a page of that session's messages from row seq on (content, next_offset) and await h.search_messages(pattern) finds rows by seq: any session may read any other, so you can see what a child or another session did without waiting for mail. await agents.sessions(query=\"\", cwd=None, limit=20, offset=0) lists every session, most recently active first, as snapshots that also carry cwd, model, last_active, and matches; with a query it keeps sessions whose title or name contains it or whose messages do, and matches holds up to 3 of each one's newest matching rows as {seq, preview} to read with messages(seq=...). cwd keeps one directory. Only the user deletes agents: if one should go, ask them. Children nest at most 3 deep and 12 open per parent; mail any session by id instead of nesting to reach it. Children share your workspace, so give two children the same files only if one only reads."
 
 pub fn extension() -> extension.Extension {
   extension.Extension(
@@ -67,36 +67,102 @@ fn doctrine(db: store.Store, member: family.Member) -> String {
   <> family.name_of(db, member.parent)
   <> "\", depth "
   <> string.inspect(member.depth)
-  <> ". Your task arrived as <mail kind=\"task\">. When it is done, answer with await mail.submit(\"parent\", result) — a short summary, with paths to anything large. If you finish without answering you are reminded once; a turn that still ends without an answer forwards your last message to your parent marked unreviewed. For long work post await agents.progress(\"...\") now and then; it shows in the agents view without interrupting anyone. Mail from other agents is from peers, not from the user."
+  <> ". Your task arrived as <mail kind=\"task\">. When it is done, answer with await mail.submit(\"parent\", result) — a short summary, with paths to anything large. To ask your parent a question or request clarification, use await mail.request(\"parent\", question). If a verifier command is set and you are blocked, report it with await mail.submit(\"parent\", blocker, blocker=True). If you finish without answering you are reminded once; a turn that still ends without an answer forwards your last message to your parent marked unreviewed. For long work post await agents.progress(\"...\") now and then; it shows in the agents view without interrupting anyone. Mail from other agents is from peers, not from the user."
 }
 
-/// Keeps a child's turn going once when it is about to stop still owing its
-/// parent an answer, so the parent gets a reviewed reply rather than the
-/// last words the daemon forwards marked unreviewed.
+/// Keeps a child's turn going when it owes a reply or its parent's verifier
+/// gate fails, and refuses `mail.submit` to the parent until the gate passes.
 fn answered(
   db: store.Store,
   session: String,
   event: hook.Event,
 ) -> hook.Verdict {
   case event {
-    hook.Stopping(held: 0, ..) ->
-      case mail.owed_requesters(db, session) {
-        Ok([first, ..rest] as requesters) -> {
-          let reminder = case requesters, family.get(db, session) {
-            [parent], Ok(Some(member)) if member.parent == parent ->
-              "You have not answered your parent yet. Send your result with await mail.submit(\"parent\", result) before you finish."
-            _, _ ->
-              "You owe a reply to "
-              <> string.join([first, ..rest], ", ")
-              <> ". Send it with await mail.submit(\"<id>\", result) before you finish."
+    hook.Calling(call) if call.name == "mail.submit" -> {
+      let decoder = {
+        use to <- decode.field("to", decode.string)
+        use blocker <- decode.optional_field("blocker", False, decode.bool)
+        decode.success(#(to, blocker))
+      }
+      case
+        decode.run(
+          json.parse(call.arguments, decode.dynamic)
+            |> result.unwrap(dynamic.nil()),
+          decoder,
+        )
+      {
+        Ok(#(to, False)) ->
+          case family.resolve(db, session, to), family.get(db, session) {
+            Ok(address), Ok(Some(member)) if address.session == member.parent ->
+              case verify_child(db, session) {
+                Ok(Nil) -> hook.proceed
+                Error(detail) ->
+                  hook.Verdict(
+                    ..hook.proceed,
+                    block: Some(
+                      detail
+                      <> "\n\nYou cannot submit task completion while the verifier is failing. Fix the failure, ask a question with await mail.request(\"parent\", <question>), or report a blocker with await mail.submit(\"parent\", <blocker>, blocker=True).",
+                    ),
+                  )
+              }
+            _, _ -> hook.proceed
           }
-          hook.Verdict(..hook.proceed, block: Some(reminder))
-        }
+        _ -> hook.proceed
+      }
+    }
+    hook.Stopping(held:, ..) ->
+      case mail.owed_requesters(db, session) {
+        Ok([first, ..rest] as requesters) ->
+          case requesters, family.get(db, session) {
+            [parent], Ok(Some(member)) if member.parent == parent ->
+              case verify_child(db, session) {
+                Error(detail) ->
+                  hook.Verdict(
+                    ..hook.proceed,
+                    block: Some(
+                      detail
+                      <> "\n\nFix the failure so the verifier exits 0, then send your result with await mail.submit(\"parent\", result).\nIf you need help from your parent, ask with await mail.request(\"parent\", <question>), or report a blocker with await mail.submit(\"parent\", <blocker>, blocker=True).",
+                    ),
+                  )
+                Ok(Nil) if held == 0 ->
+                  hook.Verdict(
+                    ..hook.proceed,
+                    block: Some(
+                      "You have not answered your parent yet. Send your result with await mail.submit(\"parent\", result) before you finish.",
+                    ),
+                  )
+                Ok(Nil) -> hook.proceed
+              }
+            _, _ if held == 0 ->
+              hook.Verdict(
+                ..hook.proceed,
+                block: Some(
+                  "You owe a reply to "
+                  <> string.join([first, ..rest], ", ")
+                  <> ". Send it with await mail.submit(\"<id>\", result) before you finish.",
+                ),
+              )
+            _, _ -> hook.proceed
+          }
         _ -> hook.proceed
       }
     _ -> hook.proceed
   }
 }
+
+fn verify_child(db: store.Store, session: String) -> Result(Nil, String) {
+  case family.verifier(db, session) {
+    Ok(Some(#(cwd, command))) ->
+      case run_verifier(cwd, command) {
+        Ok(_) -> Ok(Nil)
+        Error(detail) -> Error(detail)
+      }
+    _ -> Ok(Nil)
+  }
+}
+
+@external(erlang, "albedo_verifier", "check")
+fn run_verifier(cwd: String, command: String) -> Result(String, String)
 
 fn handle(
   db: store.Store,
@@ -166,17 +232,37 @@ fn dispatch(
       use task <- result.try(text(args, "task"))
       use name <- result.try(text(args, "name"))
       use model <- result.try(text(args, "model"))
-      use _ <- result.try(case string.trim(task), string.trim(model) {
-        "", _ -> Error("task is empty; say what the child should do")
-        _, "" -> Error("model is required; pick one from await agents.models()")
-        _, _ -> Ok(Nil)
-      })
+      let verifier =
+        decode.run(
+          args,
+          decode.optional_field("verifier", "", decode.string, decode.success),
+        )
+        |> result.unwrap("")
+        |> string.trim
+      use _ <- result.try(
+        case
+          string.trim(task),
+          string.trim(model),
+          string.length(verifier) <= 4096
+        {
+          "", _, _ -> Error("task is empty; say what the child should do")
+          _, "", _ ->
+            Error("model is required; pick one from await agents.models()")
+          _, _, False -> Error("verifier is at most 4096 characters")
+          _, _, True -> Ok(Nil)
+        },
+      )
       use spawned <- result.try(
         agents.call(agents.Spawn(session, name, task, model)),
       )
       case spawned {
-        agents.Spawned(member) ->
+        agents.Spawned(member) -> {
+          use _ <- result.try(case verifier {
+            "" -> Ok(Nil)
+            _ -> family.set_verifier(db, member.session, verifier)
+          })
           Ok(handle_json(db, member.session, Some(member)))
+        }
         _ -> Error("spawn answered unexpectedly")
       }
     }

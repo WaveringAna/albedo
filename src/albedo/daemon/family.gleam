@@ -187,7 +187,12 @@ CREATE INDEX IF NOT EXISTS session_family_parent ON session_family(parent);
 "
 
 pub fn initialise(db: store.Store) -> Result(Nil, String) {
-  store.query(db, fn(connection) { store.exec(connection, schema) })
+  store.query(db, fn(connection) {
+    use _ <- result.try(store.exec(connection, schema))
+    store.add_columns(connection, "session_family", [
+      #("verifier", "TEXT NOT NULL DEFAULT ''"),
+    ])
+  })
 }
 
 const columns = "session,parent,name,depth,closed_at IS NOT NULL"
@@ -275,6 +280,41 @@ pub fn set_role(
 
 pub fn get(db: store.Store, session: String) -> Result(Option(Member), String) {
   store.read(db, members("WHERE session=?"), [sqlight.text(session)], decoder())
+  |> result.map(fn(found) { list.first(found) |> option.from_result })
+}
+
+/// Set the command that must pass before this child answers its parent.
+pub fn set_verifier(
+  db: store.Store,
+  session: String,
+  command: String,
+) -> Result(Nil, String) {
+  let command = string.trim(command)
+  case string.length(command) <= 4096 {
+    False -> Error("verifier is at most 4096 characters")
+    True ->
+      store.write(db, "UPDATE session_family SET verifier=? WHERE session=?", [
+        sqlight.text(command),
+        sqlight.text(session),
+      ])
+  }
+}
+
+/// Read the child's verifier command and its current workspace.
+pub fn verifier(
+  db: store.Store,
+  session: String,
+) -> Result(Option(#(String, String)), String) {
+  store.read(
+    db,
+    "SELECT COALESCE(s.desired_workspace,s.cwd),f.verifier FROM session_family f JOIN sessions s ON s.id=f.session WHERE f.session=? AND f.verifier<>''",
+    [sqlight.text(session)],
+    {
+      use cwd <- decode.field(0, decode.string)
+      use command <- decode.field(1, decode.string)
+      decode.success(#(cwd, command))
+    },
+  )
   |> result.map(fn(found) { list.first(found) |> option.from_result })
 }
 

@@ -7,7 +7,8 @@ a subagent is a session with a parent. a message is mail. both are daemon primit
 ```python
 m = await agents.models()                     # required once before spawning
 kid = await agents.self.spawn("map every wake path", name="scout", model=m[0],
-                              deliverable="notes/wakes.md")   # returns at once
+                              deliverable="notes/wakes.md",
+                              verifier="test -s notes/wakes.md")   # returns at once
 await mail.submit(kid, "also cover schedules")               # or "parent", a name, a session id
 kids = await agents.self.children()           # snapshots: running, closed
 await kid.cancel()                            # stop its turn, keep everything
@@ -26,6 +27,7 @@ await agents.progress("on turn.gleam now")    # shows in /agents, starts no turn
   preparation with an empty transcript; neither observation proves spawn failed.
   End the parent turn and wait for mail instead of cancelling on that snapshot.
 - spawn never returns the child's answer: the answer arrives later as `<mail>` and starts the parent's next turn. a child about to end its turn without answering is reminded once (a [hook](hooks.md)); one that still ends without answering forwards its last message, marked `unreviewed`.
+- `verifier` is an optional shell command stored on the child's `session_family` row (up to 4096 characters). When set, normal `mail.submit` to the parent and `Stopping` while a reply is owed run the command in the child's workspace (in its own process group, 300 s timeout) and refuse with its exit status and output until it exits 0. To ask questions or clarify without completing, the child uses `await mail.request("parent", ...)`; to report an unavoidable blocker when the verifier fails, `await mail.submit("parent", ..., blocker=True)`. Mail to siblings or other sessions is unaffected.
 - names resolve inside the family (children, siblings, parent); anything else takes a session id.
 - any session may look up and read any other: `get`, `messages`, and `search_messages` resolve names and ids the way mail does, and closed agents stay readable. cancel and close work on your own children only. `cancel(tree=True)` and `cancel_all()` stop parents before their children, so a stopped agent cannot answer by spawning, and answer the sessions that were running; they never close or delete anything. the model cannot delete an agent; it asks the user.
 - limits: 3 deep and 12 open children per parent by default, set in the daemon's `subagents` settings section (`maxDepth`, `maxOpenChildren`; -1 for no limit; see [settings](settings.md#extension-settings)), and fixed at 1 MiB per letter and 1000 undelivered letters per session.

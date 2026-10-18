@@ -72,6 +72,7 @@ class Agent:
         deliverable: str | None = None,
         evidence_bar: str | None = None,
         falsifier: str | None = None,
+        verifier: str | None = None,
     ) -> "Agent":
         """Start a child with `task`. Returns at once; its answer comes as mail."""
         if self.id != agents.self.id:
@@ -85,21 +86,22 @@ class Agent:
         for label, value in (("task", task), ("name", name), ("model", model)):
             if not isinstance(value, str) or not value.strip():
                 raise TypeError(f"{label} must be a non-empty str")
+        if verifier is not None and (
+            not isinstance(verifier, str) or not verifier.strip()
+        ):
+            raise TypeError("verifier must be a non-empty str")
         brief = _brief(
             task,
             name=name,
             deliverable=deliverable,
             evidence_bar=evidence_bar,
             falsifier=falsifier,
+            verifier=verifier,
         )
-        return _agent(
-            cast(
-                dict,
-                await _act(
-                    "agents.spawn", {"task": brief, "name": name, "model": model}
-                ),
-            )
-        )
+        payload: dict[str, object] = {"task": brief, "name": name, "model": model}
+        if verifier is not None:
+            payload["verifier"] = verifier.strip()
+        return _agent(cast(dict, await _act("agents.spawn", payload)))
 
     async def children(self) -> list["Agent"]:
         if self.id != agents.self.id:
@@ -218,6 +220,7 @@ def _brief(
     deliverable: str | None,
     evidence_bar: str | None,
     falsifier: str | None,
+    verifier: str | None = None,
 ) -> str:
     parts = [f"TASK:\n{task.strip()}"]
     if deliverable:
@@ -229,6 +232,10 @@ def _brief(
         parts.append(f"EVIDENCE BAR:\n{evidence_bar.strip()}")
     if falsifier:
         parts.append(f"FALSIFIER:\n{falsifier.strip()}")
+    if verifier:
+        parts.append(
+            f'VERIFIER:\n`{verifier.strip()}` must exit 0 before `mail.submit("parent", ...)` or turn completion will succeed.'
+        )
     parts.append(
         'WHEN DONE: await mail.submit("parent", <short summary, with paths to anything large>).'
     )

@@ -58,13 +58,19 @@ fn handle(
       let decoder = {
         use to <- decode.field("to", decode.string)
         use body <- decode.field("body", decode.string)
-        decode.success(#(to, body))
+        use blocker <- decode.optional_field("blocker", False, decode.bool)
+        decode.success(#(to, body, blocker))
       }
       case decode.run(args, decoder) {
-        Ok(#(to, body)) ->
+        Ok(#(to, body, blocker)) -> {
+          let body = case blocker {
+            True -> "[blocker] " <> body
+            False -> body
+          }
           mail.send(db, session, to, body)
           |> result.map(mail.receipt_json)
           |> result.map_error(fn(m) { #("invalid", m) })
+        }
         Error(_) ->
           Error(#("invalid", "mail.submit(to, body) takes two strings"))
       }
