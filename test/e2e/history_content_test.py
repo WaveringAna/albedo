@@ -4,12 +4,60 @@ import json
 import urllib.error
 import urllib.parse
 
-from harness import exclusive, operation_id
+from harness import Reply, exclusive, operation_id
 
 from integration_support import IntegrationScenario
 
 
 class HistoryContentTests(IntegrationScenario):
+    def test_raw_reasoning_reads_once_as_thinking_and_not_as_the_answer(self):
+        # Servers such as DeepSeek's stream raw reasoning_text, which the item
+        # keeps in `content`, where an answer's text also lives.
+        reasoning = "weighing the two routes"
+        answer = "use the first route"
+        self.provider.script = lambda _: Reply(
+            "raw",
+            events=[
+                {
+                    "type": "response.reasoning_text.delta",
+                    "output_index": 0,
+                    "delta": reasoning,
+                },
+                {
+                    "type": "response.completed",
+                    "response": {
+                        "id": "raw-reasoning",
+                        "status": "completed",
+                        "output": [
+                            {
+                                "type": "reasoning",
+                                "id": "rs-1",
+                                "summary": [],
+                                "content": [
+                                    {"type": "reasoning_text", "text": reasoning}
+                                ],
+                            },
+                            {
+                                "type": "message",
+                                "role": "assistant",
+                                "content": [{"type": "output_text", "text": answer}],
+                            },
+                        ],
+                        "usage": {"input_tokens": 10, "output_tokens": 20},
+                    },
+                },
+            ],
+        )
+        app = self.app_for("responses")
+        session = app.session()
+        self.send(app, session, "which route")
+        shown = [
+            (entry["kind"], self.entry_text(entry))
+            for entry in self.history(app, session)
+            if entry["kind"] in ("thinking", "assistant")
+        ]
+        self.assertEqual(shown, [("thinking", reasoning), ("assistant", answer)])
+
     # exclusive: restarts the daemon
     @exclusive
     def test_tool_checkpoint_forks_without_executing_its_pending_call(self):

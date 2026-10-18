@@ -12,11 +12,7 @@ import gleam/string
 pub fn visible_assistant_text(input: types.Input) -> Option(String) {
   let text = case input {
     types.Assistant(value) -> value
-    types.Replay(item) ->
-      case item_kind(item) {
-        "reasoning" -> ""
-        _ -> output_text(item)
-      }
+    types.Replay(item) -> output_text(item)
     _ -> ""
   }
   case text {
@@ -47,19 +43,24 @@ pub fn output_text(item: types.ReplayItem) -> String {
       )
       |> result.unwrap(None)
       |> option.unwrap("")
-    types.Responses -> {
-      let part = decode.field("text", decode.string, decode.success)
-      types.inspect_item(
-        item,
-        decode.field(
-          "content",
-          decode.list(decode.one_of(part, [decode.success("")])),
-          decode.success,
-        ),
-      )
-      |> result.unwrap([])
-      |> string.concat
-    }
+    // Reasoning keeps its raw text in `content` too, so only a message is an answer.
+    types.Responses ->
+      case item_kind(item) {
+        "message" -> {
+          let part = decode.field("text", decode.string, decode.success)
+          types.inspect_item(
+            item,
+            decode.field(
+              "content",
+              decode.list(decode.one_of(part, [decode.success("")])),
+              decode.success,
+            ),
+          )
+          |> result.unwrap([])
+          |> string.concat
+        }
+        _ -> ""
+      }
   }
 }
 
