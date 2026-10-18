@@ -94,7 +94,7 @@ def report_for(provider, credential):
                     "usedPercent": 100,
                     "windowLabel": "6 days",
                     "windowSeconds": 518400,
-                    "resetsAt": 1799999999000,
+                    "resetsAt": 1799999000000,
                     "status": "exceeded",
                 },
             ]
@@ -176,6 +176,10 @@ class QuotaTests(unittest.TestCase):
                             "expires": int(time.time() * 1000) + 3600000,
                             "projectId": "fixture-project",
                             "email": "antigravity@example.com",
+                            # A 429 left this weeks-long Gemini mark behind; the
+                            # fake reports Gemini at 65 percent on a one-hour
+                            # window, so the poll has to drop it.
+                            "limitedMeters": {"gemini": 1799999999000},
                             "limitedUntil": 1799999999000,
                         }
                     ],
@@ -345,25 +349,42 @@ class QuotaTests(unittest.TestCase):
         self.assertEqual(gpt_oss["window_seconds"], 518400)
         self.assertEqual(gpt_oss["status"], "exceeded")
 
-        # The poller heal re-keyed creds.json with legacy limitedUntil replaced by limitedMeters
-        def healed():
-            creds_path = self.app.home / "creds.json"
+        # The poll reconciles every mark it can speak to: the legacy
+        # limitedUntil is re-keyed onto the meter whose reset it matched, a
+        # meter the report puts at 100 percent is marked until the reset it
+        # names, and a mark the report has superseded is dropped. Gemini read
+        # 65 percent on a one-hour window here, so the weeks-long mark a 429
+        # left behind has to go.
+        creds_path = self.app.home / "creds.json"
+
+        def meters():
             if not creds_path.exists():
-                return False
+                return {}
             data = (
                 json.loads(creds_path.read_text())
                 .get("accounts", {})
                 .get("google-antigravity", [])
             )
-            return bool(data and "limitedMeters" in data[0])
+            return data[0] if data else {}
 
-        self.wait_for(healed, 15, "poller heal did not re-key creds.json")
-        creds = json.loads((self.app.home / "creds.json").read_text())["accounts"][
-            "google-antigravity"
-        ][0]
+        def reconciled():
+            account = meters()
+            return (
+                "limitedUntil" not in account
+                and "gemini" not in account.get("limitedMeters", {})
+                and "gpt-oss" in account.get("limitedMeters", {})
+            )
+
+        self.wait_for(
+            reconciled,
+            15,
+            "the poll did not reconcile the account's marks: " + json.dumps(meters()),
+        )
+        creds = meters()
         self.assertNotIn("limitedUntil", creds)
-        self.assertIn("limitedMeters", creds)
         self.assertEqual(creds["limitedMeters"]["claude"], 1799999999000)
+        # Only the poll could mark gpt-oss: no legacy mark and no 429 named it.
+        self.assertEqual(creds["limitedMeters"]["gpt-oss"], 1799999000000)
 
         # Enough polls of each account to read a cadence off the intervals.
         self.wait_for(

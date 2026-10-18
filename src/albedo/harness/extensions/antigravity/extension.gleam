@@ -161,6 +161,9 @@ pub type Limited {
     meter: String,
     sibling_status: String,
     soon: Bool,
+    /// The request's pool is narrower than the stored accounts: a profile
+    /// pinned to one account, which no sibling can take over from.
+    pinned: Bool,
   )
 }
 
@@ -235,7 +238,9 @@ fn upstream(
       },
     ),
     access,
-    fn(access, error) { explain_fallback(home, access, error, Some(meter)) },
+    fn(access, error) {
+      explain_fallback(home, profile, access, error, Some(meter))
+    },
     // The Google account's email; blank credentials report no account.
     fn(access) { access.email },
     case catalog.family(model) {
@@ -278,7 +283,7 @@ fn profile_pool(
   rotation.Pool(
     current: fn() { connect(home, session, profile, meter) },
     mark: fn(access, body) {
-      case limited(home, access, body, meter) {
+      case limited(home, profile, access, body, meter) {
         Ok(limit) ->
           Some(rotation.Marked(
             case limit.lasting {
@@ -298,24 +303,27 @@ fn profile_pool(
 
 fn limited(
   home: String,
+  profile: String,
   access: Access,
   body: String,
   fallback_meter: Option(String),
 ) -> Result(Limited, Nil) {
-  native_limited(home, access.token, body, fallback_meter)
+  native_limited(home, profile, access.token, body, fallback_meter)
   |> result.replace_error(Nil)
 }
 
 pub fn explain(
   home: String,
+  profile: String,
   access: Access,
   error: types.Error,
 ) -> Option(String) {
-  explain_fallback(home, access, error, None)
+  explain_fallback(home, profile, access, error, None)
 }
 
 fn explain_fallback(
   home: String,
+  profile: String,
   access: Access,
   error: types.Error,
   fallback_meter: Option(String),
@@ -334,7 +342,7 @@ fn explain_fallback(
       )
     }
     types.HttpError(429, body) ->
-      case limited(home, access, body, fallback_meter) {
+      case limited(home, profile, access, body, fallback_meter) {
         Ok(limit) -> Some(limit_message(account, limit))
         Error(_) ->
           Some(
@@ -372,20 +380,10 @@ fn limit_message(account: String, limit: Limited) -> String {
       rotation.limit_message(
         "Antigravity " <> kind <> " for " <> account <> " until " <> limit.until,
         limit.next,
-        case limit.soon {
-          True ->
-            "no other Google account has room. Wait for the reset, or add an account with /login"
-          False ->
-            "no other Google account has room. Add one with /login or wait for the reset"
-        },
+        none_left(account, limit, ""),
       )
     meter -> {
-      let title = case meter {
-        "gemini" -> "Gemini"
-        "claude" -> "Claude"
-        "gpt-oss" -> "GPT-OSS"
-        _ -> meter
-      }
+      let title = meter_title(meter)
       let head =
         "Antigravity "
         <> title
@@ -398,17 +396,42 @@ fn limit_message(account: String, limit: Limited) -> String {
         <> " (its "
         <> meter
         <> " meter)"
-      let none_left =
-        "no other Google account has room on the "
-        <> title
-        <> " meter."
-        <> limit.sibling_status
-        <> case limit.soon {
-          True -> " Wait for the reset, or add an account with /login"
-          False -> " Add one with /login or wait for the reset"
-        }
-      rotation.limit_message(head, limit.next, none_left)
+      rotation.limit_message(
+        head,
+        limit.next,
+        none_left(account, limit, " on the " <> title <> " meter"),
+      )
     }
+  }
+}
+
+/// What to do when no sibling can take over. A pinned profile names the
+/// account it is confined to and points at the picker: resending would only
+/// reach the same account again.
+fn none_left(account: String, limit: Limited, where: String) -> String {
+  case limit.pinned {
+    True ->
+      "this profile is pinned to "
+      <> account
+      <> ", so no other Google account can take over: pick another one with /login"
+    False ->
+      "no other Google account has room"
+      <> where
+      <> "."
+      <> limit.sibling_status
+      <> case limit.soon {
+        True -> " Wait for the reset, or add an account with /login"
+        False -> " Add one with /login or wait for the reset"
+      }
+  }
+}
+
+fn meter_title(meter: String) -> String {
+  case meter {
+    "gemini" -> "Gemini"
+    "claude" -> "Claude"
+    "gpt-oss" -> "GPT-OSS"
+    _ -> meter
   }
 }
 
@@ -443,6 +466,7 @@ fn native_access(
 @external(erlang, "albedo_antigravity", "limited")
 fn native_limited(
   home: String,
+  profile: String,
   access: String,
   body: String,
   fallback_meter: Option(String),

@@ -560,26 +560,27 @@ fn run(
   }
 }
 
+/// A poll is the provider's own view of the account's quota, so it is also
+/// what heals that account's marks: a legacy `limitedUntil` is re-keyed to the
+/// meters its reset matched, a meter at 100 percent is marked until the reset
+/// the report names, and a mark the report has superseded is dropped.
 fn heal_antigravity(
   home: String,
   account: String,
   limits: List(usage_feed.Limit),
 ) -> Nil {
-  let pairs =
-    list.filter_map(limits, fn(limit) {
-      case limit.resets_at {
-        Some(resets_at) -> Ok(#(limit.id, resets_at))
-        None -> Error(Nil)
-      }
+  let readings =
+    list.map(limits, fn(limit) {
+      #(limit.id, limit.used_percent, limit.resets_at)
     })
-  native_heal(home, account, pairs)
+  native_heal(home, account, readings)
 }
 
 @external(erlang, "albedo_antigravity", "heal")
 fn native_heal(
   home: String,
   account: String,
-  pairs: List(#(String, Int)),
+  readings: List(#(String, Option(Float), Option(Int))),
 ) -> Nil
 
 fn is_busy(report: Report, now: Int) -> Bool {

@@ -2,7 +2,7 @@
 %% Antigravity credentials and request identity.
 
 -include_lib("kernel/include/file.hrl").
--export([access/1, access/2, access/3, access/4, limited/3, limited/4, limit/1, limit/2,
+-export([access/1, access/2, access/3, access/4, limited/4, limited/5, limit/1, limit/2,
          meter_of/1, meter_of/2, heal/3, encode/1, session_number/1, uuid/1,
          call_id/0, user_agent/1, discovered/1, refresh/1, reload/1, expire/2,
          exchange/4, discover/3, account/1, client_id/0, accounts/1, offered/1]).
@@ -72,6 +72,14 @@ first_usable([Credential | Rest], Path, Session) ->
 credentials(Data) ->
     albedo_credentials:oauth(Data, ?KEY).
 
+%% The accounts a request through `Profile` can rotate through: a profile
+%% pinned to one account narrows the pool to that account alone.
+pool_for(Home, Profile, Values) ->
+    case albedo_credentials:bound_values(Home, Profile, Values) of
+        {ok, Pool} -> Pool;
+        _ -> []
+    end.
+
 %% Every Google account for the quota poller, each refreshed the way a request
 %% refreshes it: `label` is the account's non-secret identity, the rest are
 %% the provide-usage credential fields, projectId included. The refresh
@@ -108,10 +116,12 @@ field(Value, Key) ->
 %% Records a Cloud Code Assist 429 against the account whose token received
 %% it. Returns a JSON summary, or {error, not_a_limit} when the body is not a
 %% per-account limit: a model out of capacity for everyone moves nobody.
-limited(Home, Access, Body) ->
-    limited(Home, Access, Body, undefined).
+%% `Profile` bounds the sibling advice: a profile pinned to one account cannot
+%% rotate, so it must not be promised an account it will never reach.
+limited(Home, Profile, Access, Body) ->
+    limited(Home, Profile, Access, Body, undefined).
 
-limited(Home, Access, Body, FallbackMeter0) ->
+limited(Home, Profile, Access, Body, FallbackMeter0) ->
     FallbackMeter = case FallbackMeter0 of
         {some, FM} -> FM;
         none -> undefined;
@@ -125,8 +135,9 @@ limited(Home, Access, Body, FallbackMeter0) ->
             case albedo_accounts:mark(Path, ?KEY, Hit, Until, Meter) of
                 {ok, Updated} ->
                     Values = credentials(#{?KEY => Updated}),
+                    Pool = pool_for(Home, Profile, Values),
                     Now = erlang:system_time(millisecond),
-                    Next = [V || V <- albedo_accounts:order(?SCOPE, Values, <<>>, fun account_id/1, Meter),
+                    Next = [V || V <- albedo_accounts:order(?SCOPE, Pool, <<>>, fun account_id/1, Meter),
                                  not Hit(V), not albedo_accounts:limited(V, Now, Meter)],
                     Account = label([V || V <- Values, Hit(V)]),
                     UntilText = until_text(Until, Now),
@@ -137,7 +148,7 @@ limited(Home, Access, Body, FallbackMeter0) ->
                         _ -> <<>>
                     end,
                     {ok, {limited, Account, UntilText, NextText, Lasting, MeterText, SiblingStatus,
-                          Until - Now =< ?SOON_MS}};
+                          Until - Now =< ?SOON_MS, length(Pool) < length(Values)}};
                 Error -> Error
             end;
         {error, _} -> {error, <<"not_a_limit">>};
@@ -441,7 +452,12 @@ account_limit_detail(Credential, Now) ->
             end
     end.
 
-heal(Home, AccountId, LimitPairs) ->
+%% Reconciles one account's recorded limits with the provider's own quota
+%% view, which a poll carries as [{Meter, UsedPercent, ResetsAt}] with the
+%% readings it did not state left out. The report is the authority on its own
+%% quota, so it both re-keys the legacy `limitedUntil` mark and corrects the
+%% per-meter ones a 429 left behind.
+heal(Home, AccountId, Readings) ->
     Path = albedo_credentials:creds_path(Home),
     albedo_settings_lock:with_lock(filename:dirname(Path), fun() ->
         case albedo_credentials:accounts(Path) of
@@ -450,24 +466,9 @@ heal(Home, AccountId, LimitPairs) ->
                 Values = case Stored of L when is_list(L) -> L; One -> [One] end,
                 Now = erlang:system_time(millisecond),
                 {Updated, Changed} = lists:mapfoldl(fun(V, Acc) ->
-                    case is_map(V) andalso (account_id(V) =:= AccountId orelse maps:get(<<"email">>, V, <<>>) =:= AccountId)
-                         andalso maps:is_key(<<"limitedUntil">>, V) of
-                        true ->
-                            Until = maps:get(<<"limitedUntil">>, V),
-                            CleanV = maps:remove(<<"limitedUntil">>, V),
-                            Matched = [Id || {Id, ResetsAt} <- LimitPairs, ResetsAt =:= Until],
-                            NewV = case Matched of
-                                [_ | _] ->
-                                    Meters = maps:get(<<"limitedMeters">>, CleanV, #{}),
-                                    Live = maps:filter(fun(_, U) -> is_integer(U) andalso U > Now end, Meters),
-                                    Added = lists:foldl(fun(MeterId, AccM) -> AccM#{MeterId => Until} end, Live, Matched),
-                                    CleanV#{<<"limitedMeters">> => Added};
-                                [] ->
-                                    CleanV
-                            end,
-                            {NewV, true};
-                        false ->
-                            {V, Acc}
+                    case is_map(V) andalso (account_id(V) =:= AccountId orelse maps:get(<<"email">>, V, <<>>) =:= AccountId) of
+                        true -> reconciled(V, Readings, Now, Acc);
+                        false -> {V, Acc}
                     end
                 end, false, Values),
                 case Changed of
@@ -480,6 +481,64 @@ heal(Home, AccountId, LimitPairs) ->
         end
     end, fun() -> ok end),
     nil.
+
+reconciled(V, Readings, Now, Acc) ->
+    {Clean, Rekeyed} = rekeyed(V, Readings, Now),
+    Marked = reconcile(live_meters(maps:get(<<"limitedMeters">>, Clean, #{}), Now), Readings, Now),
+    Final = case map_size(Marked) of
+        0 -> maps:remove(<<"limitedMeters">>, Clean);
+        _ -> Clean#{<<"limitedMeters">> => Marked}
+    end,
+    {Final, Acc orelse Rekeyed orelse Final =/= V}.
+
+%% The legacy single-account mark named no meter, so the meters whose reset it
+%% matched take it over; one that matched nothing is dropped and the account
+%% re-learns its limits from the wire.
+rekeyed(V, Readings, Now) ->
+    case maps:find(<<"limitedUntil">>, V) of
+        {ok, Until} when is_integer(Until) ->
+            Matched = [Id || {Id, _, {some, ResetsAt}} <- Readings, ResetsAt =:= Until],
+            Meters = maps:get(<<"limitedMeters">>, V, #{}),
+            Added = lists:foldl(fun(Meter, AccM) -> AccM#{Meter => Until} end, live_meters(Meters, Now), Matched),
+            {maps:remove(<<"limitedUntil">>, V#{<<"limitedMeters">> => Added}), true};
+        _ ->
+            {V, false}
+    end.
+
+%% A meter the report puts at 100 percent is marked until the reset it names,
+%% so the next request skips it without spending a 429. A mark whose window the
+%% report has replaced — under 100 percent used, resetting sooner than the mark
+%% claims — is dropped: the quota came back and the mark did not. A meter the
+%% report leaves out keeps its mark, because retrieveUserQuota omits some models
+%% entirely and silence is not room.
+reconcile(Meters, Readings, Now) ->
+    lists:foldl(fun(Reading, Acc) -> reconcile_one(Reading, Acc, Now) end, Meters, Readings).
+
+reconcile_one({Meter, Used0, Reset0}, Acc, Now) ->
+    Used = used_percent(Used0),
+    Reset = resets_at(Reset0),
+    case Used of
+        undefined -> Acc;
+        _ when Used >= 100 ->
+            case is_integer(Reset) andalso Reset > Now of
+                true -> Acc#{Meter => Reset};
+                false -> Acc
+            end;
+        _ ->
+            case {maps:find(Meter, Acc), Reset} of
+                {{ok, Until}, R} when is_integer(R), R < Until -> maps:remove(Meter, Acc);
+                _ -> Acc
+            end
+    end.
+
+used_percent({some, Used}) when is_number(Used) -> Used;
+used_percent(_) -> undefined.
+
+resets_at({some, Reset}) when is_integer(Reset) -> Reset;
+resets_at(_) -> undefined.
+
+live_meters(Meters, Now) ->
+    maps:filter(fun(_, Until) -> is_integer(Until) andalso Until > Now end, Meters).
 
 %% ---- request identity ---------------------------------------------------
 

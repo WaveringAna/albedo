@@ -25,6 +25,13 @@ import gleeunit/should
 const google_accounts =
   "{\"accounts\":{\"google-antigravity\":[{\"type\":\"oauth\",\"access\":\"a1\",\"refresh\":\"r1\",\"expires\":9999999999999,\"projectId\":\"p1\",\"email\":\"one@example.com\"},{\"type\":\"oauth\",\"access\":\"a2\",\"refresh\":\"r2\",\"expires\":9999999999999,\"projectId\":\"p2\",\"email\":\"two@example.com\"}]}}"
 
+/// The same two accounts, with the public ids a pinned profile names.
+const pinned_accounts =
+  "{\"accounts\":{\"google-antigravity\":[{\"type\":\"oauth\",\"_albedo_account_id\":\"public-one\",\"access\":\"a1\",\"refresh\":\"r1\",\"expires\":9999999999999,\"projectId\":\"p1\",\"email\":\"one@example.com\"},{\"type\":\"oauth\",\"_albedo_account_id\":\"public-two\",\"access\":\"a2\",\"refresh\":\"r2\",\"expires\":9999999999999,\"projectId\":\"p2\",\"email\":\"two@example.com\"}]}}"
+
+const pinned_config =
+  "{\"providers\":{\"pinned\":{\"accountId\":\"public-one\"}}}"
+
 const claude_quota =
   "{\"error\":{\"code\":429,\"status\":\"RESOURCE_EXHAUSTED\",\"message\":\"You have exhausted your capacity on this model.\",\"details\":[{\"@type\":\"type.googleapis.com/google.rpc.ErrorInfo\",\"reason\":\"QUOTA_EXHAUSTED\",\"metadata\":{\"model\":\"claude-sonnet-5-5-high\",\"quotaResetDelay\":\"2h3m4.5s\"}},{\"@type\":\"type.googleapis.com/google.rpc.RetryInfo\",\"retryDelay\":\"7384.5s\"}]}}"
 
@@ -159,7 +166,7 @@ pub fn antigravity_quota_moves_the_request_to_a_sibling_test() -> Nil {
   string.contains(two.detail, "limited until") |> should.be_true
   let assert Ok(last) = pool.current()
   let assert Some(message) =
-    antigravity.explain(home, last, types.HttpError(429, quota))
+    antigravity.explain(home, "", last, types.HttpError(429, quota))
   string.contains(message, "quota exhausted") |> should.be_true
   string.contains(message, "no other Google account") |> should.be_true
   cleanup(root)
@@ -190,7 +197,7 @@ pub fn antigravity_limit_text_says_how_long_a_near_reset_takes_test() -> Nil {
       )
     let assert Ok(last) = pool.current()
     let assert Some(message) =
-      antigravity.explain(home, last, types.HttpError(429, body))
+      antigravity.explain(home, "", last, types.HttpError(429, body))
     message
   }
 
@@ -205,6 +212,31 @@ pub fn antigravity_limit_text_says_how_long_a_near_reset_takes_test() -> Nil {
   string.contains(far, "Add one with /login or wait for the reset")
   |> should.be_true
   cleanup(root)
+}
+
+/// A profile pinned to one account cannot rotate to its sibling, so a 429 on
+/// it must not invite the user to resend: the same account would answer again.
+pub fn antigravity_pinned_profile_names_its_account_instead_of_a_sibling_test() -> Nil {
+  let #(root, _, home) = fixture()
+  let _ = write(home, "creds.json", pinned_accounts)
+  let _ = write(home, "config.json", pinned_config)
+  let one = antigravity.Access("a1", "p1", "one@example.com")
+  let assert Some(message) =
+    antigravity.explain(home, "pinned", one, types.HttpError(429, gemini_quota))
+  string.contains(message, "pinned to one@example.com") |> should.be_true
+  string.contains(message, "two@example.com") |> should.be_false
+  string.contains(message, "next turn will use") |> should.be_false
+  string.contains(message, "Send your message again") |> should.be_false
+  cleanup(root)
+
+  // Unpinned, the same 429 does hand the next turn to the sibling.
+  let #(free_root, _, free_home) = fixture()
+  let _ = write(free_home, "creds.json", pinned_accounts)
+  let assert Some(open) =
+    antigravity.explain(free_home, "", one, types.HttpError(429, gemini_quota))
+  string.contains(open, "pinned to") |> should.be_false
+  string.contains(open, "next turn will use two@example.com") |> should.be_true
+  cleanup(free_root)
 }
 
 /// Claude behind Cloud Code Assist is held to Anthropic's 2000px rule, so an
@@ -279,7 +311,7 @@ pub fn antigravity_claude_quota_leaves_gemini_served_test() -> Nil {
   |> should.equal(Error(types.HttpError(429, claude_quota)))
   let assert Ok(last) = both_claude_pool.current()
   let assert Some(claude_msg) =
-    antigravity.explain(home, last, types.HttpError(429, claude_quota))
+    antigravity.explain(home, "", last, types.HttpError(429, claude_quota))
   string.contains(claude_msg, "Antigravity Claude quota exhausted")
   |> should.be_true
   string.contains(claude_msg, "its claude meter") |> should.be_true
@@ -293,9 +325,14 @@ pub fn antigravity_claude_quota_leaves_gemini_served_test() -> Nil {
   // then a1 exhausts Gemini, no accounts have room on Gemini, and refusal message names
   // the Gemini meter while mentioning sibling a2's Claude limit.
   let assert Some(_) =
-    antigravity.explain(home, claude_next, types.HttpError(429, gemini_quota))
+    antigravity.explain(
+      home,
+      "",
+      claude_next,
+      types.HttpError(429, gemini_quota),
+    )
   let assert Some(gemini_msg) =
-    antigravity.explain(home, first, types.HttpError(429, gemini_quota))
+    antigravity.explain(home, "", first, types.HttpError(429, gemini_quota))
   string.contains(
     gemini_msg,
     "Antigravity Gemini quota exhausted for one@example.com",
