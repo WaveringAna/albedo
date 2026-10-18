@@ -70,6 +70,8 @@ def scripted(request):
         return python("first turn", tool_name="lcm_grep")
     if "fold list probe" in prompt:
         return python("", tool_name="lcm_list")
+    if "call display as a tool" in prompt:
+        return python("display()", tool_name="display")
     return text("older conversation summary")
 
 
@@ -899,6 +901,14 @@ class ExtensionTests(unittest.TestCase):
         self.assertEqual(report["state"], "compacted", report)
         after = self.snapshot()["kernel"]["instance_id"]
         self.assertEqual(after, before)
+
+    def test_calling_a_kernel_binding_by_tool_name_points_at_the_kernel(self):
+        """A capability that is a Python binding is not a callable tool."""
+        requests = self.turn("call display as a tool", expected=2)
+        tool_names = {tool["name"] for tool in requests[0]["tools"]}
+        self.assertNotIn("display", tool_names)
+        refused = json.dumps(requests[1]["input"])
+        self.assertIn("python kernel", refused)
 
     # exclusive: restarts the daemon
     @exclusive

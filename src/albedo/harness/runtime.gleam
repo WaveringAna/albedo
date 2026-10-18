@@ -999,7 +999,11 @@ pub fn invoke(
 ) -> Result(types.Input, String) {
   use _ <- result.try(owned_by(runtime, session))
   case tool_call(runtime, session, call, images) {
-    Error(_) -> Ok(refusal(call, "tool is not installed"))
+    Error(_) ->
+      Ok(refusal(
+        call,
+        "no such tool; every capability is exposed through the python kernel, so call it inside a python cell",
+      ))
     Ok(#(tool, context)) ->
       case extension.invoke(tool, context, call.arguments) {
         Ok(output) -> Ok(types.ToolOutput(call.id, output.text, output.images))
