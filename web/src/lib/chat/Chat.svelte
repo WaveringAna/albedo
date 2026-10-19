@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
   import type { Session } from '../api';
+  import { busy } from '../live.svelte';
   import LiveFace from '../LiveFace.svelte';
   import { face, formatElapsed } from '../moods';
   import { Transcript } from '../transcript.svelte';
@@ -12,7 +13,7 @@
 
   // svelte-ignore state_referenced_locally
   const transcript = new Transcript(sessionId);
-  const running = $derived(session?.status?.phase === 'running');
+  const running = $derived(busy(session));
   $effect(() => {
     transcript.running = running;
   });

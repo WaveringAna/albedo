@@ -3,13 +3,14 @@
   import type { SessionWindow } from '../board.svelte';
   import Chat from '../chat/Chat.svelte';
   import { place } from '../format';
+  import { busy } from '../live.svelte';
   import LiveFace from '../LiveFace.svelte';
   import { sessions } from '../sessions.svelte';
   import WindowFrame from './WindowFrame.svelte';
 
   let { id, data, selected }: NodeProps<SessionWindow> = $props();
   const session = $derived(sessions.byId.get(data.sessionId));
-  const working = $derived(session?.status?.phase === 'running');
+  const working = $derived(busy(session));
 </script>
 
 <WindowFrame {id} selected={!!selected} title={session?.name || 'untitled session'}>

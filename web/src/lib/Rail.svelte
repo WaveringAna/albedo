@@ -2,6 +2,7 @@
   import type { Session } from './api';
   import { boards } from './boards.svelte';
   import { ago, homePath, matches, place } from './format';
+  import { busy } from './live.svelte';
   import LiveFace from './LiveFace.svelte';
   import { sessions } from './sessions.svelte';
 
@@ -62,7 +63,7 @@
 {#snippet row(session: Session)}
   <button class="row" class:open={onBoard.has(session.id)} onclick={() => boards.openSession(session)} title="{session.name}\n{homePath(session.workspace)}">
     <span class="name">{#if session.preferences.pinned}<span class="star" aria-label="pinned">★</span>{/if}{session.name || 'untitled session'}</span>
-    {#if session.status?.phase === 'running'}
+    {#if busy(session)}
       <span class="when"><LiveFace {session} /></span>
     {:else}
       <span class="when">{ago(session.activity_at)}</span>

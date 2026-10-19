@@ -80,11 +80,10 @@ export function face(mood: Mood, seed: number): string {
   return set[pick(mood, seed, set.length)];
 }
 
-/** The turn's animation at tick, one frame per FRAME_MS. */
-export function frame(mood: Mood, seed: number, tick: number): string {
+/** The frames of the animation a turn plays for a mood. */
+export function frames(mood: Mood, seed: number): string[] {
   const pool = animations[mood] ?? animations.working!;
-  const set = pool[pick(mood, seed, pool.length)];
-  return set[tick % set.length];
+  return pool[pick(mood, seed, pool.length)];
 }
 
 /** How a finished turn ended and how long it took. */

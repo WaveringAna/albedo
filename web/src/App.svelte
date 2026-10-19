@@ -5,6 +5,7 @@
   import { shortcut, typing } from './lib/keys';
   import Palette, { type Item } from './lib/Palette.svelte';
   import { prefs } from './lib/prefs.svelte';
+  import { busy } from './lib/live.svelte';
   import Rail from './lib/Rail.svelte';
   import Settings from './lib/Settings.svelte';
   import { sessions } from './lib/sessions.svelte';
@@ -54,7 +55,7 @@
         key: session.id,
         kind: 'session',
         label: session.name || 'untitled session',
-        detail: `${place(session.workspace)} · ${session.status?.phase === 'running' ? 'working' : ago(session.activity_at)}`,
+        detail: `${place(session.workspace)} · ${busy(session) ? 'working' : ago(session.activity_at)}`,
         run: () => boards.openSession(session),
       }));
     const reopen = boards.closed.map((entry) => ({ label: `open board: ${entry.name}`, run: () => boards.show(entry.id) }));
