@@ -126,6 +126,7 @@ export class Transcript {
   progress = $state.raw<Progress[]>([]);
   #stop: (() => void) | null = null;
   #settle: ReturnType<typeof setTimeout> | undefined;
+  #replacing: 'all' | string[] = [];
   more = $state(false);
   error = $state<string | null>(null);
 
@@ -243,11 +244,18 @@ export class Transcript {
    * never blinks out between its last delta and its history entry.
    */
   #commit(replaces: 'all' | string[] | null) {
+    // Events arrive in bursts (a commit, then its tool, then a status), so
+    // one read serves them all; what each burst replaces adds up rather than
+    // the last event's list winning.
+    if (replaces === 'all') this.#replacing = 'all';
+    else if (replaces && this.#replacing !== 'all') this.#replacing = [...this.#replacing, ...replaces];
     clearTimeout(this.#settle);
     this.#settle = setTimeout(async () => {
       await this.poll().catch(() => {});
-      if (replaces === 'all') this.live = [];
-      else if (replaces?.length) this.live = this.live.filter((item) => !replaces.includes(item.id));
+      const replacing = this.#replacing;
+      this.#replacing = [];
+      if (replacing === 'all') this.live = [];
+      else if (replacing.length) this.live = this.live.filter((item) => !replacing.includes(item.id));
       if (this.phase === 'idle' || this.phase === 'interrupted') [this.live, this.progress] = [[], []];
     }, 60);
   }
