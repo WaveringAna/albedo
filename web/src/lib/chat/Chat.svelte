@@ -1,6 +1,8 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
   import type { Session } from '../api';
+  import LiveFace from '../LiveFace.svelte';
+  import { face, formatElapsed } from '../moods';
   import { Transcript } from '../transcript.svelte';
   import Composer from './Composer.svelte';
   import Markdown from './Markdown.svelte';
@@ -11,6 +13,16 @@
   // svelte-ignore state_referenced_locally
   const transcript = new Transcript(sessionId);
   const running = $derived(session?.status?.phase === 'running');
+  $effect(() => {
+    transcript.running = running;
+  });
+  let copied = $state<string | null>(null);
+
+  async function copy(key: string, text: string) {
+    await navigator.clipboard.writeText(text);
+    copied = key;
+    setTimeout(() => copied === key && (copied = null), 1400);
+  }
   const last = $derived(transcript.groups.at(-1));
   const activity = $derived(session?.activity?.lines.findLast((line) => line.text.trim())?.text.trim() ?? '');
 
@@ -89,19 +101,21 @@
     <div class="thread">
       <div bind:this={top}></div>
       {#if transcript.loading}
-        <p class="quiet">Loading the transcript…</p>
+        <p class="quiet">(・ω・)ﾉ reading the transcript…</p>
       {:else if transcript.error}
-        <p class="quiet error">Couldn't read the transcript: {transcript.error}</p>
+        <p class="quiet error">(｡•︿•｡) couldn't read the transcript: {transcript.error}</p>
       {:else if transcript.groups.length === 0}
-        <p class="quiet">No messages yet. Say hello below.</p>
+        <p class="quiet">(˶ᵔ ᵕ ᵔ˶) nothing here yet. say hi below</p>
       {:else if transcript.more}
-        <p class="quiet">Earlier messages load as you scroll up.</p>
+        <p class="quiet">earlier messages load as you scroll up</p>
       {/if}
 
       {#each transcript.groups as group (group.key)}
         {#if group.kind === 'user'}
           <div class="user" class:failed={group.state === 'failed'}>
-            {#if group.from}<span class="from">{group.from}</span>{/if}
+            {#if group.from || group.gap}
+              <span class="plate"><span class:you={!group.from}>{group.from ?? 'you'}</span>{#if group.gap}<span class="meta">{' · '}{group.gap}</span>{/if}</span>
+            {/if}
             <div class="bubble" class:sending={group.state === 'sending'}>{group.text}</div>
             {#if group.state === 'failed'}
               <span class="problem">
@@ -112,18 +126,29 @@
             {/if}
           </div>
         {:else if group.kind === 'assistant'}
-          <div class="assistant"><Markdown text={group.text} /></div>
+          <div class="assistant">
+            {#if group.plate}<span class="plate agent">albedo</span>{/if}
+            <Markdown text={group.text} />
+          </div>
         {:else if group.kind === 'work'}
-          <WorkSteps steps={group.steps} live={running && group === last} {transcript} />
+          <WorkSteps steps={group.steps} live={running && group === last} {transcript} {session} />
+        {:else if group.kind === 'end'}
+          <p class="end">
+            <span class="face kaomoji" title={group.mood}>{face(group.mood, group.seed)}</span>
+            <span class="meta">{[group.elapsedMs >= 1000 ? formatElapsed(group.elapsedMs) : '', group.tools ? `${group.tools} ${group.tools === 1 ? 'tool' : 'tools'}` : ''].filter(Boolean).join(' · ')}</span>
+            {#if group.text}
+              <button class="copy" onclick={() => copy(group.key, group.text)}>{copied === group.key ? 'copied' : 'copy'}</button>
+            {/if}
+          </p>
         {:else if group.kind === 'note'}
           <p class="note">{group.text}</p>
         {:else if group.kind === 'compaction'}
-          <p class="note">Earlier context was compacted here.</p>
+          <p class="note">{'(>_<)'} earlier context was compacted here</p>
         {/if}
       {/each}
 
-      {#if running && last?.kind !== 'work'}
-        <p class="live"><span class="working">Working</span>{#if activity}<span class="activity">{activity}</span>{/if}</p>
+      {#if running}
+        <p class="live"><LiveFace {session} label />{#if activity}<span class="activity">{activity}</span>{/if}</p>
       {/if}
     </div>
   </div>
@@ -173,9 +198,51 @@
     gap: 3px;
     margin-top: 6px;
   }
-  .from {
+  .plate {
     color: var(--muted);
-    font-size: 11px;
+    font-size: 12px;
+    font-weight: 560;
+  }
+  .plate .meta {
+    font-weight: 400;
+  }
+  .you {
+    color: var(--you);
+  }
+  .agent {
+    display: block;
+    margin-bottom: 2px;
+    color: var(--agent);
+  }
+  .end {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    margin: -4px 0 4px;
+    color: var(--muted);
+    font-size: 12px;
+  }
+  .end .face {
+    color: var(--agent);
+    font-size: 13px;
+  }
+  .copy {
+    padding: 0 4px;
+    color: var(--muted);
+    font: inherit;
+    background: none;
+    border: 0;
+    border-radius: 4px;
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 120ms ease, color 120ms ease;
+  }
+  .end:hover .copy,
+  .copy:focus-visible {
+    opacity: 1;
+  }
+  .copy:hover {
+    color: var(--text);
   }
   .bubble {
     max-width: 85%;
@@ -209,9 +276,6 @@
     color: var(--muted);
     font-size: 12px;
     white-space: pre-wrap;
-  }
-  .live .working {
-    flex: none;
   }
   .live {
     display: flex;

@@ -23,24 +23,24 @@
   sessions.start();
 
   const commands: Omit<Item, 'kind' | 'key'>[] = [
-    { label: 'New board', run: () => boards.create() },
-    { label: 'Rename board', hint: 'F2', run: () => (boards.renaming = boards.active) },
-    { label: 'Next board', hint: '⇧]', run: () => boards.step(1) },
-    { label: 'Previous board', hint: '⇧[', run: () => boards.step(-1) },
-    { label: 'Close board tab', run: () => boards.active && boards.close(boards.active) },
-    { label: 'Delete board', run: () => boards.active && boards.delete(boards.active) },
-    { label: 'Fit all windows', hint: '⇧1', run: () => boards.board?.fit() },
-    { label: 'Zoom to 100%', hint: '⇧0', run: () => boards.board?.zoomTo(1) },
-    { label: 'Next window', hint: '⌥→', run: () => boards.board?.step(1) },
-    { label: 'Previous window', hint: '⌥←', run: () => boards.board?.step(-1) },
-    { label: 'Close window', run: () => closeSelected() },
-    { label: 'Toggle overview map', hint: 'M', run: () => (minimap = !minimap) },
-    { label: 'Toggle sessions', hint: '[', run: () => (railOpen = !railOpen) },
-    { label: 'Refresh sessions', run: () => sessions.refresh() },
-    { label: 'Settings', hint: '⌘,', run: () => (settingsOpen = true) },
-    { label: 'Theme: follow the system', run: () => (prefs.theme = 'system') },
-    { label: 'Theme: light', run: () => (prefs.theme = 'light') },
-    { label: 'Theme: dark', run: () => (prefs.theme = 'dark') },
+    { label: 'new board', run: () => boards.create() },
+    { label: 'rename board', hint: 'F2', run: () => (boards.renaming = boards.active) },
+    { label: 'next board', hint: '⇧]', run: () => boards.step(1) },
+    { label: 'previous board', hint: '⇧[', run: () => boards.step(-1) },
+    { label: 'close board tab', run: () => boards.active && boards.close(boards.active) },
+    { label: 'delete board', run: () => boards.active && boards.delete(boards.active) },
+    { label: 'fit all windows', hint: '⇧1', run: () => boards.board?.fit() },
+    { label: 'zoom to 100%', hint: '⇧0', run: () => boards.board?.zoomTo(1) },
+    { label: 'next window', hint: '⌥→', run: () => boards.board?.step(1) },
+    { label: 'previous window', hint: '⌥←', run: () => boards.board?.step(-1) },
+    { label: 'close window', run: () => closeSelected() },
+    { label: 'toggle overview map', hint: 'M', run: () => (minimap = !minimap) },
+    { label: 'toggle sessions', hint: '[', run: () => (railOpen = !railOpen) },
+    { label: 'refresh sessions', run: () => sessions.refresh() },
+    { label: 'settings', hint: '⌘,', run: () => (settingsOpen = true) },
+    { label: 'theme: follow the system', run: () => (prefs.theme = 'system') },
+    { label: 'theme: light', run: () => (prefs.theme = 'light') },
+    { label: 'theme: dark', run: () => (prefs.theme = 'dark') },
   ];
 
   function searchEverything(query: string): Item[] {
@@ -57,7 +57,7 @@
         detail: `${place(session.workspace)} · ${session.status?.phase === 'running' ? 'working' : ago(session.activity_at)}`,
         run: () => boards.openSession(session),
       }));
-    const reopen = boards.closed.map((entry) => ({ label: `Open board: ${entry.name}`, run: () => boards.show(entry.id) }));
+    const reopen = boards.closed.map((entry) => ({ label: `open board: ${entry.name}`, run: () => boards.show(entry.id) }));
     const actions = rank([...commands, ...reopen], query, (command) => command.label).map<Item>((command) => ({ key: `command:${command.label}`, kind: 'command', ...command }));
     return query ? [...found, ...actions] : [...actions, ...found];
   }
@@ -110,7 +110,7 @@
       <button class="icon" aria-label={railOpen ? 'Hide sessions' : 'Show sessions'} title="{railOpen ? 'Hide' : 'Show'} sessions ([)" onclick={() => (railOpen = !railOpen)}>
         <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><rect x="2" y="3" width="12" height="10" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.3" /><path d="M6.25 3v10" stroke="currentColor" stroke-width="1.3" /></svg>
       </button>
-      <span class="brand">albedo</span>
+      <span class="brand"><span class="spark" aria-hidden="true">✦</span> <span class="brand-ink">albedo</span></span>
     </div>
     <Tabs />
     {#if sessions.link !== 'online'}
@@ -118,7 +118,7 @@
     {/if}
     <div class="end">
       <button class="command" onclick={() => (paletteOpen = true)}>
-        <span>Search</span>
+        <span>search</span>
         <kbd>{shortcut('K')}</kbd>
       </button>
       <button class="icon" class:on={settingsOpen} data-settings-toggle aria-label="Settings" aria-expanded={settingsOpen} title="Settings ({shortcut(',')})" onclick={() => (settingsOpen = !settingsOpen)}>
@@ -158,7 +158,7 @@
 {/if}
 
 {#if paletteOpen}
-  <Palette placeholder="Open a session or run a command" search={searchEverything} onclose={() => (paletteOpen = false)} />
+  <Palette placeholder="open a session or run a command…" search={searchEverything} onclose={() => (paletteOpen = false)} />
 {/if}
 
 <style>
@@ -191,6 +191,11 @@
     font-size: 14px;
     font-weight: 650;
     letter-spacing: -0.02em;
+    white-space: nowrap;
+  }
+  .spark {
+    color: var(--brand-from);
+    font-size: 12px;
   }
   .icon,
   .command {

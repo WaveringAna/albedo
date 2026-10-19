@@ -3,16 +3,20 @@
 // and this keeps <html> in step afterwards.
 
 export type Theme = 'system' | 'light' | 'dark';
-export type Accent = 'pine' | 'lake' | 'clay' | 'graphite';
+export type Accent = 'albedo' | 'pine' | 'lake' | 'clay' | 'graphite';
 
 export const ACCENTS: { id: Accent; label: string }[] = [
-  { id: 'pine', label: 'Pine' },
-  { id: 'lake', label: 'Lake' },
-  { id: 'clay', label: 'Clay' },
-  { id: 'graphite', label: 'Graphite' },
+  { id: 'albedo', label: 'albedo' },
+  { id: 'pine', label: 'pine' },
+  { id: 'lake', label: 'lake' },
+  { id: 'clay', label: 'clay' },
+  { id: 'graphite', label: 'graphite' },
 ];
 
-const STORAGE_KEY = 'albedo.prefs.v1';
+// v1 defaulted the accent to pine; v2 keeps its theme and dots but starts
+// everyone on albedo's own mauve.
+const STORAGE_KEY = 'albedo.prefs.v2';
+const EARLIER_KEY = 'albedo.prefs.v1';
 
 interface Saved {
   theme: Theme;
@@ -21,9 +25,13 @@ interface Saved {
 }
 
 function load(): Saved {
-  const fallback: Saved = { theme: 'system', accent: 'pine', dots: true };
+  const fallback: Saved = { theme: 'system', accent: 'albedo', dots: true };
   try {
-    return { ...fallback, ...JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '{}') };
+    const saved = localStorage.getItem(STORAGE_KEY);
+    if (saved) return { ...fallback, ...JSON.parse(saved) };
+    const { theme, dots } = JSON.parse(localStorage.getItem(EARLIER_KEY) ?? '{}');
+    localStorage.removeItem(EARLIER_KEY);
+    return { ...fallback, ...(theme ? { theme } : {}), ...(typeof dots === 'boolean' ? { dots } : {}) };
   } catch {
     return fallback;
   }

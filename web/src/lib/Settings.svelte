@@ -7,9 +7,9 @@
   let pane = $state<HTMLElement>();
 
   const themes: { id: Theme; label: string }[] = [
-    { id: 'system', label: 'System' },
-    { id: 'light', label: 'Light' },
-    { id: 'dark', label: 'Dark' },
+    { id: 'system', label: 'system' },
+    { id: 'light', label: 'light' },
+    { id: 'dark', label: 'dark' },
   ];
 
   $effect(() => {
@@ -39,10 +39,10 @@
 </script>
 
 <section class="pane" bind:this={pane} aria-label="Settings">
-  <h2>Settings</h2>
+  <h2>settings</h2>
 
   <div class="group">
-    <h3 id="theme-label">Theme</h3>
+    <h3 id="theme-label">theme</h3>
     <div
       class="segmented"
       role="radiogroup"
@@ -57,11 +57,11 @@
         </button>
       {/each}
     </div>
-    <p class="note">{prefs.theme === 'system' ? `Following your system, which is ${prefs.resolved} right now.` : `Always ${prefs.theme}.`}</p>
+    <p class="note">{prefs.theme === 'system' ? `following your system, which is ${prefs.resolved} right now` : `always ${prefs.theme}`}</p>
   </div>
 
   <div class="group">
-    <h3 id="accent-label">Accent</h3>
+    <h3 id="accent-label">accent</h3>
     <div
       class="accents"
       role="radiogroup"
@@ -81,8 +81,8 @@
   <div class="group">
     <label class="toggle">
       <span>
-        <span class="label">Dots on the canvas</span>
-        <span class="note">A faint guide for panning. They fade out when you zoom out.</span>
+        <span class="label">dots on the canvas</span>
+        <span class="note">a faint guide for panning. they fade out when you zoom out.</span>
       </span>
       <input type="checkbox" role="switch" bind:checked={prefs.dots} />
     </label>

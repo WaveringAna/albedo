@@ -2,6 +2,7 @@
   import type { Session } from './api';
   import { boards } from './boards.svelte';
   import { ago, homePath, matches, place } from './format';
+  import LiveFace from './LiveFace.svelte';
   import { sessions } from './sessions.svelte';
 
   let { search = $bindable() }: { search?: HTMLInputElement } = $props();
@@ -10,8 +11,26 @@
   const visible = $derived(
     sessions.list.filter((session) => !session.preferences.archived && (!query || matches(query, `${session.name} ${place(session.workspace)}`))),
   );
-  const pinned = $derived(visible.filter((session) => session.preferences.pinned));
-  const recent = $derived(visible.filter((session) => !session.preferences.pinned));
+  // Grouped as the terminal groups them: pinned, then by when they last moved.
+  const DAY = 86_400_000;
+  const sections = $derived.by(() => {
+    const midnight = new Date().setHours(0, 0, 0, 0);
+    const when = (session: Session) => Date.parse(session.activity_at ?? '') || 0;
+    const named: [string, (session: Session) => boolean][] = [
+      ['pinned', (session) => session.preferences.pinned],
+      ['today', (session) => when(session) >= midnight],
+      ['this week', (session) => when(session) >= midnight - 6 * DAY],
+      ['earlier', () => true],
+    ];
+    const left = [...visible];
+    return named
+      .map(([label, belongs]) => {
+        const rows = left.filter(belongs);
+        for (const row of rows) left.splice(left.indexOf(row), 1);
+        return { label, rows };
+      })
+      .filter((section) => section.rows.length);
+  });
   const onBoard = $derived(new Set(boards.board?.nodes.map((node) => node.data.sessionId)));
 
   function submit(event: SubmitEvent) {
@@ -23,21 +42,17 @@
 <aside>
   <form class="search" onsubmit={submit}>
     <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><circle cx="7" cy="7" r="4.5" fill="none" stroke="currentColor" stroke-width="1.4" /><path d="M10.5 10.5L14 14" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" /></svg>
-    <input bind:this={search} bind:value={query} placeholder="Filter sessions" aria-label="Filter sessions" spellcheck="false" onkeydown={(event) => event.key === 'Escape' && ((query = ''), search?.blur())} />
+    <input bind:this={search} bind:value={query} placeholder="filter sessions" aria-label="Filter sessions" spellcheck="false" onkeydown={(event) => event.key === 'Escape' && ((query = ''), search?.blur())} />
     <kbd>/</kbd>
   </form>
 
   <nav>
-    {#if pinned.length}
-      <h3>Pinned</h3>
-      {#each pinned as session (session.id)}{@render row(session)}{/each}
-    {/if}
-    {#if recent.length}
-      <h3>Recent</h3>
-      {#each recent as session (session.id)}{@render row(session)}{/each}
-    {/if}
+    {#each sections as section (section.label)}
+      <h3>{section.label} <span class="count">{section.rows.length}</span></h3>
+      {#each section.rows as session (session.id)}{@render row(session)}{/each}
+    {/each}
     {#if sessions.loaded && visible.length === 0}
-      <p class="none">{query ? 'No session matches.' : 'No sessions yet.'}</p>
+      <p class="none">{query ? 'nothing matches (・_・ )' : 'no sessions yet (・ω・)ﾉ'}</p>
     {:else if !sessions.loaded && sessions.link === 'connecting'}
       {#each { length: 6 } as _}<div class="ghost"></div>{/each}
     {/if}
@@ -46,9 +61,9 @@
 
 {#snippet row(session: Session)}
   <button class="row" class:open={onBoard.has(session.id)} onclick={() => boards.openSession(session)} title="{session.name}\n{homePath(session.workspace)}">
-    <span class="name">{session.name || 'Untitled session'}</span>
+    <span class="name">{#if session.preferences.pinned}<span class="star" aria-label="pinned">★</span>{/if}{session.name || 'untitled session'}</span>
     {#if session.status?.phase === 'running'}
-      <span class="when working">working</span>
+      <span class="when"><LiveFace {session} /></span>
     {:else}
       <span class="when">{ago(session.activity_at)}</span>
     {/if}
@@ -105,7 +120,16 @@
     margin: 16px 10px 6px;
     color: var(--muted);
     font-size: 12px;
-    font-weight: 560;
+    font-weight: 600;
+  }
+  .count {
+    color: var(--faint);
+    font-weight: 400;
+  }
+  .star {
+    margin-right: 5px;
+    color: var(--agent);
+    font-size: 11px;
   }
   .row {
     display: grid;

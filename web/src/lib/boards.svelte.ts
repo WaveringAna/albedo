@@ -63,8 +63,8 @@ class Boards {
   create() {
     const taken = new Set(this.entries.map((entry) => entry.name));
     let number = this.entries.length + 1;
-    while (taken.has(`Board ${number}`)) number++;
-    const entry = { id: crypto.randomUUID(), name: `Board ${number}`, open: true };
+    while (taken.has(`board ${number}`)) number++;
+    const entry = { id: crypto.randomUUID(), name: `board ${number}`, open: true };
     this.#get(entry.id);
     this.entries = [...this.entries, entry];
     this.active = entry.id;

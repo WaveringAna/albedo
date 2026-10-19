@@ -13,7 +13,13 @@
   --faint: #9a958b;
   --hover: rgb(40 35 25 / 0.05);
   --selected: rgb(40 35 25 / 0.075);
-  --accent: #2c6b5b;
+  --accent: #8a52b8;
+  /* Who is speaking, as in the terminal: albedo in mauve, you in teal. */
+  --agent: #8a52b8;
+  --brand-from: #8a52b8;
+  --brand-to: #c0508f;
+  --you: #1f7a74;
+  --added: #3c8a4e;
   --focus-ring: color-mix(in srgb, var(--accent) 42%, transparent);
   --danger: #b4412d;
   --scrim: rgb(235 233 228 / 0.6);
@@ -25,6 +31,8 @@
   --shadow-lg: 0 4px 12px rgb(40 35 25 / 0.08), 0 32px 72px -16px rgb(40 35 25 / 0.32);
   --sans: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
   --mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  /* Faces read softest in a rounded Japanese face where there is one. */
+  --face: 'Hiragino Maru Gothic ProN', 'Hiragino Sans', 'Yu Gothic UI', system-ui, sans-serif;
 }
 
 :root[data-theme='dark'] {
@@ -42,6 +50,11 @@
   --hover: rgb(255 250 240 / 0.06);
   --selected: rgb(255 250 240 / 0.09);
   --danger: #ee7c66;
+  --agent: #c6a0f6;
+  --brand-from: #c6a0f6;
+  --brand-to: #f5bde6;
+  --you: #8bd5ca;
+  --added: #a6da95;
   --scrim: rgb(17 17 16 / 0.55);
   --dots: rgb(255 250 240 / 0.09);
   --minimap-window: #3a3936;
@@ -52,7 +65,10 @@
 }
 
 /* Accents: one hue each, tuned per theme. They key on any element, so a
-   swatch can show an accent it is not using. */
+   swatch can show an accent it is not using. Albedo's own mauve is the default. */
+[data-accent='albedo'] {
+  --accent: #8a52b8;
+}
 [data-accent='pine'] {
   --accent: #2c6b5b;
 }
@@ -64,6 +80,10 @@
 }
 [data-accent='graphite'] {
   --accent: #4a4741;
+}
+[data-theme='dark'][data-accent='albedo'],
+[data-theme='dark'] [data-accent='albedo'] {
+  --accent: #c6a0f6;
 }
 [data-theme='dark'][data-accent='pine'],
 [data-theme='dark'] [data-accent='pine'] {
@@ -130,23 +150,20 @@ input:focus-visible,
   outline-offset: 1px;
 }
 
-/* Said of anything that is working right now: a word that breathes, not a dot. */
-.working {
-  color: var(--accent);
-  font-weight: 560;
-  animation: breathe 2.4s ease-in-out infinite;
+/* A kaomoji: albedo's face for a turn, still or animated. */
+.kaomoji {
+  font-family: var(--face);
+  letter-spacing: -0.03em;
+  white-space: pre;
 }
 
-@keyframes breathe {
-  50% {
-    opacity: 0.45;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .working {
-    animation: none;
-  }
+/* The wordmark, swept from mauve to pink as in the terminal's header. */
+.brand-ink {
+  color: var(--brand-from);
+  background: linear-gradient(90deg, var(--brand-from), var(--brand-to));
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
 }
 
 /* Svelte Flow takes the app's colours. */

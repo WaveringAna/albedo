@@ -9,10 +9,10 @@
       // Apply the saved theme before the first paint, so a dark choice never flashes light.
       (() => {
         let prefs = {};
-        try { prefs = JSON.parse(localStorage.getItem('albedo.prefs.v1') || '{}'); } catch {}
+        try { prefs = JSON.parse(localStorage.getItem('albedo.prefs.v2') || localStorage.getItem('albedo.prefs.v1') || '{}'); } catch {}
         const theme = prefs.theme === 'light' || prefs.theme === 'dark' ? prefs.theme : matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
         document.documentElement.dataset.theme = theme;
-        document.documentElement.dataset.accent = prefs.accent || 'pine';
+        document.documentElement.dataset.accent = localStorage.getItem('albedo.prefs.v2') ? prefs.accent || 'albedo' : 'albedo';
       })();
     </script>
     <style>

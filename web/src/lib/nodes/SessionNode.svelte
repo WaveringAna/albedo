@@ -3,6 +3,7 @@
   import type { SessionWindow } from '../board.svelte';
   import Chat from '../chat/Chat.svelte';
   import { place } from '../format';
+  import LiveFace from '../LiveFace.svelte';
   import { sessions } from '../sessions.svelte';
   import WindowFrame from './WindowFrame.svelte';
 
@@ -11,16 +12,16 @@
   const working = $derived(session?.status?.phase === 'running');
 </script>
 
-<WindowFrame {id} selected={!!selected} title={session?.name || 'Untitled session'}>
+<WindowFrame {id} selected={!!selected} title={session?.name || 'untitled session'}>
   {#snippet meta()}
-    {#if working}<span class="working">working</span>{/if}
+    {#if working}<LiveFace {session} />{/if}
     {#if session}<span title={session.workspace}>{place(session.workspace)}</span>{/if}
   {/snippet}
 
   {#if session || !sessions.loaded}
     <Chat sessionId={data.sessionId} {session} />
   {:else}
-    <p class="gone">This session is no longer on the daemon.</p>
+    <p class="gone">(・_・;) this session is no longer on the daemon</p>
   {/if}
 </WindowFrame>
 

@@ -77,9 +77,10 @@
 
   {#if board.nodes.length === 0}
     <div class="empty">
-      <p class="lead">An empty board</p>
-      <p>Open a session to start. Windows can sit anywhere; pinch to zoom out and see them all.</p>
-      <button onclick={onpalette}>Open a session <kbd>{shortcut('K')}</kbd></button>
+      <p class="face kaomoji" aria-hidden="true">(・ω・)ﾉ</p>
+      <p class="lead">an empty board</p>
+      <p>open a session to start. windows can sit anywhere; pinch to zoom out and see them all.</p>
+      <button onclick={onpalette}>open a session <kbd>{shortcut('K')}</kbd></button>
     </div>
   {/if}
 </div>
@@ -105,6 +106,11 @@
     color: var(--muted);
     font-size: 13px;
     text-wrap: balance;
+  }
+  .empty .face {
+    margin-bottom: 4px;
+    color: var(--agent);
+    font-size: 22px;
   }
   .empty .lead {
     color: var(--text);

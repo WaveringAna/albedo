@@ -1,16 +1,32 @@
 import { readEntryContent, readHistory, sendMessage, uuidv7, type ContentPart, type HistoryEntry } from './api';
+import type { Trace } from './burst';
+import { formatGap, outcome, type Mood } from './moods';
 
 // One session's transcript as the chat shows it. Entries arrive as history
 // pages; blocks are what the chat draws. Content a page only referenced is
 // fetched when it is needed: message text at once, tool output on opening.
 
 export type Block =
-  | { kind: 'user'; key: string; text: string; from: string | null; state: 'sent' | 'sending' | 'failed'; error?: string }
-  | { kind: 'assistant'; key: string; text: string }
+  | { kind: 'user'; key: string; text: string; from: string | null; gap: string | null; state: 'sent' | 'sending' | 'failed'; error?: string }
+  | { kind: 'assistant'; key: string; text: string; plate: boolean }
   | { kind: 'thinking'; key: string; text: string; ms: number | null }
-  | { kind: 'tool'; key: string; name: string; entry: HistoryEntry; done: boolean }
+  | { kind: 'tool'; key: string; name: string; entry: HistoryEntry; done: boolean; trace?: Trace; failed: boolean }
   | { kind: 'note'; key: string; text: string }
-  | { kind: 'compaction'; key: string; text: string };
+  | { kind: 'compaction'; key: string; text: string }
+  | { kind: 'end'; key: string; mood: Mood; seed: number; elapsedMs: number; tools: number; text: string };
+
+interface Turn {
+  id: string | null;
+  start: number;
+  last: number;
+  tools: number;
+  answered: boolean;
+  /** The turn's last reply, which its copy action copies. */
+  text: string;
+}
+
+/** The pause before your message that earns a "later" note, as in the TUI. */
+const AWAY_MS = 30 * 60_000;
 
 /** A turn's run of thinking and tool use, drawn as one collapsible step list. */
 export type Group = { kind: 'work'; key: string; steps: Block[] } | Block;
@@ -30,6 +46,24 @@ export function jsonField(entry: HistoryEntry, field: string): unknown {
   for (const part of entry.content) if (part.kind === 'json' && part.field === field) return part.value;
   return undefined;
 }
+
+function traceOf(entry: HistoryEntry): Trace | undefined {
+  for (const part of entry.content) if (part.kind === 'trace') return part.trace as Trace;
+  return undefined;
+}
+
+/** A python cell that raised, read from its result envelope. */
+function failedTool(entry: HistoryEntry): boolean {
+  const result = jsonField(entry, 'result');
+  if (typeof result !== 'string') return false;
+  try {
+    return JSON.parse(result)?.status === 'error';
+  } catch {
+    return false;
+  }
+}
+
+const at = (entry: HistoryEntry) => (entry.created_at ? Date.parse(entry.created_at) : 0);
 
 function referenced(entry: HistoryEntry): boolean {
   return entry.content.some((part) => part.kind === 'reference' && !part.reference.field.startsWith('image-'));
@@ -56,6 +90,8 @@ export class Transcript {
   entries = $state.raw<HistoryEntry[]>([]);
   pending = $state.raw<Pending[]>([]);
   loading = $state(true);
+  /** Whether the session is running, so its newest turn is not signed off yet. */
+  running = $state(false);
   more = $state(false);
   error = $state<string | null>(null);
 
@@ -159,24 +195,50 @@ export class Transcript {
   #blocks(): Block[] {
     const results = new Set(this.entries.flatMap((entry) => (entry.kind === 'tool_result' && entry.tool ? [entry.tool.tool_call_id] : [])));
     const blocks: Block[] = [];
+    let turn = null as Turn | null;
+    let previous = 0;
+    let speaker = '';
+
+    // A turn signs off with a face once the next one starts or the session rests.
+    const signOff = () => {
+      if (!turn || (!turn.answered && !turn.tools)) return;
+      const elapsedMs = Math.max(0, turn.last - turn.start);
+      blocks.push({ kind: 'end', key: `end:${turn.id}`, mood: outcome(false, false, elapsedMs), seed: turn.last, elapsedMs, tools: turn.tools, text: turn.text });
+    };
+
     for (const entry of this.entries) {
       const text = textOf(entry.content);
+      if (!turn || entry.turn_id !== turn.id) {
+        signOff();
+        turn = { id: entry.turn_id, start: at(entry), last: at(entry), tools: 0, answered: false, text: '' };
+      }
+      turn.last = Math.max(turn.last, at(entry));
       switch (entry.kind) {
-        case 'user':
-          blocks.push({ kind: 'user', key: entry.id, text, from: entry.mail?.sender_label ?? (entry.turn_type && entry.turn_type !== 'user' ? entry.turn_type : null), state: 'sent' });
+        case 'user': {
+          const gap = previous && at(entry) - previous >= AWAY_MS ? formatGap(at(entry) - previous) : null;
+          const from = entry.mail?.sender_label?.toLowerCase() ?? (entry.turn_type && !['user', 'chat'].includes(entry.turn_type) ? entry.turn_type : null);
+          blocks.push({ kind: 'user', key: entry.id, text, from, gap, state: 'sent' });
+          speaker = 'you';
           break;
+        }
         case 'assistant':
-          if (text.trim()) blocks.push({ kind: 'assistant', key: entry.id, text });
+          if (!text.trim()) break;
+          blocks.push({ kind: 'assistant', key: entry.id, text, plate: speaker !== 'albedo' });
+          speaker = 'albedo';
+          turn.answered = true;
+          turn.text = text;
           break;
         case 'thinking':
           if (text.trim()) blocks.push({ kind: 'thinking', key: entry.id, text, ms: entry.thinking_duration_ms });
           break;
         case 'tool_call':
           // A call shows until its result replaces it.
-          if (entry.tool && !results.has(entry.tool.tool_call_id)) blocks.push({ kind: 'tool', key: entry.id, name: entry.tool.name, entry, done: false });
+          if (entry.tool && !results.has(entry.tool.tool_call_id)) blocks.push({ kind: 'tool', key: entry.id, name: entry.tool.name, entry, done: false, failed: false });
           break;
         case 'tool_result':
-          if (entry.tool) blocks.push({ kind: 'tool', key: entry.id, name: entry.tool.name, entry, done: true });
+          if (!entry.tool) break;
+          turn.tools++;
+          blocks.push({ kind: 'tool', key: entry.id, name: entry.tool.name, entry, done: true, trace: traceOf(entry), failed: failedTool(entry) });
           break;
         case 'note':
         case 'image_fit':
@@ -186,9 +248,11 @@ export class Transcript {
           blocks.push({ kind: 'compaction', key: entry.id, text });
           break;
       }
+      if (at(entry)) previous = at(entry);
     }
+    if (!this.running && !this.pending.length) signOff();
     for (const send of this.pending) {
-      blocks.push({ kind: 'user', key: `pending:${send.id}`, text: send.text, from: null, state: send.error ? 'failed' : 'sending', error: send.error });
+      blocks.push({ kind: 'user', key: `pending:${send.id}`, text: send.text, from: null, gap: null, state: send.error ? 'failed' : 'sending', error: send.error });
     }
     return blocks;
   }

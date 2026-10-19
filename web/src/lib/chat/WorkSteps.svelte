@@ -1,23 +1,39 @@
 <script lang="ts">
-  import type { Block, Transcript } from '../transcript.svelte';
+  import type { Session } from '../api';
+  import { summarize, type Step } from '../burst';
+  import LiveFace from '../LiveFace.svelte';
+  import { jsonField, type Block, type Transcript } from '../transcript.svelte';
   import Markdown from './Markdown.svelte';
   import ToolStep from './ToolStep.svelte';
 
-  // A turn's thinking and tool use between two messages, folded to one line
-  // once it is done. The run still going stays open so it can be watched.
-  let { steps, live, transcript }: { steps: Block[]; live: boolean; transcript: Transcript } = $props();
+  // A turn's thinking and tool use between two messages, read as one line of
+  // what it did, the way the terminal writes it. The run still going stays
+  // open, with albedo's face, so it can be watched.
+  let { steps, live, transcript, session }: { steps: Block[]; live: boolean; transcript: Transcript; session: Session | undefined } = $props();
 
   let chosen = $state<boolean | null>(null);
+  let element = $state<HTMLElement>();
   const open = $derived(chosen ?? live);
-  const tools = $derived(steps.filter((step) => step.kind === 'tool'));
-  const thoughts = $derived(steps.filter((step) => step.kind === 'thinking').length);
-  const seconds = $derived(Math.round(steps.reduce((sum, step) => sum + (step.kind === 'thinking' ? (step.ms ?? 0) : 0), 0) / 1000));
-
-  const label = $derived(
-    [thoughts ? `${thoughts} ${thoughts === 1 ? 'thought' : 'thoughts'}` : '', tools.length ? `${tools.length} ${tools.length === 1 ? 'tool' : 'tools'}` : '']
-      .filter(Boolean)
-      .join(' · '),
+  const tools = $derived(steps.flatMap((step) => (step.kind === 'tool' ? [step.entry] : [])));
+  const summary = $derived(
+    summarize(
+      steps.flatMap((step): Step[] => {
+        if (step.kind === 'thinking') return [{ kind: 'thinking', ms: step.ms }];
+        if (step.kind === 'tool') return [{ kind: 'tool', name: step.name, args: jsonField(step.entry, 'arguments') as Record<string, unknown> | undefined, trace: step.trace, failed: step.failed }];
+        return [];
+      }),
+      session?.workspace ?? '',
+    ),
   );
+
+  // What a call touched lives in its trace, which a page may only reference;
+  // fetch it once the line comes into view.
+  $effect(() => {
+    if (!element) return;
+    const observer = new IntersectionObserver(([entry]) => entry.isIntersecting && transcript.expand(...tools), { rootMargin: '200px' });
+    observer.observe(element);
+    return () => observer.disconnect();
+  });
 
   // Thoughts show their first lines; a click shows the rest.
   let whole = $state(new Set<string>());
@@ -27,16 +43,17 @@
     whole = next;
   }
 
-  $effect(() => {
-    if (open) transcript.expand(...tools.flatMap((step) => (step.kind === 'tool' ? [step.entry] : [])));
-  });
 </script>
 
-<div class="work">
-  <button class="summary" onclick={() => (chosen = !open)} aria-expanded={open}>
+<div class="work" bind:this={element}>
+  <button class="summary" onclick={() => (chosen = !open)} aria-expanded={open} title={summary.text}>
     <svg class="chevron" class:open viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" /></svg>
-    <span class:working={live}>{live ? 'Working' : 'Worked'}</span>
-    <span class="count">{label}{seconds ? ` · thought ${seconds}s` : ''}</span>
+    {#if live}<LiveFace {session} />{/if}
+    <span class="line">{summary.text || 'worked'}</span>
+    {#if summary.failed}<span class="failed">{summary.failed} failed</span>{/if}
+    {#if summary.added || summary.removed}
+      <span class="counts"><span class="added">+{summary.added}</span> <span class="removed">−{summary.removed}</span></span>
+    {/if}
   </button>
   {#if open}
     <div class="steps">
@@ -56,6 +73,9 @@
     display: flex;
     align-items: center;
     gap: 6px;
+    width: 100%;
+    min-width: 0;
+    text-align: left;
     padding: 2px 6px;
     margin: 0 -6px;
     color: var(--muted);
@@ -77,8 +97,29 @@
   .chevron.open {
     transform: rotate(90deg);
   }
-  .count {
-    color: var(--muted);
+  .chevron {
+    flex: none;
+  }
+  .line {
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+  .failed {
+    flex: none;
+    color: var(--danger);
+  }
+  .counts {
+    flex: none;
+    margin-left: 4px;
+    font-variant-numeric: tabular-nums;
+  }
+  .added {
+    color: var(--added);
+  }
+  .removed {
+    color: var(--danger);
   }
   .steps {
     display: grid;

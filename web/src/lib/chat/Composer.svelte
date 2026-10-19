@@ -1,6 +1,6 @@
 <script lang="ts">
   // Enter sends, Shift-Enter starts a new line. A draft survives until it is sent.
-  let { onsend, busy, placeholder = 'Message' }: { onsend: (text: string) => void; busy: boolean; placeholder?: string } = $props();
+  let { onsend, busy, placeholder = 'message albedo…' }: { onsend: (text: string) => void; busy: boolean; placeholder?: string } = $props();
   let text = $state('');
   let field = $state<HTMLTextAreaElement>();
   const ready = $derived(text.trim().length > 0);
@@ -21,9 +21,9 @@
 </script>
 
 <form class="composer" onsubmit={(event) => (event.preventDefault(), send())}>
-  <textarea bind:this={field} bind:value={text} onkeydown={keydown} {placeholder} rows="1" spellcheck="true" aria-label="Message"></textarea>
+  <textarea bind:this={field} bind:value={text} onkeydown={keydown} {placeholder} rows="1" spellcheck="true" aria-label="message"></textarea>
   <div class="bar">
-    <span class="hint">{busy ? 'working · a new message waits its turn' : ''}</span>
+    <span class="hint">{busy ? 'albedo is working · a new message waits its turn' : ''}</span>
     <button type="submit" class="send" disabled={!ready} aria-label="Send" title="Send (Enter)">
       <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M8 13V3.5M3.5 8 8 3.5 12.5 8" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" /></svg>
     </button>
