@@ -19,31 +19,33 @@ export interface Batch {
 
 const RETRY = { first: 500, most: 5000 };
 
-/** Follows a session's stream until stopped, reconnecting with the saved cursor. Returns the stop function. */
-export function follow(sessionId: string, onBatch: (batch: Batch) => void, onState: (connected: boolean) => void): () => void {
+/**
+ * Reads server-sent events from a daemon resource until stopped, asking
+ * again after an ordinary end or a failure with a growing wait. `resume`
+ * names the query that continues after a handled batch. Returns the stop
+ * function.
+ */
+function subscribe<T>(path: string, resume: (batch: T) => Record<string, string> | null, onBatch: (batch: T) => void, onState: (connected: boolean) => void): () => void {
   const controller = new AbortController();
-  let after: { generation: string; cursor: number } | null = null;
+  let after: Record<string, string> | null = null;
   let delay = RETRY.first;
 
   const run = async () => {
     while (!controller.signal.aborted) {
-      const query = new URLSearchParams({ tail: '0' });
-      if (after) {
-        query.set('after_generation', after.generation);
-        query.set('after_seq', String(after.cursor));
-      }
+      const [base, given = ''] = path.split('?');
+      const query = new URLSearchParams(given);
+      for (const [key, value] of Object.entries(after ?? {})) query.set(key, value);
       try {
-        const response = await fetch(`/api/sessions/${sessionId}?${query}`, { headers: { accept: 'text/event-stream' }, signal: controller.signal });
+        const response = await fetch(`/api${base}?${query}`, { headers: { accept: 'text/event-stream' }, signal: controller.signal });
         if (!response.ok || !response.body) throw new Error(`stream answered ${response.status}`);
         onState(true);
         delay = RETRY.first;
         for await (const data of frames(response.body)) {
-          const batch = JSON.parse(data) as Batch;
-          if (!Array.isArray(batch.events)) continue;
+          const batch = JSON.parse(data) as T;
           onBatch(batch);
-          after = { generation: batch.generation, cursor: batch.cursor };
+          after = resume(batch) ?? after;
         }
-      } catch (error) {
+      } catch {
         if (controller.signal.aborted) return;
       }
       // An ordinary end is a restart or a deletion; either way, ask again.
@@ -54,6 +56,25 @@ export function follow(sessionId: string, onBatch: (batch: Batch) => void, onSta
   };
   run();
   return () => controller.abort();
+}
+
+/** Follows one session's stream, resuming after the last batch it fully handled. */
+export function follow(sessionId: string, onBatch: (batch: Batch) => void, onState: (connected: boolean) => void): () => void {
+  return subscribe<Batch>(
+    `/sessions/${sessionId}?tail=0`,
+    (batch) => (batch.generation ? { after_generation: batch.generation, after_seq: String(batch.cursor) } : null),
+    (batch) => Array.isArray(batch.events) && onBatch(batch),
+    onState,
+  );
+}
+
+/**
+ * Follows the session list: each session's status and activity as it
+ * changes, and invalidations when sessions come, go or change. Every
+ * connection starts with a reset, so there is nothing to resume.
+ */
+export function followSessions(onEvents: (events: StreamEvent[]) => void, onState: (connected: boolean) => void): () => void {
+  return subscribe<{ events?: StreamEvent[] }>('/sessions?scope=roots', () => null, (batch) => Array.isArray(batch.events) && onEvents(batch.events), onState);
 }
 
 /** The data of each server-sent event in a body: lines after `data:`, joined, up to a blank line. */
