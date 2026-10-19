@@ -1,4 +1,4 @@
-import type { Node, Viewport, useSvelteFlow } from '@xyflow/svelte';
+import type { Edge, Node, Viewport, useSvelteFlow } from '@xyflow/svelte';
 
 // A board is an open canvas: windows sit anywhere, the view pans freely and
 // zooms out to an overview. Svelte Flow draws, drags and sizes the windows;
@@ -6,8 +6,14 @@ import type { Node, Viewport, useSvelteFlow } from '@xyflow/svelte';
 //
 // A window's data names what it shows and the window looks the live record
 // up, so the saved board stays small and never holds stale daemon state.
-export type SessionWindow = Node<{ sessionId: string }, 'session'>;
-export type Window = SessionWindow;
+//
+// A view opened from a window names it as its parent; the canvas draws a
+// faint line between them, so a board reads as conversations with the
+// papers each one spread around it.
+export type SessionWindow = Node<{ sessionId: string; parent?: string }, 'session'>;
+/** The changes one turn made, walked file by file. `from` is the turn's first history position. */
+export type ReviewWindow = Node<{ sessionId: string; turnId: string; from: number; parent?: string }, 'review'>;
+export type Window = SessionWindow | ReviewWindow;
 
 type Flow = ReturnType<typeof useSvelteFlow>;
 
@@ -31,6 +37,13 @@ function load(key: string): Saved {
 /** One board's windows and view. Only the active board is on screen, so `flow` is set only while it is. */
 export class Board {
   nodes = $state.raw<Window[]>([]);
+  edges = $derived(
+    this.nodes.flatMap((node): Edge[] =>
+      node.data.parent && this.nodes.some((other) => other.id === node.data.parent)
+        ? [{ id: `${node.data.parent}->${node.id}`, source: node.data.parent, target: node.id, type: 'default', selectable: false, focusable: false, class: 'tether' }]
+        : [],
+    ),
+  );
   viewport = $state.raw<Viewport>({ x: 0, y: 0, zoom: 1 });
   flow: Flow | null = null;
   #key: string;
@@ -97,13 +110,22 @@ export class Board {
 
   /** Brings a session's window into view, placing it beside the selected (or newest) window first. */
   openSession(sessionId: string) {
-    const id = `session:${sessionId}`;
-    if (!this.nodes.some((node) => node.id === id)) {
+    this.#open({ id: `session:${sessionId}`, type: 'session', data: { sessionId } });
+  }
+
+  /** Opens the review of one turn's changes beside the window it was asked from. */
+  openReview(sessionId: string, turnId: string, from: number, parent?: string) {
+    this.#open({ id: `review:${sessionId}:${turnId}`, type: 'review', data: { sessionId, turnId, from, parent } }, 640);
+  }
+
+  #open(window: Pick<SessionWindow, 'id' | 'type' | 'data'> | Pick<ReviewWindow, 'id' | 'type' | 'data'>, width = SIZE.width) {
+    if (!this.nodes.some((node) => node.id === window.id)) {
       const height = Math.round(Math.min(860, Math.max(480, (paneRect()?.height ?? 800) / this.viewport.zoom - 140)));
-      const window: SessionWindow = { id, type: 'session', position: this.#freeSpot(height), width: SIZE.width, height, dragHandle: '.window-handle', data: { sessionId } };
-      this.nodes = [...this.nodes, window];
+      const anchor = this.nodes.find((node) => node.id === window.data.parent);
+      const placed = { ...window, position: this.#freeSpot(height, width, anchor), width, height, dragHandle: '.window-handle' } as Window;
+      this.nodes = [...this.nodes, placed];
     }
-    this.focus(id);
+    this.focus(window.id);
   }
 
   focus(id: string) {
@@ -155,15 +177,15 @@ export class Board {
    * right of the selected window (or the newest), top-aligned, stepping right
    * past anything in the way, so windows never land on each other.
    */
-  #freeSpot(height: number) {
-    const anchor = this.nodes.find((node) => node.selected) ?? this.nodes.at(-1);
+  #freeSpot(height: number, width: number, near?: Window) {
+    const anchor = near ?? this.nodes.find((node) => node.selected) ?? this.nodes.at(-1);
     if (!anchor) {
       const { x, y, zoom } = this.viewport;
       return { x: Math.round((48 - x) / zoom), y: Math.round((88 - y) / zoom) };
     }
     const spot = { x: anchor.position.x + (anchor.width ?? SIZE.width) + GAP, y: anchor.position.y };
     let blocker: Window | undefined;
-    while ((blocker = this.nodes.find((node) => overlaps(node, spot, height)))) spot.x = blocker.position.x + (blocker.width ?? SIZE.width) + GAP;
+    while ((blocker = this.nodes.find((node) => overlaps(node, spot, width, height)))) spot.x = blocker.position.x + (blocker.width ?? SIZE.width) + GAP;
     return spot;
   }
 }
@@ -172,8 +194,8 @@ function paneRect() {
   return document.querySelector('.svelte-flow')?.getBoundingClientRect() ?? null;
 }
 
-function overlaps(node: Window, spot: { x: number; y: number }, height: number) {
-  const width = node.width ?? SIZE.width;
+function overlaps(node: Window, spot: { x: number; y: number }, width: number, height: number) {
+  const wide = node.width ?? SIZE.width;
   const tall = node.height ?? 720;
-  return spot.x < node.position.x + width + GAP && spot.x + SIZE.width + GAP > node.position.x && spot.y < node.position.y + tall && spot.y + height > node.position.y;
+  return spot.x < node.position.x + wide + GAP && spot.x + width + GAP > node.position.x && spot.y < node.position.y + tall && spot.y + height > node.position.y;
 }

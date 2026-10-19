@@ -1,7 +1,6 @@
 <script lang="ts">
   import type { Session } from '../api';
   import { summarize, type Step } from '../burst';
-  import LiveFace from '../LiveFace.svelte';
   import { jsonField, type Block, type Transcript } from '../transcript.svelte';
   import Markdown from './Markdown.svelte';
   import ToolStep from './ToolStep.svelte';
@@ -48,7 +47,6 @@
 <div class="work" bind:this={element}>
   <button class="summary" onclick={() => (chosen = !open)} aria-expanded={open} title={summary.text}>
     <svg class="chevron" class:open viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" /></svg>
-    {#if live}<LiveFace {session} />{/if}
     <span class="line">{summary.text || 'worked'}</span>
     {#if summary.failed}<span class="failed">{summary.failed} failed</span>{/if}
     {#if summary.added || summary.removed}

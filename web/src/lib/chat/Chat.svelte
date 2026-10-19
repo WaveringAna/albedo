@@ -2,6 +2,7 @@
   import { onMount, tick } from 'svelte';
   import type { Session } from '../api';
   import { busy } from '../live.svelte';
+  import { boards } from '../boards.svelte';
   import LiveFace from '../LiveFace.svelte';
   import { face, formatElapsed } from '../moods';
   import { Transcript } from '../transcript.svelte';
@@ -9,7 +10,7 @@
   import Markdown from './Markdown.svelte';
   import WorkSteps from './WorkSteps.svelte';
 
-  let { sessionId, session }: { sessionId: string; session: Session | undefined } = $props();
+  let { sessionId, session, windowId }: { sessionId: string; session: Session | undefined; windowId: string } = $props();
 
   // svelte-ignore state_referenced_locally
   const transcript = new Transcript(sessionId);
@@ -143,6 +144,12 @@
           <p class="end">
             <span class="face kaomoji" title={group.mood}>{face(group.mood, group.seed)}</span>
             <span class="meta">{[group.elapsedMs >= 1000 ? formatElapsed(group.elapsedMs) : '', group.tools ? `${group.tools} ${group.tools === 1 ? 'tool' : 'tools'}` : ''].filter(Boolean).join(' · ')}</span>
+            {#if group.changed.files && group.turnId}
+              <button class="review" title="review this turn's changes" onclick={() => boards.board?.openReview(sessionId, group.turnId!, group.from, windowId)}>
+                review {group.changed.files} {group.changed.files === 1 ? 'file' : 'files'}
+                {#if group.changed.added || group.changed.removed}<span class="added">+{group.changed.added}</span> <span class="removed">−{group.changed.removed}</span>{/if}
+              </button>
+            {/if}
             {#if group.text}
               <button class="copy" onclick={() => copy(group.key, group.text)}>{copied === group.key ? 'copied' : 'copy'}</button>
             {/if}
@@ -232,6 +239,25 @@
   .end .face {
     color: var(--agent);
     font-size: 13px;
+  }
+  .review {
+    padding: 1px 8px;
+    color: var(--text);
+    font: inherit;
+    background: var(--well);
+    border: 0;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background-color 120ms ease;
+  }
+  .review:hover {
+    background: var(--selected);
+  }
+  .review .added {
+    color: var(--added);
+  }
+  .review .removed {
+    color: var(--danger);
   }
   .copy {
     padding: 0 4px;

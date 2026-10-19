@@ -4,6 +4,7 @@
   import { prefs } from './prefs.svelte';
   import FlowBinder from './FlowBinder.svelte';
   import { shortcut } from './keys';
+  import ReviewNode from './nodes/ReviewNode.svelte';
   import SessionNode from './nodes/SessionNode.svelte';
 
   // Mounted again on every tab switch (keyed on the board), so each board
@@ -15,7 +16,7 @@
   // and every other scroll pans the canvas freely.
   let { board, onpalette, minimap }: { board: Board; onpalette: () => void; minimap: boolean } = $props();
 
-  const nodeTypes: NodeTypes = { session: SessionNode };
+  const nodeTypes: NodeTypes = { session: SessionNode, review: ReviewNode };
   const READABLE = 0.6;
   let element = $state<HTMLElement>();
   // The dots fade out as the view zooms out, before they crowd into a texture.
@@ -51,6 +52,7 @@
 <div class="canvas" bind:this={element} style:--dots-opacity={Math.min(1, (zoom - 0.5) * 4)}>
   <SvelteFlow
     bind:nodes={board.nodes}
+    edges={board.edges}
     {nodeTypes}
     colorMode={prefs.resolved}
     initialViewport={board.viewport}

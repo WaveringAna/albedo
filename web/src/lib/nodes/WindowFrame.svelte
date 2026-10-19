@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { NodeResizer } from '@xyflow/svelte';
+  import { Handle, NodeResizer, Position } from '@xyflow/svelte';
   import type { Snippet } from 'svelte';
   import { SIZE } from '../board.svelte';
   import { boards } from '../boards.svelte';
@@ -12,6 +12,9 @@
 </script>
 
 <NodeResizer minWidth={SIZE.minWidth} minHeight={SIZE.minHeight} lineClass="window-edge" handleClass="window-corner" />
+<!-- Where the lines between a window and the views it opened meet it; nothing to grab. -->
+<Handle type="target" position={Position.Left} isConnectable={false} class="tether-end" />
+<Handle type="source" position={Position.Right} isConnectable={false} class="tether-end" />
 
 <article class="window" class:selected>
   <header class="window-handle">

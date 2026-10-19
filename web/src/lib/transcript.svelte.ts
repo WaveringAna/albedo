@@ -14,7 +14,7 @@ export type Block =
   | { kind: 'tool'; key: string; name: string; entry: HistoryEntry; done: boolean; trace?: Trace; failed: boolean }
   | { kind: 'note'; key: string; text: string }
   | { kind: 'compaction'; key: string; text: string }
-  | { kind: 'end'; key: string; mood: Mood; seed: number; elapsedMs: number; tools: number; text: string }
+  | { kind: 'end'; key: string; turnId: string | null; from: number; mood: Mood; seed: number; elapsedMs: number; tools: number; text: string; changed: { files: number; added: number; removed: number } }
   | { kind: 'progress'; key: string; name: string; preview: string };
 
 /** Output the session is writing now, before it commits: one message of thinking or reply. */
@@ -35,10 +35,15 @@ interface Progress {
 
 interface Turn {
   id: string | null;
+  /** The turn's first history position, where a review starts reading. */
+  from: number;
   start: number;
   last: number;
   tools: number;
   answered: boolean;
+  files: Set<string>;
+  added: number;
+  removed: number;
   /** The turn's last reply, which its copy action copies. */
   text: string;
 }
@@ -302,14 +307,15 @@ export class Transcript {
     const signOff = () => {
       if (!turn || (!turn.answered && !turn.tools)) return;
       const elapsedMs = Math.max(0, turn.last - turn.start);
-      blocks.push({ kind: 'end', key: `end:${turn.id}`, mood: outcome(false, false, elapsedMs), seed: turn.last, elapsedMs, tools: turn.tools, text: turn.text });
+      const changed = { files: turn.files.size, added: turn.added, removed: turn.removed };
+      blocks.push({ kind: 'end', key: `end:${turn.id}`, turnId: turn.id, from: turn.from, mood: outcome(false, false, elapsedMs), seed: turn.last, elapsedMs, tools: turn.tools, text: turn.text, changed });
     };
 
     for (const entry of this.entries) {
       const text = textOf(entry.content);
       if (!turn || entry.turn_id !== turn.id) {
         signOff();
-        turn = { id: entry.turn_id, start: at(entry), last: at(entry), tools: 0, answered: false, text: '' };
+        turn = { id: entry.turn_id, from: entry.position, start: at(entry), last: at(entry), tools: 0, answered: false, files: new Set(), added: 0, removed: 0, text: '' };
       }
       turn.last = Math.max(turn.last, at(entry));
       switch (entry.kind) {
@@ -337,6 +343,11 @@ export class Transcript {
         case 'tool_result':
           if (!entry.tool) break;
           turn.tools++;
+          for (const change of traceOf(entry)?.changes ?? []) {
+            turn.files.add(change.path);
+            turn.added += change.added ?? 0;
+            turn.removed += change.removed ?? 0;
+          }
           blocks.push({ kind: 'tool', key: entry.id, name: entry.tool.name, entry, done: true, trace: traceOf(entry), failed: failedTool(entry) });
           break;
         case 'note':

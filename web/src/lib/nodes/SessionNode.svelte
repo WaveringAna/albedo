@@ -20,7 +20,7 @@
   {/snippet}
 
   {#if session || !sessions.loaded}
-    <Chat sessionId={data.sessionId} {session} />
+    <Chat sessionId={data.sessionId} {session} windowId={id} />
   {:else}
     <p class="gone">(・_・;) this session is no longer on the daemon</p>
   {/if}

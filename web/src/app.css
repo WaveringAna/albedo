@@ -163,6 +163,23 @@ input:focus-visible,
   box-shadow: var(--shadow-lg);
 }
 
+/* A window and the views it opened are tied by a faint line. */
+.svelte-flow .tether-end {
+  width: 1px;
+  height: 1px;
+  min-width: 0;
+  min-height: 0;
+  background: transparent;
+  border: 0;
+  pointer-events: none;
+}
+
+.svelte-flow .tether path {
+  stroke: color-mix(in oklab, var(--accent) 40%, transparent);
+  stroke-width: 1.5;
+  stroke-dasharray: 4 6;
+}
+
 /* Window edges and corners resize but draw nothing until hovered. */
 .svelte-flow .window-edge {
   border-color: transparent;
