@@ -1,5 +1,6 @@
 import { readEntryContent, readHistory, sendMessage, uuidv7, type ContentPart, type HistoryEntry } from './api';
 import type { Trace } from './burst';
+import type { Attached } from './chat/attachments';
 import { follow, type Batch } from './stream';
 import { formatGap, outcome, type Mood } from './moods';
 
@@ -8,7 +9,7 @@ import { formatGap, outcome, type Mood } from './moods';
 // fetched when it is needed: message text at once, tool output on opening.
 
 export type Block =
-  | { kind: 'user'; key: string; text: string; from: string | null; gap: string | null; state: 'sent' | 'sending' | 'failed'; error?: string }
+  | { kind: 'user'; key: string; text: string; images: Picture[]; from: string | null; gap: string | null; state: 'sent' | 'sending' | 'failed'; error?: string }
   | { kind: 'assistant'; key: string; text: string; plate: boolean }
   | { kind: 'thinking'; key: string; text: string; ms: number | null }
   | { kind: 'tool'; key: string; name: string; entry: HistoryEntry; done: boolean; trace?: Trace; failed: boolean }
@@ -54,10 +55,23 @@ const AWAY_MS = 30 * 60_000;
 /** A turn's run of thinking and tool use, drawn as one collapsible step list. */
 export type Group = { kind: 'work'; key: string; steps: Block[] } | Block;
 
+/** An image in a message: where to load it, and its size when known. */
+export interface Picture {
+  src: string;
+  width?: number;
+  height?: number;
+}
+
 interface Pending {
   id: string;
   text: string;
+  images: Attached[];
   error?: string;
+}
+
+/** The images a user entry carries; the daemon serves each under its reference. */
+function picturesOf(entry: HistoryEntry): Picture[] {
+  return entry.content.flatMap((part) => (part.kind === 'image' && part.image.reference ? [{ src: `/api${part.image.reference.url}`, width: part.image.width, height: part.image.height }] : []));
 }
 
 function textOf(content: ContentPart[]): string {
@@ -260,8 +274,8 @@ export class Transcript {
     }, 60);
   }
 
-  async send(text: string) {
-    const send = { id: uuidv7(), text };
+  async send(text: string, images: Attached[] = []) {
+    const send = { id: uuidv7(), text, images };
     this.pending = [...this.pending, send];
     await this.#deliver(send);
   }
@@ -269,7 +283,7 @@ export class Transcript {
   async retry(id: string) {
     const send = this.pending.find((candidate) => candidate.id === id);
     if (!send) return;
-    this.pending = this.pending.map((candidate) => (candidate.id === id ? { id, text: send.text } : candidate));
+    this.pending = this.pending.map((candidate) => (candidate.id === id ? { ...send, error: undefined } : candidate));
     await this.#deliver(send);
   }
 
@@ -292,7 +306,7 @@ export class Transcript {
 
   async #deliver(send: Pending) {
     try {
-      await sendMessage(this.sessionId, send.id, send.text);
+      await sendMessage(this.sessionId, send.id, send.text, send.images.map(({ mime_type, data }) => ({ mime_type, data })));
     } catch (error) {
       const message = String((error as Error).message ?? error);
       this.pending = this.pending.map((candidate) => (candidate.id === send.id ? { ...candidate, error: message } : candidate));
@@ -330,7 +344,7 @@ export class Transcript {
         case 'user': {
           const gap = previous && at(entry) - previous >= AWAY_MS ? formatGap(at(entry) - previous) : null;
           const from = entry.mail?.sender_label?.toLowerCase() ?? (entry.turn_type && !['user', 'chat'].includes(entry.turn_type) ? entry.turn_type : null);
-          blocks.push({ kind: 'user', key: entry.id, text, from, gap, state: 'sent' });
+          blocks.push({ kind: 'user', key: entry.id, text, images: picturesOf(entry), from, gap, state: 'sent' });
           speaker = 'you';
           break;
         }
@@ -380,7 +394,8 @@ export class Transcript {
       if (!called.has(item.call)) blocks.push({ kind: 'progress', key: `progress:${item.id}`, name: item.name, preview: item.preview });
     }
     for (const send of this.pending) {
-      blocks.push({ kind: 'user', key: `pending:${send.id}`, text: send.text, from: null, gap: null, state: send.error ? 'failed' : 'sending', error: send.error });
+      const images = send.images.map((image) => ({ src: image.preview }));
+      blocks.push({ kind: 'user', key: `pending:${send.id}`, text: send.text, images, from: null, gap: null, state: send.error ? 'failed' : 'sending', error: send.error });
     }
     return blocks;
   }

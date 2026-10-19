@@ -68,7 +68,7 @@ export type EntryKind = 'user' | 'assistant' | 'thinking' | 'tool_call' | 'tool_
 export type ContentPart =
   | { kind: 'text'; text: string }
   | { kind: 'json'; field: string; value: unknown }
-  | { kind: 'image'; image: { mime_type: string; width: number; height: number } }
+  | { kind: 'image'; image: { mime_type: string; width: number; height: number; reference?: { url: string } } }
   | { kind: 'trace'; trace: unknown }
   | { kind: 'reference'; reference: { url: string; field: string; bytes: number } };
 
@@ -137,6 +137,13 @@ export function uuidv7(): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
-export function sendMessage(sessionId: string, inputId: string, text: string): Promise<unknown> {
-  return request('PUT', `/sessions/${sessionId}/inputs/${inputId}`, { body: { kind: 'message', text } });
+export interface ImageUpload {
+  mime_type: 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp';
+  /** Base64, without a data URL's prefix. */
+  data: string;
+}
+
+export function sendMessage(sessionId: string, inputId: string, text: string, images: ImageUpload[] = []): Promise<unknown> {
+  const body = images.length ? { kind: 'message', text, images } : { kind: 'message', text };
+  return request('PUT', `/sessions/${sessionId}/inputs/${inputId}`, { body });
 }

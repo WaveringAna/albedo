@@ -1,15 +1,59 @@
 <script lang="ts">
-  // Enter sends, Shift-Enter starts a new line. A draft survives until it is sent.
-  let { onsend, busy, placeholder = 'message albedo…' }: { onsend: (text: string) => void; busy: boolean; placeholder?: string } = $props();
+  import { SvelteMap } from 'svelte/reactivity';
+  import { attachable, marker, MAX_IMAGES, readImage, referenced, resolve, unmark, type Attached } from './attachments';
+
+  // Enter sends, Shift-Enter starts a new line. A draft survives until it is
+  // sent. Images come by paste, drop or the picker; each leaves a marker in
+  // the text where it was attached.
+  let { onsend, busy, placeholder = 'message albedo…' }: { onsend: (text: string, images: Attached[]) => void; busy: boolean; placeholder?: string } = $props();
   let text = $state('');
   let field = $state<HTMLTextAreaElement>();
-  const ready = $derived(text.trim().length > 0);
+  let picker = $state<HTMLInputElement>();
+  let dragging = $state(false);
+  let notice = $state('');
+  const images = new SvelteMap<number, Attached>();
+  let next = 0;
+
+  const marked = $derived(referenced(text, images));
+  const ready = $derived(text.trim().length > 0 || marked.length > 0);
 
   function send() {
     if (!ready) return;
-    onsend(text);
+    const message = resolve(text, images);
+    onsend(message.text, message.images);
     text = '';
+    images.clear();
+    next = 0;
+    notice = '';
     field?.focus();
+  }
+
+  async function attach(files: Iterable<File>) {
+    const chosen = [...files].filter(attachable);
+    if (!chosen.length) return;
+    const room = MAX_IMAGES - marked.length;
+    notice = chosen.length > room ? `a message carries at most ${MAX_IMAGES} images` : '';
+    for (const file of chosen.slice(0, Math.max(0, room))) {
+      const image = await readImage(file);
+      images.set(++next, image);
+      insert(marker(next));
+    }
+  }
+
+  /** Puts text at the cursor, spaced from its neighbours. */
+  function insert(piece: string) {
+    const at = field?.selectionStart ?? text.length;
+    const end = field?.selectionEnd ?? at;
+    const before = text.slice(0, at);
+    const spaced = (before && !/\s$/.test(before) ? ' ' : '') + piece + ' ';
+    text = before + spaced + text.slice(end);
+    const cursor = at + spaced.length;
+    queueMicrotask(() => field?.setSelectionRange(cursor, cursor));
+  }
+
+  function remove(n: number) {
+    text = unmark(text, n);
+    images.delete(n);
   }
 
   function keydown(event: KeyboardEvent) {
@@ -18,12 +62,64 @@
       send();
     }
   }
+
+  function paste(event: ClipboardEvent) {
+    const files = [...(event.clipboardData?.files ?? [])].filter(attachable);
+    if (!files.length) return;
+    event.preventDefault();
+    attach(files);
+  }
+
+  function drop(event: DragEvent) {
+    dragging = false;
+    if (!event.dataTransfer?.files.length) return;
+    event.preventDefault();
+    attach(event.dataTransfer.files);
+  }
 </script>
 
-<form class="composer" onsubmit={(event) => (event.preventDefault(), send())}>
-  <textarea bind:this={field} bind:value={text} onkeydown={keydown} {placeholder} rows="1" spellcheck="true" aria-label="message"></textarea>
+<form
+  class="composer"
+  class:dragging
+  onsubmit={(event) => (event.preventDefault(), send())}
+  ondragover={(event) => {
+    if (!event.dataTransfer?.types.includes('Files')) return;
+    event.preventDefault();
+    dragging = true;
+  }}
+  ondragleave={() => (dragging = false)}
+  ondrop={drop}
+>
+  {#if marked.length}
+    <ul class="images" aria-label="attached images">
+      {#each marked as n (n)}
+        <li>
+          <img src={images.get(n)!.preview} alt={marker(n)} />
+          <span class="number">#{n}</span>
+          <button type="button" class="drop" aria-label="remove image {n}" title="remove" onclick={() => remove(n)}>
+            <svg viewBox="0 0 16 16" width="10" height="10" aria-hidden="true"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" /></svg>
+          </button>
+        </li>
+      {/each}
+    </ul>
+  {/if}
+  <textarea bind:this={field} bind:value={text} onkeydown={keydown} onpaste={paste} {placeholder} rows="1" spellcheck="true" aria-label="message"></textarea>
   <div class="bar">
-    <span class="hint">{busy ? 'albedo is working · a new message waits its turn' : ''}</span>
+    <button type="button" class="attach" aria-label="attach images" title="attach images (or paste, or drop)" onclick={() => picker?.click()}>
+      <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><rect x="2" y="3" width="12" height="10" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.3" /><circle cx="6" cy="6.6" r="1.2" fill="currentColor" /><path d="M2.6 11.6 6 8.6l2.4 2 2.2-1.8 2.8 2.6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" /></svg>
+    </button>
+    <input
+      bind:this={picker}
+      type="file"
+      accept="image/png,image/jpeg,image/gif,image/webp"
+      multiple
+      hidden
+      onchange={(event) => {
+        const input = event.currentTarget;
+        attach(input.files ?? []).then(() => (input.value = ''));
+      }}
+    />
+    <span class="hint">{notice || (busy ? 'albedo is working · a new message waits its turn' : '')}</span>
     <button type="submit" class="send" disabled={!ready} aria-label="Send" title="Send (Enter)">
       <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M8 13V3.5M3.5 8 8 3.5 12.5 8" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" /></svg>
     </button>
@@ -42,6 +138,58 @@
   }
   .composer:focus-within {
     box-shadow: 0 0 0 2px var(--focus-ring);
+  }
+  .composer.dragging {
+    box-shadow: 0 0 0 2px var(--accent);
+  }
+  .images {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin: 0 0 6px;
+    padding: 0;
+    list-style: none;
+  }
+  .images li {
+    position: relative;
+  }
+  .images img {
+    display: block;
+    width: 56px;
+    height: 56px;
+    object-fit: cover;
+    border-radius: 8px;
+  }
+  .number {
+    position: absolute;
+    left: 4px;
+    bottom: 4px;
+    padding: 0 4px;
+    color: #fff;
+    font-size: 10px;
+    background: rgb(0 0 0 / 0.5);
+    border-radius: 4px;
+  }
+  .drop {
+    position: absolute;
+    top: -5px;
+    right: -5px;
+    display: grid;
+    place-items: center;
+    width: 18px;
+    height: 18px;
+    padding: 0;
+    color: var(--surface);
+    background: var(--text);
+    border: 0;
+    border-radius: 50%;
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 120ms ease;
+  }
+  .images li:hover .drop,
+  .drop:focus-visible {
+    opacity: 1;
   }
   textarea {
     min-height: 22px;
@@ -62,6 +210,24 @@
     display: flex;
     align-items: center;
     gap: 8px;
+  }
+  .attach {
+    display: grid;
+    place-items: center;
+    width: 28px;
+    height: 28px;
+    margin-left: -6px;
+    padding: 0;
+    color: var(--muted);
+    background: none;
+    border: 0;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: background-color 120ms ease, color 120ms ease;
+  }
+  .attach:hover {
+    color: var(--text);
+    background: var(--hover);
   }
   .hint {
     flex: 1;

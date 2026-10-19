@@ -3,6 +3,7 @@
   import type { Session } from '../api';
   import { busy } from '../live.svelte';
   import { boards } from '../boards.svelte';
+  import type { Attached } from './attachments';
   import LiveFace from '../LiveFace.svelte';
   import { face, formatElapsed } from '../moods';
   import { Transcript } from '../transcript.svelte';
@@ -98,9 +99,9 @@
     if (scroller) pinned = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 40;
   }
 
-  function send(text: string) {
+  function send(text: string, images: Attached[]) {
     pinned = true;
-    transcript.send(text);
+    transcript.send(text, images);
   }
 </script>
 
@@ -124,7 +125,18 @@
             {#if group.from || group.gap}
               <span class="plate"><span class:you={!group.from}>{group.from ?? 'you'}</span>{#if group.gap}<span class="meta">{' · '}{group.gap}</span>{/if}</span>
             {/if}
-            <div class="bubble" class:sending={group.state === 'sending'}>{group.text}</div>
+            {#if group.images.length}
+              <div class="pictures" class:sending={group.state === 'sending'}>
+                {#each group.images as picture, index (index)}
+                  <a href={picture.src} target="_blank" rel="noopener noreferrer" title="Image #{index + 1}">
+                    <img src={picture.src} alt="Image #{index + 1}" width={picture.width} height={picture.height} loading="lazy" />
+                  </a>
+                {/each}
+              </div>
+            {/if}
+            {#if group.text.trim()}
+              <div class="bubble" class:sending={group.state === 'sending'}>{group.text}</div>
+            {/if}
             {#if group.state === 'failed'}
               <span class="problem">
                 not sent: {group.error}
@@ -285,8 +297,28 @@
     background: var(--bubble);
     border-radius: 16px 16px 4px 16px;
   }
-  .bubble.sending {
+  .bubble.sending,
+  .pictures.sending {
     opacity: 0.6;
+  }
+  .pictures {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 6px;
+    max-width: 85%;
+  }
+  .pictures a {
+    display: block;
+    line-height: 0;
+  }
+  .pictures img {
+    width: auto;
+    max-width: 220px;
+    height: auto;
+    max-height: 160px;
+    object-fit: cover;
+    border-radius: 12px;
   }
   .failed .bubble {
     box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--danger) 50%, transparent);
