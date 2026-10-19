@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>albedo</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='6' fill='%23e8e4dc' stroke='%23333' stroke-width='1.5'/%3E%3C/svg%3E" />
+    <script>
+      // Apply the saved theme before the first paint, so a dark choice never flashes light.
+      (() => {
+        let prefs = {};
+        try { prefs = JSON.parse(localStorage.getItem('albedo.prefs.v1') || '{}'); } catch {}
+        const theme = prefs.theme === 'light' || prefs.theme === 'dark' ? prefs.theme : matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+        document.documentElement.dataset.theme = theme;
+        document.documentElement.dataset.accent = prefs.accent || 'pine';
+      })();
+    </script>
+    <style>
+      html { background: #ebe9e4; overscroll-behavior: none; }
+      html[data-theme='dark'] { background: #111110; }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

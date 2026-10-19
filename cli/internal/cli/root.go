@@ -27,6 +27,8 @@ type Dependencies struct {
 	Storage     *storage.Service
 	Terminal    *terminal.Service
 	Workspace   string
+	// ProjectRoot is the albedo checkout, where the web client is built.
+	ProjectRoot string
 }
 type Streams struct {
 	In       io.Reader
@@ -139,7 +141,7 @@ func NewRoot(deps Dependencies) *cobra.Command {
 		_, err = fmt.Fprintln(cmd.OutOrStdout(), result.Answer)
 		return err
 	}
-	root.AddCommand(newOpen(deps), newResume(deps), newSessions(deps), newModels(deps), newSend(deps), newStop(deps), newDaemon(deps), newStorage(deps), newLogin(deps))
+	root.AddCommand(newOpen(deps), newResume(deps), newSessions(deps), newModels(deps), newSend(deps), newStop(deps), newDaemon(deps), newStorage(deps), newLogin(deps), newWeb(deps))
 	return root
 }
 func open(cmd *cobra.Command, deps Dependencies, options app.OpenOptions) error {

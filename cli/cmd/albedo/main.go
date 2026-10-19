@@ -114,5 +114,5 @@ func run(args []string) error {
 	if err != nil {
 		workspace = "."
 	}
-	return cli.Execute(ctx, args, cli.Dependencies{Application: application, Storage: store, Terminal: term, Workspace: workspace}, streams)
+	return cli.Execute(ctx, args, cli.Dependencies{Application: application, Storage: store, Terminal: term, Workspace: workspace, ProjectRoot: options.ProjectRoot}, streams)
 }

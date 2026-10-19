@@ -1,0 +1,292 @@
+<script lang="ts">
+  import { boards } from './lib/boards.svelte';
+  import Canvas from './lib/Canvas.svelte';
+  import { ago, place, rank } from './lib/format';
+  import { shortcut, typing } from './lib/keys';
+  import Palette, { type Item } from './lib/Palette.svelte';
+  import { prefs } from './lib/prefs.svelte';
+  import Rail from './lib/Rail.svelte';
+  import Settings from './lib/Settings.svelte';
+  import { sessions } from './lib/sessions.svelte';
+  import Tabs from './lib/Tabs.svelte';
+
+  const RAIL_KEY = 'albedo.rail';
+  const MINIMAP_KEY = 'albedo.minimap';
+  let railOpen = $state(localStorage.getItem(RAIL_KEY) !== 'closed');
+  let minimap = $state(localStorage.getItem(MINIMAP_KEY) === 'on');
+  let paletteOpen = $state(false);
+  let settingsOpen = $state(false);
+  let search = $state<HTMLInputElement>();
+
+  $effect(() => localStorage.setItem(RAIL_KEY, railOpen ? 'open' : 'closed'));
+  $effect(() => localStorage.setItem(MINIMAP_KEY, minimap ? 'on' : 'off'));
+  sessions.start();
+
+  const commands: Omit<Item, 'kind' | 'key'>[] = [
+    { label: 'New board', run: () => boards.create() },
+    { label: 'Rename board', hint: 'F2', run: () => (boards.renaming = boards.active) },
+    { label: 'Next board', hint: '⇧]', run: () => boards.step(1) },
+    { label: 'Previous board', hint: '⇧[', run: () => boards.step(-1) },
+    { label: 'Close board tab', run: () => boards.active && boards.close(boards.active) },
+    { label: 'Delete board', run: () => boards.active && boards.delete(boards.active) },
+    { label: 'Fit all windows', hint: '⇧1', run: () => boards.board?.fit() },
+    { label: 'Zoom to 100%', hint: '⇧0', run: () => boards.board?.zoomTo(1) },
+    { label: 'Next window', hint: '⌥→', run: () => boards.board?.step(1) },
+    { label: 'Previous window', hint: '⌥←', run: () => boards.board?.step(-1) },
+    { label: 'Close window', run: () => closeSelected() },
+    { label: 'Toggle overview map', hint: 'M', run: () => (minimap = !minimap) },
+    { label: 'Toggle sessions', hint: '[', run: () => (railOpen = !railOpen) },
+    { label: 'Refresh sessions', run: () => sessions.refresh() },
+    { label: 'Settings', hint: '⌘,', run: () => (settingsOpen = true) },
+    { label: 'Theme: follow the system', run: () => (prefs.theme = 'system') },
+    { label: 'Theme: light', run: () => (prefs.theme = 'light') },
+    { label: 'Theme: dark', run: () => (prefs.theme = 'dark') },
+  ];
+
+  function searchEverything(query: string): Item[] {
+    const found = rank(
+      sessions.list.filter((session) => !session.preferences.archived),
+      query,
+      (session) => `${session.name} ${place(session.workspace)}`,
+    )
+      .slice(0, 60)
+      .map<Item>((session) => ({
+        key: session.id,
+        kind: 'session',
+        label: session.name || 'untitled session',
+        detail: `${place(session.workspace)} · ${session.status?.phase === 'running' ? 'working' : ago(session.activity_at)}`,
+        run: () => boards.openSession(session),
+      }));
+    const reopen = boards.closed.map((entry) => ({ label: `Open board: ${entry.name}`, run: () => boards.show(entry.id) }));
+    const actions = rank([...commands, ...reopen], query, (command) => command.label).map<Item>((command) => ({ key: `command:${command.label}`, kind: 'command', ...command }));
+    return query ? [...found, ...actions] : [...actions, ...found];
+  }
+
+  function closeSelected() {
+    const selected = boards.board?.nodes.find((node) => node.selected);
+    if (selected) boards.board?.remove(selected.id);
+  }
+
+  function keydown(event: KeyboardEvent) {
+    if ((event.metaKey || event.ctrlKey) && event.key === ',') {
+      event.preventDefault();
+      settingsOpen = !settingsOpen;
+      return;
+    }
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+      event.preventDefault();
+      paletteOpen = !paletteOpen;
+      return;
+    }
+    if (paletteOpen || typing(event) || event.metaKey || event.ctrlKey) return;
+    if (event.altKey) {
+      if (event.key === 'ArrowRight') boards.board?.step(1);
+      else if (event.key === 'ArrowLeft') boards.board?.step(-1);
+      else return;
+      return event.preventDefault();
+    }
+    if (event.key === '[') railOpen = !railOpen;
+    else if (event.key === '{') boards.step(-1);
+    else if (event.key === '}') boards.step(1);
+    else if (event.key === 'F2') boards.renaming = boards.active;
+    else if (event.key === '!' && event.code === 'Digit1') boards.board?.fit();
+    else if (event.key === ')' && event.code === 'Digit0') boards.board?.zoomTo(1);
+    else if (event.key === 'm') minimap = !minimap;
+    else if (event.key === '/') {
+      railOpen = true;
+      queueMicrotask(() => search?.focus());
+    } else return;
+    event.preventDefault();
+  }
+
+  const linkLabel = { connecting: 'connecting', online: 'connected', offline: 'daemon unreachable', unauthorized: 'signed out: open the link albedo web printed' };
+</script>
+
+<svelte:window onkeydown={keydown} />
+
+<div class="shell" class:rail-closed={!railOpen}>
+  <header class="topbar">
+    <div class="start">
+      <button class="icon" aria-label={railOpen ? 'Hide sessions' : 'Show sessions'} title="{railOpen ? 'Hide' : 'Show'} sessions ([)" onclick={() => (railOpen = !railOpen)}>
+        <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><rect x="2" y="3" width="12" height="10" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.3" /><path d="M6.25 3v10" stroke="currentColor" stroke-width="1.3" /></svg>
+      </button>
+      <span class="brand">albedo</span>
+    </div>
+    <Tabs />
+    {#if sessions.link !== 'online'}
+      <span class="link" role="status">{linkLabel[sessions.link]}</span>
+    {/if}
+    <div class="end">
+      <button class="command" onclick={() => (paletteOpen = true)}>
+        <span>Search</span>
+        <kbd>{shortcut('K')}</kbd>
+      </button>
+      <button class="icon" class:on={settingsOpen} data-settings-toggle aria-label="Settings" aria-expanded={settingsOpen} title="Settings ({shortcut(',')})" onclick={() => (settingsOpen = !settingsOpen)}>
+        <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M2.5 5h6M11.5 5h2M2.5 11h2M7.5 11h6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" /><circle cx="10" cy="5" r="1.6" fill="none" stroke="currentColor" stroke-width="1.3" /><circle cx="6" cy="11" r="1.6" fill="none" stroke="currentColor" stroke-width="1.3" /></svg>
+      </button>
+    </div>
+  </header>
+
+  {#if railOpen}<Rail bind:search />{/if}
+
+  <main>
+    {#if boards.board}
+      {#key boards.board}
+        <Canvas board={boards.board} {minimap} onpalette={() => (paletteOpen = true)} />
+      {/key}
+      <div class="view" role="toolbar" aria-label="View">
+        <button aria-label="Zoom out" title="Zoom out" onclick={() => boards.board?.zoomTo(boards.board.viewport.zoom / 1.25)}>
+          <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 8h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" /></svg>
+        </button>
+        <button class="level" title="Zoom to 100% (⇧0)" onclick={() => boards.board?.zoomTo(1)}>{Math.round((boards.board.viewport.zoom ?? 1) * 100)}%</button>
+        <button aria-label="Zoom in" title="Zoom in" onclick={() => boards.board?.zoomTo(boards.board.viewport.zoom * 1.25)}>
+          <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 8h8M8 4v8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" /></svg>
+        </button>
+        <button aria-label="Fit all windows" title="Fit all windows (⇧1)" onclick={() => boards.board?.fit()}>
+          <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M2.5 6V3.5a1 1 0 011-1H6M10 2.5h2.5a1 1 0 011 1V6M13.5 10v2.5a1 1 0 01-1 1H10M6 13.5H3.5a1 1 0 01-1-1V10" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" /></svg>
+        </button>
+        <button aria-label="Overview map" aria-pressed={minimap} title="Overview map (M)" class:on={minimap} onclick={() => (minimap = !minimap)}>
+          <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><rect x="2" y="3" width="12" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="1.3" /><rect x="4.5" y="5.5" width="4" height="3" rx="0.75" fill="currentColor" /></svg>
+        </button>
+      </div>
+    {/if}
+  </main>
+</div>
+
+{#if settingsOpen}
+  <Settings onclose={() => (settingsOpen = false)} />
+{/if}
+
+{#if paletteOpen}
+  <Palette placeholder="Open a session or run a command" search={searchEverything} onclose={() => (paletteOpen = false)} />
+{/if}
+
+<style>
+  .shell {
+    display: grid;
+    grid-template-rows: 44px 1fr;
+    grid-template-columns: 264px 1fr;
+    height: 100%;
+  }
+  .shell.rail-closed {
+    grid-template-columns: 1fr;
+  }
+  .topbar {
+    display: grid;
+    grid-column: 1 / -1;
+    grid-template-columns: 264px 1fr auto auto;
+    align-items: stretch;
+    background: var(--rail);
+  }
+  .rail-closed .topbar {
+    grid-template-columns: auto 1fr auto auto;
+  }
+  .start {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 0 14px 0 10px;
+  }
+  .brand {
+    font-size: 14px;
+    font-weight: 650;
+    letter-spacing: -0.02em;
+  }
+  .icon,
+  .command {
+    align-self: center;
+    color: var(--muted);
+    font: inherit;
+    background: none;
+    border: 0;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: color 120ms ease, background-color 120ms ease;
+  }
+  .icon {
+    display: grid;
+    place-items: center;
+    width: 30px;
+    height: 30px;
+    padding: 0;
+  }
+  .end {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 0 8px 0 6px;
+  }
+  .icon.on {
+    color: var(--text);
+    background: var(--selected);
+  }
+  .command {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    height: 30px;
+    padding: 0 5px 0 12px;
+    font-size: 13px;
+    background: var(--field);
+  }
+  .icon:hover,
+  .command:hover {
+    color: var(--text);
+    background: var(--hover);
+  }
+  .command:hover {
+    background: var(--selected);
+  }
+  .link {
+    align-self: center;
+    color: var(--danger);
+    font-size: 12px;
+  }
+  main {
+    position: relative;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+  }
+  .view {
+    position: absolute;
+    left: 14px;
+    bottom: 14px;
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    padding: 4px;
+    background: var(--surface);
+    border-radius: 12px;
+    box-shadow: var(--shadow);
+  }
+  .view button {
+    display: grid;
+    place-items: center;
+    min-width: 30px;
+    height: 30px;
+    padding: 0 6px;
+    color: var(--muted);
+    font: inherit;
+    font-size: 12px;
+    background: none;
+    border: 0;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: background-color 120ms ease, color 120ms ease;
+  }
+  .view button:hover {
+    color: var(--text);
+    background: var(--hover);
+  }
+  .view button:active {
+    transform: scale(0.95);
+  }
+  .view .on {
+    color: var(--accent);
+  }
+  .view .level {
+    min-width: 52px;
+    font-variant-numeric: tabular-nums;
+  }
+</style>

@@ -1,0 +1,192 @@
+:root {
+  color-scheme: light;
+  /* Ground, chrome and windows step in tone; only what floats casts a shadow. */
+  --bg: #ebe9e4;
+  --rail: #f6f5f2;
+  --surface: #ffffff;
+  --title-bar: #faf9f7;
+  --well: #f5f4f0;
+  --field: #f0eee9;
+  --bubble: #eeede8;
+  --text: #1c1b19;
+  --muted: #69655d;
+  --faint: #9a958b;
+  --hover: rgb(40 35 25 / 0.05);
+  --selected: rgb(40 35 25 / 0.075);
+  --accent: #2c6b5b;
+  --focus-ring: color-mix(in srgb, var(--accent) 42%, transparent);
+  --danger: #b4412d;
+  --scrim: rgb(235 233 228 / 0.6);
+  --dots: rgb(40 35 25 / 0.17);
+  --minimap-window: #d8d5ce;
+  --minimap-mask: rgb(235 233 228 / 0.65);
+  --shadow: 0 1px 2px rgb(40 35 25 / 0.06), 0 10px 28px -8px rgb(40 35 25 / 0.14);
+  --shadow-raised: 0 2px 4px rgb(40 35 25 / 0.07), 0 22px 48px -12px rgb(40 35 25 / 0.24);
+  --shadow-lg: 0 4px 12px rgb(40 35 25 / 0.08), 0 32px 72px -16px rgb(40 35 25 / 0.32);
+  --sans: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --bg: #111110;
+  --rail: #181817;
+  --surface: #1f1e1d;
+  --title-bar: #242322;
+  --well: #191918;
+  --field: #2a2927;
+  --bubble: #2c2b29;
+  --text: #edece8;
+  --muted: #a6a29a;
+  --faint: #75716a;
+  --hover: rgb(255 250 240 / 0.06);
+  --selected: rgb(255 250 240 / 0.09);
+  --danger: #ee7c66;
+  --scrim: rgb(17 17 16 / 0.55);
+  --dots: rgb(255 250 240 / 0.09);
+  --minimap-window: #3a3936;
+  --minimap-mask: rgb(17 17 16 / 0.6);
+  --shadow: 0 1px 2px rgb(0 0 0 / 0.4), 0 12px 32px -8px rgb(0 0 0 / 0.6);
+  --shadow-raised: 0 2px 4px rgb(0 0 0 / 0.45), 0 24px 56px -12px rgb(0 0 0 / 0.75);
+  --shadow-lg: 0 4px 12px rgb(0 0 0 / 0.5), 0 32px 80px -16px rgb(0 0 0 / 0.8);
+}
+
+/* Accents: one hue each, tuned per theme. They key on any element, so a
+   swatch can show an accent it is not using. */
+[data-accent='pine'] {
+  --accent: #2c6b5b;
+}
+[data-accent='lake'] {
+  --accent: #2d5d8a;
+}
+[data-accent='clay'] {
+  --accent: #9a4f32;
+}
+[data-accent='graphite'] {
+  --accent: #4a4741;
+}
+[data-theme='dark'][data-accent='pine'],
+[data-theme='dark'] [data-accent='pine'] {
+  --accent: #7fc2ab;
+}
+[data-theme='dark'][data-accent='lake'],
+[data-theme='dark'] [data-accent='lake'] {
+  --accent: #8db7e2;
+}
+[data-theme='dark'][data-accent='clay'],
+[data-theme='dark'] [data-accent='clay'] {
+  --accent: #e3a184;
+}
+[data-theme='dark'][data-accent='graphite'],
+[data-theme='dark'] [data-accent='graphite'] {
+  --accent: #cfccc5;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+
+/* A sideways two-finger swipe pans the canvas; without this the browser
+   reads the same gesture as back/forward. */
+html,
+body {
+  overscroll-behavior: none;
+}
+
+body {
+  overflow: hidden;
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 13px;
+  line-height: 1.45;
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+}
+
+kbd {
+  display: inline-grid;
+  place-items: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
+  color: var(--muted);
+  font-family: var(--sans);
+  font-size: 11px;
+  background: var(--hover);
+  border-radius: 5px;
+}
+
+button:focus-visible,
+input:focus-visible,
+[role='tab']:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
+/* Said of anything that is working right now: a word that breathes, not a dot. */
+.working {
+  color: var(--accent);
+  font-weight: 560;
+  animation: breathe 2.4s ease-in-out infinite;
+}
+
+@keyframes breathe {
+  50% {
+    opacity: 0.45;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .working {
+    animation: none;
+  }
+}
+
+/* Svelte Flow takes the app's colours. */
+.svelte-flow {
+  --xy-background-color: var(--bg);
+}
+
+/* Sparse, faint dots give panning something to move against; they fade out
+   as the view zooms out, before they crowd into a texture. */
+.svelte-flow__background-pattern.dots {
+  fill: var(--dots);
+}
+
+.svelte-flow__background {
+  opacity: var(--dots-opacity, 1);
+}
+
+.svelte-flow__node:focus-visible {
+  outline: none;
+}
+
+.svelte-flow__node.dragging .window {
+  box-shadow: var(--shadow-lg);
+}
+
+/* Window edges and corners resize but draw nothing until hovered. */
+.svelte-flow .window-edge {
+  border-color: transparent;
+  border-width: 4px;
+}
+
+.svelte-flow .window-corner {
+  width: 14px;
+  height: 14px;
+  background: transparent;
+  border: 0;
+}
+
+.svelte-flow__minimap {
+  overflow: hidden;
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+}

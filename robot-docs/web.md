@@ -1,0 +1,27 @@
+# web client
+
+`web/` is the browser client: a canvas (Svelte 5, Svelte Flow) where sessions open as panels. It is a client like the TUI, not an extension; it reads the same daemon HTTP API.
+
+`albedo web` (`cli/internal/cli/web.go`) finds or starts the daemon, serves `web/dist` (or `ALBEDO_WEB_DIST`) on `127.0.0.1:4317` (`--port`, 0 for any), prints a launch link and opens it unless `--no-open` or `ALBEDO_NO_BROWSER` is set. `cli/internal/webui` owns the boundary:
+
+- The daemon token never reaches the browser. The page calls `/api/...` on its own origin; the proxy strips `/api`, drops `Origin`, `Cookie` and `Referer`, and adds `Authorization: Bearer <token>`. Session streams pass through unbuffered.
+- Each run draws a launch key. `/?key=<key>` sets an `HttpOnly`, `SameSite=Strict` cookie and redirects to `/`; `/api` without that cookie answers `401 web_signed_out`. A restarted `albedo web` signs every tab out.
+- Requests whose `Host` is not `127.0.0.1` or `localhost` are refused (DNS rebinding), and so is an `Origin` other than the page's own.
+- A transport failure or a 401 from the daemon triggers `Connection.Refresh`, so a restarted daemon is found on the next request.
+- `/assets/*` (content-hashed by Vite) is cached as immutable; everything else is `no-cache`.
+
+In development, `npm run dev` in `web/` proxies `/api` the same way from `$ALBEDO_HOME/daemon.json`, read once at start.
+
+Words: a **board** is a named canvas of panels, and the open boards are the tabs along the top (`boards.svelte.ts`). A board holds sessions from any folders. **Workspace** keeps its albedo meaning, a session's folder, and the sidebar shows each session's folder under its name. `+` makes a new board; double-click or F2 renames one; closing a tab keeps the board, which the palette reopens (`Open board: <name>`); `Delete board` removes it. The last tab cannot be closed, so there is always a canvas.
+
+A board is an open canvas. **Windows** sit anywhere on it; the view pans freely and zooms out to an overview. Svelte Flow draws, drags and resizes the windows; `board.svelte.ts` places new ones (right of the selected window, top-aligned, stepping past overlaps) and owns the viewport. The wheel is handled in `Canvas.svelte` rather than by Svelte Flow, because windows and canvas share the trackpad: a pinch (ctrl-wheel) zooms around the pointer anywhere, an up-down scroll over a window that can scroll scrolls it while the zoom is readable (60% and up), and every other scroll pans. ⇧1 fits all windows, ⇧0 returns to 100%, M shows an overview map, ⌥←/⌥→ moves between windows. What a window shows is a **view**: today a session's chat; files, diffs, terminals and agent-made pages are meant to be further views beside it, each framed by `nodes/WindowFrame.svelte`.
+
+Design rules the client keeps (from the design pass): surfaces separate by a step in tone, not by lines; only what floats (windows, the palette, the view controls, the overview map) casts a shadow; one accent (pine), used for focus and for work in progress; no status dots: a running session says "working" in words that breathe (`.working` in `app.css`); monospace only for code and tool commands. The canvas has sparse, faint dots that fade out below 75% zoom, before they can crowd into a texture.
+
+Settings (the sliders button at the top right, or ⌘,) is a non-modal pane over the board: theme (follow the system, the default; light; dark), accent (pine, lake, clay, graphite) and the canvas dots. They live in this browser (`prefs.svelte.ts`, `albedo.prefs.v1`). The resolved theme and accent are attributes on `<html>` (`data-theme`, `data-accent`) that `app.css` keys every token on; a small script in `index.html` sets them before the first paint so a saved dark theme never flashes light, and `prefs` follows system changes while the theme is `system`.
+
+The chat view (`chat/`) reads `GET /sessions/{id}/history` (newest page, then `before=` as the reader scrolls up, and `after=` every 1.2 s while the session runs or a send is pending, else every 5 s) and sends with `PUT /sessions/{id}/inputs/{uuidv7}` `{kind: "message", text}`; a send stays on screen as pending until its `input_id` appears in history, and a failed one offers retry with the same id. `transcript.svelte.ts` turns entries into blocks: user bubbles, assistant markdown, and each run of thinking and tool calls between messages folded into one "Worked" line (open while it is the live run). Referenced message text is fetched with the page; tool arguments and output only when their run is opened. Markdown is rendered by `marked` with raw HTML escaped and only http(s)/mailto links (`markdown.ts`), because transcripts carry model and tool text into a page that can reach the daemon. Live token streaming over the session event stream is not wired yet; committed entries appear by polling.
+
+Boards live in the browser's `localStorage`: the list under `albedo.boards.v1`, and each board's windows (position, size, what they show) and viewport under `albedo.board.v2:<id>`. Only the active board is mounted; `FlowBinder` hands it the flow helpers, and anything asked of a hidden board (revealing a new window) runs when it is shown.
+
+Checks: `npm run check` and `npm run build` in `web/`; `go -C cli test ./internal/webui/` for the boundary. Neither web command is in `test.sh` yet, because the dev shell has no Node.
