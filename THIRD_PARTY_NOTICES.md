@@ -87,3 +87,14 @@ WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
 FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
 OTHER DEALINGS IN THE SOFTWARE.
 ```
+
+## madoromi
+
+The web client's default colours, its seasons and its accent presets
+(`web/src/lib/prefs.svelte.ts`, with fallbacks in `web/src/app.css` and
+`web/index.html`) are hex values from madoromi by samhain
+(https://github.com/the-moonwitch/madoromi, https://madoromi.moonwit.ch/,
+https://bsky.app/profile/personhood.removal.surgery),
+colours measured from Pilot's iroshizuku inks. madoromi is distributed under the
+Mozilla Public License 2.0 (https://mozilla.org/MPL/2.0/); the values are used
+unmodified and the settings pane credits it with a link.

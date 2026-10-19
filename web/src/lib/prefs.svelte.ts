@@ -1,49 +1,100 @@
 // Client preferences, kept in this browser. The theme follows the system
-// unless chosen; index.html applies the saved choice before the first paint,
-// and this keeps <html> in step afterwards.
+// unless chosen. Each mode has its own three colours and a contrast, from
+// which app.css derives every other token; index.html applies the saved
+// choice before the first paint, and this keeps <html> in step afterwards.
 
 export type Theme = 'system' | 'light' | 'dark';
-export type Accent = 'albedo' | 'pine' | 'lake' | 'clay' | 'graphite';
+export type Mode = 'light' | 'dark';
 
-export const ACCENTS: { id: Accent; label: string }[] = [
-  { id: 'albedo', label: 'albedo' },
-  { id: 'pine', label: 'pine' },
-  { id: 'lake', label: 'lake' },
-  { id: 'clay', label: 'clay' },
-  { id: 'graphite', label: 'graphite' },
+export interface Palette {
+  accent: string;
+  background: string;
+  foreground: string;
+  /** 0 to 100: how far surfaces and secondary text step from the ground. */
+  contrast: number;
+}
+
+// The colours are madoromi's (https://madoromi.moonwit.ch/, MPL-2.0, by
+// samhain): Pilot iroshizuku inks on paper. Each season is a ground (kami),
+// an ink (sumi) and wisteria (fuji) for its accent, by day and by night.
+export const SEASONS: { id: string; kanji: string; label: string; light: Omit<Palette, 'contrast'>; dark: Omit<Palette, 'contrast'> }[] = [
+  { id: 'haru', kanji: '春', label: 'spring', light: { accent: '#6928bd', background: '#f6eff8', foreground: '#584a5c' }, dark: { accent: '#ddb3ff', background: '#241c26', foreground: '#e1d1e7' } },
+  { id: 'natsu', kanji: '夏', label: 'summer', light: { accent: '#6526b9', background: '#e9f4f8', foreground: '#3b545e' }, dark: { accent: '#aea8ff', background: '#132227', foreground: '#c0dde8' } },
+  { id: 'aki', kanji: '秋', label: 'autumn', light: { accent: '#581ca7', background: '#f8f0e9', foreground: '#5d4c3c' }, dark: { accent: '#d3a1ff', background: '#271d14', foreground: '#e8d3c1' } },
+  { id: 'fuyu', kanji: '冬', label: 'winter', light: { accent: '#5e21b0', background: '#f0f1f8', foreground: '#4a4e63' }, dark: { accent: '#bbb8ff', background: '#1c1e2a', foreground: '#d2d6eb' } },
 ];
 
-// v1 defaulted the accent to pine; v2 keeps its theme and dots but starts
-// everyone on albedo's own mauve.
-const STORAGE_KEY = 'albedo.prefs.v2';
-const EARLIER_KEY = 'albedo.prefs.v1';
+export const DEFAULTS: Record<Mode, Palette> = {
+  light: { ...SEASONS[0].light, contrast: 45 },
+  dark: { ...SEASONS[0].dark, contrast: 50 },
+};
+
+/** Quick picks for the accent: madoromi's spring inks, by day and by night. */
+export const ACCENTS: { id: string; label: string; light: string; dark: string }[] = [
+  { id: 'fuji', label: 'fuji 藤', light: '#6928bd', dark: '#ddb3ff' },
+  { id: 'sakura', label: 'sakura 桜', light: '#aa6e89', dark: '#ffc5da' },
+  { id: 'botan', label: 'botan 牡丹', light: '#b25d9d', dark: '#fe8dc0' },
+  { id: 'sora', label: 'sora 空', light: '#008bae', dark: '#88d9eb' },
+  { id: 'tokiwa', label: 'tokiwa 常磐', light: '#009162', dark: '#7bd6b6' },
+  { id: 'kaki', label: 'kaki 柿', light: '#fd5217', dark: '#ffbb74' },
+];
+
+const STORAGE_KEY = 'albedo.prefs.v4';
+const EARLIER_KEYS = ['albedo.prefs.v3', 'albedo.prefs.v2', 'albedo.prefs.v1'];
+const HEX = /^#[0-9a-f]{6}$/i;
 
 interface Saved {
   theme: Theme;
-  accent: Accent;
   dots: boolean;
+  palettes: Record<Mode, Palette>;
+}
+
+/** A palette from untrusted JSON: known fields with valid values, the rest from the defaults. */
+export function readPalette(value: unknown, mode: Mode): Palette {
+  const given = (value && typeof value === 'object' ? value : {}) as Partial<Palette>;
+  const color = (key: 'accent' | 'background' | 'foreground') => (typeof given[key] === 'string' && HEX.test(given[key]) ? given[key].toLowerCase() : DEFAULTS[mode][key]);
+  const contrast = typeof given.contrast === 'number' && given.contrast >= 0 && given.contrast <= 100 ? Math.round(given.contrast) : DEFAULTS[mode].contrast;
+  return { accent: color('accent'), background: color('background'), foreground: color('foreground'), contrast };
 }
 
 function load(): Saved {
-  const fallback: Saved = { theme: 'system', accent: 'albedo', dots: true };
+  const fallback: Saved = { theme: 'system', dots: true, palettes: { ...DEFAULTS } };
   try {
-    const saved = localStorage.getItem(STORAGE_KEY);
-    if (saved) return { ...fallback, ...JSON.parse(saved) };
-    const { theme, dots } = JSON.parse(localStorage.getItem(EARLIER_KEY) ?? '{}');
-    localStorage.removeItem(EARLIER_KEY);
-    return { ...fallback, ...(theme ? { theme } : {}), ...(typeof dots === 'boolean' ? { dots } : {}) };
-  } catch {
-    return fallback;
-  }
+    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? 'null');
+    if (saved) {
+      return {
+        theme: ['system', 'light', 'dark'].includes(saved.theme) ? saved.theme : 'system',
+        dots: saved.dots !== false,
+        palettes: { light: readPalette(saved.palettes?.light, 'light'), dark: readPalette(saved.palettes?.dark, 'dark') },
+      };
+    }
+    // Earlier versions' theme and dots carry over; their colours give way to madoromi.
+    for (const key of EARLIER_KEYS) {
+      const earlier = JSON.parse(localStorage.getItem(key) ?? 'null');
+      localStorage.removeItem(key);
+      if (earlier) return { ...fallback, theme: earlier.theme ?? 'system', dots: earlier.dots !== false };
+    }
+  } catch {}
+  return fallback;
+}
+
+/** The custom properties app.css derives the theme from. */
+export function seedVariables(palette: Palette): Record<string, string> {
+  return {
+    '--seed-accent': palette.accent,
+    '--seed-bg': palette.background,
+    '--seed-fg': palette.foreground,
+    '--contrast': String(palette.contrast / 100),
+  };
 }
 
 class Prefs {
   #saved = load();
   theme = $state<Theme>(this.#saved.theme);
-  accent = $state<Accent>(this.#saved.accent);
   dots = $state(this.#saved.dots);
+  palettes = $state<Record<Mode, Palette>>(this.#saved.palettes);
   #systemDark = $state(matchMedia('(prefers-color-scheme: dark)').matches);
-  resolved = $derived<'light' | 'dark'>(this.theme === 'system' ? (this.#systemDark ? 'dark' : 'light') : this.theme);
+  resolved = $derived<Mode>(this.theme === 'system' ? (this.#systemDark ? 'dark' : 'light') : this.theme);
 
   constructor() {
     matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (event) => (this.#systemDark = event.matches));
@@ -51,10 +102,21 @@ class Prefs {
       $effect(() => {
         const root = document.documentElement;
         root.dataset.theme = this.resolved;
-        root.dataset.accent = this.accent;
-        localStorage.setItem(STORAGE_KEY, JSON.stringify({ theme: this.theme, accent: this.accent, dots: this.dots }));
+        for (const [name, value] of Object.entries(seedVariables(this.palettes[this.resolved]))) root.style.setProperty(name, value);
+        localStorage.setItem(STORAGE_KEY, JSON.stringify({ theme: this.theme, dots: this.dots, palettes: this.palettes }));
       });
     });
+  }
+
+  reset(mode: Mode) {
+    this.palettes[mode] = { ...DEFAULTS[mode] };
+  }
+
+  /** A season sets both modes' colours and keeps each mode's contrast. */
+  season(id: string) {
+    const season = SEASONS.find((candidate) => candidate.id === id);
+    if (!season) return;
+    this.palettes = { light: { ...season.light, contrast: this.palettes.light.contrast }, dark: { ...season.dark, contrast: this.palettes.dark.contrast } };
   }
 }
 

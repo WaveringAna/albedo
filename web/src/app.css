@@ -1,105 +1,79 @@
+/*
+ * Every colour comes from three seeds and a contrast, per mode, which the
+ * settings pane edits (prefs.svelte.ts sets them on <html>): --seed-bg is the
+ * ground, --seed-fg the ink, --seed-accent the accent, --contrast 0 to 1.
+ * Surfaces and secondary text are mixed from them, so any three colours make
+ * a whole theme. The fallbacks here are the defaults, madoromi's spring
+ * (https://madoromi.moonwit.ch/), for the first paint.
+ */
 :root {
   color-scheme: light;
-  /* Ground, chrome and windows step in tone; only what floats casts a shadow. */
-  --bg: #ebe9e4;
-  --rail: #f6f5f2;
-  --surface: #ffffff;
-  --title-bar: #faf9f7;
-  --well: #f5f4f0;
-  --field: #f0eee9;
-  --bubble: #eeede8;
-  --text: #1c1b19;
-  --muted: #69655d;
-  --faint: #9a958b;
-  --hover: rgb(40 35 25 / 0.05);
-  --selected: rgb(40 35 25 / 0.075);
-  --accent: #8a52b8;
-  /* Who is speaking, as in the terminal: albedo in mauve, you in teal. */
-  --agent: #8a52b8;
-  --brand-from: #8a52b8;
-  --brand-to: #c0508f;
-  --you: #1f7a74;
-  --added: #3c8a4e;
-  --focus-ring: color-mix(in srgb, var(--accent) 42%, transparent);
-  --danger: #b4412d;
-  --scrim: rgb(235 233 228 / 0.6);
-  --dots: rgb(40 35 25 / 0.17);
-  --minimap-window: #d8d5ce;
-  --minimap-mask: rgb(235 233 228 / 0.65);
-  --shadow: 0 1px 2px rgb(40 35 25 / 0.06), 0 10px 28px -8px rgb(40 35 25 / 0.14);
-  --shadow-raised: 0 2px 4px rgb(40 35 25 / 0.07), 0 22px 48px -12px rgb(40 35 25 / 0.24);
-  --shadow-lg: 0 4px 12px rgb(40 35 25 / 0.08), 0 32px 72px -16px rgb(40 35 25 / 0.32);
+  --seed-bg: #f6eff8;
+  --seed-fg: #584a5c;
+  --seed-accent: #6928bd;
+  --contrast: 0.45;
+  /* how far each step goes: half as far at no contrast, half again at full */
+  --k: calc(0.5 + var(--contrast));
+
+  --bg: var(--seed-bg);
+  --rail: color-mix(in oklab, var(--seed-bg), var(--seed-fg) calc(3% * var(--k)));
+  --surface: color-mix(in oklab, var(--seed-bg), #fff 78%);
+  --title-bar: color-mix(in oklab, var(--surface), var(--seed-fg) calc(2% * var(--k)));
+  --well: color-mix(in oklab, var(--surface), var(--seed-fg) calc(3.5% * var(--k)));
+  --field: color-mix(in oklab, var(--surface), var(--seed-fg) calc(6% * var(--k)));
+  --bubble: color-mix(in oklab, var(--field), var(--seed-accent) 7%);
+  --text: var(--seed-fg);
+  --muted: color-mix(in oklab, var(--seed-fg), var(--surface) calc(46% - 20% * var(--contrast)));
+  --faint: color-mix(in oklab, var(--seed-fg), var(--surface) calc(64% - 20% * var(--contrast)));
+  --hover: color-mix(in oklab, var(--seed-fg) calc(5% * var(--k)), transparent);
+  --selected: color-mix(in oklab, var(--seed-fg) calc(8% * var(--k)), transparent);
+  --accent: var(--seed-accent);
+  --focus-ring: color-mix(in oklab, var(--seed-accent) 45%, transparent);
+  /* Who is speaking, as in the terminal: albedo in the accent, you opposite it. */
+  --agent: var(--seed-accent);
+  --brand-from: var(--seed-accent);
+  --brand-to: oklch(from var(--seed-accent) l c calc(h + 40));
+  --you: oklch(from var(--seed-accent) 0.5 0.09 calc(h - 130));
+  /* madoromi's young leaves (wakaba) and crimson (beni) */
+  --added: #5e8933;
+  --danger: #ce2700;
+  --scrim: color-mix(in oklab, var(--seed-bg) 60%, transparent);
+  --dots: color-mix(in oklab, var(--seed-fg) calc(16% * var(--k)), transparent);
+  --minimap-window: var(--field);
+  --minimap-mask: color-mix(in oklab, var(--seed-bg) 65%, transparent);
+  --shade: color-mix(in oklab, var(--seed-fg) 70%, #000);
+  --shadow: 0 1px 2px color-mix(in oklab, var(--shade) 7%, transparent), 0 10px 28px -8px color-mix(in oklab, var(--shade) 16%, transparent);
+  --shadow-raised: 0 2px 4px color-mix(in oklab, var(--shade) 8%, transparent), 0 22px 48px -12px color-mix(in oklab, var(--shade) 26%, transparent);
+  --shadow-lg: 0 4px 12px color-mix(in oklab, var(--shade) 9%, transparent), 0 32px 72px -16px color-mix(in oklab, var(--shade) 34%, transparent);
   --sans: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
   --mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
   /* Faces read softest in a rounded Japanese face where there is one. */
   --face: 'Hiragino Maru Gothic ProN', 'Hiragino Sans', 'Yu Gothic UI', system-ui, sans-serif;
 }
 
+/* In the dark, windows lift toward the ink and chrome sinks below the ground. */
 :root[data-theme='dark'] {
   color-scheme: dark;
-  --bg: #111110;
-  --rail: #181817;
-  --surface: #1f1e1d;
-  --title-bar: #242322;
-  --well: #191918;
-  --field: #2a2927;
-  --bubble: #2c2b29;
-  --text: #edece8;
-  --muted: #a6a29a;
-  --faint: #75716a;
-  --hover: rgb(255 250 240 / 0.06);
-  --selected: rgb(255 250 240 / 0.09);
-  --danger: #ee7c66;
-  --agent: #c6a0f6;
-  --brand-from: #c6a0f6;
-  --brand-to: #f5bde6;
-  --you: #8bd5ca;
-  --added: #a6da95;
-  --scrim: rgb(17 17 16 / 0.55);
-  --dots: rgb(255 250 240 / 0.09);
-  --minimap-window: #3a3936;
-  --minimap-mask: rgb(17 17 16 / 0.6);
+  --seed-bg: #241c26;
+  --seed-fg: #e1d1e7;
+  --seed-accent: #ddb3ff;
+  --contrast: 0.5;
+  --rail: color-mix(in oklab, var(--seed-bg), #000 calc(20% * var(--k)));
+  --surface: color-mix(in oklab, var(--seed-bg), var(--seed-fg) calc(5% * var(--k)));
+  --title-bar: color-mix(in oklab, var(--surface), var(--seed-fg) calc(2.5% * var(--k)));
+  --well: color-mix(in oklab, var(--surface), #000 calc(16% * var(--k)));
+  --field: color-mix(in oklab, var(--surface), var(--seed-fg) calc(7% * var(--k)));
+  --bubble: color-mix(in oklab, var(--field), var(--seed-accent) 9%);
+  --muted: color-mix(in oklab, var(--seed-fg), var(--surface) calc(42% - 20% * var(--contrast)));
+  --faint: color-mix(in oklab, var(--seed-fg), var(--surface) calc(60% - 20% * var(--contrast)));
+  --you: oklch(from var(--seed-accent) 0.82 0.08 calc(h - 130));
+  --added: #c1dd4a;
+  --danger: #ff8b79;
+  --dots: color-mix(in oklab, var(--seed-fg) calc(9% * var(--k)), transparent);
+  --shade: #000;
   --shadow: 0 1px 2px rgb(0 0 0 / 0.4), 0 12px 32px -8px rgb(0 0 0 / 0.6);
   --shadow-raised: 0 2px 4px rgb(0 0 0 / 0.45), 0 24px 56px -12px rgb(0 0 0 / 0.75);
   --shadow-lg: 0 4px 12px rgb(0 0 0 / 0.5), 0 32px 80px -16px rgb(0 0 0 / 0.8);
-}
-
-/* Accents: one hue each, tuned per theme. They key on any element, so a
-   swatch can show an accent it is not using. Albedo's own mauve is the default. */
-[data-accent='albedo'] {
-  --accent: #8a52b8;
-}
-[data-accent='pine'] {
-  --accent: #2c6b5b;
-}
-[data-accent='lake'] {
-  --accent: #2d5d8a;
-}
-[data-accent='clay'] {
-  --accent: #9a4f32;
-}
-[data-accent='graphite'] {
-  --accent: #4a4741;
-}
-[data-theme='dark'][data-accent='albedo'],
-[data-theme='dark'] [data-accent='albedo'] {
-  --accent: #c6a0f6;
-}
-[data-theme='dark'][data-accent='pine'],
-[data-theme='dark'] [data-accent='pine'] {
-  --accent: #7fc2ab;
-}
-[data-theme='dark'][data-accent='lake'],
-[data-theme='dark'] [data-accent='lake'] {
-  --accent: #8db7e2;
-}
-[data-theme='dark'][data-accent='clay'],
-[data-theme='dark'] [data-accent='clay'] {
-  --accent: #e3a184;
-}
-[data-theme='dark'][data-accent='graphite'],
-[data-theme='dark'] [data-accent='graphite'] {
-  --accent: #cfccc5;
 }
 
 * {

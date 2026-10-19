@@ -6,18 +6,26 @@
     <title>albedo</title>
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='6' fill='%23e8e4dc' stroke='%23333' stroke-width='1.5'/%3E%3C/svg%3E" />
     <script>
-      // Apply the saved theme before the first paint, so a dark choice never flashes light.
+      // Apply the saved theme and colours before the first paint, so a custom
+      // or dark theme never flashes the default. prefs.svelte.ts keeps them after.
       (() => {
         let prefs = {};
-        try { prefs = JSON.parse(localStorage.getItem('albedo.prefs.v2') || localStorage.getItem('albedo.prefs.v1') || '{}'); } catch {}
-        const theme = prefs.theme === 'light' || prefs.theme === 'dark' ? prefs.theme : matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-        document.documentElement.dataset.theme = theme;
-        document.documentElement.dataset.accent = localStorage.getItem('albedo.prefs.v2') ? prefs.accent || 'albedo' : 'albedo';
+        try { prefs = JSON.parse(localStorage.getItem('albedo.prefs.v4') || '{}') || {}; } catch {}
+        const mode = prefs.theme === 'light' || prefs.theme === 'dark' ? prefs.theme : matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+        const root = document.documentElement;
+        root.dataset.theme = mode;
+        const palette = prefs.palettes && prefs.palettes[mode];
+        const hex = /^#[0-9a-f]{6}$/i;
+        if (!palette) return;
+        if (hex.test(palette.accent)) root.style.setProperty('--seed-accent', palette.accent);
+        if (hex.test(palette.background)) root.style.setProperty('--seed-bg', palette.background);
+        if (hex.test(palette.foreground)) root.style.setProperty('--seed-fg', palette.foreground);
+        if (typeof palette.contrast === 'number') root.style.setProperty('--contrast', String(palette.contrast / 100));
       })();
     </script>
     <style>
-      html { background: #ebe9e4; overscroll-behavior: none; }
-      html[data-theme='dark'] { background: #111110; }
+      html { background: var(--seed-bg, #f6eff8); overscroll-behavior: none; }
+      html[data-theme='dark'] { background: var(--seed-bg, #241c26); }
     </style>
   </head>
   <body>
