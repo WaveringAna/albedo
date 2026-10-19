@@ -75,6 +75,15 @@
     return query ? [...found, ...actions] : [...actions, ...found];
   }
 
+  /** Zooms in or out by 5 points, landing on a multiple of 5. */
+  function zoomStep(by: 1 | -1) {
+    const board = boards.board;
+    if (!board) return;
+    const percent = Math.round(board.viewport.zoom * 100);
+    const next = by > 0 ? Math.floor(percent / 5) * 5 + 5 : Math.ceil(percent / 5) * 5 - 5;
+    board.zoomTo(next / 100);
+  }
+
   function closeSelected() {
     const selected = boards.board?.nodes.find((node) => node.selected);
     if (selected) boards.board?.remove(selected.id);
@@ -105,6 +114,8 @@
     else if (event.key === '!' && event.code === 'Digit1') boards.board?.fit();
     else if (event.key === ')' && event.code === 'Digit0') boards.board?.zoomTo(1);
     else if (event.key === 'm') minimap = !minimap;
+    else if (event.key === '+' || event.key === '=') zoomStep(1);
+    else if (event.key === '-' || event.key === '_') zoomStep(-1);
     else if (event.key === '/') {
       railOpen = true;
       queueMicrotask(() => search?.focus());
@@ -148,11 +159,11 @@
         <Canvas board={boards.board} {minimap} onpalette={() => (paletteOpen = true)} />
       {/key}
       <div class="view" class:shown={viewShown} role="toolbar" aria-label="View">
-        <button aria-label="Zoom out" title="Zoom out" onclick={() => boards.board?.zoomTo(boards.board.viewport.zoom / 1.25)}>
+        <button aria-label="Zoom out" title="Zoom out (−)" onclick={() => zoomStep(-1)}>
           <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 8h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" /></svg>
         </button>
         <button class="level" title="Zoom to 100% (⇧0)" onclick={() => boards.board?.zoomTo(1)}>{Math.round((boards.board.viewport.zoom ?? 1) * 100)}%</button>
-        <button aria-label="Zoom in" title="Zoom in" onclick={() => boards.board?.zoomTo(boards.board.viewport.zoom * 1.25)}>
+        <button aria-label="Zoom in" title="Zoom in (+)" onclick={() => zoomStep(1)}>
           <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 8h8M8 4v8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" /></svg>
         </button>
         <button aria-label="Fit all windows" title="Fit all windows (⇧1)" onclick={() => boards.board?.fit()}>
