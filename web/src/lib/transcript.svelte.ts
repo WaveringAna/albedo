@@ -1,5 +1,6 @@
 import { readEntryContent, readHistory, sendMessage, uuidv7, type ContentPart, type HistoryEntry } from './api';
 import type { Trace } from './burst';
+import { follow, type Batch } from './stream';
 import { formatGap, outcome, type Mood } from './moods';
 
 // One session's transcript as the chat shows it. Entries arrive as history
@@ -13,7 +14,24 @@ export type Block =
   | { kind: 'tool'; key: string; name: string; entry: HistoryEntry; done: boolean; trace?: Trace; failed: boolean }
   | { kind: 'note'; key: string; text: string }
   | { kind: 'compaction'; key: string; text: string }
-  | { kind: 'end'; key: string; mood: Mood; seed: number; elapsedMs: number; tools: number; text: string };
+  | { kind: 'end'; key: string; mood: Mood; seed: number; elapsedMs: number; tools: number; text: string }
+  | { kind: 'progress'; key: string; name: string; preview: string };
+
+/** Output the session is writing now, before it commits: one message of thinking or reply. */
+interface Live {
+  id: string;
+  kind: 'text' | 'thinking';
+  text: string;
+}
+
+/** A tool call running now, as its progress reports it. */
+interface Progress {
+  id: string;
+  /** The model's id for the call, which its tool_call entry carries too. */
+  call: string;
+  name: string;
+  preview: string;
+}
 
 interface Turn {
   id: string | null;
@@ -63,6 +81,10 @@ function failedTool(entry: HistoryEntry): boolean {
   }
 }
 
+function progressOf(progress: any): Progress {
+  return { id: progress?.call_id ?? '', call: progress?.tool_call_id ?? '', name: progress?.name ?? 'tool', preview: progress?.preview?.text ?? '' };
+}
+
 const at = (entry: HistoryEntry) => (entry.created_at ? Date.parse(entry.created_at) : 0);
 
 function referenced(entry: HistoryEntry): boolean {
@@ -90,8 +112,15 @@ export class Transcript {
   entries = $state.raw<HistoryEntry[]>([]);
   pending = $state.raw<Pending[]>([]);
   loading = $state(true);
-  /** Whether the session is running, so its newest turn is not signed off yet. */
+  /** Whether the session is busy, so its newest turn is not signed off yet. */
   running = $state(false);
+  /** The phase the stream last reported, fresher than the session list's. */
+  phase = $state<string | null>(null);
+  streaming = $state(false);
+  live = $state.raw<Live[]>([]);
+  progress = $state.raw<Progress[]>([]);
+  #stop: (() => void) | null = null;
+  #settle: ReturnType<typeof setTimeout> | undefined;
   more = $state(false);
   error = $state<string | null>(null);
 
@@ -146,6 +175,76 @@ export class Transcript {
     } finally {
       this.#polling = false;
     }
+  }
+
+  /** Follows the session's stream: live output as it is written, and history as it commits. */
+  attach() {
+    this.#stop ??= follow(this.sessionId, (batch) => this.#apply(batch), (connected) => (this.streaming = connected));
+  }
+
+  detach() {
+    this.#stop?.();
+    this.#stop = null;
+    clearTimeout(this.#settle);
+  }
+
+  #apply(batch: Batch) {
+    for (const event of batch.events) {
+      const data = event.data ?? {};
+      switch (event.type) {
+        case 'reset': {
+          const snapshot = batch.snapshot ?? {};
+          this.phase = snapshot.status?.phase ?? null;
+          this.live = (snapshot.active_output ?? []).flatMap((output: any) =>
+            output.kind === 'text' || output.kind === 'thinking' ? [{ id: output.message_id, kind: output.kind, text: output.text ?? '…' }] : [],
+          );
+          this.progress = (snapshot.current_progress ?? []).map(progressOf);
+          this.#commit(null);
+          break;
+        }
+        case 'status':
+          this.phase = data.phase ?? null;
+          if (this.phase === 'idle' || this.phase === 'interrupted') this.#commit(null);
+          break;
+        case 'text':
+        case 'thinking': {
+          const at = this.live.findIndex((item) => item.id === data.message_id);
+          if (at < 0) this.live = [...this.live, { id: data.message_id, kind: event.type, text: data.text }];
+          else this.live = this.live.map((item, index) => (index === at ? { ...item, text: item.text + data.text } : item));
+          break;
+        }
+        case 'tool_progress': {
+          const next = progressOf(data.progress);
+          this.progress = [...this.progress.filter((item) => item.id !== next.id), next];
+          break;
+        }
+        case 'tool':
+          this.progress = this.progress.filter((item) => item.id !== data.progress_call_id);
+          this.#commit(null);
+          break;
+        case 'committed':
+          this.#commit(data.replaces_all_live ? 'all' : (data.replaces_live_ids ?? []));
+          break;
+        case 'message':
+        case 'note':
+          this.#commit(null);
+          break;
+      }
+    }
+  }
+
+  /**
+   * Reads what committed, then drops the live output it replaces, so a reply
+   * never blinks out between its last delta and its history entry.
+   */
+  #commit(replaces: 'all' | string[] | null) {
+    clearTimeout(this.#settle);
+    this.#settle = setTimeout(async () => {
+      await this.poll().catch(() => {});
+      if (replaces === 'all') this.live = [];
+      else if (replaces?.length) this.live = this.live.filter((item) => !replaces.includes(item.id));
+      if (this.phase === 'idle' || this.phase === 'interrupted') [this.live, this.progress] = [[], []];
+    }, 60);
   }
 
   async send(text: string) {
@@ -251,6 +350,16 @@ export class Transcript {
       if (at(entry)) previous = at(entry);
     }
     if (!this.running && !this.pending.length) signOff();
+    for (const item of this.live) {
+      if (!item.text.trim()) continue;
+      if (item.kind === 'thinking') blocks.push({ kind: 'thinking', key: `live:${item.id}`, text: item.text, ms: null });
+      else blocks.push({ kind: 'assistant', key: `live:${item.id}`, text: item.text, plate: speaker !== 'albedo' });
+    }
+    // A call whose entry has committed already shows as that entry.
+    const called = new Set(this.entries.flatMap((entry) => (entry.kind === 'tool_call' && entry.tool ? [entry.tool.tool_call_id] : [])));
+    for (const item of this.progress) {
+      if (!called.has(item.call)) blocks.push({ kind: 'progress', key: `progress:${item.id}`, name: item.name, preview: item.preview });
+    }
     for (const send of this.pending) {
       blocks.push({ kind: 'user', key: `pending:${send.id}`, text: send.text, from: null, gap: null, state: send.error ? 'failed' : 'sending', error: send.error });
     }
@@ -262,7 +371,7 @@ function group(blocks: Block[]): Group[] {
   const groups: Group[] = [];
   for (const block of blocks) {
     const last = groups.at(-1);
-    if (block.kind === 'thinking' || block.kind === 'tool') {
+    if (block.kind === 'thinking' || block.kind === 'tool' || block.kind === 'progress') {
       if (last?.kind === 'work') last.steps.push(block);
       else groups.push({ kind: 'work', key: `work:${block.key}`, steps: [block] });
     } else groups.push(block);

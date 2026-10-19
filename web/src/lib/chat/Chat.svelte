@@ -13,7 +13,9 @@
 
   // svelte-ignore state_referenced_locally
   const transcript = new Transcript(sessionId);
-  const running = $derived(busy(session));
+  // The stream's phase is fresher than the session list's; the list answers until the stream does.
+  const view = $derived(session && transcript.phase ? { ...session, status: { ...session.status!, phase: transcript.phase } } : session);
+  const running = $derived(busy(view));
   $effect(() => {
     transcript.running = running;
   });
@@ -38,11 +40,14 @@
       await toBottom();
       settled = true;
     });
+    transcript.attach();
+    return () => transcript.detach();
   });
 
-  // Committed entries arrive by polling: quickly while the session works.
+  // The stream says when history grows. Polling is the fallback while it is
+  // down, quick while the session works.
   $effect(() => {
-    const every = running || transcript.pending.length ? 1200 : 5000;
+    const every = transcript.streaming ? 20_000 : running || transcript.pending.length ? 1200 : 5000;
     let timer: ReturnType<typeof setTimeout>;
     const tickOnce = async () => {
       if (!document.hidden && !transcript.loading) await transcript.poll().catch(() => {});
@@ -79,6 +84,7 @@
   $effect(() => {
     transcript.groups;
     activity;
+    transcript.live;
     if (pinned) toBottom();
   });
 
@@ -132,7 +138,7 @@
             <Markdown text={group.text} />
           </div>
         {:else if group.kind === 'work'}
-          <WorkSteps steps={group.steps} live={running && group === last} {transcript} {session} />
+          <WorkSteps steps={group.steps} live={running && group === last} {transcript} session={view} />
         {:else if group.kind === 'end'}
           <p class="end">
             <span class="face kaomoji" title={group.mood}>{face(group.mood, group.seed)}</span>
@@ -149,7 +155,7 @@
       {/each}
 
       {#if running}
-        <p class="live"><LiveFace {session} label />{#if activity}<span class="activity">{activity}</span>{/if}</p>
+        <p class="live"><LiveFace session={view} label />{#if !transcript.streaming && activity}<span class="activity">{activity}</span>{/if}</p>
       {/if}
     </div>
   </div>

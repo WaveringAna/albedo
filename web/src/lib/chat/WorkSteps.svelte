@@ -62,6 +62,8 @@
           <button class="thought" class:whole={whole.has(step.key)} onclick={() => toggle(step.key)}><Markdown text={step.text} /></button>
         {:else if step.kind === 'tool'}
           <ToolStep entry={step.entry} name={step.name} done={step.done} {transcript} />
+        {:else if step.kind === 'progress'}
+          <p class="running"><span class="spinner" aria-label="running"></span><span class="name">{step.name}</span><span class="preview">{step.preview.split('\n').find((line) => line.trim())?.trim() ?? ''}</span></p>
         {/if}
       {/each}
     </div>
@@ -129,6 +131,40 @@
     padding: 8px 12px;
     background: var(--well);
     border-radius: 10px;
+  }
+  .running {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    margin: 0;
+    padding: 3px 0;
+    color: var(--muted);
+    font-size: 12.5px;
+  }
+  .running .name {
+    flex: none;
+    font-weight: 560;
+  }
+  .running .preview {
+    min-width: 0;
+    overflow: hidden;
+    font-family: var(--mono);
+    font-size: 11.5px;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+  .spinner {
+    flex: none;
+    width: 9px;
+    height: 9px;
+    border: 1.5px solid color-mix(in oklab, var(--accent) 25%, transparent);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin {
+    to { transform: rotate(360deg); }
   }
   .thought {
     display: -webkit-box;
