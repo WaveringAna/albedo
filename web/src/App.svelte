@@ -21,6 +21,18 @@
 
   $effect(() => localStorage.setItem(RAIL_KEY, railOpen ? 'open' : 'closed'));
   $effect(() => localStorage.setItem(MINIMAP_KEY, minimap ? 'on' : 'off'));
+
+  // The view controls show while the view moves and for a while after, then
+  // fade; hovering or focusing them keeps them.
+  const VIEW_LINGER_MS = 4000;
+  let viewShown = $state(false);
+  let viewTimer: ReturnType<typeof setTimeout> | undefined;
+  $effect(() => {
+    boards.board?.viewport;
+    viewShown = true;
+    clearTimeout(viewTimer);
+    viewTimer = setTimeout(() => (viewShown = false), VIEW_LINGER_MS);
+  });
   sessions.start();
 
   const commands: Omit<Item, 'kind' | 'key'>[] = [
@@ -135,7 +147,7 @@
       {#key boards.board}
         <Canvas board={boards.board} {minimap} onpalette={() => (paletteOpen = true)} />
       {/key}
-      <div class="view" role="toolbar" aria-label="View">
+      <div class="view" class:shown={viewShown} role="toolbar" aria-label="View">
         <button aria-label="Zoom out" title="Zoom out" onclick={() => boards.board?.zoomTo(boards.board.viewport.zoom / 1.25)}>
           <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 8h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" /></svg>
         </button>
@@ -255,6 +267,8 @@
     overflow: hidden;
   }
   .view {
+    opacity: 0;
+    transition: opacity 600ms ease;
     position: absolute;
     left: 14px;
     bottom: 14px;
@@ -265,6 +279,17 @@
     background: var(--surface);
     border-radius: 12px;
     box-shadow: var(--shadow);
+  }
+  .view.shown,
+  .view:hover,
+  .view:focus-within {
+    opacity: 1;
+    transition-duration: 160ms;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .view {
+      transition: none;
+    }
   }
   .view button {
     display: grid;

@@ -64,7 +64,7 @@
     deleteKey={null}
     nodesConnectable={false}
     proOptions={{ hideAttribution: true }}
-    onmoveend={(_, viewport) => (board.viewport = viewport)}
+    onmove={(_, viewport) => (board.viewport = viewport)}
   >
     {#if prefs.dots && zoom >= 0.5}
       <Background variant={BackgroundVariant.Dots} gap={28} size={1.6} />
