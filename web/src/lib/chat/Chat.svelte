@@ -210,11 +210,14 @@
 </div>
 
 <style>
+  /* The chat reads a size up from the rest of the canvas; everything in it,
+     text and the spacing around it, scales together. */
   .chat {
     display: flex;
     flex: 1;
     flex-direction: column;
     min-height: 0;
+    zoom: 1.15;
   }
   .scroller {
     flex: 1;
