@@ -7,6 +7,8 @@
   import { prefs } from './lib/prefs.svelte';
   import { busy } from './lib/live.svelte';
   import About from './lib/About.svelte';
+  import { layout } from './lib/layout.svelte';
+  import Phone from './lib/Phone.svelte';
   import Rail from './lib/Rail.svelte';
   import Settings from './lib/Settings.svelte';
   import { sessions } from './lib/sessions.svelte';
@@ -136,6 +138,9 @@
 
 <svelte:window onkeydown={keydown} />
 
+{#if layout.phone}
+  <Phone onsettings={() => (settingsOpen = !settingsOpen)} onpalette={() => (paletteOpen = true)} />
+{:else}
 <div class="shell" class:rail-closed={!railOpen}>
   <header class="topbar">
     <div class="start">
@@ -187,6 +192,8 @@
     {/if}
   </main>
 </div>
+
+{/if}
 
 {#if settingsOpen}
   <Settings onclose={() => (settingsOpen = false)} />

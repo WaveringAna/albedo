@@ -56,6 +56,8 @@ export interface Fonts {
 interface Saved {
   theme: Theme;
   dots: boolean;
+  /** Whether a narrow screen gets the canvas rather than one chat at a time. */
+  canvasOnPhone: boolean;
   palettes: Record<Mode, Palette>;
   fonts: Fonts;
 }
@@ -96,13 +98,14 @@ export function readPalette(value: unknown, mode: Mode): Palette {
 }
 
 function load(): Saved {
-  const fallback: Saved = { theme: 'system', dots: true, palettes: { ...DEFAULTS }, fonts: { ui: '', code: '' } };
+  const fallback: Saved = { theme: 'system', dots: true, canvasOnPhone: false, palettes: { ...DEFAULTS }, fonts: { ui: '', code: '' } };
   try {
     const saved = (readCookie() ?? JSON.parse(localStorage.getItem(STORAGE_KEY) ?? 'null')) as Record<string, any> | null;
     if (saved) {
       return {
         theme: ['system', 'light', 'dark'].includes(saved.theme) ? saved.theme : 'system',
         dots: saved.dots !== false,
+        canvasOnPhone: saved.canvasOnPhone === true,
         palettes: { light: readPalette(saved.palettes?.light, 'light'), dark: readPalette(saved.palettes?.dark, 'dark') },
         fonts: readFonts(saved.fonts),
       };
@@ -131,6 +134,7 @@ class Prefs {
   #saved = load();
   theme = $state<Theme>(this.#saved.theme);
   dots = $state(this.#saved.dots);
+  canvasOnPhone = $state(this.#saved.canvasOnPhone);
   palettes = $state<Record<Mode, Palette>>(this.#saved.palettes);
   fonts = $state<Fonts>(this.#saved.fonts);
   #systemDark = $state(matchMedia('(prefers-color-scheme: dark)').matches);
@@ -148,7 +152,7 @@ class Prefs {
           if (stack) root.style.setProperty(name, stack);
           else root.style.removeProperty(name);
         }
-        const saved = JSON.stringify({ theme: this.theme, dots: this.dots, palettes: this.palettes, fonts: this.fonts });
+        const saved = JSON.stringify({ theme: this.theme, dots: this.dots, canvasOnPhone: this.canvasOnPhone, palettes: this.palettes, fonts: this.fonts });
         localStorage.setItem(STORAGE_KEY, saved);
         document.cookie = `${COOKIE}=${encodeURIComponent(saved)}; path=/; max-age=31536000; samesite=strict`;
       });

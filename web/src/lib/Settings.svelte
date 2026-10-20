@@ -221,6 +221,13 @@
       </span>
       <input type="checkbox" role="switch" bind:checked={prefs.dots} />
     </label>
+    <label class="toggle">
+      <span>
+        <span class="label">canvas on small screens</span>
+        <span class="note">on a phone, albedo shows one chat at a time and opens changes inside it. turn this on for the canvas instead.</span>
+      </span>
+      <input type="checkbox" role="switch" bind:checked={prefs.canvasOnPhone} />
+    </label>
   </div>
 
   <p class="credit">

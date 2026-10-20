@@ -1,5 +1,6 @@
 import { uuidv7, type Session } from './api';
 import { Board } from './board.svelte';
+import { layout } from './layout.svelte';
 
 // A board is a named canvas of panels: sessions from any folders, arranged
 // however the reader likes. Open boards are the tabs; closing a tab keeps the
@@ -120,8 +121,10 @@ class Boards {
     this.entries = rest;
   }
 
+  /** Opens a session: a window on the canvas, or the whole screen on a phone. */
   openSession(session: Session) {
-    this.board?.openSession(session.id);
+    if (layout.phone) layout.open(session.id);
+    else this.board?.openSession(session.id);
   }
 }
 

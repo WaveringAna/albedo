@@ -11,8 +11,21 @@
   import Composer from './Composer.svelte';
   import Markdown from './Markdown.svelte';
   import WorkSteps from './WorkSteps.svelte';
+  import ReviewView from '../views/ReviewView.svelte';
 
-  let { sessionId, session, windowId }: { sessionId: string; session: Session | undefined; windowId: string } = $props();
+  // On the canvas a chat is a window, whose reviews and notes open beside
+  // it. `inline` is the phone's single chat: a review opens inside the chat,
+  // under the line that asked for it, and there are no notes.
+  let { sessionId, session, windowId, inline = false }: { sessionId: string; session: Session | undefined; windowId: string; inline?: boolean } = $props();
+
+  let shown = $state<{ at: string; turnId: string; from: number; jump?: { path: string; at: number } } | null>(null);
+
+  /** Opens a turn's review: beside the window, or under the line it was asked from. */
+  function review(at: string, turnId: string, from: number, path?: string) {
+    if (!inline) return boards.board?.openReview(sessionId, turnId, from, windowId, path);
+    const jump = path ? { path, at: Date.now() } : undefined;
+    shown = shown?.at === at && shown.turnId === turnId && !path ? null : { at, turnId, from, jump };
+  }
 
   // svelte-ignore state_referenced_locally
   const transcript = new Transcript(sessionId);
@@ -173,13 +186,13 @@
             <Markdown text={group.text} />
           </div>
         {:else if group.kind === 'work'}
-          <WorkSteps steps={group.steps} live={running && group === last} {transcript} session={view} {windowId} />
+          <WorkSteps steps={group.steps} live={running && group === last} {transcript} session={view} onreview={(turnId, from, path) => review(group.key, turnId, from, path)} />
         {:else if group.kind === 'end'}
           <p class="end">
             <span class="face kaomoji" title={group.mood}>{face(group.mood, group.seed)}</span>
             <span class="meta">{[group.elapsedMs >= 1000 ? formatElapsed(group.elapsedMs) : '', group.tools ? `${group.tools} ${group.tools === 1 ? 'tool' : 'tools'}` : ''].filter(Boolean).join(' · ')}</span>
             {#if group.changed.files && group.turnId}
-              <button class="review" title="review this turn's changes" onclick={() => boards.board?.openReview(sessionId, group.turnId!, group.from, windowId)}>
+              <button class="review" title="review this turn's changes" aria-expanded={inline ? shown?.at === group.key : undefined} onclick={() => review(group.key, group.turnId!, group.from)}>
                 review {group.changed.files} {group.changed.files === 1 ? 'file' : 'files'}
                 {#if group.changed.added || group.changed.removed}<span class="added">+{group.changed.added}</span> <span class="removed">−{group.changed.removed}</span>{/if}
               </button>
@@ -193,6 +206,15 @@
         {:else if group.kind === 'compaction'}
           <p class="note">{'(>_<)'} earlier context was compacted here</p>
         {/if}
+        {#if shown?.at === group.key}
+          <section class="inline-review" aria-label="changes">
+            <header>
+              <span>changes</span>
+              <button onclick={() => (shown = null)} aria-label="close the changes">close</button>
+            </header>
+            <ReviewView sessionId={sessionId} turnId={shown.turnId} from={shown.from} workspace={session?.workspace ?? ''} jump={shown.jump} keyOf={(path, change) => `${windowId}#${path}#${change}`} />
+          </section>
+        {/if}
       {/each}
 
       {#if running}
@@ -205,7 +227,7 @@
     {#if tied.length}
       <button class="notes" disabled={sendingNotes} onclick={sendTied}>send {tied.length} {tied.length === 1 ? 'note' : 'notes'} tied to this chat</button>
     {/if}
-    <Composer onsend={send} busy={running} onpopout={popout} onstop={() => interruptSession(sessionId)} />
+    <Composer onsend={send} busy={running} onpopout={inline ? undefined : popout} onstop={() => interruptSession(sessionId)} />
   </div>
 </div>
 
@@ -316,6 +338,35 @@
   }
   .copy:hover {
     color: var(--text);
+  }
+  .inline-review {
+    margin: 4px 0 14px;
+    padding: 10px 12px 14px;
+    background: var(--well);
+    border-radius: 12px;
+    --review-ground: var(--well);
+    --review-sticky-top: -1px;
+  }
+  .inline-review header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 8px;
+    color: var(--muted);
+    font-size: 12px;
+  }
+  .inline-review header button {
+    padding: 2px 8px;
+    color: var(--muted);
+    font: inherit;
+    background: none;
+    border: 0;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+  .inline-review header button:hover {
+    color: var(--text);
+    background: var(--hover);
   }
   .notes {
     align-self: flex-start;

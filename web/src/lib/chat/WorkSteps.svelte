@@ -1,6 +1,5 @@
 <script lang="ts">
   import type { Session } from '../api';
-  import { boards } from '../boards.svelte';
   import { summarize, type Step } from '../burst';
   import { jsonField, type Block, type Transcript } from '../transcript.svelte';
   import Markdown from './Markdown.svelte';
@@ -9,7 +8,13 @@
   // A turn's thinking and tool use between two messages, read as one line of
   // what it did, the way the terminal writes it. The run still going stays
   // open, with albedo's face, so it can be watched.
-  let { steps, live, transcript, session, windowId }: { steps: Block[]; live: boolean; transcript: Transcript; session: Session | undefined; windowId: string } = $props();
+  let {
+    steps,
+    live,
+    transcript,
+    session,
+    onreview,
+  }: { steps: Block[]; live: boolean; transcript: Transcript; session: Session | undefined; onreview: (turnId: string, from: number, path?: string) => void } = $props();
 
   let chosen = $state<boolean | null>(null);
   let element = $state<HTMLElement>();
@@ -35,13 +40,12 @@
     return () => observer.disconnect();
   });
 
-  // The counts open the turn's review beside the chat.
+  // The counts open the turn's review, on the first file this stretch changed.
   const turnId = $derived(tools.find((entry) => entry.turn_id)?.turn_id ?? null);
   function review() {
     const from = turnId ? transcript.turnStart(turnId) : null;
-    // The first file this stretch of work changed, so the review opens on it.
     const path = steps.flatMap((step) => (step.kind === 'tool' ? (step.trace?.changes ?? []) : [])).find((change) => change.path)?.path;
-    if (turnId && from !== null) boards.board?.openReview(transcript.sessionId, turnId, from, windowId, path);
+    if (turnId && from !== null) onreview(turnId, from, path);
   }
 
   // Thoughts show their first lines; a click shows the rest.
