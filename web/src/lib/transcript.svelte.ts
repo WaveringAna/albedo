@@ -291,6 +291,11 @@ export class Transcript {
     this.pending = this.pending.filter((send) => send.id !== id);
   }
 
+  /** Where a turn starts among the loaded entries, for a review of it. */
+  turnStart(turnId: string): number | null {
+    return this.entries.find((entry) => entry.turn_id === turnId)?.position ?? null;
+  }
+
   /** Puts tool entries' full arguments and output in place of their references. */
   async expand(...entries: HistoryEntry[]) {
     const waiting = entries.filter((entry) => !entry.content_complete && !this.#expanding.has(entry.id) && referenced(entry));

@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { Session } from '../api';
+  import { boards } from '../boards.svelte';
   import { summarize, type Step } from '../burst';
   import { jsonField, type Block, type Transcript } from '../transcript.svelte';
   import Markdown from './Markdown.svelte';
@@ -8,7 +9,7 @@
   // A turn's thinking and tool use between two messages, read as one line of
   // what it did, the way the terminal writes it. The run still going stays
   // open, with albedo's face, so it can be watched.
-  let { steps, live, transcript, session }: { steps: Block[]; live: boolean; transcript: Transcript; session: Session | undefined } = $props();
+  let { steps, live, transcript, session, windowId }: { steps: Block[]; live: boolean; transcript: Transcript; session: Session | undefined; windowId: string } = $props();
 
   let chosen = $state<boolean | null>(null);
   let element = $state<HTMLElement>();
@@ -34,6 +35,15 @@
     return () => observer.disconnect();
   });
 
+  // The counts open the turn's review beside the chat.
+  const turnId = $derived(tools.find((entry) => entry.turn_id)?.turn_id ?? null);
+  function review() {
+    const from = turnId ? transcript.turnStart(turnId) : null;
+    // The first file this stretch of work changed, so the review opens on it.
+    const path = steps.flatMap((step) => (step.kind === 'tool' ? (step.trace?.changes ?? []) : [])).find((change) => change.path)?.path;
+    if (turnId && from !== null) boards.board?.openReview(transcript.sessionId, turnId, from, windowId, path);
+  }
+
   // Thoughts show their first lines; a click shows the rest.
   let whole = $state(new Set<string>());
   function toggle(key: string) {
@@ -45,14 +55,16 @@
 </script>
 
 <div class="work" bind:this={element}>
+  <div class="head">
   <button class="summary" onclick={() => (chosen = !open)} aria-expanded={open} title={summary.text}>
     <svg class="chevron" class:open viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" /></svg>
     <span class="line">{summary.text || 'worked'}</span>
     {#if summary.failed}<span class="failed">{summary.failed} failed</span>{/if}
-    {#if summary.added || summary.removed}
-      <span class="counts"><span class="added">+{summary.added}</span> <span class="removed">−{summary.removed}</span></span>
-    {/if}
   </button>
+  {#if summary.added || summary.removed}
+    <button class="counts" onclick={review} title="show these changes in the review"><span class="added">+{summary.added}</span> <span class="removed">−{summary.removed}</span></button>
+  {/if}
+  </div>
   {#if open}
     <div class="steps">
       {#each steps as step (step.key)}
@@ -110,10 +122,29 @@
     flex: none;
     color: var(--danger);
   }
+  .head {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    min-width: 0;
+  }
+  .head .summary {
+    flex: 1;
+    width: auto;
+  }
   .counts {
     flex: none;
-    margin-left: 4px;
+    padding: 2px 6px;
+    font: inherit;
     font-variant-numeric: tabular-nums;
+    background: none;
+    border: 0;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background-color 120ms ease;
+  }
+  .counts:hover {
+    background: var(--hover);
   }
   .added {
     color: var(--added);

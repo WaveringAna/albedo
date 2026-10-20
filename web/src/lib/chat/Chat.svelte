@@ -151,7 +151,7 @@
             <Markdown text={group.text} />
           </div>
         {:else if group.kind === 'work'}
-          <WorkSteps steps={group.steps} live={running && group === last} {transcript} session={view} />
+          <WorkSteps steps={group.steps} live={running && group === last} {transcript} session={view} {windowId} />
         {:else if group.kind === 'end'}
           <p class="end">
             <span class="face kaomoji" title={group.mood}>{face(group.mood, group.seed)}</span>

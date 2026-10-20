@@ -12,7 +12,8 @@ import type { Edge, Node, Viewport, useSvelteFlow } from '@xyflow/svelte';
 // papers each one spread around it.
 export type SessionWindow = Node<{ sessionId: string; parent?: string }, 'session'>;
 /** The changes one turn made, walked file by file. `from` is the turn's first history position. */
-export type ReviewWindow = Node<{ sessionId: string; turnId: string; from: number; parent?: string }, 'review'>;
+/** `jump` asks the window to bring one file into view; `at` makes each ask new. */
+export type ReviewWindow = Node<{ sessionId: string; turnId: string; from: number; parent?: string; jump?: { path: string; at: number } }, 'review'>;
 export type Window = SessionWindow | ReviewWindow;
 
 type Flow = ReturnType<typeof useSvelteFlow>;
@@ -114,8 +115,11 @@ export class Board {
   }
 
   /** Opens the review of one turn's changes beside the window it was asked from. */
-  openReview(sessionId: string, turnId: string, from: number, parent?: string) {
-    this.#open({ id: `review:${sessionId}:${turnId}`, type: 'review', data: { sessionId, turnId, from, parent } }, 640);
+  openReview(sessionId: string, turnId: string, from: number, parent?: string, path?: string) {
+    const id = `review:${sessionId}:${turnId}`;
+    const jump = path ? { path, at: Date.now() } : undefined;
+    this.#open({ id, type: 'review', data: { sessionId, turnId, from, parent, jump } }, 640);
+    if (jump) this.nodes = this.nodes.map((node) => (node.id === id && node.type === 'review' ? { ...node, data: { ...node.data, jump } } : node));
   }
 
   #open(window: Pick<SessionWindow, 'id' | 'type' | 'data'> | Pick<ReviewWindow, 'id' | 'type' | 'data'>, width = SIZE.width) {
