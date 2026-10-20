@@ -15,6 +15,7 @@ import sys
 import tempfile
 from typing import BinaryIO, TYPE_CHECKING, TypeVar
 
+from . import hooks
 from .errors import LaunchError
 from .transport import positive
 
@@ -193,45 +194,52 @@ class OwnedChrome:
         self._lock_fd: int | None = None
         self._released = False
         try:
-            self.profile.mkdir(parents=True, exist_ok=True, mode=0o700)
-            # O_EXCL closes the race between two spawn() calls using the same profile.
-            try:
-                self._lock_fd = os.open(
-                    self.profile / _LOCK, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600
+            # The profile's lock and marker are the browser's bookkeeping, not the
+            # cell's work, so they stay out of its file-change trace.
+            with hooks.unobserved():
+                self.profile.mkdir(parents=True, exist_ok=True, mode=0o700)
+                # O_EXCL closes the race between two spawn() calls using the same profile.
+                try:
+                    self._lock_fd = os.open(
+                        self.profile / _LOCK,
+                        os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                        0o600,
+                    )
+                    os.write(self._lock_fd, f"kernel_pid={os.getpid()}\n".encode())
+                except FileExistsError as exc:
+                    raise LaunchError(
+                        "This profile is already reserved by another spawn().",
+                        reason="profile_in_use",
+                        profile=str(self.profile),
+                        recovery="Use a different profile, or close its owning Browser. Do not delete a live lock.",
+                    ) from exc
+                marker = self.profile / _MARKER
+                if not marker.is_file() and any(
+                    p.name != _LOCK for p in self.profile.iterdir()
+                ):
+                    raise LaunchError(
+                        "Refusing a nonempty profile not created for this skill.",
+                        reason="unsafe_profile",
+                        profile=str(self.profile),
+                        recovery="Use a new empty directory, not your normal browser profile.",
+                    )
+                # lexists notices dangling singleton symlinks too: don't guess whether a
+                # previous Chrome crashed, or attach to somebody else's running process.
+                if any(
+                    os.path.lexists(self.profile / name)
+                    for name in ("SingletonLock", "SingletonSocket")
+                ):
+                    raise LaunchError(
+                        "Chrome has a singleton lock in this profile.",
+                        reason="profile_in_use",
+                        profile=str(self.profile),
+                    )
+                marker.touch(mode=0o600, exist_ok=True)
+                # After acquiring our exclusive lock, remove only stale discovery metadata.
+                (self.profile / "DevToolsActivePort").unlink(missing_ok=True)
+                self.log = tempfile.TemporaryFile(
+                    mode="w+b", prefix="prime-browser-log-"
                 )
-                os.write(self._lock_fd, f"kernel_pid={os.getpid()}\n".encode())
-            except FileExistsError as exc:
-                raise LaunchError(
-                    "This profile is already reserved by another spawn().",
-                    reason="profile_in_use",
-                    profile=str(self.profile),
-                    recovery="Use a different profile, or close its owning Browser. Do not delete a live lock.",
-                ) from exc
-            marker = self.profile / _MARKER
-            if not marker.is_file() and any(
-                p.name != _LOCK for p in self.profile.iterdir()
-            ):
-                raise LaunchError(
-                    "Refusing a nonempty profile not created for this skill.",
-                    reason="unsafe_profile",
-                    profile=str(self.profile),
-                    recovery="Use a new empty directory, not your normal browser profile.",
-                )
-            # lexists notices dangling singleton symlinks too: don't guess whether a
-            # previous Chrome crashed, or attach to somebody else's running process.
-            if any(
-                os.path.lexists(self.profile / name)
-                for name in ("SingletonLock", "SingletonSocket")
-            ):
-                raise LaunchError(
-                    "Chrome has a singleton lock in this profile.",
-                    reason="profile_in_use",
-                    profile=str(self.profile),
-                )
-            marker.touch(mode=0o600, exist_ok=True)
-            # After acquiring our exclusive lock, remove only stale discovery metadata.
-            (self.profile / "DevToolsActivePort").unlink(missing_ok=True)
-            self.log = tempfile.TemporaryFile(mode="w+b", prefix="prime-browser-log-")
         except BaseException:
             self._release()
             raise

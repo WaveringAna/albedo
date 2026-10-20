@@ -1255,7 +1255,10 @@ class Page:
             destination.parent.mkdir(parents=True, exist_ok=True)
             destination.write_bytes(raw)
 
-        await asyncio.to_thread(write)
+        # A screenshot the cell asked for by path is its work; one filed
+        # under .browser-artifacts is the browser's, and stays out of the trace.
+        with contextlib.nullcontext() if path is not None else hooks.unobserved():
+            await asyncio.to_thread(write)
         return destination
 
     async def close(self, *, allow_existing: bool = False) -> None:

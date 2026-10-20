@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import contextlib
 import shutil
 import sys
 import unittest
@@ -12,7 +13,8 @@ sys.path.insert(0, str(ROOT / "priv" / "python"))
 
 from albedo_plugins.browser import spawn, render, one  # noqa: E402
 from albedo_plugins.browser.errors import NotActionable  # noqa: E402
-from albedo_plugins.browser.launch import _command  # noqa: E402
+from albedo_plugins.browser import hooks  # noqa: E402
+from albedo_plugins.browser.launch import OwnedChrome, _command  # noqa: E402
 
 
 class BrowserIntegrationTest(unittest.IsolatedAsyncioTestCase):
@@ -128,6 +130,30 @@ class LaunchCommandTest(unittest.TestCase):
             "/opt/chrome", PROFILE, headless=True, sandbox=True, args=[]
         )
         self.assertIn("--headless=new", headless)
+
+
+class BookkeepingTest(unittest.TestCase):
+    """The browser's own files stay out of a cell's file-change trace."""
+
+    def test_profile_setup_runs_unobserved(self):
+        entered: list[bool] = []
+        original = hooks.unobserved
+
+        @contextlib.contextmanager
+        def unobserved():
+            entered.append(True)
+            yield
+
+        hooks.unobserved = unobserved
+        try:
+            chrome = OwnedChrome(None)
+            try:
+                self.assertTrue(entered)
+                self.assertTrue((chrome.profile / ".albedo-browser-profile").exists())
+            finally:
+                chrome._release()
+        finally:
+            hooks.unobserved = original
 
 
 if __name__ == "__main__":

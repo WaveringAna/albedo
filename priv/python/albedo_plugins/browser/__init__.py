@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import importlib
 import sys
+
+import albedo_trace
 from typing import TYPE_CHECKING
 
 from . import hooks
@@ -133,6 +135,7 @@ async def _cleanup() -> None:
 
 def setup(api: PythonApi) -> dict[str, object]:
     hooks.attach_image = api.attach_image
+    hooks.unobserved = albedo_trace.unobserved
     api.on_shutdown(_cleanup)
     return {
         "browser": browser,
