@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tick } from 'svelte';
   import { boards } from './lib/boards.svelte';
   import Canvas from './lib/Canvas.svelte';
   import { ago, place, rank } from './lib/format';
@@ -161,8 +162,9 @@
     else if (event.key === '+' || event.key === '=') zoomStep(1);
     else if (event.key === '-' || event.key === '_') zoomStep(-1);
     else if (event.key === '/') {
-      railOpen = true;
-      queueMicrotask(() => search?.focus());
+      // A hidden sidebar comes out floating, held there by the filter's focus.
+      if (!railOpen) peek = true;
+      tick().then(() => search?.focus());
     } else return;
     event.preventDefault();
   }
