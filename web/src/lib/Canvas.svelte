@@ -15,7 +15,8 @@
   // The wheel is handled here rather than by Svelte Flow, because a window's
   // contents and the canvas share the trackpad: a pinch zooms the canvas
   // anywhere, an up-down scroll over a readable window scrolls that window,
-  // and every other scroll pans the canvas freely.
+  // and every other scroll pans the canvas freely. Holding space, or the
+  // middle button, drags the canvas from anywhere, over windows too.
   let { board, onpalette, minimap }: { board: Board; onpalette: () => void; minimap: boolean } = $props();
 
   const nodeTypes: NodeTypes = { session: SessionNode, review: ReviewNode, note: NoteNode };
@@ -36,13 +37,59 @@
     return scroller.scrollHeight > scroller.clientHeight || deltaY === 0;
   }
 
+  // A pinch moves a few pixels at a time, a mouse wheel's notch a hundred or
+  // so (or a few lines), so a notch is one fixed step rather than a jump.
+  const NOTCH = 1.1;
+  function zoomFactor(event: WheelEvent) {
+    const pixels = event.deltaMode === WheelEvent.DOM_DELTA_PIXEL ? event.deltaY : event.deltaY * 40;
+    return Math.abs(pixels) >= 50 ? NOTCH ** -Math.sign(pixels) : Math.exp(-pixels * 0.01);
+  }
+
+  let hand = $state(false);
+  let panning = $state<{ x: number; y: number } | null>(null);
+
+  function typing(target: EventTarget | null) {
+    return !!(target as HTMLElement | null)?.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"])');
+  }
+
+  function keydown(event: KeyboardEvent) {
+    if (event.key !== ' ' || typing(event.target) || event.metaKey || event.ctrlKey || event.altKey) return;
+    // Held, not typed: no scrolling the page or pressing the focused button.
+    event.preventDefault();
+    hand = true;
+  }
+
+  function keyup(event: KeyboardEvent) {
+    if (event.key === ' ') hand = false;
+  }
+
+  function grab(event: PointerEvent) {
+    if (!(event.button === 1 || (hand && event.button === 0))) return;
+    // Taken before Svelte Flow or a window sees it, so nothing drags, selects or autoscrolls.
+    event.preventDefault();
+    event.stopPropagation();
+    element!.setPointerCapture(event.pointerId);
+    panning = { x: event.clientX, y: event.clientY };
+  }
+
+  function drag(event: PointerEvent) {
+    if (!panning) return;
+    const { x, y, zoom } = board.viewport;
+    board.setView({ x: x + event.clientX - panning.x, y: y + event.clientY - panning.y, zoom });
+    panning = { x: event.clientX, y: event.clientY };
+  }
+
+  function release() {
+    panning = null;
+  }
+
   $effect(() => {
     if (!element) return;
     const wheel = (event: WheelEvent) => {
       const rect = element!.getBoundingClientRect();
       if (event.ctrlKey || event.metaKey) {
         event.preventDefault();
-        board.zoomAt(Math.exp(-event.deltaY * 0.01), { x: event.clientX - rect.left, y: event.clientY - rect.top });
+        board.zoomAt(zoomFactor(event), { x: event.clientX - rect.left, y: event.clientY - rect.top });
         return;
       }
       const vertical = Math.abs(event.deltaY) >= Math.abs(event.deltaX);
@@ -52,11 +99,28 @@
       board.setView({ x: x - event.deltaX, y: y - event.deltaY, zoom });
     };
     element.addEventListener('wheel', wheel, { passive: false, capture: true });
-    return () => element?.removeEventListener('wheel', wheel, { capture: true });
+    element.addEventListener('pointerdown', grab, { capture: true });
+    return () => {
+      element?.removeEventListener('wheel', wheel, { capture: true });
+      element?.removeEventListener('pointerdown', grab, { capture: true });
+    };
   });
 </script>
 
-<div class="canvas" bind:this={element} style:--dots-opacity={Math.min(1, (zoom - 0.5) * 4)} ondblclick={dblclick} role="presentation">
+<svelte:window onkeydown={keydown} onkeyup={keyup} onblur={() => (hand = false)} />
+
+<div
+  class="canvas"
+  class:hand
+  class:panning={panning !== null}
+  bind:this={element}
+  style:--dots-opacity={Math.min(1, (zoom - 0.5) * 4)}
+  ondblclick={dblclick}
+  onpointermove={drag}
+  onpointerup={release}
+  onpointercancel={release}
+  role="presentation"
+>
   <SvelteFlow
     bind:nodes={board.nodes}
     edges={board.edges}
@@ -71,6 +135,7 @@
     zoomOnPinch={false}
     zoomOnDoubleClick={false}
     deleteKey={null}
+    panActivationKey={null}
     nodesConnectable={false}
     proOptions={{ hideAttribution: true }}
     onmove={(_, viewport) => (board.viewport = viewport)}
@@ -99,6 +164,15 @@
   .canvas {
     position: absolute;
     inset: 0;
+  }
+  .hand,
+  .hand :global(*) {
+    cursor: grab !important;
+    user-select: none;
+  }
+  .panning,
+  .panning :global(*) {
+    cursor: grabbing !important;
   }
   .empty {
     position: absolute;
