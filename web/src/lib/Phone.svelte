@@ -1,7 +1,5 @@
 <script lang="ts">
   import Chat from './chat/Chat.svelte';
-  import { busy } from './live.svelte';
-  import LiveFace from './LiveFace.svelte';
   import { layout } from './layout.svelte';
   import Rail from './Rail.svelte';
   import { sessions } from './sessions.svelte';
@@ -13,14 +11,14 @@
 </script>
 
 <div class="phone">
+  {#if layout.session}
+    <!-- No bar over a chat: one floating button back to the list, so the
+         conversation has the whole screen. -->
+    <button class="back" aria-label="back to sessions" title={session?.name || 'untitled session'} onclick={() => layout.back()}>
+      <svg viewBox="0 0 16 16" width="18" height="18" aria-hidden="true"><path d="M10 3.5 5.5 8l4.5 4.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" /></svg>
+    </button>
+  {:else}
   <header>
-    {#if layout.session}
-      <button class="icon" aria-label="back to sessions" onclick={() => layout.back()}>
-        <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M10 3.5 5.5 8l4.5 4.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" /></svg>
-      </button>
-      <h1>{session?.name || 'untitled session'}</h1>
-      {#if busy(session)}<span class="face"><LiveFace {session} /></span>{/if}
-    {:else}
       <span class="brand"><span class="spark" aria-hidden="true">✦</span> albedo</span>
       <span class="spacer"></span>
       <button class="icon" aria-label="search" onclick={onpalette}>
@@ -29,8 +27,8 @@
       <button class="icon" data-settings-toggle aria-label="settings" onclick={onsettings}>
         <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M2.5 5h6M11.5 5h2M2.5 11h2M7.5 11h6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" /><circle cx="10" cy="5" r="1.6" fill="none" stroke="currentColor" stroke-width="1.3" /><circle cx="6" cy="11" r="1.6" fill="none" stroke="currentColor" stroke-width="1.3" /></svg>
       </button>
-    {/if}
   </header>
+  {/if}
   <main>
     {#if layout.session}
       {#key layout.session}
@@ -44,6 +42,7 @@
 
 <style>
   .phone {
+    position: relative;
     display: flex;
     flex-direction: column;
     height: 100dvh;
@@ -58,16 +57,6 @@
     padding-top: env(safe-area-inset-top);
     background: var(--surface);
   }
-  h1 {
-    flex: 1;
-    min-width: 0;
-    margin: 0;
-    overflow: hidden;
-    font-size: 16px;
-    font-weight: 560;
-    white-space: nowrap;
-    text-overflow: ellipsis;
-  }
   .brand {
     padding-left: 6px;
     font-size: 15px;
@@ -78,10 +67,6 @@
   }
   .spacer {
     flex: 1;
-  }
-  .face {
-    color: var(--agent);
-    font-size: 13px;
   }
   .icon {
     display: grid;
@@ -94,6 +79,27 @@
     border: 0;
     border-radius: 10px;
     cursor: pointer;
+  }
+  .back {
+    position: absolute;
+    top: calc(env(safe-area-inset-top) + 8px);
+    left: 10px;
+    z-index: 2;
+    display: grid;
+    place-items: center;
+    width: 40px;
+    height: 40px;
+    padding: 0;
+    color: var(--text);
+    background: color-mix(in oklab, var(--surface) 80%, transparent);
+    border: 0;
+    border-radius: 50%;
+    box-shadow: var(--shadow);
+    backdrop-filter: blur(12px);
+    cursor: pointer;
+  }
+  .back:active {
+    transform: scale(0.95);
   }
   .icon:active {
     background: var(--hover);
@@ -110,6 +116,7 @@
     min-height: 0;
   }
   .chat {
+    padding-top: env(safe-area-inset-top);
     display: flex;
     flex: 1;
     min-height: 0;

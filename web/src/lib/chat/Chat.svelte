@@ -52,10 +52,10 @@
   let older = false;
 
   onMount(() => {
-    transcript.load().then(async () => {
-      await toBottom();
-      settled = true;
-    });
+    transcript
+      .load()
+      .then(toBottom)
+      .finally(() => (settled = true));
     transcript.attach();
     return () => transcript.detach();
   });
@@ -142,10 +142,22 @@
 
 <div class="chat" class:inline>
   <div class="scroller nowheel" bind:this={scroller} onscroll={scrolled}>
-    <div class="thread">
+    {#if !settled && !transcript.error}
+      <!-- Shaped like the end of a typical chat, as measured at phone width:
+           a work line, your message, more work, then the reply's last lines
+           and its sign-off, sitting at the bottom where the chat will open. -->
+      <div class="skeleton" aria-label="loading the chat" role="status">
+        <span class="bar work"></span>
+        <span class="bubble-shape"></span>
+        <span class="bar work"></span>
+        {#each [92, 100, 84, 96, 70, 88, 100, 60] as width, index (index)}<span class="bar line" style:width="{width}%"></span>{/each}
+        <span class="bar end"></span>
+      </div>
+    {/if}
+    <div class="thread" class:waiting={!settled}>
       <div bind:this={top}></div>
       {#if transcript.loading}
-        <p class="quiet">(・ω・)ﾉ reading the transcript…</p>
+        <span></span>
       {:else if transcript.error}
         <p class="quiet error">(｡•︿•｡) couldn't read the transcript: {transcript.error}</p>
       {:else if transcript.groups.length === 0}
@@ -248,14 +260,76 @@
   }
   .inline .thread {
     gap: 12px;
-    padding: 6px 16px 16px;
+    padding: 60px 16px 16px;
     font-size: 16px;
     line-height: 1.55;
   }
   .inline .dock {
     padding: 0 10px 8px;
   }
+  /* Until the first page is in and scrolled to its end, the thread stays
+     unseen and the skeleton holds its place, so it never shows its top and
+     then jumps. */
+  .thread.waiting {
+    visibility: hidden;
+  }
+  .skeleton {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+    gap: 12px;
+    max-width: 720px;
+    margin: 0 auto;
+    padding: 18px 20px 24px;
+    overflow: hidden;
+    pointer-events: none;
+  }
+  .inline .skeleton {
+    padding: 60px 16px 16px;
+  }
+  .skeleton > * {
+    flex: none;
+    border-radius: 8px;
+    background: var(--well);
+    animation: pulse 1.6s ease-in-out infinite;
+  }
+  .skeleton .work {
+    width: 58%;
+    height: 14px;
+    margin: 4px 0;
+  }
+  .skeleton .bubble-shape {
+    align-self: flex-end;
+    width: 64%;
+    height: 72px;
+    border-radius: 16px 16px 4px 16px;
+    background: var(--bubble);
+  }
+  .skeleton .line {
+    height: 14px;
+    margin: 0;
+  }
+  .skeleton .line + .line {
+    margin-top: -2px;
+  }
+  .skeleton .end {
+    width: 30%;
+    height: 12px;
+  }
+  @keyframes pulse {
+    50% {
+      opacity: 0.55;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .skeleton > * {
+      animation: none;
+    }
+  }
   .scroller {
+    position: relative;
     flex: 1;
     min-height: 0;
     overflow-y: auto;

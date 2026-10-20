@@ -111,11 +111,21 @@
     font-size: 0.92em;
     border-collapse: collapse;
   }
+  /* A table scrolls sideways rather than squeezing its columns: cells keep
+     their words whole, headers and inline code stay on one line. */
   .markdown :global(th),
   .markdown :global(td) {
+    min-width: 6ch;
+    max-width: 44ch;
     padding: 4px 10px;
+    overflow-wrap: normal;
     text-align: left;
+    vertical-align: top;
     border: 1px solid var(--line);
+  }
+  .markdown :global(th),
+  .markdown :global(td code) {
+    white-space: nowrap;
   }
   .markdown :global(hr) {
     height: 0;

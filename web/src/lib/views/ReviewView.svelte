@@ -36,6 +36,11 @@
   } = $props();
 
   const name = $derived(namer(workspace));
+  /** The file and its folder, which is what tells most files apart; the full path is its title. */
+  function short(path: string) {
+    const parts = name(path).split('/');
+    return parts.length > 2 ? `…/${parts.slice(-2).join('/')}` : parts.join('/');
+  }
   let files = $state<FileChanges[] | null>(null);
   let error = $state<string | null>(null);
   let element = $state<HTMLElement>();
@@ -75,7 +80,7 @@
     <nav class="index" aria-label="Files">
       {#each files as file, index (file.path)}
         <button onclick={() => show(index)} title={file.path}>
-          <span class="path">{name(file.path)}</span>
+          <span class="path">{short(file.path)}</span>
           {#if count(file.path)}<span class="said" title="notes">{count(file.path)} ✎</span>{/if}
           <span class="counts"><span class="added">+{file.added}</span> <span class="removed">−{file.removed}</span></span>
         </button>
@@ -83,7 +88,7 @@
     </nav>
     {#each files as file, index (file.path)}
       <section class="file" data-file={index}>
-        <h3 title={file.path}>{name(file.path)}</h3>
+        <h3 title={file.path}>{short(file.path)}</h3>
         {#each file.changes as change, step (step)}
           {#if change.reason}
             <p class="quiet">no diff to show: {change.reason}</p>
@@ -109,7 +114,9 @@
     color: var(--danger);
   }
   .counts {
+    flex: none;
     font-variant-numeric: tabular-nums;
+    white-space: nowrap;
   }
   .added {
     color: var(--added);
