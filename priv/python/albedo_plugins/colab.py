@@ -9,7 +9,11 @@ Colab exposes, run as ssh's ProxyCommand by `albedo_plugins.ws` (see `connect`).
 from __future__ import annotations
 
 import asyncio
+import base64
+import http.client
 import json
+import re
+import secrets
 import shlex
 import sys
 import urllib.error
@@ -21,7 +25,7 @@ from typing import Any
 
 import albedo_ssh
 from albedo_api import PythonApi, Record
-from albedo_plugins.remote import remote
+from albedo_plugins.remote import RemoteError, remote
 
 API_BASE = "https://colab.research.google.com"
 CONNECT_TIMEOUT = 60.0
@@ -41,6 +45,10 @@ class ColabError(RuntimeError):
     def __init__(self, message: str, status: int | None = None) -> None:
         super().__init__(message)
         self.status = status
+
+
+class ColabSshSessionError(ColabError):
+    """The runtime refused ssh because its single session slot is occupied."""
 
 
 class ColabInstance(Record):
@@ -390,13 +398,178 @@ async def connect(
             "ALBEDO_WS_HEADERS": json.dumps({"X-Colab-Ssh-Pubkey": public}),
         },
     )
-    return await remote.connect(
-        host,
-        remote_cwd=remote_cwd or "/content",
-        python=python or "/usr/bin/python3",
-        modules=modules,
-        timeout=timeout,
+    try:
+        return await remote.connect(
+            host,
+            remote_cwd=remote_cwd or "/content",
+            python=python or "/usr/bin/python3",
+            modules=modules,
+            timeout=timeout,
+        )
+    except RemoteError as error:
+        try:
+            occupied = await asyncio.to_thread(
+                _ssh_session_occupied, socket_url, public, min(timeout, 10.0)
+            )
+        except (OSError, http.client.HTTPException):
+            occupied = False
+        if occupied:
+            raise ColabSshSessionError(
+                "Colab allows one ssh session per runtime; a previously held session "
+                "was not released. This is server-side and does not clear on retry. "
+                "Use the HTTP file routes to keep working: colab.contents(), "
+                "colab.read(), colab.pull() (and colab.runtime_status() for liveness). "
+                "stop()/unassign is the only forceful reset and destroys the VM.",
+                429,
+            ) from error
+        raise
+
+
+def _ssh_session_occupied(url: str, public: str, timeout: float) -> bool:
+    target = urllib.parse.urlsplit(url)
+    transport = (
+        http.client.HTTPSConnection
+        if target.scheme == "wss"
+        else http.client.HTTPConnection
     )
+    connection = transport(target.netloc, timeout=timeout)
+    try:
+        connection.request(
+            "GET",
+            f"{target.path}?{target.query}",
+            headers={
+                "Upgrade": "websocket",
+                "Connection": "Upgrade",
+                "Sec-WebSocket-Key": base64.b64encode(secrets.token_bytes(16)).decode(),
+                "Sec-WebSocket-Version": "13",
+                "X-Colab-Ssh-Pubkey": public,
+            },
+        )
+        response = connection.getresponse()
+        return response.status == 429 and b"already-active-session" in response.read(
+            4096
+        )
+    finally:
+        connection.close()
+
+
+async def _runtime_url(instance: str | ColabInstance, path: str, **query: str) -> str:
+    live = _find(await instances(), instance)
+    if not (live.url and live.token):
+        raise ColabError(f"Colab instance {live.id} has no runtime proxy yet")
+    target = urllib.parse.urlsplit(live.url)
+    return urllib.parse.urlunsplit(
+        (
+            target.scheme,
+            target.netloc,
+            path,
+            urllib.parse.urlencode({"colab-runtime-proxy-token": live.token, **query}),
+            "",
+        )
+    )
+
+
+def _runtime_open(url: str, headers: dict[str, str] | None = None) -> Any:
+    request = urllib.request.Request(
+        url, headers={"X-Colab-Client-Agent": "colab-cli", **(headers or {})}
+    )
+    try:
+        return urllib.request.urlopen(request, timeout=API_TIMEOUT)
+    except urllib.error.HTTPError as error:
+        status = error.code
+        error.close()
+        raise ColabError(
+            f"Colab runtime HTTP request failed ({status})", status
+        ) from None
+    except urllib.error.URLError:
+        raise ColabError(
+            "network error connecting to the Colab runtime proxy"
+        ) from None
+
+
+def _runtime_json(url: str) -> Any:
+    with _runtime_open(url) as response:
+        return json.load(response)
+
+
+async def runtime_status(instance: str | ColabInstance) -> Record:
+    """Jupyter liveness over HTTPS, independent of the ssh session slot."""
+    url = await _runtime_url(instance, "/api/status")
+    return Record(await asyncio.to_thread(_runtime_json, url))
+
+
+async def contents(
+    instance: str | ColabInstance, path: str = "", *, content: bool = True
+) -> Record:
+    """Jupyter metadata, directory entries, or text-file content over HTTPS.
+
+    Paths are relative to Jupyter's root, not the ssh working directory.
+    Use content=False for file metadata without loading the file.
+    """
+    route = "/api/contents/" + urllib.parse.quote(path.lstrip("/"), safe="/")
+    url = await _runtime_url(
+        instance, route, content="1" if content else "0", format="text"
+    )
+    return Record(await asyncio.to_thread(_runtime_json, url))
+
+
+async def read(instance: str | ColabInstance, path: str) -> str:
+    """Read one text file over HTTPS; use pull() for large or binary files."""
+    result = await contents(instance, path)
+    if result.get("type") != "file" or not isinstance(result.get("content"), str):
+        raise ColabError(f"not a text file: {path!r}")
+    return result["content"]
+
+
+def _pull(url: str, local: Path, resume: bool) -> Path:
+    have = local.stat().st_size if resume and local.exists() else 0
+    headers = {"Range": f"bytes={have}-"} if have else {}
+    with _runtime_open(url, headers) as response:
+        total = None
+        if response.status == 206:
+            match = re.fullmatch(
+                r"bytes (\d+)-(\d+)/(\d+)", response.headers.get("Content-Range", "")
+            )
+            if not match or int(match[1]) != have or int(match[2]) + 1 != int(match[3]):
+                raise ColabError(
+                    "invalid Content-Range from Colab; local file left unchanged"
+                )
+            total = int(match[3])
+        elif response.status == 200:
+            # An ignored Range must replace the partial file, not append to it.
+            have = 0
+            length = response.headers.get("Content-Length")
+            total = int(length) if length is not None else None
+        else:
+            raise ColabError(f"unexpected Colab download response ({response.status})")
+        local.parent.mkdir(parents=True, exist_ok=True)
+        with local.open("ab" if have else "wb") as output:
+            while chunk := response.read(1 << 20):
+                output.write(chunk)
+                have += len(chunk)
+        if total is not None and have != total:
+            raise ColabError(
+                f"incomplete Colab download: got {have} of {total} bytes; retry to resume"
+            )
+    return local
+
+
+async def pull(
+    instance: str | ColabInstance,
+    remote: str,
+    local: str | Path,
+    *,
+    resume: bool = True,
+) -> Path:
+    """Stream a Jupyter-root-relative file to disk over HTTPS, without ssh.
+
+    Partial downloads remain on disk for retry. Resume assumes the remote file
+    has not changed; use resume=False for mutable files. A 416 response is an
+    error, not proof that the local file is complete.
+    """
+    route = "/files/" + urllib.parse.quote(remote.lstrip("/"), safe="/")
+    url = await _runtime_url(instance, route)
+    return await asyncio.to_thread(_pull, url, Path(local).expanduser(), resume)
 
 
 class Colab:
@@ -407,6 +580,10 @@ class Colab:
     launch = staticmethod(launch)
     stop = staticmethod(stop)
     connect = staticmethod(connect)
+    runtime_status = staticmethod(runtime_status)
+    contents = staticmethod(contents)
+    read = staticmethod(read)
+    pull = staticmethod(pull)
 
 
 colab = Colab()
@@ -419,6 +596,7 @@ def setup(api: PythonApi) -> dict[str, object]:
     return {
         "colab": colab,
         "ColabError": ColabError,
+        "ColabSshSessionError": ColabSshSessionError,
         "ColabInstance": ColabInstance,
         "ColabStatus": ColabStatus,
     }

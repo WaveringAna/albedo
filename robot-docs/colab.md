@@ -24,6 +24,24 @@ runtimes from the kernel and reaches one through `remote`.
   written to `~/.ssh/config`. a missing ssh public key (`~/.ssh/id_ed25519.pub`,
   `id_ecdsa.pub`, or `ssh_key=`) is an error before anything connects.
   `stop()` drops the alias; it does not close a connection already open on it.
+- **occupied ssh slot**: only after `remote.connect()` fails, a bounded websocket
+  handshake probe checks for HTTP 429 with `already-active-session`. this raises
+  `ColabSshSessionError` (a `ColabError`, `status=429`). unrelated refusals and
+  probe failures preserve the original `RemoteError`; successful connects cost
+  no extra request. a previously held server-side session may survive a bridge
+  restart. retrying does not release it. `stop()`/unassign is the only forceful
+  reset and **destroys the VM**; never do that to recover files from a live job.
+- **HTTP recovery**: `await colab.runtime_status(vm)` reads Jupyter `/api/status`;
+  `await colab.contents(vm, "content")` lists a directory;
+  `await colab.contents(vm, path, content=False)` reads metadata (including size);
+  `await colab.read(vm, path)` returns a text file in memory;
+  `await colab.pull(vm, path, local, resume=True)` streams `/files/<path>` to disk
+  in 1 MiB chunks and returns its local `Path`. these read-only routes refresh
+  the runtime proxy token and work independently of ssh. paths are relative to
+  **Jupyter's root**, not `/content`. partial downloads remain for retry; resume
+  assumes unchanged remote content, so use `resume=False` for mutable files.
+  an ignored Range restarts rather than appending; invalid ranges and HTTP 416
+  fail instead of claiming completeness. runtime HTTP errors omit credential URLs.
 - **tests**: `test/harness/colab_plugin_test.py` (the plugin against a faked
   HTTP layer), `ws_test.py` (frames, and the bridge in a real
   subprocess) and `google_oauth_test.gleam` (the refresh against a local token
