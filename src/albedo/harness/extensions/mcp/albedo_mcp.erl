@@ -2,7 +2,7 @@
 -export([check_candidate/3]).
 
 -export([prepare/5, definitions/1, context/1, offline/1, observe/3, only/2, observer/1, closer/1,
-         call/3, close/1, url_allowed/1, validate_settings/3]).
+         call/3, close/1, url_allowed/1, validate_settings/3, transport_spec/3]).
 
 -define(DEFAULT_STARTUP_MS, 20000).
 -define(DEFAULT_CALL_MS, 60000).
@@ -161,7 +161,8 @@ saved(_) -> none.
 transport_spec(#{<<"type">> := <<"http">>, <<"url">> := Url} = Config, Secrets, Spec)
         when is_binary(Url), byte_size(Url) > 0 ->
     case url_allowed(Url) of true -> ok; false -> erlang:error(unsafe_url) end,
-    Spec#{transport => {http, Url}, auth => none, http_headers => http_headers(Config, Secrets)};
+    Spec#{transport => {http, Url}, auth => none, http_headers => http_headers(Config, Secrets),
+          ssl_options => tls_options()};
 transport_spec(#{<<"type">> := <<"stdio">>, <<"command">> := Command} = Config, Secrets, Spec)
         when is_binary(Command), byte_size(Command) > 0 ->
     Args = string_list(maps:get(<<"args">>, Config, [])),
@@ -173,6 +174,14 @@ transport_spec(#{<<"type">> := <<"stdio">>, <<"command">> := Command} = Config, 
     },
     Spec#{transport => {stdio, Stdio}, auth => none};
 transport_spec(_, _, _) -> erlang:error(invalid_transport).
+
+%% The OS trust store, as albedo's own HTTP clients use, instead of the certifi
+%% bundle hackney ships: the bundle only changes with a hackney release, so a CA
+%% the platforms have distrusted (eMudhra, 2026-10) stays trusted until then.
+%% barrel_mcp merges these over hackney's defaults, so its peer and hostname
+%% checks stay on, and its OAuth requests use the same store.
+tls_options() ->
+    [{verify, verify_peer}, {cacerts, public_key:cacerts_get()}].
 
 url_allowed(Url) ->
     try

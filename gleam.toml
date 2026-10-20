@@ -24,7 +24,7 @@ mist = ">= 6.0.3 and < 7.0.0"
 gleam_http = ">= 4.4.0 and < 5.0.0"
 yamerl = ">= 0.10.0 and < 1.0.0"
 # Fork with fixes not yet upstream; see ALBEDO.md in the repo.
-barrel_mcp = { git = "https://tangled.org/okami.mom/barrel_mcp", ref = "94aac610a12c3e22619ba7d3d8ac4af37a0053b5" }
+barrel_mcp = { git = "https://tangled.org/okami.mom/barrel_mcp", ref = "d4e19276bd32aaeafeec1358b788711d35647520" }
 gleam_crypto = ">= 1.0.0 and < 2.0.0"
 
 [dev_dependencies]
