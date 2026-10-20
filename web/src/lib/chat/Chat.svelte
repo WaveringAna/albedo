@@ -1,8 +1,8 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
-  import type { Session } from '../api';
   import { busy } from '../live.svelte';
   import { boards } from '../boards.svelte';
+  import { interruptSession, type Session } from '../api';
   import { sendNotes } from '../notes';
   import type { Attached } from './attachments';
   import LiveFace from '../LiveFace.svelte';
@@ -205,7 +205,7 @@
     {#if tied.length}
       <button class="notes" disabled={sendingNotes} onclick={sendTied}>send {tied.length} {tied.length === 1 ? 'note' : 'notes'} tied to this chat</button>
     {/if}
-    <Composer onsend={send} busy={running} onpopout={popout} />
+    <Composer onsend={send} busy={running} onpopout={popout} onstop={() => interruptSession(sessionId)} />
   </div>
 </div>
 

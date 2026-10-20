@@ -8,9 +8,23 @@
   let {
     onsend,
     onpopout,
+    onstop,
     busy,
     placeholder = 'message albedo…',
-  }: { onsend: (text: string, images: Attached[]) => void; onpopout?: (text: string) => void; busy: boolean; placeholder?: string } = $props();
+  }: { onsend: (text: string, images: Attached[]) => void; onpopout?: (text: string) => void; onstop?: () => Promise<void>; busy: boolean; placeholder?: string } = $props();
+  let stopping = $state(false);
+
+  async function stop() {
+    if (!onstop || stopping) return;
+    stopping = true;
+    try {
+      await onstop();
+    } catch (error) {
+      notice = `couldn't stop: ${(error as Error).message ?? error}`;
+    } finally {
+      stopping = false;
+    }
+  }
   let text = $state('');
   let field = $state<HTMLTextAreaElement>();
   let picker = $state<HTMLInputElement>();
@@ -62,6 +76,12 @@
   }
 
   function keydown(event: KeyboardEvent) {
+    // Escape in an empty field stops the turn, as in the terminal.
+    if (event.key === 'Escape' && busy && !text) {
+      event.preventDefault();
+      stop();
+      return;
+    }
     if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
       event.preventDefault();
       send();
@@ -139,6 +159,11 @@
       </button>
     {/if}
     <span class="hint">{notice || (busy ? 'albedo is working · a new message waits its turn' : '')}</span>
+    {#if busy && onstop}
+      <button type="button" class="stop" disabled={stopping} aria-label="Stop" title="stop albedo (Esc)" onclick={stop}>
+        <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><rect x="3.5" y="3.5" width="9" height="9" rx="2" fill="currentColor" /></svg>
+      </button>
+    {/if}
     <button type="submit" class="send" disabled={!ready} aria-label="Send" title="Send (Enter)">
       <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M8 13V3.5M3.5 8 8 3.5 12.5 8" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" /></svg>
     </button>
@@ -265,6 +290,30 @@
     border-radius: 50%;
     cursor: pointer;
     transition: opacity 120ms ease, transform 120ms ease;
+  }
+  .stop {
+    display: grid;
+    place-items: center;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    color: var(--text);
+    background: var(--well);
+    border: 0;
+    border-radius: 50%;
+    cursor: pointer;
+    transition: background-color 120ms ease, transform 120ms ease;
+  }
+  .stop:hover:not(:disabled) {
+    color: var(--danger);
+    background: color-mix(in oklab, var(--danger) 14%, var(--well));
+  }
+  .stop:active:not(:disabled) {
+    transform: scale(0.94);
+  }
+  .stop:disabled {
+    opacity: 0.5;
+    cursor: default;
   }
   .send:active:not(:disabled) {
     transform: scale(0.94);

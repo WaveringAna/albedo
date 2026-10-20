@@ -137,6 +137,15 @@ export function uuidv7(): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
+/**
+ * Stops the session's running turn and any inputs waiting behind it. The run
+ * and input order are read fresh, so a stop never reaches a later run.
+ */
+export async function interruptSession(sessionId: string): Promise<void> {
+  const session = await get<{ status: { run_id: string | null }; input_order: number }>(`/sessions/${sessionId}`);
+  await request('POST', `/sessions/${sessionId}/interrupt`, { body: { run_id: session.status.run_id, through_input_order: session.input_order } });
+}
+
 export interface ImageUpload {
   mime_type: 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp';
   /** Base64, without a data URL's prefix. */
