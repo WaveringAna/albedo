@@ -6,6 +6,7 @@
   import Palette, { type Item } from './lib/Palette.svelte';
   import { prefs } from './lib/prefs.svelte';
   import { busy } from './lib/live.svelte';
+  import About from './lib/About.svelte';
   import Rail from './lib/Rail.svelte';
   import Settings from './lib/Settings.svelte';
   import { sessions } from './lib/sessions.svelte';
@@ -17,6 +18,7 @@
   let minimap = $state(localStorage.getItem(MINIMAP_KEY) === 'on');
   let paletteOpen = $state(false);
   let settingsOpen = $state(false);
+  let aboutOpen = $state(false);
   let search = $state<HTMLInputElement>();
 
   $effect(() => localStorage.setItem(RAIL_KEY, railOpen ? 'open' : 'closed'));
@@ -46,6 +48,7 @@
     { label: 'close board tab', run: () => boards.active && boards.close(boards.active) },
     { label: 'delete board', run: () => boards.active && boards.delete(boards.active) },
     { label: 'new note', hint: 'N', run: () => boards.board?.noteAt() },
+    { label: 'about albedo', run: () => (aboutOpen = true) },
     { label: 'fit all windows', hint: '⇧1', run: () => boards.board?.fit() },
     { label: 'zoom to 100%', hint: '⇧0', run: () => boards.board?.zoomTo(1) },
     { label: 'next window', hint: '⌥→', run: () => boards.board?.step(1) },
@@ -140,6 +143,9 @@
         <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><rect x="2" y="3" width="12" height="10" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.3" /><path d="M6.25 3v10" stroke="currentColor" stroke-width="1.3" /></svg>
       </button>
       <span class="brand"><span class="spark" aria-hidden="true">✦</span> <span class="brand-ink">albedo</span></span>
+      <button class="icon about" data-about-toggle aria-label="about albedo" aria-expanded={aboutOpen} title="about albedo" onclick={() => (aboutOpen = !aboutOpen)}>
+        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.3" /><path d="M6.4 6.3a1.7 1.7 0 0 1 3.3.5c0 1.1-1.7 1.4-1.7 2.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" /><circle cx="8" cy="11.4" r="0.8" fill="currentColor" /></svg>
+      </button>
     </div>
     <Tabs />
     {#if sessions.link !== 'online'}
@@ -184,6 +190,10 @@
 
 {#if settingsOpen}
   <Settings onclose={() => (settingsOpen = false)} />
+{/if}
+
+{#if aboutOpen}
+  <About onclose={() => (aboutOpen = false)} />
 {/if}
 
 {#if paletteOpen}
@@ -243,6 +253,12 @@
     width: 30px;
     height: 30px;
     padding: 0;
+  }
+  .about {
+    width: 24px;
+    height: 24px;
+    margin-left: -4px;
+    color: var(--faint);
   }
   .end {
     display: flex;

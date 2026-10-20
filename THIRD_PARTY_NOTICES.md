@@ -98,3 +98,11 @@ https://bsky.app/profile/personhood.removal.surgery),
 colours measured from Pilot's iroshizuku inks. madoromi is distributed under the
 Mozilla Public License 2.0 (https://mozilla.org/MPL/2.0/); the values are used
 unmodified and the settings pane credits it with a link.
+
+## web client libraries
+
+The browser client in `web/` bundles these libraries, each under its own
+licence, which ships in its package: Svelte and Svelte Flow (xyflow), MIT;
+Diffs from The Pierre Computer Company (`@pierre/diffs`, https://diffs.com),
+Apache License 2.0; Shiki, MIT; KaTeX, MIT; Pele (https://pele.run, by
+Obsidian), MIT; marked, MIT. The client's about pane lists them with links.
