@@ -158,6 +158,19 @@ export class Board {
     this.nodes = this.nodes.map((node) => (node.id === id && node.type === 'note' ? { ...node, data: { ...node.data, ...data } } : node));
   }
 
+  /**
+   * Glides the view to centre a point on screen, at a zoom: 300 ms from the
+   * middle of the pane, up to 500 ms from a corner.
+   */
+  centreOn(screen: { x: number; y: number }, zoom: number) {
+    const pane = paneRect();
+    if (!this.flow || !pane) return;
+    const away = Math.hypot(screen.x - (pane.left + pane.width / 2), screen.y - (pane.top + pane.height / 2));
+    const far = Math.min(1, away / (Math.hypot(pane.width, pane.height) / 2));
+    const point = this.flow.screenToFlowPosition(screen);
+    this.flow.setCenter(point.x, point.y, { zoom, duration: 300 + 200 * far });
+  }
+
   /** Puts a loose note at a point on screen, or the middle of the view. */
   noteAt(screen?: { x: number; y: number }): string | null {
     const pane = paneRect();

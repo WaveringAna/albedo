@@ -23,9 +23,15 @@
 
   const nodeTypes: NodeTypes = { session: SessionNode, review: ReviewNode, note: NoteNode };
 
-  // A double-click on empty canvas leaves a note there.
+  // A double-click on empty canvas leaves a note there. Holding space, a
+  // double-click anywhere, over windows too, takes the view there instead.
+  const JUMP_ZOOM = 0.9;
   function dblclick(event: MouseEvent) {
-    if ((event.target as HTMLElement).classList.contains('svelte-flow__pane')) board.noteAt({ x: event.clientX, y: event.clientY });
+    const at = { x: event.clientX, y: event.clientY };
+    if (hand) {
+      event.stopPropagation();
+      board.centreOn(at, JUMP_ZOOM);
+    } else if ((event.target as HTMLElement).classList.contains('svelte-flow__pane')) board.noteAt(at);
   }
   const READABLE = 0.6;
   let element = $state<HTMLElement>();
@@ -125,7 +131,7 @@
   class:hand
   class:panning={panning !== null}
   bind:this={element}
-  ondblclick={dblclick}
+  ondblclickcapture={dblclick}
   onpointermove={drag}
   onpointerup={release}
   onpointercancel={release}
