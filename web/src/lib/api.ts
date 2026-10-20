@@ -163,6 +163,44 @@ export async function interruptSession(sessionId: string): Promise<void> {
   await request('POST', `/sessions/${sessionId}/interrupt`, { body: { run_id: session.status.run_id, through_input_order: session.input_order } });
 }
 
+/** One background job as the kernel's job book keeps it; times are wall-clock milliseconds. */
+export interface Job {
+  id: string;
+  command: string;
+  state: 'running' | 'exited';
+  exit_code: number | null;
+  timed_out: boolean;
+  service: boolean;
+  started_at: number;
+  ended_at: number | null;
+  bytes: number;
+}
+
+/** A page of a job's output: the bytes from `offset` to `next_offset`, cut on characters. */
+export interface JobPage {
+  job: Job;
+  offset: number;
+  next_offset: number;
+  text: string;
+}
+
+/** The session's jobs, newest first, finished ones too while the kernel keeps their output. */
+export function listJobs(sessionId: string, signal?: AbortSignal): Promise<Job[]> {
+  return get<{ items: Job[] }>(`/extensions/run/sessions/${sessionId}/jobs/recent`, signal).then((page) => page.items);
+}
+
+/** A page of a job's output: from `offset`, or the last page when there is none. */
+export function readJobOutput(sessionId: string, jobId: string, offset?: number, signal?: AbortSignal): Promise<JobPage> {
+  const query = new URLSearchParams({ limit: '65536' });
+  if (offset !== undefined) query.set('offset', String(offset));
+  return get(`/extensions/run/sessions/${sessionId}/jobs/${jobId}/output?${query}`, signal);
+}
+
+/** Stops the job's process group; the kernel answers once it is gone. */
+export async function stopJob(sessionId: string, jobId: string): Promise<void> {
+  await request('POST', `/extensions/run/sessions/${sessionId}/jobs/${jobId}/stop`);
+}
+
 /** A folder sessions have worked in, most used first. */
 export interface RecentWorkspace {
   location: string;

@@ -14,6 +14,9 @@
   import Receipt from './Receipt.svelte';
   import WorkSteps from './WorkSteps.svelte';
   import ReviewView from '../views/ReviewView.svelte';
+  import TerminalView from '../views/TerminalView.svelte';
+  import JobsButton from '../JobsButton.svelte';
+  import { headline } from '../jobs.svelte';
   import ModelPicker from './ModelPicker.svelte';
   import { catalogue, invoke, type Command } from '../commands';
 
@@ -29,6 +32,8 @@
   }: { sessionId: string; session: Session | undefined; windowId: string; inline?: boolean; handle?: Snippet } = $props();
 
   let shown = $state<{ at: string; turnId: string; from: number; jump?: { path: string; at: number } } | null>(null);
+  /** A job's output opened inside the phone's chat, where there is no canvas to put a window on. */
+  let terminal = $state<{ job: string; command: string } | null>(null);
 
   /** Opens a turn's review: beside the window, or under the line it was asked from. */
   function review(at: string, turnId: string, from: number, path?: string) {
@@ -346,6 +351,20 @@
         <pre>{answer.text}</pre>
       </section>
     {/if}
+    {#if inline}
+      {#if terminal}
+        <section class="inline-terminal" aria-label="terminal">
+          <header>
+            <span title={terminal.command}>{terminal.command ? headline(terminal.command) : 'terminal'}</span>
+            <button onclick={() => (terminal = null)} aria-label="close the terminal">close</button>
+          </header>
+          {#key terminal.job}
+            <TerminalView {sessionId} jobId={terminal.job} onjob={(found) => terminal && (terminal.command = found.command)} />
+          {/key}
+        </section>
+      {/if}
+      <span class="jobs"><JobsButton {sessionId} up onopen={(job) => (terminal = { job, command: '' })} /></span>
+    {/if}
     <Composer onsend={send} busy={running} {commands} oncommand={command} compact={inline} extra={session && !inline ? modelChip : undefined} onpopout={inline ? undefined : popout} onstop={() => interruptSession(sessionId)} />
   </div>
 </div>
@@ -599,6 +618,50 @@
   .inline-review header button:hover {
     color: var(--text);
     background: var(--hover);
+  }
+  .inline-terminal {
+    display: flex;
+    flex-direction: column;
+    height: min(45vh, 360px);
+    margin: 0 0 8px;
+    overflow: hidden;
+    background: var(--well);
+    border-radius: 12px;
+  }
+  .inline-terminal header {
+    display: flex;
+    flex: none;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 6px 8px 6px 12px;
+    color: var(--muted);
+    font-size: 12px;
+    background: var(--title-bar);
+  }
+  .inline-terminal header span {
+    min-width: 0;
+    overflow: hidden;
+    font-family: var(--mono);
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+  .inline-terminal header button {
+    padding: 2px 8px;
+    color: var(--muted);
+    font: inherit;
+    background: none;
+    border: 0;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+  .inline-terminal header button:hover {
+    color: var(--text);
+    background: var(--hover);
+  }
+  .jobs {
+    align-self: flex-start;
+    margin: 0 0 4px 6px;
   }
   .notes {
     align-self: flex-start;

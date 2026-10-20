@@ -22,7 +22,7 @@
       const node = board?.nodes.find((candidate) => candidate.id === window);
       if (!node || node.type === 'note') return 'a closed window';
       const name = sessions.byId.get(node.data.sessionId)?.name || 'untitled session';
-      return node.type === 'review' ? `the review of ${name}` : name;
+      return node.type === 'review' ? `the review of ${name}` : node.type === 'terminal' ? `a terminal of ${name}` : name;
     }),
   );
   const ready = $derived(!!board && !data.sent && sendable(board, { id, data } as NoteWindow));

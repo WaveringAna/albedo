@@ -3,7 +3,9 @@
   import type { SessionWindow } from '../board.svelte';
   import Chat from '../chat/Chat.svelte';
   import { place } from '../format';
+  import { boards } from '../boards.svelte';
   import { busy } from '../live.svelte';
+  import JobsButton from '../JobsButton.svelte';
   import LiveFace from '../LiveFace.svelte';
   import { sessions } from '../sessions.svelte';
   import WindowFrame from './WindowFrame.svelte';
@@ -15,6 +17,7 @@
 
 <WindowFrame {id} selected={!!selected} title={session?.name || 'untitled session'}>
   {#snippet meta()}
+    <JobsButton sessionId={data.sessionId} onopen={(job) => boards.board?.openTerminal(data.sessionId, job, id)} />
     {#if working}<LiveFace {session} />{/if}
     {#if session}<span title={session.workspace}>{place(session.workspace)}</span>{/if}
   {/snippet}

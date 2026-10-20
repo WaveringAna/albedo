@@ -15,6 +15,8 @@ export type SessionWindow = Node<{ sessionId: string; parent?: string }, 'sessio
 /** The changes one turn made, walked file by file. `from` is the turn's first history position. */
 /** `jump` asks the window to bring one file into view; `at` makes each ask new. */
 export type ReviewWindow = Node<{ sessionId: string; turnId: string; from: number; parent?: string; jump?: { path: string; at: number } }, 'review'>;
+/** A background job's output, following the job; `job` is its id in the session's kernel. */
+export type TerminalWindow = Node<{ sessionId: string; job: string; parent?: string }, 'terminal'>;
 /**
  * What a note is about. The quote is taken when the note is tied, so a sent
  * note says what it pointed at even if that has since scrolled or closed.
@@ -25,7 +27,7 @@ export type Target =
   | { kind: 'lines'; window: string; path: string; change: number; side: 'additions' | 'deletions'; start: number; end: number; quote: string };
 /** A note on the canvas: free, or tied to a window, a message or step in a chat, or lines in a diff. */
 export type NoteWindow = Node<{ text: string; target?: Target; sent?: boolean }, 'note'>;
-export type Window = SessionWindow | ReviewWindow | NoteWindow;
+export type Window = SessionWindow | ReviewWindow | TerminalWindow | NoteWindow;
 
 export const NOTE = { width: 260 };
 /** Notes float over windows, whichever window was picked last. */
@@ -145,6 +147,11 @@ export class Board {
     if (jump) this.nodes = this.nodes.map((node) => (node.id === id && node.type === 'review' ? { ...node, data: { ...node.data, jump } } : node));
   }
 
+  /** Opens a background job's output beside the window of the session that started it. */
+  openTerminal(sessionId: string, job: string, parent?: string) {
+    this.#open({ id: `terminal:${sessionId}:${job}`, type: 'terminal', data: { sessionId, job, parent } }, 640);
+  }
+
   /** Puts a note on the canvas at a point in canvas coordinates; returns its id. */
   addNote(position: { x: number; y: number }, target?: Target, text = ''): string {
     const id = `note:${uuidv7()}`;
@@ -203,7 +210,7 @@ export class Board {
     return node && node.type !== 'note' ? node.data.sessionId : null;
   }
 
-  #open(window: Pick<SessionWindow, 'id' | 'type' | 'data'> | Pick<ReviewWindow, 'id' | 'type' | 'data'>, width = SIZE.width) {
+  #open(window: Pick<Exclude<Window, NoteWindow>, 'id' | 'type' | 'data'>, width = SIZE.width) {
     if (!this.nodes.some((node) => node.id === window.id)) {
       const height = Math.round(Math.min(860, Math.max(480, (paneRect()?.height ?? 800) / this.viewport.zoom - 140)));
       const anchor = this.nodes.find((node) => node.id === window.data.parent && node.type !== 'note');

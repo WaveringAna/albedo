@@ -7,6 +7,7 @@
   import { shortcut } from './keys';
   import NoteNode from './nodes/NoteNode.svelte';
   import ReviewNode from './nodes/ReviewNode.svelte';
+  import TerminalNode from './nodes/TerminalNode.svelte';
   import Tethers from './Tethers.svelte';
   import SessionNode from './nodes/SessionNode.svelte';
 
@@ -22,7 +23,7 @@
   // alt (option) drags a window by any part of it, not only its title bar.
   let { board, onpalette, minimap, mapWidth }: { board: Board; onpalette: () => void; minimap: boolean; mapWidth: number } = $props();
 
-  const nodeTypes: NodeTypes = { session: SessionNode, review: ReviewNode, note: NoteNode };
+  const nodeTypes: NodeTypes = { session: SessionNode, review: ReviewNode, terminal: TerminalNode, note: NoteNode };
 
   // A double-click on empty canvas leaves a note there. Holding space, a
   // double-click anywhere, over windows too, takes the view there instead.
