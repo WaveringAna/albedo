@@ -106,3 +106,28 @@ licence, which ships in its package: Svelte and Svelte Flow (xyflow), MIT;
 Diffs from The Pierre Computer Company (`@pierre/diffs`, https://diffs.com),
 Apache License 2.0; Shiki, MIT; KaTeX, MIT; Pele (https://pele.run, by
 Obsidian), MIT; marked, MIT. The client's about pane lists them with links.
+
+## Lucide
+
+The canvas's key hints (`web/src/lib/Gesture.svelte`) draw four of Lucide's
+icons, copied as SVG paths rather than installed: hand-grab, move, mouse and
+mouse-pointer-click (https://lucide.dev). Lucide is distributed under the ISC
+License:
+
+```
+ISC License
+
+Copyright (c) 2026 Lucide Icons and Contributors
+
+Permission to use, copy, modify, and/or distribute this software for any
+purpose with or without fee is hereby granted, provided that the above
+copyright notice and this permission notice appear in all copies.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+```

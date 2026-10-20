@@ -9,6 +9,7 @@
   import { busy } from './lib/live.svelte';
   import About from './lib/About.svelte';
   import { layout } from './lib/layout.svelte';
+  import Gesture, { drawn } from './lib/Gesture.svelte';
   import NewSession from './lib/NewSession.svelte';
   import Phone from './lib/Phone.svelte';
   import Rail from './lib/Rail.svelte';
@@ -92,16 +93,17 @@
   // fade; hovering or focusing them keeps them.
   const VIEW_LINGER_MS = 4000;
   // The keys the canvas answers that nothing on screen shows, as the
-  // terminal's footer lists them: the key, then what it does.
+  // terminal's footer lists them: the key and the mouse gesture with it
+  // (drawn, to keep the card short), then what it does.
   const canvasHints = [
-    ['space', 'drag'],
-    [mac ? '⌥ drag' : 'alt drag', 'move window'],
-    [mac ? '⌘ scroll' : 'ctrl scroll', 'zoom'],
-    ['⇧1', 'fit all'],
-    ['⌥←→', 'windows'],
-    ['space double-click', 'zoom at'],
-    ['double-click', 'note'],
-  ];
+    [['spc', 'grab'], 'pan'],
+    [[mac ? '⌥' : 'alt', 'move'], 'move window'],
+    [[mac ? 'cmd' : 'ctrl', 'scroll'], 'zoom'],
+    [['⇧1'], 'fit all'],
+    [['⌥←→'], 'windows'],
+    [['spc', 'click', 'click'], 'zoom at'],
+    [['click', 'click'], 'note'],
+  ] as const;
   let viewShown = $state(false);
   /** The overview map is as wide as the controls it sits on. */
   let controlsWidth = $state(188);
@@ -272,7 +274,16 @@
       {/key}
       <div class="view" class:shown={viewShown} onpointerenter={() => clearTimeout(viewTimer)} onpointerleave={lingerView} role="presentation">
         <p class="hints" aria-hidden="true">
-          {#each canvasHints as [key, does], index (key)}{#if index}<span class="dot">·</span>{/if}<span><kbd>{key}</kbd> {does}</span>{/each}
+          {#each canvasHints as [keys, does] (does)}
+            <span class="hint">
+              <kbd>
+                {#each keys as key, at (at)}
+                  {#if drawn(key)}<Gesture kind={key} />{:else}{key}{/if}
+                {/each}
+              </kbd>
+              {does}
+            </span>
+          {/each}
         </p>
         <div class="controls" role="toolbar" aria-label="View" tabindex="-1" bind:offsetWidth={controlsWidth}>
           <button aria-label="Zoom out" title="Zoom out (−)" onclick={() => zoomStep(-1)}>
@@ -512,36 +523,41 @@
     border-radius: 12px;
     box-shadow: var(--shadow);
   }
-  /* As the terminal's footer: keys in muted, what they do fainter, on a
-     card of their own beside the controls. */
+  /* As the terminal's footer, the key standing out from what it does, each
+     pair on a surface of its own beside the controls. */
   .hints {
     display: flex;
     align-items: center;
-    gap: 8px;
-    height: 38px;
+    gap: 6px;
     margin: 0;
-    padding: 0 12px;
-    color: var(--faint);
+    color: var(--muted);
     font-size: 12px;
     white-space: nowrap;
-    background: var(--surface);
-    border-radius: 12px;
-    box-shadow: var(--shadow);
     pointer-events: none;
   }
-  .hints .dot {
-    color: var(--faint);
-    font-weight: 700;
+  /* Centred rather than on a baseline: a key that is all drawing has none. */
+  .hints .hint {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    height: 30px;
+    padding: 0 10px;
+    background: var(--surface);
+    border-radius: 9px;
+    box-shadow: var(--shadow);
   }
   .hints kbd {
-    display: inline;
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
     min-width: 0;
     height: auto;
     padding: 0;
-    color: var(--muted);
+    color: var(--text);
     font: inherit;
     background: none;
   }
+
   main :global(.svelte-flow__minimap) {
     transition: opacity 160ms ease, visibility 0s;
   }

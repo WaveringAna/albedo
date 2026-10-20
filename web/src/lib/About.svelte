@@ -23,6 +23,7 @@
     { name: 'KaTeX', url: 'https://katex.org', license: 'MIT' },
     { name: 'Pele', url: 'https://pele.run', license: 'MIT' },
     { name: 'marked', url: 'https://marked.js.org', license: 'MIT' },
+    { name: 'Lucide', url: 'https://lucide.dev', license: 'ISC' },
     { name: 'madoromi', url: 'https://madoromi.moonwit.ch/', license: 'MPL-2.0' },
   ];
 
