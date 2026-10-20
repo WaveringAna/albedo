@@ -140,7 +140,7 @@
   }
 </script>
 
-<div class="chat">
+<div class="chat" class:inline>
   <div class="scroller nowheel" bind:this={scroller} onscroll={scrolled}>
     <div class="thread">
       <div bind:this={top}></div>
@@ -227,7 +227,7 @@
     {#if tied.length}
       <button class="notes" disabled={sendingNotes} onclick={sendTied}>send {tied.length} {tied.length === 1 ? 'note' : 'notes'} tied to this chat</button>
     {/if}
-    <Composer onsend={send} busy={running} onpopout={inline ? undefined : popout} onstop={() => interruptSession(sessionId)} />
+    <Composer onsend={send} busy={running} compact={inline} onpopout={inline ? undefined : popout} onstop={() => interruptSession(sessionId)} />
   </div>
 </div>
 
@@ -240,6 +240,20 @@
     flex-direction: column;
     min-height: 0;
     zoom: 1.15;
+  }
+  /* On a phone the chat is the whole screen: no scaling, the reading size
+     set outright, and the room at the sides given back to the text. */
+  .chat.inline {
+    zoom: 1;
+  }
+  .inline .thread {
+    gap: 12px;
+    padding: 6px 16px 16px;
+    font-size: 16px;
+    line-height: 1.55;
+  }
+  .inline .dock {
+    padding: 0 10px 8px;
   }
   .scroller {
     flex: 1;

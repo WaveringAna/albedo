@@ -10,8 +10,17 @@
     onpopout,
     onstop,
     busy,
+    compact = false,
     placeholder = 'message albedo…',
-  }: { onsend: (text: string, images: Attached[]) => void; onpopout?: (text: string) => void; onstop?: () => Promise<void>; busy: boolean; placeholder?: string } = $props();
+  }: {
+    onsend: (text: string, images: Attached[]) => void;
+    onpopout?: (text: string) => void;
+    onstop?: () => Promise<void>;
+    busy: boolean;
+    /** One row, as a phone wants it: the working note moves into the placeholder. */
+    compact?: boolean;
+    placeholder?: string;
+  } = $props();
   let stopping = $state(false);
 
   async function stop() {
@@ -105,6 +114,7 @@
 
 <form
   class="composer"
+  class:compact
   class:dragging
   onsubmit={(event) => (event.preventDefault(), send())}
   ondragover={(event) => {
@@ -128,7 +138,7 @@
       {/each}
     </ul>
   {/if}
-  <textarea bind:this={field} bind:value={text} onkeydown={keydown} onpaste={paste} {placeholder} rows="1" spellcheck="true" aria-label="message"></textarea>
+  <textarea bind:this={field} bind:value={text} onkeydown={keydown} onpaste={paste} placeholder={compact && busy ? 'albedo is working…' : placeholder} rows="1" spellcheck="true" aria-label="message"></textarea>
   <div class="bar">
     <button type="button" class="attach" aria-label="attach images" title="attach images (or paste, or drop)" onclick={() => picker?.click()}>
       <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><rect x="2" y="3" width="12" height="10" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.3" /><circle cx="6" cy="6.6" r="1.2" fill="currentColor" /><path d="M2.6 11.6 6 8.6l2.4 2 2.2-1.8 2.8 2.6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" /></svg>
@@ -158,7 +168,7 @@
         <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M9 3h4v4M13 3 8 8M11.5 9.5V12a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5.5a1 1 0 0 1 1-1h2.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" /></svg>
       </button>
     {/if}
-    <span class="hint">{notice || (busy ? 'albedo is working · a new message waits its turn' : '')}</span>
+    <span class="hint">{notice || (busy && !compact ? 'albedo is working · a new message waits its turn' : '')}</span>
     {#if busy && onstop}
       <button type="button" class="stop" disabled={stopping} aria-label="Stop" title="stop albedo (Esc)" onclick={stop}>
         <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><rect x="3.5" y="3.5" width="9" height="9" rx="2" fill="currentColor" /></svg>
@@ -172,6 +182,7 @@
 
 <style>
   .composer {
+    position: relative;
     display: flex;
     flex-direction: column;
     gap: 4px;
@@ -179,6 +190,57 @@
     background: var(--field);
     border-radius: 16px;
     transition: box-shadow 120ms ease;
+  }
+  /* One row: the picture button, the field, then stop and send. */
+  .composer.compact {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    grid-template-areas: 'images images' 'bar text';
+    align-items: end;
+    gap: 2px 6px;
+    padding: 6px 6px 6px 8px;
+    border-radius: 24px;
+  }
+  .compact .images {
+    grid-area: images;
+    margin: 4px 4px 4px;
+  }
+  .compact textarea {
+    grid-area: text;
+    order: 2;
+    align-self: center;
+    padding: 6px 76px 6px 0;
+    font-size: 16px;
+  }
+  .compact .bar {
+    display: contents;
+  }
+  .compact .hint:empty {
+    display: none;
+  }
+  .compact .attach {
+    grid-area: bar;
+    width: 34px;
+    height: 34px;
+    margin: 0;
+  }
+  .compact .stop,
+  .compact .send {
+    position: absolute;
+    bottom: 9px;
+    width: 32px;
+    height: 32px;
+  }
+  .compact .send {
+    right: 9px;
+  }
+  .compact .stop {
+    right: 45px;
+  }
+  .compact .hint {
+    position: absolute;
+    left: 50px;
+    bottom: -18px;
   }
   .composer:focus-within {
     box-shadow: 0 0 0 2px var(--focus-ring);

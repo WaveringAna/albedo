@@ -47,7 +47,7 @@
     display: flex;
     flex-direction: column;
     height: 100dvh;
-    background: var(--bg);
+    background: var(--surface);
   }
   header {
     display: flex;
@@ -56,15 +56,15 @@
     min-height: 48px;
     padding: 0 8px;
     padding-top: env(safe-area-inset-top);
-    background: var(--rail);
+    background: var(--surface);
   }
   h1 {
     flex: 1;
     min-width: 0;
     margin: 0;
     overflow: hidden;
-    font-size: 15px;
-    font-weight: 600;
+    font-size: 16px;
+    font-weight: 560;
     white-space: nowrap;
     text-overflow: ellipsis;
   }
