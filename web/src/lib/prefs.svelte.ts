@@ -40,13 +40,51 @@ export const ACCENTS: { id: string; label: string; light: string; dark: string }
 ];
 
 const STORAGE_KEY = 'albedo.prefs.v4';
+// Also kept in a cookie, which is shared by every port on this host, so the
+// dev server and `albedo web` (and each new port it picks) open with the same
+// look. The cookie wins when both exist; `albedo web` never forwards it.
+const COOKIE = 'albedo_prefs';
 const EARLIER_KEYS = ['albedo.prefs.v3', 'albedo.prefs.v2', 'albedo.prefs.v1'];
 const HEX = /^#[0-9a-f]{6}$/i;
+
+/** Font families as typed, or empty for the default stack. */
+export interface Fonts {
+  ui: string;
+  code: string;
+}
 
 interface Saved {
   theme: Theme;
   dots: boolean;
   palettes: Record<Mode, Palette>;
+  fonts: Fonts;
+}
+
+const GENERIC = new Set(['serif', 'sans-serif', 'monospace', 'cursive', 'fantasy', 'system-ui', 'ui-serif', 'ui-sans-serif', 'ui-monospace', 'ui-rounded', 'math', 'emoji']);
+
+/** A typed family list as CSS: each name quoted unless it is a generic family; nothing that could end the value. */
+export function fontStack(typed: string, fallback: string): string | null {
+  const names = typed
+    .replace(/[;{}<>\\]/g, '')
+    .slice(0, 200)
+    .split(',')
+    .map((name) => name.trim().replace(/^["']|["']$/g, ''))
+    .filter(Boolean);
+  if (!names.length) return null;
+  return [...names.map((name) => (GENERIC.has(name.toLowerCase()) ? name : `"${name.replace(/"/g, '')}"`)), fallback].join(', ');
+}
+
+export const FONT_FALLBACK = { ui: "ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif", code: "ui-monospace, 'SF Mono', Menlo, Consolas, monospace" };
+
+function readFonts(value: unknown): Fonts {
+  const given = (value && typeof value === 'object' ? value : {}) as Partial<Fonts>;
+  const text = (key: keyof Fonts) => (typeof given[key] === 'string' ? given[key].slice(0, 200) : '');
+  return { ui: text('ui'), code: text('code') };
+}
+
+function readCookie(): unknown {
+  const found = document.cookie.split('; ').find((part) => part.startsWith(`${COOKIE}=`));
+  return found ? JSON.parse(decodeURIComponent(found.slice(COOKIE.length + 1))) : null;
 }
 
 /** A palette from untrusted JSON: known fields with valid values, the rest from the defaults. */
@@ -58,14 +96,15 @@ export function readPalette(value: unknown, mode: Mode): Palette {
 }
 
 function load(): Saved {
-  const fallback: Saved = { theme: 'system', dots: true, palettes: { ...DEFAULTS } };
+  const fallback: Saved = { theme: 'system', dots: true, palettes: { ...DEFAULTS }, fonts: { ui: '', code: '' } };
   try {
-    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? 'null');
+    const saved = (readCookie() ?? JSON.parse(localStorage.getItem(STORAGE_KEY) ?? 'null')) as Record<string, any> | null;
     if (saved) {
       return {
         theme: ['system', 'light', 'dark'].includes(saved.theme) ? saved.theme : 'system',
         dots: saved.dots !== false,
         palettes: { light: readPalette(saved.palettes?.light, 'light'), dark: readPalette(saved.palettes?.dark, 'dark') },
+        fonts: readFonts(saved.fonts),
       };
     }
     // Earlier versions' theme and dots carry over; their colours give way to madoromi.
@@ -93,6 +132,7 @@ class Prefs {
   theme = $state<Theme>(this.#saved.theme);
   dots = $state(this.#saved.dots);
   palettes = $state<Record<Mode, Palette>>(this.#saved.palettes);
+  fonts = $state<Fonts>(this.#saved.fonts);
   #systemDark = $state(matchMedia('(prefers-color-scheme: dark)').matches);
   resolved = $derived<Mode>(this.theme === 'system' ? (this.#systemDark ? 'dark' : 'light') : this.theme);
 
@@ -103,7 +143,14 @@ class Prefs {
         const root = document.documentElement;
         root.dataset.theme = this.resolved;
         for (const [name, value] of Object.entries(seedVariables(this.palettes[this.resolved]))) root.style.setProperty(name, value);
-        localStorage.setItem(STORAGE_KEY, JSON.stringify({ theme: this.theme, dots: this.dots, palettes: this.palettes }));
+        for (const [name, typed, fallback] of [['--sans', this.fonts.ui, FONT_FALLBACK.ui], ['--mono', this.fonts.code, FONT_FALLBACK.code]] as const) {
+          const stack = fontStack(typed, fallback);
+          if (stack) root.style.setProperty(name, stack);
+          else root.style.removeProperty(name);
+        }
+        const saved = JSON.stringify({ theme: this.theme, dots: this.dots, palettes: this.palettes, fonts: this.fonts });
+        localStorage.setItem(STORAGE_KEY, saved);
+        document.cookie = `${COOKIE}=${encodeURIComponent(saved)}; path=/; max-age=31536000; samesite=strict`;
       });
     });
   }

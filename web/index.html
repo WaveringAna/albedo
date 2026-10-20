@@ -10,7 +10,10 @@
       // or dark theme never flashes the default. prefs.svelte.ts keeps them after.
       (() => {
         let prefs = {};
-        try { prefs = JSON.parse(localStorage.getItem('albedo.prefs.v4') || '{}') || {}; } catch {}
+        try {
+          const cookie = document.cookie.split('; ').find((part) => part.startsWith('albedo_prefs='));
+          prefs = JSON.parse(cookie ? decodeURIComponent(cookie.slice(13)) : localStorage.getItem('albedo.prefs.v4') || '{}') || {};
+        } catch {}
         const mode = prefs.theme === 'light' || prefs.theme === 'dark' ? prefs.theme : matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
         const root = document.documentElement;
         root.dataset.theme = mode;

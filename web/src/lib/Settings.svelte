@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { ACCENTS, DEFAULTS, prefs, readPalette, SEASONS, type Mode, type Palette, type Theme } from './prefs.svelte';
+  import { ACCENTS, DEFAULTS, FONT_FALLBACK, fontStack, prefs, readPalette, SEASONS, type Mode, type Palette, type Theme } from './prefs.svelte';
 
   // A pane at the top right, beside the button that opens it. It is not
   // modal: the board stays usable, and Escape or a click elsewhere closes it.
@@ -49,6 +49,27 @@
   function typed(key: 'accent' | 'background' | 'foreground', value: string) {
     const hex = value.trim().startsWith('#') ? value.trim() : `#${value.trim()}`;
     if (/^#[0-9a-f]{6}$/i.test(hex)) set({ [key]: hex.toLowerCase() });
+  }
+
+  const fontFields = [
+    { key: 'ui', label: 'interface', placeholder: 'system', sample: 'albedo is thinking about your board' },
+    { key: 'code', label: 'code', placeholder: 'system monospace', sample: 'const tie = pick(x, y) // 0O 1lI' },
+  ] as const;
+
+  // Suggestions for the font fields: a few common families, and, where the
+  // browser lets a page ask (Chromium, with permission), the families
+  // actually installed.
+  const COMMON_FONTS = ['Inter', 'SF Pro Text', 'Helvetica Neue', 'Comic Sans MS', 'Iosevka', 'JetBrains Mono', 'Fira Code', 'SF Mono', 'Menlo', 'Berkeley Mono', 'Paper Mono'];
+  let installed = $state<string[]>(COMMON_FONTS);
+
+  async function findFonts() {
+    try {
+      const fonts: { family: string }[] = await (window as unknown as { queryLocalFonts: () => Promise<{ family: string }[]> }).queryLocalFonts();
+      installed = [...new Set([...COMMON_FONTS, ...fonts.map((font) => font.family)])].sort((a, b) => a.localeCompare(b));
+      say(`found ${installed.length} font families`);
+    } catch {
+      say('the browser did not share its fonts');
+    }
   }
 
   function say(text: string) {
@@ -163,6 +184,35 @@
   </div>
 
   <div class="group">
+    <h3>fonts</h3>
+    {#each fontFields as field (field.key)}
+      <label class="font">
+        <span>{field.label}</span>
+        <input
+          list="installed-fonts"
+          value={prefs.fonts[field.key]}
+          placeholder={field.placeholder}
+          spellcheck="false"
+          maxlength="200"
+          aria-label="{field.label} font"
+          oninput={(event) => (prefs.fonts = { ...prefs.fonts, [field.key]: event.currentTarget.value })}
+        />
+      </label>
+      <p class="sample" style:font-family={fontStack(prefs.fonts[field.key], FONT_FALLBACK[field.key]) ?? FONT_FALLBACK[field.key]}>{field.sample}</p>
+    {/each}
+    <datalist id="installed-fonts">
+      {#each installed as family (family)}<option value={family}></option>{/each}
+    </datalist>
+    <div class="actions">
+      {#if 'queryLocalFonts' in window}
+        <button onclick={findFonts} disabled={installed.length > COMMON_FONTS.length}>suggest installed fonts</button>
+      {/if}
+      <button onclick={() => (prefs.fonts = { ui: '', code: '' })} disabled={!prefs.fonts.ui && !prefs.fonts.code}>default fonts</button>
+    </div>
+    <p class="note">any font installed on this computer, by name; a comma adds fallbacks. kept in this browser and a cookie, so every albedo web port opens the same way.</p>
+  </div>
+
+  <div class="group">
     <label class="toggle">
       <span>
         <span class="label">dots on the canvas</span>
@@ -185,6 +235,7 @@
     right: 10px;
     z-index: 50;
     display: grid;
+    grid-template-columns: minmax(0, 1fr);
     gap: 22px;
     width: 320px;
     max-height: calc(100vh - 64px);
@@ -245,6 +296,37 @@
   }
   [aria-checked='true'] {
     box-shadow: 0 0 0 2px var(--accent);
+  }
+  .font {
+    display: grid;
+    grid-template-columns: 78px 1fr;
+    align-items: center;
+    gap: 10px;
+    margin-top: 8px;
+    font-size: 12.5px;
+  }
+  .font input {
+    width: 100%;
+    min-width: 0;
+    height: 30px;
+    padding: 0 10px;
+    color: var(--text);
+    font: inherit;
+    background: var(--field);
+    border: 0;
+    border-radius: 8px;
+    outline: 0;
+  }
+  .font input:focus-visible {
+    box-shadow: 0 0 0 2px var(--focus-ring);
+  }
+  .sample {
+    margin: 6px 0 0 88px;
+    overflow: hidden;
+    color: var(--muted);
+    font-size: 13px;
+    white-space: nowrap;
+    text-overflow: ellipsis;
   }
   .themes {
     display: grid;
