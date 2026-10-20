@@ -38,7 +38,7 @@
   --added: #5e8933;
   --danger: #ce2700;
   --scrim: color-mix(in oklab, var(--seed-bg) 60%, transparent);
-  --dots: color-mix(in oklab, var(--seed-fg) calc(16% * var(--k)), transparent);
+  --dots: color-mix(in oklab, var(--seed-fg) calc(36% * var(--k)), transparent);
   --minimap-window: var(--field);
   --minimap-mask: color-mix(in oklab, var(--seed-bg) 65%, transparent);
   --shade: color-mix(in oklab, var(--seed-fg) 70%, #000);
@@ -69,7 +69,7 @@
   --you: oklch(from var(--seed-accent) 0.82 0.08 calc(h - 130));
   --added: #c1dd4a;
   --danger: #ff8b79;
-  --dots: color-mix(in oklab, var(--seed-fg) calc(9% * var(--k)), transparent);
+  --dots: color-mix(in oklab, var(--seed-fg) calc(26% * var(--k)), transparent);
   --shade: #000;
   --shadow: 0 1px 2px rgb(0 0 0 / 0.4), 0 12px 32px -8px rgb(0 0 0 / 0.6);
   --shadow-raised: 0 2px 4px rgb(0 0 0 / 0.45), 0 24px 56px -12px rgb(0 0 0 / 0.75);
@@ -145,7 +145,7 @@ input:focus-visible,
   --xy-background-color: var(--bg);
 }
 
-/* Sparse, faint dots give panning something to move against; they fade out
+/* Sparse dots give panning something to move against; they fade out
    as the view zooms out, before they crowd into a texture. */
 .svelte-flow__background-pattern.dots {
   fill: var(--dots);

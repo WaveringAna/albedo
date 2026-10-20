@@ -141,7 +141,7 @@
     onmove={(_, viewport) => (board.viewport = viewport)}
   >
     {#if prefs.dots && zoom >= 0.5}
-      <Background variant={BackgroundVariant.Dots} gap={28} size={1.6} />
+      <Background variant={BackgroundVariant.Dots} gap={36} size={3} />
     {/if}
     {#if minimap}
       <MiniMap position="bottom-right" pannable zoomable={false} width={168} height={104} nodeBorderRadius={6} bgColor="var(--surface)" nodeColor="var(--minimap-window)" maskColor="var(--minimap-mask)" />
