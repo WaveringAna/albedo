@@ -56,7 +56,7 @@
 
   <nav>
     {#each sections as section (section.label)}
-      <h3>{section.label} <span class="count">{section.rows.length}</span></h3>
+      <h3>{section.label}<span class="count">{section.rows.length}</span></h3>
       <div class="rows">
         {#each section.rows as session (session.id)}{@render row(session)}{/each}
       </div>
@@ -151,11 +151,21 @@
     overscroll-behavior: contain;
     scrollbar-width: thin;
   }
+  /* As the terminal's section rules: the label, its count, then a rule to the edge. */
   h3 {
+    display: flex;
+    align-items: center;
+    gap: 8px;
     margin: 16px 10px 6px;
-    color: var(--muted);
-    font-size: 12px;
-    font-weight: 600;
+    color: var(--text);
+    font-size: 12.5px;
+    font-weight: 650;
+  }
+  h3::after {
+    flex: 1;
+    height: 1px;
+    background: color-mix(in oklab, var(--text) 28%, transparent);
+    content: '';
   }
   .count {
     color: var(--faint);
