@@ -14,6 +14,7 @@ export interface Session {
   activity_at: string | null;
   model: string | null;
   provider_profile: string | null;
+  effort: string | null;
   preferences: { pinned: boolean; archived: boolean };
   preview: { text: string; transcript_count: number } | null;
   status: { phase: Phase; blocking_reason: string | null } | null;

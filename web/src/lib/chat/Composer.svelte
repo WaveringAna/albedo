@@ -1,4 +1,5 @@
 <script lang="ts">
+  import type { Snippet } from 'svelte';
   import { SvelteMap } from 'svelte/reactivity';
   import { attachable, marker, MAX_IMAGES, readImage, referenced, resolve, unmark, type Attached } from './attachments';
 
@@ -11,6 +12,7 @@
     onstop,
     busy,
     compact = false,
+    extra,
     placeholder = 'message albedo…',
   }: {
     onsend: (text: string, images: Attached[]) => void;
@@ -19,6 +21,8 @@
     busy: boolean;
     /** One row, as a phone wants it: the working note moves into the placeholder. */
     compact?: boolean;
+    /** More controls for the bar, after the picture button: the chat's model chip. */
+    extra?: Snippet;
     placeholder?: string;
   } = $props();
   let stopping = $state(false);
@@ -143,6 +147,7 @@
     <button type="button" class="attach" aria-label="attach images" title="attach images (or paste, or drop)" onclick={() => picker?.click()}>
       <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><rect x="2" y="3" width="12" height="10" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.3" /><circle cx="6" cy="6.6" r="1.2" fill="currentColor" /><path d="M2.6 11.6 6 8.6l2.4 2 2.2-1.8 2.8 2.6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" /></svg>
     </button>
+    {@render extra?.()}
     <input
       bind:this={picker}
       type="file"

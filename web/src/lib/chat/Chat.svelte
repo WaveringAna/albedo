@@ -12,6 +12,7 @@
   import Markdown from './Markdown.svelte';
   import WorkSteps from './WorkSteps.svelte';
   import ReviewView from '../views/ReviewView.svelte';
+  import ModelPicker from './ModelPicker.svelte';
 
   // On the canvas a chat is a window, whose reviews and notes open beside
   // it. `inline` is the phone's single chat: a review opens inside the chat,
@@ -146,6 +147,8 @@
   }
 </script>
 
+{#snippet modelChip()}<ModelPicker session={session!} />{/snippet}
+
 <div class="chat" class:inline>
   <div class="scroller nowheel" bind:this={scroller} onscroll={scrolled}>
     {#if !settled && !transcript.error}
@@ -246,7 +249,7 @@
     {#if tied.length}
       <button class="notes" disabled={sendingNotes} onclick={sendTied}>send {tied.length} {tied.length === 1 ? 'note' : 'notes'} tied to this chat</button>
     {/if}
-    <Composer onsend={send} busy={running} compact={inline} onpopout={inline ? undefined : popout} onstop={() => interruptSession(sessionId)} />
+    <Composer onsend={send} busy={running} compact={inline} extra={session && !inline ? modelChip : undefined} onpopout={inline ? undefined : popout} onstop={() => interruptSession(sessionId)} />
   </div>
 </div>
 
