@@ -10,7 +10,7 @@
 - A transport failure or a 401 from the daemon triggers `Connection.Refresh`, so a restarted daemon is found on the next request.
 - `/assets/*` (content-hashed by Vite) is cached as immutable; everything else is `no-cache`.
 
-In development, `npm run dev` in `web/` proxies `/api` the same way from `$ALBEDO_HOME/daemon.json`, read once at start (only when serving, so a build needs no daemon), dropping `Origin` and `Cookie`. It listens on the local network, open, so other devices at home can try the client.
+In development, `npm run dev` in `web/` proxies `/api` the same way from `$ALBEDO_HOME/daemon.json`, read once at start (only when serving, so a build needs no daemon), dropping `Origin` and `Cookie`. It listens on the local network, open, so other devices at home can try the client; the `Host` it answers is limited to the machine's own name (bare and `.local`) and Tailscale's `*.ts.net`, since the proxy holds the token and a rebound name must not reach it.
 
 Words: a **board** is a named canvas of panels, and the open boards are the tabs along the top (`boards.svelte.ts`). A board holds sessions from any folders. **Workspace** keeps its albedo meaning, a session's folder, and the sidebar shows each session's folder under its name. `+` makes a new board; double-click or F2 renames one; closing a tab keeps the board, which the palette reopens (`Open board: <name>`); `Delete board` removes it. The last tab cannot be closed, so there is always a canvas.
 

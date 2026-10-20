@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { homedir, hostname } from 'node:os';
 import { join } from 'node:path';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
 import { defineConfig, type ProxyOptions } from 'vite';
@@ -24,11 +24,18 @@ function daemonProxy(): ProxyOptions {
   };
 }
 
+function ownNames(): string[] {
+  const name = hostname().toLowerCase().replace(/\.local$/, '');
+  return [name, `${name}.local`, '.ts.net'];
+}
+
 // Only the dev server talks to a daemon, so a build (in the Nix sandbox, say)
 // never needs daemon.json.
 export default defineConfig(({ command }) => ({
   plugins: [svelte()],
   // Open to the local network, so other devices at home can try the client.
-  server: { host: true, proxy: command === 'serve' ? { '/api': daemonProxy() } : undefined },
+  // Only this machine's own names (and Tailscale's MagicDNS ones) pass as Host:
+  // the proxy holds the daemon token, so any name a page could rebind must not.
+  server: { host: true, allowedHosts: ownNames(), proxy: command === 'serve' ? { '/api': daemonProxy() } : undefined },
   build: { target: 'es2022', cssCodeSplit: false, reportCompressedSize: true },
 }));
