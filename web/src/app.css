@@ -39,6 +39,8 @@
   --danger: #ce2700;
   --scrim: color-mix(in oklab, var(--seed-bg) 60%, transparent);
   --dots: color-mix(in oklab, var(--seed-fg) calc(36% * var(--k)), transparent);
+  /* The sidebar's stripes: the step the phone's stripes take from its ground, taken from the rail's. */
+  --rail-stripe: color-mix(in oklab, var(--rail), var(--shade) calc(3.2% * var(--k)));
   --minimap-window: var(--field);
   --minimap-mask: color-mix(in oklab, var(--seed-bg) 65%, transparent);
   --shade: color-mix(in oklab, var(--seed-fg) 70%, #000);
@@ -74,6 +76,7 @@
   --shadow: 0 1px 2px rgb(0 0 0 / 0.4), 0 12px 32px -8px rgb(0 0 0 / 0.6);
   --shadow-raised: 0 2px 4px rgb(0 0 0 / 0.45), 0 24px 56px -12px rgb(0 0 0 / 0.75);
   --shadow-lg: 0 4px 12px rgb(0 0 0 / 0.5), 0 32px 80px -16px rgb(0 0 0 / 0.8);
+  --rail-stripe: color-mix(in oklab, var(--rail), var(--shade) calc(19% * var(--k)));
 }
 
 * {

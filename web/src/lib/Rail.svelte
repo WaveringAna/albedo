@@ -57,7 +57,9 @@
   <nav>
     {#each sections as section (section.label)}
       <h3>{section.label} <span class="count">{section.rows.length}</span></h3>
-      {#each section.rows as session (session.id)}{@render row(session)}{/each}
+      <div class="rows">
+        {#each section.rows as session (session.id)}{@render row(session)}{/each}
+      </div>
     {/each}
     {#if sessions.loaded && visible.length === 0}
       <p class="none">{query ? 'nothing matches (・_・ )' : 'no sessions yet (・ω・)ﾉ'}</p>
@@ -165,6 +167,7 @@
     font-size: 11px;
   }
   .row {
+    position: relative;
     display: grid;
     grid-template-columns: 1fr auto;
     grid-template-areas: 'name when' 'where where';
@@ -181,11 +184,39 @@
     cursor: pointer;
     transition: background-color 100ms ease;
   }
-  .row:hover {
-    background: var(--hover);
+  /* Every other row a step down from the rail, as the phone's list steps
+     from its ground, starting again in each section. Hover lays a step over
+     a row's own tone, so it never reads as a stripe. */
+  .rows > .row:nth-child(odd) {
+    background-color: var(--rail-stripe);
   }
-  .row.open {
-    background: var(--selected);
+  .row:hover {
+    background-image: linear-gradient(var(--selected), var(--selected));
+  }
+  /* Open on the board: a pill down the row's own margin, so nothing moves,
+     inset enough to clear its rounded corners. */
+  .row.open::before {
+    position: absolute;
+    top: 4px;
+    bottom: 4px;
+    left: 1px;
+    width: 3px;
+    background: var(--accent);
+    border-radius: 2px;
+    content: '';
+  }
+  .name {
+    grid-area: name;
+    overflow: hidden;
+    font-size: 12.5px;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+  .when {
+    grid-area: when;
+    color: var(--muted);
+    font-size: 11.5px;
+    font-variant-numeric: tabular-nums;
   }
   .where {
     grid-area: where;
