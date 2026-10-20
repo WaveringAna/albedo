@@ -132,6 +132,12 @@ func DismissServerNotices(ctx context.Context, conn *Connection, etag string, id
 	return err
 }
 
+// SaveWebAllow keeps the networks `albedo web` serves to, for its next start.
+func SaveWebAllow(ctx context.Context, conn *Connection, etag string, networks []string) error {
+	var change protocol.UISettingsChange
+	return patchSettingsGroup(ctx, conn, "ui", etag, map[string]any{"web_allow": networks}, &change)
+}
+
 // BuildIdentity identifies daemon code by its label and content digest.
 type BuildIdentity struct {
 	Build  string

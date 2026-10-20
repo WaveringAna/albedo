@@ -35,6 +35,8 @@ type Upstream interface {
 type Server struct {
 	dist     string
 	key      string
+	hosts    map[string]bool
+	clients  []*net.IPNet
 	upstream Upstream
 	proxy    *httputil.ReverseProxy
 	static   http.Handler
@@ -49,7 +51,7 @@ func New(dist string, upstream Upstream) (*Server, error) {
 	if _, err := rand.Read(raw); err != nil {
 		return nil, err
 	}
-	s := &Server{dist: dist, key: hex.EncodeToString(raw), upstream: upstream, static: http.FileServer(http.Dir(dist))}
+	s := &Server{dist: dist, key: hex.EncodeToString(raw), hosts: map[string]bool{"127.0.0.1": true, "localhost": true}, upstream: upstream, static: http.FileServer(http.Dir(dist))}
 	s.proxy = &httputil.ReverseProxy{
 		Rewrite:        s.rewrite,
 		FlushInterval:  -1, // session streams are server-sent events
@@ -59,6 +61,23 @@ func New(dist string, upstream Upstream) (*Server, error) {
 	return s, nil
 }
 
+// Share opens the server to other devices on the given networks, as
+// `albedo web --allow` does: it answers on this machine's addresses inside
+// them (only those names, so a stranger's DNS name pointed here still does
+// not pass) and only to clients from them or this machine. A device still
+// signs in with the printed link. It returns the addresses it answers on.
+func (s *Server) Share(networks []*net.IPNet, addresses []string) []string {
+	s.clients = append(s.clients, networks...)
+	var shared []string
+	for _, address := range addresses {
+		if ip := net.ParseIP(address); ip != nil && inside(networks, ip) {
+			s.hosts[address] = true
+			shared = append(shared, address)
+		}
+	}
+	return shared
+}
+
 // LaunchURL is the address that signs a browser in; it works once per
 // browser, which keeps the cookie after that.
 func (s *Server) LaunchURL(addr string) string {
@@ -66,8 +85,12 @@ func (s *Server) LaunchURL(addr string) string {
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if !localHost(r.Host) {
-		http.Error(w, "albedo web answers only on 127.0.0.1 or localhost", http.StatusMisdirectedRequest)
+	if !s.allowed(r.Host) {
+		http.Error(w, "albedo web does not answer on this name", http.StatusMisdirectedRequest)
+		return
+	}
+	if !s.client(r.RemoteAddr) {
+		http.Error(w, "albedo web does not serve this network; allow it with --allow", http.StatusForbidden)
 		return
 	}
 	if key := r.URL.Query().Get("key"); key != "" && r.URL.Path == "/" {
@@ -150,13 +173,82 @@ func (s *Server) validKey(candidate string) bool {
 	return subtle.ConstantTimeCompare([]byte(candidate), []byte(s.key)) == 1
 }
 
-// localHost refuses other names that resolve here (DNS rebinding).
-func localHost(hostport string) bool {
+// allowed refuses other names that resolve here (DNS rebinding).
+func (s *Server) allowed(hostport string) bool {
 	host, _, err := net.SplitHostPort(hostport)
 	if err != nil {
 		host = hostport
 	}
-	return host == "127.0.0.1" || host == "localhost"
+	return s.hosts[strings.Trim(host, "[]")]
+}
+
+// client lets this machine in, and devices on the shared networks. Unshared,
+// the listener is on loopback alone and every client is this machine.
+func (s *Server) client(remote string) bool {
+	if len(s.clients) == 0 {
+		return true
+	}
+	host, _, err := net.SplitHostPort(remote)
+	if err != nil {
+		host = remote
+	}
+	ip := net.ParseIP(host)
+	return ip == nil || ip.IsLoopback() || inside(s.clients, ip)
+}
+
+func inside(networks []*net.IPNet, ip net.IP) bool {
+	for _, network := range networks {
+		if network.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// ParseNetwork reads a network as CIDR, or as an IPv4 address whose trailing
+// zero octets stand for any: 10.0.0.0 is 10.0.0.0/8, 100.64.0.0 is
+// 100.64.0.0/16, and an address with no zero octets is that address alone.
+func ParseNetwork(text string) (*net.IPNet, error) {
+	if strings.Contains(text, "/") {
+		_, network, err := net.ParseCIDR(text)
+		return network, err
+	}
+	ip := net.ParseIP(text).To4()
+	if ip == nil {
+		return nil, fmt.Errorf("%q is not an IPv4 address or a CIDR network", text)
+	}
+	bits := 32
+	for octet := 3; octet >= 0 && ip[octet] == 0; octet-- {
+		bits -= 8
+	}
+	return &net.IPNet{IP: ip, Mask: net.CIDRMask(bits, 32)}, nil
+}
+
+// NetworkAddresses are this machine's addresses other devices can reach: up
+// interfaces' IPv4 addresses, without loopback and link-local ones.
+func NetworkAddresses() ([]string, error) {
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return nil, err
+	}
+	var found []string
+	for _, iface := range interfaces {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		addresses, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, address := range addresses {
+			network, ok := address.(*net.IPNet)
+			if !ok || network.IP.To4() == nil || network.IP.IsLinkLocalUnicast() {
+				continue
+			}
+			found = append(found, network.IP.String())
+		}
+	}
+	return found, nil
 }
 
 func writeError(w http.ResponseWriter, status int, code, detail string) {

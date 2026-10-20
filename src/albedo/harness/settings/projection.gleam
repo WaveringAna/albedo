@@ -32,7 +32,12 @@ type Profile {
 }
 
 type UI {
-  UI(thinking: Bool, tools: Bool, dismissed_notices: List(String))
+  UI(
+    thinking: Bool,
+    tools: Bool,
+    dismissed_notices: List(String),
+    web_allow: List(String),
+  )
 }
 
 type Source {
@@ -103,12 +108,15 @@ pub fn ui_group(picker: Dynamic) -> Result(Dynamic, Error) {
       [],
       decode.list(text),
     )
-    decode.success(UI(thinking, tools, notices))
+    use web_allow <- decode.optional_field("web_allow", [], decode.list(text))
+    decode.success(UI(thinking, tools, notices, web_allow))
   }
   use ui <- result.try(
     decode.run(picker, decoder) |> result.replace_error(InvalidValue),
   )
-  case list.length(ui.dismissed_notices) <= 1000 {
+  case
+    list.length(ui.dismissed_notices) <= 1000 && list.length(ui.web_allow) <= 64
+  {
     False -> Error(InvalidValue)
     True ->
       Ok(
@@ -119,6 +127,7 @@ pub fn ui_group(picker: Dynamic) -> Result(Dynamic, Error) {
             "dismissed_notices",
             dynamic.list(list.map(ui.dismissed_notices, dynamic.string)),
           ),
+          #("web_allow", dynamic.list(list.map(ui.web_allow, dynamic.string))),
         ]),
       )
   }

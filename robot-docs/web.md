@@ -7,6 +7,7 @@
 - The daemon token never reaches the browser. The page calls `/api/...` on its own origin; the proxy strips `/api`, drops `Origin`, `Cookie` and `Referer`, and adds `Authorization: Bearer <token>`. Session streams pass through unbuffered.
 - Each run draws a launch key. `/?key=<key>` sets an `HttpOnly`, `SameSite=Strict` cookie and redirects to `/`; `/api` without that cookie answers `401 web_signed_out`. A restarted `albedo web` signs every tab out.
 - Requests whose `Host` is not `127.0.0.1` or `localhost` are refused (DNS rebinding), and so is an `Origin` other than the page's own.
+- `--allow <network>` (repeatable; CIDR, or an IPv4 address whose trailing zero octets stand for any, so `10.0.0.0` is `/8` and `100.64.0.0` is `/16`; `webui.ParseNetwork`) shares it with other devices: it listens on `0.0.0.0`, answers only on this machine's addresses inside an allowed network (also accepted as `Host`) and only to clients from one or from loopback (`403` otherwise), and prints a launch link per address. Devices still sign in with the key. `--save` stores the given networks in the daemon's `ui.web_allow` setting, which a later `albedo web` without `--allow` uses; `--save` alone clears it.
 - A transport failure or a 401 from the daemon triggers `Connection.Refresh`, so a restarted daemon is found on the next request.
 - `/assets/*` (content-hashed by Vite) is cached as immutable; everything else is `no-cache`.
 

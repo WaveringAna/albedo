@@ -22,6 +22,7 @@ type UIPreferencesPatch struct {
 }
 type UIPreferences struct {
 	DismissedNotices []string
+	WebAllow         []string
 	Opens            map[string]int
 	Pinned, Archived []string
 	Thinking, Tools  bool
@@ -66,7 +67,7 @@ func GetSettings(ctx context.Context, conn *Connection) (Settings, error) {
 			result.Capabilities.Global["mcp"][name] = preference
 		}
 	}
-	result.UI = UIPreferences{DismissedNotices: wire.UI.DismissedNotices, Thinking: wire.UI.Thinking, Tools: wire.UI.Tools, ETag: wire.GroupResources.UI.ETag}
+	result.UI = UIPreferences{DismissedNotices: wire.UI.DismissedNotices, WebAllow: wire.UI.WebAllow, Thinking: wire.UI.Thinking, Tools: wire.UI.Tools, ETag: wire.GroupResources.UI.ETag}
 	for _, etag := range result.ETags {
 		if etag == "" {
 			return Settings{}, fieldError("settings group validator")

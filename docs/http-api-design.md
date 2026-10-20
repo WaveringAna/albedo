@@ -341,7 +341,7 @@ that group's canonical representation and its `ETag` header.
 | `extension_settings` | `sections`: the daemon's own sections, then each installed extension's that declares settings, with its `name` in extensions.json, a label saying what it configures, its `category` (`web_search`, `context`, `agents`, `models_and_caching` or `tools`, which `/config` groups sections by), its declared fields (key, label, description, kind `integer`, `text` or `limit`, default, range) and saved values, and the `problem` when its owner cannot use its saved section. A limit takes -1 for no limit. A patch is `values` keyed by section then key; null restores the default. |
 | `capabilities` | Global skill, instruction, and MCP preferences keyed by their stable preference key. |
 | `models` | Per-model raised context choices and the cache TTL prior table, with source and units. |
-| `ui` | `thinking`, `tools`, and `dismissed_notices`. Per-session pin, archive, and visits are session fields. |
+| `ui` | `thinking`, `tools`, `dismissed_notices`, and `web_allow` (the networks `albedo web` serves). Per-session pin, archive, and visits are session fields. |
 
 `PATCH /settings?group={name}` changes exactly one group per request. Its body
 is a merge patch of that group's fields, with the observed group `If-Match`.
@@ -447,7 +447,7 @@ selection uses the session override, then the global preference, then true.
 A definition with `enabled: false` remains unavailable regardless of selection.
 Global MCP preference changes use the same catalog revision guard as global
 skill and instruction choices. Other group writes use `extensions.defaults`,
-`models.raised_caps`, or `ui.thinking`, `ui.tools`, and `ui.dismissed_notices`.
+`models.raised_caps`, or `ui.thinking`, `ui.tools`, `ui.dismissed_notices`, and `ui.web_allow`.
 Capabilities read as `preferences` keyed by stable preference key; their
 write-only selection fields are siblings in the capabilities group.
 

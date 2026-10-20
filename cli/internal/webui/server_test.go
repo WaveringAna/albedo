@@ -122,6 +122,61 @@ func TestRefusesWithoutReachingTheDaemon(t *testing.T) {
 	}
 }
 
+func TestNetworksReadAsCIDROrTrailingZeros(t *testing.T) {
+	for text, want := range map[string]string{
+		"10.0.0.0":       "10.0.0.0/8",
+		"100.64.0.0":     "100.64.0.0/16",
+		"192.168.1.0":    "192.168.1.0/24",
+		"10.0.0.174":     "10.0.0.174/32",
+		"100.64.0.0/10":  "100.64.0.0/10",
+		"192.168.1.7/24": "192.168.1.0/24",
+	} {
+		network, err := ParseNetwork(text)
+		if err != nil || network.String() != want {
+			t.Errorf("%s read as %v (%v), want %s", text, network, err, want)
+		}
+	}
+	for _, text := range []string{"", "lan", "fe80::1", "10.0.0"} {
+		if _, err := ParseNetwork(text); err == nil {
+			t.Errorf("%q was accepted", text)
+		}
+	}
+}
+
+func TestSharedNetworksStillNeedTheKey(t *testing.T) {
+	server, _ := newServer(t, func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
+	home, _ := ParseNetwork("10.0.0.0")
+	if shared := server.Share([]*net.IPNet{home}, []string{"10.0.0.5", "100.64.0.5"}); len(shared) != 1 || shared[0] != "10.0.0.5" {
+		t.Fatalf("shared %v", shared)
+	}
+	lan := func(target, cookie, from string) *http.Request {
+		r := request(http.MethodGet, target, cookie)
+		r.Host = "10.0.0.5:4317"
+		r.RemoteAddr = from + ":50000"
+		return r
+	}
+	outside := lan("/api/sessions", server.key, "10.0.0.9")
+	outside.Host = "100.64.0.5:4317"
+
+	for name, test := range map[string]struct {
+		request *http.Request
+		status  int
+	}{
+		"signed out":        {lan("/api/sessions", "", "10.0.0.9"), http.StatusUnauthorized},
+		"sign in":           {lan("/?key="+server.key, "", "10.0.0.9"), http.StatusSeeOther},
+		"signed in":         {lan("/api/sessions", server.key, "10.0.0.9"), http.StatusOK},
+		"this machine":      {lan("/api/sessions", server.key, "127.0.0.1"), http.StatusOK},
+		"other network":     {lan("/api/sessions", server.key, "192.168.1.4"), http.StatusForbidden},
+		"address not given": {outside, http.StatusMisdirectedRequest},
+	} {
+		response := httptest.NewRecorder()
+		server.ServeHTTP(response, test.request)
+		if response.Code != test.status {
+			t.Errorf("%s: status %d, want %d", name, response.Code, test.status)
+		}
+	}
+}
+
 func TestUnreachableDaemonIsRediscovered(t *testing.T) {
 	server, upstream := newServer(t, nil)
 	closed, err := net.Listen("tcp", "127.0.0.1:0")

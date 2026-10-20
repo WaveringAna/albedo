@@ -104,8 +104,18 @@ npm --prefix web run build
 
 `albedo web` finds or starts the daemon the same way the terminal client does,
 and keeps the daemon's token to itself. It prints a link that signs the browser
-in, so don't share it. It only answers on localhost. Set `ALBEDO_WEB_DIST` to
-serve a client built somewhere else.
+in, so don't share it. It only answers on localhost unless you allow a network:
+
+```sh
+albedo web --allow 10.0.0.0 --allow 100.64.0.0   # home LAN and tailnet
+albedo web --allow 192.168.1.0/24 --save         # remember it for next time
+albedo web --save                                # forget the saved networks
+```
+
+A network is CIDR, or an address whose trailing zeros stand for any
+(`10.0.0.0` is `10.0.0.0/8`). It then also listens on this machine's addresses
+in those networks, prints a sign-in link for each, and refuses devices from
+anywhere else. Set `ALBEDO_WEB_DIST` to serve a client built somewhere else.
 
 What it does: new sessions (pick a folder, provider, model and effort), live
 chats with images, `/` commands and a model picker in the composer, reviews of

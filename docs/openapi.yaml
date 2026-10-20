@@ -5488,6 +5488,15 @@ components:
           items:
             $ref: '#/components/schemas/ID'
           maxItems: 1000
+        web_allow:
+          description: Networks `albedo web` serves to besides this machine, as CIDR or an address whose
+            trailing zero octets stand for any (10.0.0.0 is 10.0.0.0/8).
+          type: array
+          items:
+            type: string
+            minLength: 1
+            maxLength: 64
+          maxItems: 64
       required: [thinking, tools, dismissed_notices]
       additionalProperties: false
     UISettingsPatch:
@@ -5502,6 +5511,15 @@ components:
           items:
             $ref: '#/components/schemas/ID'
           maxItems: 1000
+        web_allow:
+          description: Networks `albedo web` serves to besides this machine, as CIDR or an address whose
+            trailing zero octets stand for any (10.0.0.0 is 10.0.0.0/8).
+          type: array
+          items:
+            type: string
+            minLength: 1
+            maxLength: 64
+          maxItems: 64
       additionalProperties: false
     DeclaredSetting:
       type: object

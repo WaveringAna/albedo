@@ -50,7 +50,7 @@ func Progress(id string) map[string]any {
 }
 
 func Settings() map[string]any {
-	result := map[string]any{"providers": map[string]any{"default_profile": nil, "profiles": map[string]any{}}, "mcp": map[string]any{"definitions": map[string]any{}}, "extensions": map[string]any{"defaults": map[string]bool{}}, "extension_settings": map[string]any{"sections": []any{}}, "capabilities": map[string]any{"preferences": map[string]bool{}}, "models": map[string]any{"raised_caps": map[string]bool{}, "cache_ttl_priors": []any{}}, "ui": map[string]any{"thinking": true, "tools": false, "dismissed_notices": []any{}}}
+	result := map[string]any{"providers": map[string]any{"default_profile": nil, "profiles": map[string]any{}}, "mcp": map[string]any{"definitions": map[string]any{}}, "extensions": map[string]any{"defaults": map[string]bool{}}, "extension_settings": map[string]any{"sections": []any{}}, "capabilities": map[string]any{"preferences": map[string]bool{}}, "models": map[string]any{"raised_caps": map[string]bool{}, "cache_ttl_priors": []any{}}, "ui": map[string]any{"thinking": true, "tools": false, "dismissed_notices": []any{}, "web_allow": []any{}}}
 	resources := map[string]any{}
 	for _, group := range []string{"providers", "mcp", "extensions", "extension_settings", "capabilities", "models", "ui"} {
 		resources[group] = map[string]any{"url": "/settings?group=" + group, "etag": "\"" + group + "-a\""}

@@ -73,7 +73,7 @@ pub fn settings(
             "choices",
           ]
           "models" -> ["raised_caps"]
-          _ -> ["thinking", "tools", "dismissed_notices"]
+          _ -> ["thinking", "tools", "dismissed_notices", "web_allow"]
         }
         use patch <- result.try(http_api.body(req, allowed, decode.dynamic))
         use host <- result.try(

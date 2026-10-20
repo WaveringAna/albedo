@@ -156,8 +156,15 @@ candidate(_, <<"models">>, Patch, Docs, _, _, _) ->
     Next = boolean_choices(object(<<"raisedCaps">>, Ext), object(<<"raised_caps">>, Patch)),
     {Docs#{<<"extensions.json">> => Ext#{<<"raisedCaps">> => Next}}, <<"not_applicable">>};
 candidate(_, <<"ui">>, Patch, Docs, _, _, _) ->
-    fields(Patch, [<<"thinking">>, <<"tools">>, <<"dismissed_notices">>]),
-    maps:foreach(fun(<<"dismissed_notices">>, Value) -> strings(Value, 1000, 512); (_, Value) -> true = is_boolean(Value) end, Patch),
+    fields(Patch, [<<"thinking">>, <<"tools">>, <<"dismissed_notices">>, <<"web_allow">>]),
+    maps:foreach(
+        fun
+            (<<"dismissed_notices">>, Value) -> strings(Value, 1000, 512);
+            (<<"web_allow">>, Value) -> strings(Value, 64, 64);
+            (_, Value) -> true = is_boolean(Value)
+        end,
+        Patch
+    ),
     Picker = maps:get(<<"picker.json">>, Docs),
     {Docs#{<<"picker.json">> => maps:merge(Picker, Patch)}, <<"not_applicable">>};
 candidate(_, <<"capabilities">>, Patch, Docs, Resolve, _, _) ->

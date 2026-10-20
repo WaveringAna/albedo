@@ -3124,6 +3124,9 @@ type UISettings struct {
 	DismissedNotices []ID `json:"dismissed_notices"`
 	Thinking         bool `json:"thinking"`
 	Tools            bool `json:"tools"`
+
+	// WebAllow Networks `albedo web` serves to besides this machine, as CIDR or an address whose trailing zero octets stand for any (10.0.0.0 is 10.0.0.0/8).
+	WebAllow []string `json:"web_allow,omitempty"`
 }
 
 // UISettingsChange defines model for UISettingsChange.
@@ -3138,6 +3141,9 @@ type UISettingsPatch struct {
 	DismissedNotices []ID  `json:"dismissed_notices,omitempty"`
 	Thinking         *bool `json:"thinking,omitempty"`
 	Tools            *bool `json:"tools,omitempty"`
+
+	// WebAllow Networks `albedo web` serves to besides this machine, as CIDR or an address whose trailing zero octets stand for any (10.0.0.0 is 10.0.0.0/8).
+	WebAllow []string `json:"web_allow,omitempty"`
 }
 
 // UISettingsResource defines model for UISettingsResource.
