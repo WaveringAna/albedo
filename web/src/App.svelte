@@ -98,7 +98,7 @@
     [mac ? '⌘ scroll' : 'ctrl scroll', 'zoom'],
     ['⇧1', 'fit all'],
     ['⌥←→', 'windows'],
-    ['[', 'sessions'],
+    ['space double-click', 'zoom at'],
     ['double-click', 'note'],
   ];
   let viewShown = $state(false);
@@ -220,6 +220,7 @@
     <div class="start">
       <button class="icon rail-toggle" aria-label={railOpen ? 'Hide sessions' : 'Show sessions'} title="{railOpen ? 'Hide' : 'Show'} sessions ([)" onclick={() => (railOpen = !railOpen)}>
         <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><rect x="2" y="3" width="12" height="10" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.3" /><path d="M6.25 3v10" stroke="currentColor" stroke-width="1.3" /></svg>
+        <kbd>[</kbd>
       </button>
       <span class="brand"><span class="spark" aria-hidden="true">✦</span> <span class="brand-ink">albedo</span></span>
     </div>
@@ -360,6 +361,20 @@
   .right .rail-toggle svg {
     transform: scaleX(-1);
   }
+  /* One control with its key, on the same surface as search. */
+  .icon.rail-toggle {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: auto;
+    padding: 0 5px 0 7px;
+    background: var(--field);
+  }
+  /* A step of ink on the button, so the key reads as its own little surface. */
+  .command kbd,
+  .rail-toggle kbd {
+    background: color-mix(in oklab, var(--text) 12%, transparent);
+  }
   .start {
     display: flex;
     grid-area: start;
@@ -424,7 +439,8 @@
     color: var(--text);
     background: var(--hover);
   }
-  .command:hover {
+  .command:hover,
+  .icon.rail-toggle:hover {
     background: var(--selected);
   }
   .link {
