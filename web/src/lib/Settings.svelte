@@ -217,9 +217,16 @@
     <label class="toggle">
       <span>
         <span class="label">dots on the canvas</span>
-        <span class="note">a faint guide for panning. they fade out when you zoom out.</span>
+        <span class="note">a faint guide for panning. they merge into fewer as you zoom out.</span>
       </span>
       <input type="checkbox" role="switch" bind:checked={prefs.dots} />
+    </label>
+    <label class="toggle">
+      <span>
+        <span class="label">sessions on the right</span>
+        <span class="note">the sidebar sits on the right, and search and settings move to the left of the top bar.</span>
+      </span>
+      <input type="checkbox" role="switch" bind:checked={prefs.sidebarRight} />
     </label>
     <label class="toggle">
       <span>
@@ -237,6 +244,11 @@
 </section>
 
 <style>
+  /* Under its button, wherever the top bar puts that. */
+  :global([data-sidebar='right']) .pane {
+    right: auto;
+    left: 10px;
+  }
   .pane {
     position: fixed;
     top: 50px;

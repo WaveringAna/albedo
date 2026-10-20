@@ -29,10 +29,10 @@
   $effect(() => localStorage.setItem(RAIL_KEY, railOpen ? 'open' : 'closed'));
   $effect(() => localStorage.setItem(MINIMAP_KEY, minimap ? 'on' : 'off'));
 
-  // With the sessions hidden, the pointer at the canvas's left edge brings
-  // them out floating over it, at once. How near counts as the edge grows
-  // with how fast the pointer is heading left, so a flick toward the edge
-  // opens it early and a slow drift along the canvas only right at the edge.
+  // With the sessions hidden, the pointer at the canvas's edge on their side
+  // brings them out floating over it, at once. How near counts as the edge
+  // grows with how fast the pointer is heading there, so a flick toward the
+  // edge opens it early and a slow drift along the canvas only right at it.
   // It is watched from the canvas rather than a strip along the edge, so the
   // edge still pans and clicks like the rest of the canvas. Out, the card
   // stays while the pointer is on it or near it (the top bar above it
@@ -41,13 +41,13 @@
   // the page.
   const PEEK_EDGE = 20;
   const PEEK_FLICK_EDGE = 50;
-  /** px of edge gained per px/ms of leftward speed */
+  /** px of edge gained per px/ms of speed toward it */
   const PEEK_PER_SPEED = 15;
   const PEEK_NEAR = 48;
   const PEEK_LINGER_MS = 100;
   let peek = $state(false);
   let peekEl = $state<HTMLElement>();
-  /** The pointer's last place on the canvas, and its leftward speed, smoothed. */
+  /** The pointer's last distance from that edge, and its speed toward it, smoothed. */
   const heading = { x: 0, t: 0, speed: 0 };
   let peekTimer: ReturnType<typeof setTimeout> | undefined;
   let pointerNear = false;
@@ -57,10 +57,11 @@
 
   function edge(event: PointerEvent) {
     if (railOpen || peek) return;
-    const x = event.clientX - (event.currentTarget as HTMLElement).getBoundingClientRect().left;
+    const canvas = (event.currentTarget as HTMLElement).getBoundingClientRect();
+    const x = prefs.sidebarRight ? canvas.right - event.clientX : event.clientX - canvas.left;
     const dt = event.timeStamp - heading.t;
-    const leftward = dt > 0 && dt < 100 ? Math.max(0, (heading.x - x) / dt) : 0;
-    heading.speed = heading.speed * 0.5 + leftward * 0.5;
+    const toward = dt > 0 && dt < 100 ? Math.max(0, (heading.x - x) / dt) : 0;
+    heading.speed = heading.speed * 0.5 + toward * 0.5;
     heading.x = x;
     heading.t = event.timeStamp;
     const reach = Math.min(PEEK_FLICK_EDGE, PEEK_EDGE + heading.speed * PEEK_PER_SPEED);
@@ -73,7 +74,8 @@
       return;
     }
     const card = peekEl.getBoundingClientRect();
-    pointerNear = event.clientX <= card.right + PEEK_NEAR && event.clientY <= card.bottom + PEEK_NEAR;
+    const beside = prefs.sidebarRight ? event.clientX >= card.left - PEEK_NEAR : event.clientX <= card.right + PEEK_NEAR;
+    pointerNear = beside && event.clientY <= card.bottom + PEEK_NEAR;
     if (pointerNear) clearTimeout(peekTimer);
     else unpeek();
   }
@@ -213,10 +215,10 @@
 {#if layout.phone}
   <Phone onsettings={() => (settingsOpen = !settingsOpen)} onnew={() => (newOpen = true)} />
 {:else}
-<div class="shell" class:rail-closed={!railOpen}>
+<div class="shell" class:rail-closed={!railOpen} class:right={prefs.sidebarRight}>
   <header class="topbar">
     <div class="start">
-      <button class="icon" aria-label={railOpen ? 'Hide sessions' : 'Show sessions'} title="{railOpen ? 'Hide' : 'Show'} sessions ([)" onclick={() => (railOpen = !railOpen)}>
+      <button class="icon rail-toggle" aria-label={railOpen ? 'Hide sessions' : 'Show sessions'} title="{railOpen ? 'Hide' : 'Show'} sessions ([)" onclick={() => (railOpen = !railOpen)}>
         <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><rect x="2" y="3" width="12" height="10" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.3" /><path d="M6.25 3v10" stroke="currentColor" stroke-width="1.3" /></svg>
       </button>
       <span class="brand"><span class="spark" aria-hidden="true">✦</span> <span class="brand-ink">albedo</span></span>
@@ -311,14 +313,59 @@
     display: grid;
     grid-column: 1 / -1;
     grid-template-columns: 264px 1fr auto auto;
+    grid-template-areas: 'start tabs link end';
     align-items: stretch;
     background: var(--rail);
   }
   .rail-closed .topbar {
     grid-template-columns: auto 1fr auto auto;
   }
+  .topbar > :global(.tabs) {
+    grid-area: tabs;
+  }
+  .link {
+    grid-area: link;
+  }
+  .end {
+    grid-area: end;
+  }
+  /* Mirrored: the sessions on the right, with their toggle and the brand
+     above them, and search and settings on the left. */
+  .shell.right {
+    grid-template-columns: 1fr 264px;
+  }
+  .shell.right.rail-closed {
+    grid-template-columns: 1fr;
+  }
+  .shell.right > :global(aside) {
+    grid-area: 2 / 2;
+  }
+  .shell.right > main {
+    grid-area: 2 / 1;
+  }
+  .right .topbar {
+    grid-template-columns: auto 1fr auto 264px;
+    grid-template-areas: 'end tabs link start';
+  }
+  .right.rail-closed .topbar {
+    grid-template-columns: auto 1fr auto auto;
+  }
+  .right .start {
+    flex-direction: row-reverse;
+    padding: 0 10px 0 14px;
+  }
+  .right .about {
+    margin: 0 -4px 0 0;
+  }
+  .right .end {
+    padding: 0 6px 0 8px;
+  }
+  .right .rail-toggle svg {
+    transform: scaleX(-1);
+  }
   .start {
     display: flex;
+    grid-area: start;
     align-items: center;
     gap: 8px;
     padding: 0 14px 0 10px;
@@ -410,6 +457,10 @@
   }
   .peek > :global(aside) {
     flex: 1;
+  }
+  .right .peek {
+    right: 8px;
+    left: auto;
   }
   /* Hidden, it lets clicks through to whatever window sits under it. */
   .view {

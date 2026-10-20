@@ -80,6 +80,11 @@
 </div>
 
 <style>
+  /* Under its button, wherever the top bar puts that. */
+  :global([data-sidebar='right']) .pane {
+    right: 10px;
+    left: auto;
+  }
   .pane {
     position: fixed;
     top: 50px;

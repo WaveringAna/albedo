@@ -58,6 +58,8 @@ interface Saved {
   dots: boolean;
   /** Whether a narrow screen gets the canvas rather than one chat at a time. */
   canvasOnPhone: boolean;
+  /** Whether the sessions sit on the right, and search and settings on the left. */
+  sidebarRight: boolean;
   palettes: Record<Mode, Palette>;
   fonts: Fonts;
 }
@@ -98,7 +100,7 @@ export function readPalette(value: unknown, mode: Mode): Palette {
 }
 
 function load(): Saved {
-  const fallback: Saved = { theme: 'system', dots: true, canvasOnPhone: false, palettes: { ...DEFAULTS }, fonts: { ui: '', code: '' } };
+  const fallback: Saved = { theme: 'system', dots: true, canvasOnPhone: false, sidebarRight: false, palettes: { ...DEFAULTS }, fonts: { ui: '', code: '' } };
   try {
     const saved = (readCookie() ?? JSON.parse(localStorage.getItem(STORAGE_KEY) ?? 'null')) as Record<string, any> | null;
     if (saved) {
@@ -106,6 +108,7 @@ function load(): Saved {
         theme: ['system', 'light', 'dark'].includes(saved.theme) ? saved.theme : 'system',
         dots: saved.dots !== false,
         canvasOnPhone: saved.canvasOnPhone === true,
+        sidebarRight: saved.sidebarRight === true,
         palettes: { light: readPalette(saved.palettes?.light, 'light'), dark: readPalette(saved.palettes?.dark, 'dark') },
         fonts: readFonts(saved.fonts),
       };
@@ -135,6 +138,7 @@ class Prefs {
   theme = $state<Theme>(this.#saved.theme);
   dots = $state(this.#saved.dots);
   canvasOnPhone = $state(this.#saved.canvasOnPhone);
+  sidebarRight = $state(this.#saved.sidebarRight);
   palettes = $state<Record<Mode, Palette>>(this.#saved.palettes);
   fonts = $state<Fonts>(this.#saved.fonts);
   #systemDark = $state(matchMedia('(prefers-color-scheme: dark)').matches);
@@ -146,13 +150,14 @@ class Prefs {
       $effect(() => {
         const root = document.documentElement;
         root.dataset.theme = this.resolved;
+        root.dataset.sidebar = this.sidebarRight ? 'right' : 'left';
         for (const [name, value] of Object.entries(seedVariables(this.palettes[this.resolved]))) root.style.setProperty(name, value);
         for (const [name, typed, fallback] of [['--sans', this.fonts.ui, FONT_FALLBACK.ui], ['--mono', this.fonts.code, FONT_FALLBACK.code]] as const) {
           const stack = fontStack(typed, fallback);
           if (stack) root.style.setProperty(name, stack);
           else root.style.removeProperty(name);
         }
-        const saved = JSON.stringify({ theme: this.theme, dots: this.dots, canvasOnPhone: this.canvasOnPhone, palettes: this.palettes, fonts: this.fonts });
+        const saved = JSON.stringify({ theme: this.theme, dots: this.dots, canvasOnPhone: this.canvasOnPhone, sidebarRight: this.sidebarRight, palettes: this.palettes, fonts: this.fonts });
         localStorage.setItem(STORAGE_KEY, saved);
         document.cookie = `${COOKIE}=${encodeURIComponent(saved)}; path=/; max-age=31536000; samesite=strict`;
       });
