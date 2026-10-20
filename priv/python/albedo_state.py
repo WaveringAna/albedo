@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import importlib
 import os
 import pickle
+import sys
 import tempfile
 import types
 from typing import Any, cast
@@ -14,6 +16,9 @@ STATE_MAX = 64 * 1024 * 1024
 STATE_MAX_VALUE = 8 * 1024 * 1024
 DEFINITION_MAX = 256 * 1024
 DEFINITION_MAX_VALUE = 32 * 1024
+# What the kernel started with; entries a cell adds (a sys.path.insert before
+# an import) are saved so replayed imports find their modules again.
+START_PATH = list(sys.path)
 
 
 def engine() -> tuple[object, str]:
@@ -67,6 +72,7 @@ def save_state(
     """Serialise values and readable top-level definitions within fixed caps."""
     serialiser, kind = cast("Any", engine())
     payload: dict[str, bytes] = {}
+    modules: dict[str, str] = {}
     skipped: list[dict[str, str]] = []
     total = 0
     largest: list[tuple[str, int]] = []
@@ -75,6 +81,10 @@ def save_state(
             continue
         value = namespace.get(name, injected)
         if value is injected:
+            continue
+        if isinstance(value, types.ModuleType):
+            # A module cannot be pickled; its import name is enough to bind it again.
+            modules[name] = value.__name__
             continue
         replayed = name in definitions and isinstance(
             value, (types.FunctionType, type, types.ModuleType)
@@ -125,6 +135,12 @@ def save_state(
                 pickle.dump(
                     {
                         "cwd": os.getcwd(),
+                        "path": [
+                            entry
+                            for entry in sys.path
+                            if isinstance(entry, str) and entry not in START_PATH
+                        ],
+                        "modules": modules,
                         "names": payload,
                         "definitions": saved_definitions,
                     },
@@ -138,7 +154,9 @@ def save_state(
         return {"error": f"could not write saved state: {error}"}
     largest.sort(key=lambda item: item[1], reverse=True)
     return {
-        "saved": sorted(set(payload) | {item["name"] for item in saved_definitions}),
+        "saved": sorted(
+            set(payload) | set(modules) | {item["name"] for item in saved_definitions}
+        ),
         "defs": [item["name"] for item in saved_definitions],
         "skipped": skipped,
         "largest": [{"name": name, "bytes": size} for name, size in largest[:5]],
@@ -150,7 +168,8 @@ def save_state(
 def load_state(
     path: str, namespace: dict[str, object], definitions: dict[str, str]
 ) -> dict[str, object]:
-    """Restore pickled values, then replay definitions in their saved order."""
+    """Restore the added sys.path entries and modules, then pickled values, then
+    replay definitions in their saved order."""
     try:
         with open(path, "rb") as file:
             saved = cast(dict[str, object], pickle.load(file))
@@ -166,6 +185,18 @@ def load_state(
     serialiser, kind = cast("Any", engine())
     restored: list[str] = []
     failed: list[dict[str, str]] = []
+    for entry in reversed(cast(list[object], saved.get("path", []))):
+        if isinstance(entry, str) and entry not in sys.path:
+            sys.path.insert(0, entry)
+    for name, module in cast(dict[str, str], saved.get("modules", {})).items():
+        try:
+            namespace[name] = importlib.import_module(module)
+        except BaseException as error:
+            failed.append(
+                {"name": name, "reason": f"{type(error).__name__}: {error}"[:200]}
+            )
+        else:
+            restored.append(name)
     for name, blob in cast(dict[str, bytes], saved.get("names", {})).items():
         try:
             namespace[name] = cast(object, serialiser.loads(blob))

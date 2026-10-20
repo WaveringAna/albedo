@@ -24,7 +24,7 @@ from albedo_output import JobOutput
 
 from collections import OrderedDict
 from collections.abc import Callable, Generator
-from typing import cast
+from typing import NoReturn, cast
 from albedo_api import (
     Host,
     PythonApi,
@@ -570,6 +570,72 @@ class Job(JobOutput):
             f"Job(id={self.id!r}, exit_code={self.exit_code!r}, "
             f"timed_out={self.timed_out!r}, duration={self.duration!r}, "
             f"bytes={self.capture.seen})"
+        )
+
+    def __reduce__(self):
+        # Saved kernel state keeps a variable holding a job: in this kernel it
+        # resolves to the live handle, after a restart to how the job ended.
+        return _revive, (
+            self.id,
+            self.pipeline,
+            self.exit_code,
+            self.timed_out,
+            self.duration,
+        )
+
+
+def _revive(
+    id: str,
+    command: str,
+    exit_code: int | None,
+    timed_out: bool,
+    duration: float | None,
+) -> Job | EndedJob:
+    job = jobs.get(id)
+    return (
+        job
+        if job is not None
+        else EndedJob(id, command, exit_code, timed_out, duration)
+    )
+
+
+class EndedJob:
+    """A job handle restored after the kernel restarted: what ran and how it
+    ended. The process and its output went with the old kernel."""
+
+    def __init__(
+        self,
+        id: str,
+        command: str,
+        exit_code: int | None,
+        timed_out: bool,
+        duration: float | None,
+    ) -> None:
+        self.id = id
+        self.command = command
+        self.exit_code = exit_code
+        self.timed_out = timed_out
+        self.duration = duration
+
+    def poll(self) -> int | None:
+        return self.exit_code
+
+    @property
+    def returncode(self) -> int | None:
+        return self.exit_code
+
+    def _gone(self, *_args: object, **_kwargs: object) -> NoReturn:
+        raise LookupError(
+            f"job {self.id} ran in a kernel that has since restarted; its output went "
+            f"with it (exit_code={self.exit_code!r}). Run it again to read output."
+        )
+
+    tail = head = read = save = _gone
+
+    def __repr__(self) -> str:
+        return (
+            f"EndedJob(id={self.id!r}, exit_code={self.exit_code!r}, "
+            f"timed_out={self.timed_out!r}, duration={self.duration!r})"
         )
 
 

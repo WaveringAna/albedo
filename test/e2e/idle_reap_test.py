@@ -2,8 +2,10 @@
 
 import sqlite3
 import subprocess
+import tempfile
 import time
 import unittest
+from pathlib import Path
 
 from harness import alive, latest_user
 from harness import Albedo, Provider, exclusive, python, text
@@ -38,9 +40,28 @@ def kernels(home):
 @exclusive
 class IdleReapTests(unittest.TestCase):
     def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        modules = directory.name
+        (Path(modules) / "reap_helper.py").write_text("VALUE = 'helper'\n")
+
         def script(request):
             if request["input"][-1].get("role") == "user":
                 prompt = latest_user(request)
+                if prompt.startswith("remember handles"):
+                    return python(
+                        "import sys, json\n"
+                        f"sys.path.insert(0, {modules!r})\n"
+                        "import reap_helper\n"
+                        "codec = json\n"
+                        "done = run('true')\n"
+                        "await done"
+                    )
+                if prompt.startswith("recall handles"):
+                    return python(
+                        "print('handles', reap_helper.VALUE, codec.dumps([1]), "
+                        "done.exit_code, done.command, type(done).__name__)"
+                    )
                 if prompt.startswith("remember"):
                     return python("answer = 7\nrows = [1, 2, 3]")
                 if prompt.startswith("recall"):
@@ -100,6 +121,27 @@ class IdleReapTests(unittest.TestCase):
         notes = notes_for(app, session, cursor)
         self.assertTrue(
             any("restored 2 variables from disk" in note for note in notes), notes
+        )
+
+    def test_idle_kernel_restores_path_imports_modules_and_job_handles(self):
+        app = self.app
+        existing = set(kernels(app.home))
+        session = app.session()
+        self.turn(session, "remember handles")
+        deadline = time.monotonic() + IDLE_SECONDS * 4
+        while time.monotonic() < deadline and set(kernels(app.home)) - existing:
+            time.sleep(0.1)
+        self.assertEqual(set(kernels(app.home)) - existing, set())
+        self.turn(session, "recall handles")
+        prompt = latest_user(self.provider.requests[-1]["request"])
+        self.assertNotIn("not restored", prompt)
+        outputs = [
+            item.get("output", "")
+            for item in self.provider.requests[-1]["request"]["input"]
+        ]
+        self.assertTrue(
+            any("handles helper [1] 0 true EndedJob" in output for output in outputs),
+            outputs,
         )
 
     def test_reattached_kernel_without_a_loaded_session_is_released(self):
