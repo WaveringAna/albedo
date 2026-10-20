@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, tick } from 'svelte';
+  import { onMount, tick, type Snippet } from 'svelte';
   import { busy } from '../live.svelte';
   import { boards } from '../boards.svelte';
   import { copyText, interruptSession, type Session } from '../api';
@@ -16,7 +16,13 @@
   // On the canvas a chat is a window, whose reviews and notes open beside
   // it. `inline` is the phone's single chat: a review opens inside the chat,
   // under the line that asked for it, and there are no notes.
-  let { sessionId, session, windowId, inline = false }: { sessionId: string; session: Session | undefined; windowId: string; inline?: boolean } = $props();
+  let {
+    sessionId,
+    session,
+    windowId,
+    inline = false,
+    handle,
+  }: { sessionId: string; session: Session | undefined; windowId: string; inline?: boolean; handle?: Snippet } = $props();
 
   let shown = $state<{ at: string; turnId: string; from: number; jump?: { path: string; at: number } } | null>(null);
 
@@ -236,6 +242,7 @@
   </div>
 
   <div class="dock">
+    {@render handle?.()}
     {#if tied.length}
       <button class="notes" disabled={sendingNotes} onclick={sendTied}>send {tied.length} {tied.length === 1 ? 'note' : 'notes'} tied to this chat</button>
     {/if}
