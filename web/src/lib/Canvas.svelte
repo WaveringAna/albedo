@@ -41,18 +41,11 @@
   function scrollsSideways(event: WheelEvent) {
     if (board.viewport.zoom < READABLE) return false;
     for (const target of event.composedPath()) {
-      // Nothing outside the window under the pointer scrolls it.
-      if (!(target instanceof HTMLElement)) break;
-      if (target.classList.contains('svelte-flow__node')) break;
-      if (scrollable(target)) return true;
+      if (!(target instanceof HTMLElement) || target.classList.contains('svelte-flow__node')) break;
+      const overflow = getComputedStyle(target).overflowX;
+      if ((overflow === 'auto' || overflow === 'scroll') && target.scrollWidth > target.clientWidth + 1) return true;
     }
     return false;
-  }
-
-  const SCROLLING = new Set(['auto', 'scroll']);
-  function scrollable(element: HTMLElement) {
-    const overflowing = element.scrollWidth > element.clientWidth + 1;
-    return overflowing && SCROLLING.has(getComputedStyle(element).overflowX);
   }
 
   // A pinch moves a few pixels at a time, a mouse wheel's notch a hundred or
