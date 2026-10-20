@@ -48,7 +48,7 @@
           {/each}
         </div>
       {/if}
-      {#if tiles.length && rest.length}<hr />{/if}
+      {#if tiles.length && rest.length}<hr class="dots" />{/if}
       {#each rest as session (session.id)}{@render row(session)}{/each}
       {#if sessions.loaded && !shown.length}<p class="none">no sessions yet (・ω・)ﾉ</p>{/if}
     {/if}
@@ -110,9 +110,10 @@
     border-radius: 14px;
     cursor: pointer;
   }
+  /* Pressing lays a step over the tile or row's own tone, so it never reads as a stripe. */
   .tile:active,
   .row:active {
-    background: var(--hover);
+    background-image: linear-gradient(var(--selected), var(--selected));
   }
   .tile .name {
     display: -webkit-box;
@@ -147,28 +148,26 @@
     align-items: baseline;
     gap: 12px;
     width: 100%;
-    padding: 11px 6px;
+    padding: 11px 10px;
     color: var(--text);
     font: inherit;
     font-size: 15px;
     text-align: left;
     background: none;
     border: 0;
-    border-radius: 10px;
+    border-radius: 14px;
     cursor: pointer;
   }
-  /* Hairlines between rows, inset to the text, and a fuller one under the tiles. */
-  .row + .row {
-    box-shadow: inset 0 1px 0 color-mix(in oklab, var(--text) 8%, transparent);
-    border-radius: 0;
+  /* Every other row on a softer step of the tiles' tone, so stripes don't read
+     as tiles; three dots under the tiles. */
+  .row:nth-of-type(odd) {
+    background-color: color-mix(in oklab, var(--well) 45%, transparent);
   }
-  .row:active {
-    border-radius: 10px;
-  }
-  hr {
-    height: 1px;
-    margin: 0 0 4px;
-    background: color-mix(in oklab, var(--text) 12%, transparent);
+  .dots {
+    width: 36px;
+    height: 6px;
+    margin: 0 auto 14px;
+    background: radial-gradient(circle, color-mix(in oklab, var(--text) 22%, transparent) 2.5px, transparent 3px) 0 0 / 12px 6px repeat-x;
     border: 0;
   }
   .row .name {
@@ -184,10 +183,13 @@
     font-size: 14px;
     text-align: center;
   }
+  /* The search sits on its own step of tone, so it never reads as one more row. */
   .bottom {
     display: flex;
     gap: 8px;
-    padding: 8px 12px 10px;
+    padding: 10px 12px;
+    background: var(--bg);
+    border-radius: 18px 18px 0 0;
   }
   .search {
     display: flex;
