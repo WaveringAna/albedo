@@ -16,7 +16,8 @@
   // The wheel is handled here rather than by Svelte Flow, because a window's
   // contents and the canvas share the trackpad: a pinch zooms the canvas
   // anywhere, an up-down scroll over a readable window scrolls that window,
-  // and every other scroll pans the canvas freely. Holding space, or the
+  // a sideways one over something that scrolls sideways (a diff's code, a
+  // wide table) scrolls that, and every other scroll pans the canvas freely. Holding space, or the
   // middle button, drags the canvas from anywhere, over windows too.
   let { board, onpalette, minimap }: { board: Board; onpalette: () => void; minimap: boolean } = $props();
 
@@ -34,6 +35,17 @@
     if (!scroller || board.viewport.zoom < READABLE) return false;
     // At either end a scroll still belongs to the window, so it never jumps to panning mid-read.
     return scroller.scrollHeight > scroller.clientHeight || deltaY === 0;
+  }
+
+  // The path crosses into shadow roots, so Pierre's code element counts.
+  function scrollsSideways(event: WheelEvent) {
+    if (board.viewport.zoom < READABLE) return false;
+    for (const target of event.composedPath()) {
+      if (!(target instanceof HTMLElement) || target.classList.contains('svelte-flow__node')) break;
+      const overflow = getComputedStyle(target).overflowX;
+      if ((overflow === 'auto' || overflow === 'scroll') && target.scrollWidth > target.clientWidth + 1) return true;
+    }
+    return false;
   }
 
   // A pinch moves a few pixels at a time, a mouse wheel's notch a hundred or
@@ -92,7 +104,7 @@
         return;
       }
       const vertical = Math.abs(event.deltaY) >= Math.abs(event.deltaX);
-      if (vertical && scrollsItself(event.target, event.deltaY)) return;
+      if (vertical ? scrollsItself(event.target, event.deltaY) : scrollsSideways(event)) return;
       event.preventDefault();
       const { x, y, zoom } = board.viewport;
       board.setView({ x: x - event.deltaX, y: y - event.deltaY, zoom });
