@@ -222,9 +222,6 @@
         <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><rect x="2" y="3" width="12" height="10" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.3" /><path d="M6.25 3v10" stroke="currentColor" stroke-width="1.3" /></svg>
       </button>
       <span class="brand"><span class="spark" aria-hidden="true">✦</span> <span class="brand-ink">albedo</span></span>
-      <button class="icon about" data-about-toggle aria-label="about albedo" aria-expanded={aboutOpen} title="about albedo" onclick={() => (aboutOpen = !aboutOpen)}>
-        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.3" /><path d="M6.4 6.3a1.7 1.7 0 0 1 3.3.5c0 1.1-1.7 1.4-1.7 2.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" /><circle cx="8" cy="11.4" r="0.8" fill="currentColor" /></svg>
-      </button>
     </div>
     <Tabs />
     {#if sessions.link !== 'online'}
@@ -234,6 +231,9 @@
       <button class="command" onclick={() => (paletteOpen = true)}>
         <span>search</span>
         <kbd>{shortcut('K')}</kbd>
+      </button>
+      <button class="icon about" data-about-toggle aria-label="about albedo" aria-expanded={aboutOpen} title="about albedo" onclick={() => (aboutOpen = !aboutOpen)}>
+        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.3" /><path d="M6.4 6.3a1.7 1.7 0 0 1 3.3.5c0 1.1-1.7 1.4-1.7 2.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" /><circle cx="8" cy="11.4" r="0.8" fill="currentColor" /></svg>
       </button>
       <button class="icon" class:on={settingsOpen} data-settings-toggle aria-label="Settings" aria-expanded={settingsOpen} title="Settings ({shortcut(',')})" onclick={() => (settingsOpen = !settingsOpen)}>
         <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M2.5 5h6M11.5 5h2M2.5 11h2M7.5 11h6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" /><circle cx="10" cy="5" r="1.6" fill="none" stroke="currentColor" stroke-width="1.3" /><circle cx="6" cy="11" r="1.6" fill="none" stroke="currentColor" stroke-width="1.3" /></svg>
@@ -354,9 +354,6 @@
     flex-direction: row-reverse;
     padding: 0 10px 0 14px;
   }
-  .right .about {
-    margin: 0 -4px 0 0;
-  }
   .right .end {
     padding: 0 6px 0 8px;
   }
@@ -401,7 +398,6 @@
   .about {
     width: 24px;
     height: 24px;
-    margin-left: -4px;
     color: var(--faint);
   }
   .end {

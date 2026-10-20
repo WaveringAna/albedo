@@ -82,13 +82,13 @@
 <style>
   /* Under its button, wherever the top bar puts that. */
   :global([data-sidebar='right']) .pane {
-    right: 10px;
-    left: auto;
+    right: auto;
+    left: 10px;
   }
   .pane {
     position: fixed;
     top: 50px;
-    left: 10px;
+    right: 10px;
     z-index: 50;
     display: grid;
     gap: 20px;
