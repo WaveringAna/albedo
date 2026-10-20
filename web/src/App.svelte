@@ -3,7 +3,7 @@
   import { boards } from './lib/boards.svelte';
   import Canvas from './lib/Canvas.svelte';
   import { ago, place, rank } from './lib/format';
-  import { shortcut, typing } from './lib/keys';
+  import { mac, shortcut, typing } from './lib/keys';
   import Palette, { type Item } from './lib/Palette.svelte';
   import { prefs } from './lib/prefs.svelte';
   import { busy } from './lib/live.svelte';
@@ -27,6 +27,7 @@
   let search = $state<HTMLInputElement>();
 
   $effect(() => localStorage.setItem(RAIL_KEY, railOpen ? 'open' : 'closed'));
+  $effect(() => localStorage.setItem(MINIMAP_KEY, minimap ? 'on' : 'off'));
 
   // With the sessions hidden, the pointer at the canvas's left edge brings
   // them out floating over it, until it wanders past them or leaves the
@@ -58,11 +59,20 @@
       if (!peekEl?.contains(document.activeElement)) peek = false;
     }, PEEK_LINGER_MS);
   }
-  $effect(() => localStorage.setItem(MINIMAP_KEY, minimap ? 'on' : 'off'));
 
   // The view controls show while the view moves and for a while after, then
   // fade; hovering or focusing them keeps them.
   const VIEW_LINGER_MS = 4000;
+  // The keys the canvas answers that nothing on screen shows, as the
+  // terminal's footer lists them: the key, then what it does.
+  const canvasHints = [
+    ['space', 'drag'],
+    [mac ? '⌘ scroll' : 'ctrl scroll', 'zoom'],
+    ['⇧1', 'fit all'],
+    ['⌥←→', 'windows'],
+    ['[', 'sessions'],
+    ['double-click', 'note'],
+  ];
   let viewShown = $state(false);
   let viewTimer: ReturnType<typeof setTimeout> | undefined;
   function lingerView() {
@@ -219,20 +229,25 @@
       {#key boards.board}
         <Canvas board={boards.board} {minimap} onpalette={() => (paletteOpen = true)} />
       {/key}
-      <div class="view" class:shown={viewShown} role="toolbar" aria-label="View" tabindex="-1" onpointerenter={() => clearTimeout(viewTimer)} onpointerleave={lingerView}>
-        <button aria-label="Zoom out" title="Zoom out (−)" onclick={() => zoomStep(-1)}>
-          <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 8h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" /></svg>
-        </button>
-        <button class="level" title="Zoom to 100% (⇧0)" onclick={() => boards.board?.zoomTo(1)}>{Math.round((boards.board.viewport.zoom ?? 1) * 100)}%</button>
-        <button aria-label="Zoom in" title="Zoom in (+)" onclick={() => zoomStep(1)}>
-          <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 8h8M8 4v8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" /></svg>
-        </button>
-        <button aria-label="Fit all windows" title="Fit all windows (⇧1)" onclick={() => boards.board?.fit()}>
-          <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M2.5 6V3.5a1 1 0 011-1H6M10 2.5h2.5a1 1 0 011 1V6M13.5 10v2.5a1 1 0 01-1 1H10M6 13.5H3.5a1 1 0 01-1-1V10" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" /></svg>
-        </button>
-        <button aria-label="Overview map" aria-pressed={minimap} title="Overview map (M)" class:on={minimap} onclick={() => (minimap = !minimap)}>
-          <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><rect x="2" y="3" width="12" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="1.3" /><rect x="4.5" y="5.5" width="4" height="3" rx="0.75" fill="currentColor" /></svg>
-        </button>
+      <div class="view" class:shown={viewShown} onpointerenter={() => clearTimeout(viewTimer)} onpointerleave={lingerView} role="presentation">
+        <div class="controls" role="toolbar" aria-label="View" tabindex="-1">
+          <button aria-label="Zoom out" title="Zoom out (−)" onclick={() => zoomStep(-1)}>
+            <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 8h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" /></svg>
+          </button>
+          <button class="level" title="Zoom to 100% (⇧0)" onclick={() => boards.board?.zoomTo(1)}>{Math.round((boards.board.viewport.zoom ?? 1) * 100)}%</button>
+          <button aria-label="Zoom in" title="Zoom in (+)" onclick={() => zoomStep(1)}>
+            <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 8h8M8 4v8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" /></svg>
+          </button>
+          <button aria-label="Fit all windows" title="Fit all windows (⇧1)" onclick={() => boards.board?.fit()}>
+            <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M2.5 6V3.5a1 1 0 011-1H6M10 2.5h2.5a1 1 0 011 1V6M13.5 10v2.5a1 1 0 01-1 1H10M6 13.5H3.5a1 1 0 01-1-1V10" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" /></svg>
+          </button>
+          <button aria-label="Overview map" aria-pressed={minimap} title="Overview map (M)" class:on={minimap} onclick={() => (minimap = !minimap)}>
+            <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><rect x="2" y="3" width="12" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="1.3" /><rect x="4.5" y="5.5" width="4" height="3" rx="0.75" fill="currentColor" /></svg>
+          </button>
+        </div>
+        <p class="hints" aria-hidden="true">
+          {#each canvasHints as [key, does], index (key)}{#if index}<span class="dot">·</span>{/if}<span><kbd>{key}</kbd> {does}</span>{/each}
+        </p>
       </div>
     {/if}
   </main>
@@ -380,11 +395,46 @@
     bottom: 14px;
     display: flex;
     align-items: center;
+    gap: 8px;
+  }
+  .controls {
+    display: flex;
+    align-items: center;
     gap: 2px;
     padding: 4px;
     background: var(--surface);
     border-radius: 12px;
     box-shadow: var(--shadow);
+  }
+  /* As the terminal's footer: keys in muted, what they do fainter, on a
+     card of their own beside the controls. */
+  .hints {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    height: 38px;
+    margin: 0;
+    padding: 0 12px;
+    color: var(--faint);
+    font-size: 12px;
+    white-space: nowrap;
+    background: var(--surface);
+    border-radius: 12px;
+    box-shadow: var(--shadow);
+    pointer-events: none;
+  }
+  .hints .dot {
+    color: var(--faint);
+    font-weight: 700;
+  }
+  .hints kbd {
+    display: inline;
+    min-width: 0;
+    height: auto;
+    padding: 0;
+    color: var(--muted);
+    font: inherit;
+    background: none;
   }
   .view.shown,
   .view:focus-within {
