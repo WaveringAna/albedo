@@ -41,6 +41,53 @@ def read_page(capture: OutputCapture, offset: int, limit: int) -> Text:
     return Text(capture.read(offset, limit))
 
 
+def whole_characters(data: bytes) -> int:
+    """How many leading bytes end on a character, as an unfinished UTF-8 sequence
+    at the end is left for the bytes that follow it."""
+    for back in range(1, min(4, len(data)) + 1):
+        byte = data[-back]
+        if byte & 0xC0 == 0x80:
+            continue
+        size = 4 if byte >= 0xF0 else 3 if byte >= 0xE0 else 2 if byte >= 0xC0 else 1
+        return len(data) if back >= size else len(data) - back
+    return len(data)
+
+
+def read_window(
+    capture: OutputCapture, offset: int | None, limit: int, finished: bool
+) -> tuple[int, int, str]:
+    """A page of at most `limit` bytes as text, with the bytes it starts and ends
+    at, cut on characters so a reader that continues from its end loses none.
+
+    Without `offset` the page is the end of the output. A `finished` writer
+    adds no more, so a half character at the very end is shown, not held back.
+    Raises ValueError for a bad window and LookupError for one that is lost."""
+    if offset is not None and offset < 0 or not 4 <= limit <= OUTPUT_PREVIEW:
+        # Four bytes hold any character, so a page always makes progress.
+        raise ValueError(f"offset >= 0 and 4 <= limit <= {OUTPUT_PREVIEW}")
+    seen = capture.seen
+    tail = capture.tail()
+    kept = seen - len(tail)  # the tail is always readable, whatever else was lost
+    start = max(0, seen - limit) if offset is None else min(offset, seen)
+    end = min(start + limit, seen)
+    if start >= kept:
+        data = tail[start - kept : end - kept]
+    else:
+        try:
+            data = capture.read_bytes(start, end - start)
+        except ValueError as error:
+            raise LookupError(str(error)) from error
+    if offset is None:
+        # A page that opens inside a character starts at the next one.
+        skip = 0
+        while skip < min(3, len(data)) and data[skip] & 0xC0 == 0x80:
+            skip += 1
+        start, data = start + skip, data[skip:]
+    if not (finished and start + len(data) == seen):
+        data = data[: whole_characters(data)]
+    return start, start + len(data), data.decode("utf-8", errors="replace")
+
+
 class JobOutput:
     capture: OutputCapture
     duration: float | None

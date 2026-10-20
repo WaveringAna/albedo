@@ -20,7 +20,7 @@
 -module(albedo_python).
 -export([start/1, execute/4, interrupt/1, stop/1, detach/1, events/1, alive/1, os_pid/1, job_count/1, stop_job/2, local_paths/0, paths/0, grace/0, rebind/2, clean_environment/0]).
 -export([stale/1, mark_stale/2]).
--export([observation/1, stop_recorded/2, stop_jobs/1]).
+-export([observation/1, stop_recorded/2, stop_jobs/1, job_list/1, job_read/4]).
 
 -define(PROTOCOL, 1).
 -define(STARTUP_TIMEOUT, 10000). %% bridge, kernel, and plugins, end to end
@@ -39,6 +39,7 @@
 -define(SSH_FAILED, 255).        %% ssh's own
 -define(REMOTE_HELPER_WAIT, 15000). %% a helper run over ssh
 -define(REMOTE_STOP_TIMEOUT, 15000). %% give up waiting for remote job stop confirmation
+-define(ASK_TIMEOUT, 10000).     %% give up waiting for the kernel to answer a job list or read
 -define(REATTACH_MAX_MS, 2000).
 -define(REATTACH_TRIES, 40).     %% consecutive failed attaches before giving up
 -define(REMOTE_REATTACH_MAX_MS, 30000).
@@ -59,7 +60,7 @@ start({boot, Owner, Python, Bridge, Cwd, Host, Modules, Link, RunDir, Kernel, To
               python => Python, bridge => Bridge, cwd => Cwd, remote => Remote,
               modules => Modules, run_dir => RunDir, kernel => Kernel, token => Token,
               grace => Grace, in => 0, acked => 0, kack => 0, out => OutSeq,
-              calls => #{}, stopping => #{}, bundle => none, kernel_bundle => none, retries => 0, flush => none, give_up => none, stale => none},
+              calls => #{}, stopping => #{}, asking => #{}, bundle => none, kernel_bundle => none, retries => 0, flush => none, give_up => none, stale => none},
         Mode = case Fresh of true -> start; false -> attach end,
         case open_bridge(S, Mode) of
             {ok, S1} -> startup(S1, Mode, Parent, Ref, erlang:monotonic_time(millisecond) + ?STARTUP_TIMEOUT);
@@ -296,6 +297,21 @@ stop_job(Pid, Id) ->
         {error, Reason} -> {error, detail(Reason)};
         _ -> {error, <<"could not stop job">>}
     end.
+%% The kernel's job book as the kernel's own JSON reply: every job it knows,
+%% finished ones included, or one page of a job's output (`Offset` is `none`
+%% for the page that ends it).
+job_list(Pid) -> ask(Pid, <<"job_list">>, #{}).
+job_read(Pid, Id, Offset, Limit) ->
+    Fields = #{job => Id, limit => Limit},
+    ask(Pid, <<"job_read">>, case Offset of none -> Fields; {some, At} -> Fields#{offset => At} end).
+
+ask(Pid, Kind, Fields) ->
+    case call(Pid, {ask, Kind, Fields}) of
+        {ok, Reply} when is_binary(Reply) -> {ok, Reply};
+        {error, Reason} when is_binary(Reason) -> {error, Reason};
+        {error, Reason} -> {error, detail(Reason)};
+        _ -> {error, <<"could not ask the kernel">>}
+    end.
 events(Pid) -> case call(Pid, events) of {ok, Events} -> Events; _ -> [] end.
 interrupt(Pid) -> Pid ! interrupt, nil.
 
@@ -437,6 +453,15 @@ loop(S = #{port := Port, active := Active}) ->
                     From ! {Ref, Reply},
                     loop(S)
             end;
+        {call, From, Ref, {ask, _, _}} when Port =:= none ->
+            From ! {Ref, {error, <<"kernel is unreachable">>}},
+            loop(S);
+        {call, From, Ref, {ask, Kind, Fields}} ->
+            %% The caller is not monitored: a dead caller only costs a reply nobody reads.
+            Rid = <<"ask-", (integer_to_binary(erlang:unique_integer([positive])))/binary>>,
+            Timer = erlang:send_after(?ASK_TIMEOUT, self(), {ask_timeout, Rid}),
+            S1 = send(Fields#{type => Kind, id => Rid}, S),
+            loop(S1#{asking => (maps:get(asking, S1, #{}))#{Rid => {From, Ref, Timer}}});
         {call, From, Ref, {rebind, Host}} when is_function(Host, 2) ->
             From ! {Ref, {ok, nil}}, loop(S#{host => Host});
         {call, From, Ref, events} ->
@@ -502,6 +527,13 @@ loop(S = #{port := Port, active := Active}) ->
         reattach when Port =:= none -> reattach(S);
         flush_ack -> loop(flush_ack(S));
         {host_reply, Id, Reply} -> loop(host_reply(Id, Reply, S));
+        {ask_timeout, Rid} ->
+            case maps:take(Rid, maps:get(asking, S, #{})) of
+                error -> loop(S);
+                {{From, Ref, _}, Rest} ->
+                    From ! {Ref, {error, <<"the kernel did not answer within 10s">>}},
+                    loop(S#{asking => Rest})
+            end;
         {stop_timeout, Id, Ref} ->
             Stopping = maps:get(stopping, S, #{}),
             case maps:get(Id, Stopping, []) of
@@ -695,6 +727,16 @@ handle_frame(#{<<"type">> := <<"job_stop">>, <<"id">> := Id} = Message, S) ->
                 From ! {Ref, Reply}
             end, Waiters),
             S#{stopping => Rest}
+    end;
+handle_frame(#{<<"type">> := Kind, <<"id">> := Rid} = Message, S)
+        when Kind =:= <<"job_list">>; Kind =:= <<"job_read">> ->
+    case maps:take(Rid, maps:get(asking, S, #{})) of
+        error -> S;   %% answered after its deadline
+        {{From, Ref, Timer}, Rest} ->
+            erlang:cancel_timer(Timer),
+            Reply = maps:without([<<"type">>, <<"id">>], Message),
+            From ! {Ref, {ok, iolist_to_binary(json:encode(Reply))}},
+            S#{asking => Rest}
     end;
 handle_frame(#{<<"type">> := <<"call">>, <<"id">> := Id} = Message, S = #{host := Host, calls := Calls}) ->
     case maps:is_key(Id, Calls) orelse link_call(S, Id) of

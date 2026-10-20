@@ -82,6 +82,23 @@ class JobStop(TypedDict):
     id: str
 
 
+class JobList(TypedDict):
+    """Ask for every job the kernel knows, finished ones included."""
+
+    type: Literal["job_list"]
+    id: str
+
+
+class JobRead(TypedDict):
+    """Read one page of a job's output; without `offset`, the page that ends it."""
+
+    type: Literal["job_read"]
+    id: str
+    job: str
+    offset: NotRequired[int]
+    limit: int
+
+
 Incoming = (
     Execute
     | Reply
@@ -92,6 +109,8 @@ Incoming = (
     | Release
     | State
     | JobStop
+    | JobList
+    | JobRead
 )
 
 
@@ -184,6 +203,16 @@ class JobStopReply(TypedDict):
     error: NotRequired[str]
 
 
+class JobViewReply(TypedDict):
+    """The answer to a `job_list` or `job_read`: its fields, or `code` and `error`."""
+
+    type: Literal["job_list", "job_read"]
+    id: str
+    ok: bool
+    code: NotRequired[str]
+    error: NotRequired[str]
+
+
 RemoteMessage = (
     Ready
     | StartupError
@@ -194,6 +223,7 @@ RemoteMessage = (
     | RemoteEvent
     | RemoteCleanup
     | JobStopReply
+    | JobViewReply
 )
 
 
@@ -244,6 +274,8 @@ def parse_incoming(value: object) -> Incoming:
         "snapshot",
         "restore",
         "job_stop",
+        "job_list",
+        "job_read",
     }:
         raise ValueError(f"{kind}.type: unknown message type")
     if kind not in {"shutdown", "release"}:
@@ -290,6 +322,10 @@ def parse_incoming(value: object) -> Incoming:
         _field(message, "handle", str, kind)
     elif kind in {"snapshot", "restore"}:
         _field(message, "path", str, kind)
+    elif kind == "job_read":
+        _field(message, "job", str, kind)
+        _field(message, "offset", int, kind, optional=True)
+        _field(message, "limit", int, kind)
     return cast(Incoming, message)
 
 
@@ -310,7 +346,17 @@ def _mirror(value: object, context: str) -> None:
 def parse_remote(value: object) -> RemoteMessage:
     """Validate remote replies and the event fields the owner consumes."""
     message, kind = _envelope(value)
-    if kind in {"invoked", "introspected", "call", "job_start", "job", "trace", "done"}:
+    if kind in {
+        "invoked",
+        "introspected",
+        "call",
+        "job_start",
+        "job",
+        "trace",
+        "done",
+        "job_list",
+        "job_read",
+    }:
         _field(message, "id", str, kind)
     if kind == "ready":
         _field(message, "pid", int, kind)
@@ -356,6 +402,10 @@ def parse_remote(value: object) -> RemoteMessage:
         _field(message, "module", str, kind)
     elif kind == "job_stop":
         _field(message, "ok", bool, kind)
+        _field(message, "error", str, kind, optional=True)
+    elif kind in {"job_list", "job_read"}:
+        _field(message, "ok", bool, kind)
+        _field(message, "code", str, kind, optional=True)
         _field(message, "error", str, kind, optional=True)
     elif kind not in {"job_start", "job", "trace", "done"}:
         raise ValueError(f"{kind}.type: unknown message type")

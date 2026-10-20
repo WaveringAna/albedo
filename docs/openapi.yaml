@@ -4423,6 +4423,93 @@ paths:
           $ref: '#/components/responses/Problem406'
         '503':
           $ref: '#/components/responses/Problem503'
+  /extensions/run/sessions/{session_id}/jobs/recent:
+    get:
+      operationId: listRecentJobs
+      summary: Read the kernel's jobs, running and finished
+      description: What the session's kernel still knows of the jobs its run tool started, newest first, with up to 100 rows. Finished jobs stay for as long as the kernel keeps their output (its 64 newest). A session with no kernel has none.
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ID'
+      responses:
+        '200':
+          description: The kernel's job book.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobRecordCollection'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '404':
+          $ref: '#/components/responses/Problem404'
+        '405':
+          $ref: '#/components/responses/Problem405'
+        '406':
+          $ref: '#/components/responses/Problem406'
+        '503':
+          $ref: '#/components/responses/Problem503'
+  /extensions/run/sessions/{session_id}/jobs/{job_id}/output:
+    get:
+      operationId: readJobOutput
+      summary: Read a page of one job's output
+      description: Pages are byte ranges cut on character boundaries, so a reader that continues from `next_offset` loses none of what the job wrote; a running job's last character waits for the page after it. Without `offset` the page is the end of the output. Reading never counts as the model reading the job's result.
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ID'
+      - name: job_id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ID'
+      - name: offset
+        in: query
+        required: false
+        description: Byte to start from. Omitted, the page ends at the end of the output.
+        schema:
+          type: integer
+          minimum: 0
+      - name: limit
+        in: query
+        required: false
+        description: Most bytes in the page; four hold any character.
+        schema:
+          type: integer
+          minimum: 4
+          maximum: 65536
+          default: 16384
+      responses:
+        '200':
+          description: One page of output and the job it belongs to.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobOutputPage'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '404':
+          $ref: '#/components/responses/Problem404'
+        '405':
+          $ref: '#/components/responses/Problem405'
+        '406':
+          $ref: '#/components/responses/Problem406'
+        '409':
+          description: The page lies in output the kernel no longer keeps; read the end of the output instead.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '503':
+          $ref: '#/components/responses/Problem503'
   /extensions/run/sessions/{session_id}/jobs/{job_id}/stop:
     post:
       operationId: stopJob
@@ -6920,6 +7007,64 @@ components:
           glance: null
           actions: []
           summary: 0 background jobs running
+    JobRecord:
+      type: object
+      properties:
+        id:
+          $ref: '#/components/schemas/ID'
+        command:
+          type: string
+          maxLength: 4096
+        state:
+          type: string
+          enum: [running, exited]
+        exit_code:
+          anyOf:
+          - type: integer
+          - type: 'null'
+        timed_out:
+          type: boolean
+        service:
+          type: boolean
+          description: Started to keep running, so nothing waits on its end.
+        started_at:
+          $ref: '#/components/schemas/Counter'
+          description: Wall-clock milliseconds since the epoch.
+        ended_at:
+          anyOf:
+          - $ref: '#/components/schemas/Counter'
+          - type: 'null'
+        bytes:
+          $ref: '#/components/schemas/Counter'
+          description: Everything the job has written, kept or not.
+      required: [id, command, state, exit_code, timed_out, service, started_at, ended_at, bytes]
+      additionalProperties: false
+    JobRecordCollection:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/JobRecord'
+          maxItems: 100
+      required: [items]
+      additionalProperties: false
+    JobOutputPage:
+      type: object
+      properties:
+        job:
+          $ref: '#/components/schemas/JobRecord'
+        offset:
+          $ref: '#/components/schemas/Counter'
+          description: Byte the page starts at.
+        next_offset:
+          $ref: '#/components/schemas/Counter'
+          description: Byte to continue from; equal to `offset` when there is nothing more yet.
+        text:
+          type: string
+          maxLength: 65536
+      required: [job, offset, next_offset, text]
+      additionalProperties: false
     JobStop:
       type: object
       properties:

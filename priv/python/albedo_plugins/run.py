@@ -20,7 +20,7 @@ still owed when the retry lands share one notice, and so one turn.
 
 from __future__ import annotations
 
-from albedo_output import JobOutput
+from albedo_output import JobOutput, read_window
 
 from collections import OrderedDict
 from collections.abc import Callable, Generator
@@ -42,6 +42,7 @@ import os
 import shlex
 import shutil
 import sys
+import time
 import uuid
 
 loop: asyncio.AbstractEventLoop
@@ -58,6 +59,7 @@ watch_output: Callable[[str, Callable[[], None]], None] | None = None
 forget_output: Callable[[str], None] | None = None
 
 ACTIVE_LIMIT = 64  # active jobs in one kernel
+MAX_LISTED = 100  # jobs one `job_list` names, newest first
 RETAINED_LIMIT = 64  # finished handles still addressable through `jobs`
 COMPLETION_GRACE = 0.1  # seconds to keep reading after the command exits
 SHUTDOWN_TERM = 0.25  # shared by every live group at shutdown
@@ -270,6 +272,7 @@ class Job(JobOutput):
         service: bool = False,
     ) -> None:
         self.service = service  # expected to run on; its end is not what we wait for
+        self.traced = traced  # a plugin's own job is not the session's to list
         self.source: Job | None = (
             stdin if isinstance(stdin, Job) else None
         )  # whose output is our stdin
@@ -659,6 +662,48 @@ def release(job: Job) -> None:
             del jobs[evicted.id]
 
 
+def job_record(job: Job) -> dict[str, object]:
+    """What the daemon lists of one job, with wall-clock times in milliseconds."""
+    begun = (time.time() - loop.time() + job.started) * 1000
+    return {
+        "id": job.id,
+        "command": job.command[:4096],
+        "state": "running" if job.duration is None else "exited",
+        "exit_code": job.exit_code,
+        "timed_out": job.timed_out,
+        "service": job.service,
+        "started_at": int(begun),
+        "ended_at": None if job.duration is None else int(begun + job.duration * 1000),
+        "bytes": job.capture.seen,
+    }
+
+
+async def view_jobs(request: dict[str, object]) -> dict[str, object] | None:
+    """The daemon's `job_list` and `job_read`. Reading here is not reading the job:
+    watching a job's output must not withdraw the wake its result is owed."""
+    if request["type"] == "job_list":
+        shown = sorted(
+            (job for job in jobs.values() if job.traced),
+            key=lambda job: job.started,
+            reverse=True,
+        )
+        return {"ok": True, "jobs": [job_record(job) for job in shown[:MAX_LISTED]]}
+    job = jobs.get(cast(str, request["job"]))
+    if job is None or not job.traced:
+        return None
+    offset, limit = request.get("offset"), cast(int, request["limit"])
+    start, end, text = read_window(
+        job.capture, cast("int | None", offset), limit, job.duration is not None
+    )
+    return {
+        "ok": True,
+        "job": job_record(job),
+        "offset": start,
+        "next_offset": end,
+        "text": text,
+    }
+
+
 def forget(job: Job) -> None:
     """Drop a finished job a plugin ran for its own purposes: it leaves `jobs`
     and the retained output channels, so internal work never shows up beside,
@@ -898,4 +943,6 @@ def setup(api: PythonApi) -> dict[str, object]:
     api.on_shutdown(close)
     if api.on_stop_job is not None:
         api.on_stop_job(stop_local_job)
+    if api.on_job_view is not None:
+        api.on_job_view(view_jobs)
     return {"run": run, "jobs": jobs}

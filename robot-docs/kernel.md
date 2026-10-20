@@ -98,6 +98,38 @@ A missing job returns 404. After response loss, read the collection before
 confirming another attempt; stopping is never automatically retried. Job rows
 carry no resource; the stop action binds the row id.
 
+### job book and output
+
+`GET /extensions/run/sessions/{id}/jobs/recent` lists what the kernel's run
+plugin still knows of the jobs it started, newest first, up to 100: `id`,
+`command`, `state` (`running` or `exited`), `exit_code`, `timed_out`, `service`,
+`started_at` and `ended_at` (wall-clock milliseconds), and `bytes` written. The
+kernel keeps the 64 newest finished jobs with their output, so a finished job
+stays listed that long (and only while its kernel lives); a plugin's own
+internal jobs are not listed. A session with no kernel has none. This is not
+the live observation above: that one comes from the port owner and covers
+remote jobs, this one from the kernel and covers finished ones.
+
+`GET /extensions/run/sessions/{id}/jobs/{job_id}/output?offset=&limit=` reads
+a page of one job's output: `{job, offset, next_offset, text}`. Offsets are
+bytes and pages are cut on characters, so a viewer that continues from
+`next_offset` loses none of what a job wrote, even where a pipe read split a
+character; a running job's half-written last character waits for the next page.
+`limit` is 4 to 65,536 bytes (default 16,384). Without `offset` the page is the
+end of the output, which is where a viewer opens on a long-running job. A page
+inside output the kernel did not keep (past the 1 MiB it holds in memory and
+the 16 MiB it spills) is `409 output_lost`; the end of the output is always
+readable. An unknown job is `404 job_not_found`.
+
+Both are asked of the kernel as `job_list` and `job_read` frames (the request
+carries a fresh `id` and the reply repeats it, `ok` with the fields or `code`
+and `error`), answered by the handler each plugin registers with
+`api.on_job_view`; the run plugin's reads bypass `Job.read`, so watching a job
+never withdraws the wake its result is owed. The port owner waits at most 10 s
+(`ASK_TIMEOUT`) and fails the request, and does not monitor the caller. Each
+frame goes through the outbox like any other, so a viewer polling every second
+costs one write and one delete a second while it is open.
+
 A job that finishes with its result unread wakes the session. The model reads
 the full notice with the job's handle; the transcript keeps the wake's one-line
 display (`job finished (exit_code=0, ran 1.2s): …`) as a note from `job`.
@@ -321,6 +353,9 @@ dedupe:
   request is delivered like any other frame, so one sent while the kernel was
   briefly out of reach can still land after a reattach and end the job later:
   "unconfirmed" means the outcome is unknown, not that the stop failed.
+- job_list, job_read: the port owner asks the kernel for its job book or one
+  page of a job's output (see job book and output). The kernel answers each
+  with the same type and `id`; a reply after the owner's deadline is dropped.
 - what the kernel resends after a restart: job wakes are host calls
   (`jobs.completed`), so the call ledger covers them; `job_start`, `job`,
   and `jobs` only update ownership and observations, which converge; a `done`

@@ -182,6 +182,15 @@ class PythonApi:
     on_stop_job: (
         Callable[[Callable[[str], Awaitable[dict[str, object] | None]]], None] | None
     ) = None
+    # Registers one handler for the daemon's `job_list` and `job_read` requests.
+    # It is given the request and returns the reply's fields, or None when the
+    # request names no job of its own; a listing answers {"ok": True, "jobs": [...]}.
+    on_job_view: (
+        Callable[
+            [Callable[[dict[str, object]], Awaitable[dict[str, object] | None]]], None
+        ]
+        | None
+    ) = None
 
 
 class PythonPlugin(Protocol):

@@ -72,6 +72,9 @@ pub type StateOp {
   KernelJobs(project: fn(List(kernel.Job), Option(Int)) -> json.Json)
   /// Terminate one background job by id.
   KernelStopJob(id: String)
+  /// Run a read against the session's kernel, if it has one, outside the
+  /// actor: a read that waits on the kernel must not hold the session up.
+  KernelRead(read: fn(Option(kernel.Kernel)) -> Result(json.Json, String))
 }
 
 /// The dispatch context: `state` is the session's registered command bridge.

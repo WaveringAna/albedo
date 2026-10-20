@@ -99,6 +99,7 @@ NAMESPACE: dict[str, object] = {"__name__": "__main__"}
 DEFINITIONS: collections.OrderedDict[str, str] = collections.OrderedDict()
 CLEANUP: list[albedo_api.Cleanup] = []
 STOP_HANDLERS: list[Callable[[str], Awaitable[dict[str, object] | None]]] = []
+JOB_VIEWS: list[Callable[[dict[str, object]], Awaitable[dict[str, object] | None]]] = []
 HANDLES: list[type[object]] = [asyncio.Task]
 REPR = reprlib.Repr()
 REPR.maxstring = REPR.maxother = 4000
@@ -282,6 +283,8 @@ def deliver(message: albedo_api.Incoming) -> None:
         LIVE.pop(message["handle"], None)
     elif message["type"] == "job_stop":
         _ = LOOP.create_task(serve_job_stop(message["id"]))
+    elif message["type"] in ("job_list", "job_read"):
+        _ = LOOP.create_task(serve_job_view(cast(dict[str, object], message)))
     elif message["type"] == "snapshot" and (bool(CELL_TASKS) or not QUEUE.empty()):
         # A namespace mid-cell is no state to carry: the owner tries again later.
         send(state_reply(message, {"error": "a cell is still running"}))
@@ -1292,6 +1295,39 @@ async def serve_job_stop(job_id: str) -> None:
     send(answer)
 
 
+async def serve_job_view(message: dict[str, object]) -> None:
+    """Answer a `job_list` or `job_read` for the port owner: each plugin that runs
+    jobs lists its own, and the first to know a job's id reads it."""
+    listing = message["type"] == "job_list"
+    jobs: list[object] = []
+    answer: dict[str, object] = (
+        {"ok": True}
+        if listing
+        else {"ok": False, "code": "not_found", "error": "job not found"}
+    )
+    for handler in reversed(JOB_VIEWS):
+        try:
+            res = await handler(message)
+        except ValueError as error:
+            answer = {"ok": False, "code": "invalid", "error": str(error)}
+            break
+        except LookupError as error:
+            answer = {"ok": False, "code": "lost", "error": str(error)}
+            break
+        except Exception as error:
+            answer = {"ok": False, "code": "failed", "error": str(error).lower()}
+            break
+        if res is None:
+            continue
+        if not listing:
+            answer = res
+            break
+        jobs.extend(cast(list[object], res["jobs"]))
+    if listing and answer["ok"]:
+        answer["jobs"] = jobs
+    send({**answer, "type": message["type"], "id": message["id"]})
+
+
 def deliver_trace(capture: Capture) -> None:
     payload = capture.trace.finish()
     send({"type": "trace", "id": capture.id, "trace": payload})
@@ -1665,6 +1701,7 @@ def main():
         watch_output=watch_output,
         attach_image=attach_image,
         on_stop_job=STOP_HANDLERS.append,
+        on_job_view=JOB_VIEWS.append,
     )
     NAMESPACE.update(
         cells=Cells(),

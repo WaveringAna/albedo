@@ -1346,6 +1346,43 @@ type JobCollection struct {
 	Page         PageDescriptor `json:"page"`
 }
 
+// JobOutputPage defines model for JobOutputPage.
+type JobOutputPage struct {
+	Job JobRecord `json:"job"`
+
+	// NextOffset Byte to continue from; equal to `offset` when there is nothing more yet.
+	NextOffset Counter `json:"next_offset"`
+
+	// Offset Byte the page starts at.
+	Offset Counter `json:"offset"`
+	Text   string  `json:"text"`
+}
+
+// JobRecord defines model for JobRecord.
+type JobRecord struct {
+	// Bytes Everything the job has written, kept or not.
+	Bytes    Counter  `json:"bytes"`
+	Command  string   `json:"command"`
+	EndedAt  *Counter `json:"ended_at" nullable:"true"`
+	ExitCode *int64   `json:"exit_code" nullable:"true"`
+
+	// ID Opaque identity. Never infer a resource type or route from its contents.
+	ID ID `json:"id"`
+
+	// Service Started to keep running, so nothing waits on its end.
+	Service bool `json:"service"`
+
+	// StartedAt Wall-clock milliseconds since the epoch.
+	StartedAt Counter `json:"started_at"`
+	State     string  `json:"state"`
+	TimedOut  bool    `json:"timed_out"`
+}
+
+// JobRecordCollection defines model for JobRecordCollection.
+type JobRecordCollection struct {
+	Items []JobRecord `json:"items"`
+}
+
 // JobStop Examples: {"stopped":"job-1"}
 type JobStop struct {
 	// Stopped Opaque identity. Never infer a resource type or route from its contents.
@@ -3482,6 +3519,15 @@ type PatchPaperclipsParams struct {
 	IfMatch IfMatch `json:"If-Match"`
 }
 
+// ReadJobOutputParams defines parameters for ReadJobOutput.
+type ReadJobOutputParams struct {
+	// Offset Byte to start from. Omitted, the page ends at the end of the output.
+	Offset *int64 `form:"offset,omitempty" json:"offset,omitempty"`
+
+	// Limit Most bytes in the page; four hold any character.
+	Limit *int64 `form:"limit,omitempty" json:"limit,omitempty"`
+}
+
 // StopJobJSONBody defines parameters for StopJob.
 type StopJobJSONBody = map[string]interface{}
 
@@ -4218,6 +4264,20 @@ type ClientInterface interface {
 	//
 	// Corresponds with GET /extensions/run/sessions/{session_id}/jobs (the `ListJobs` operationId).
 	ListJobs(ctx context.Context, sessionID ID, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ListRecentJobs Read the kernel's jobs, running and finished
+	//
+	// What the session's kernel still knows of the jobs its run tool started, newest first, with up to 100 rows. Finished jobs stay for as long as the kernel keeps their output (its 64 newest). A session with no kernel has none.
+	//
+	// Corresponds with GET /extensions/run/sessions/{session_id}/jobs/recent (the `ListRecentJobs` operationId).
+	ListRecentJobs(ctx context.Context, sessionID ID, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ReadJobOutput Read a page of one job's output
+	//
+	// Pages are byte ranges cut on character boundaries, so a reader that continues from `next_offset` loses none of what the job wrote; a running job's last character waits for the page after it. Without `offset` the page is the end of the output. Reading never counts as the model reading the job's result.
+	//
+	// Corresponds with GET /extensions/run/sessions/{session_id}/jobs/{job_id}/output (the `ReadJobOutput` operationId).
+	ReadJobOutput(ctx context.Context, sessionID ID, jobID ID, params *ReadJobOutputParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// StopJobWithBody Explicitly stop one observed process group
 	//
@@ -5512,6 +5572,40 @@ func (c *Client) ListProxyModels(ctx context.Context, reqEditors ...RequestEdito
 // Corresponds with GET /extensions/run/sessions/{session_id}/jobs (the `ListJobs` operationId).
 func (c *Client) ListJobs(ctx context.Context, sessionID ID, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewListJobsRequest(c.Server, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// ListRecentJobs Read the kernel's jobs, running and finished
+//
+// What the session's kernel still knows of the jobs its run tool started, newest first, with up to 100 rows. Finished jobs stay for as long as the kernel keeps their output (its 64 newest). A session with no kernel has none.
+//
+// Corresponds with GET /extensions/run/sessions/{session_id}/jobs/recent (the `ListRecentJobs` operationId).
+func (c *Client) ListRecentJobs(ctx context.Context, sessionID ID, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewListRecentJobsRequest(c.Server, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// ReadJobOutput Read a page of one job's output
+//
+// Pages are byte ranges cut on character boundaries, so a reader that continues from `next_offset` loses none of what the job wrote; a running job's last character waits for the page after it. Without `offset` the page is the end of the output. Reading never counts as the model reading the job's result.
+//
+// Corresponds with GET /extensions/run/sessions/{session_id}/jobs/{job_id}/output (the `ReadJobOutput` operationId).
+func (c *Client) ReadJobOutput(ctx context.Context, sessionID ID, jobID ID, params *ReadJobOutputParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewReadJobOutputRequest(c.Server, sessionID, jobID, params)
 	if err != nil {
 		return nil, err
 	}
@@ -8218,6 +8312,120 @@ func NewListJobsRequest(server string, sessionID ID) (*http.Request, error) {
 	queryURL, err := serverURL.Parse(operationPath)
 	if err != nil {
 		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewListRecentJobsRequest constructs an http.Request for the ListRecentJobs method
+func NewListRecentJobsRequest(server string, sessionID ID) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "session_id", sessionID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/extensions/run/sessions/%s/jobs/recent", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewReadJobOutputRequest constructs an http.Request for the ReadJobOutput method
+func NewReadJobOutputRequest(server string, sessionID ID, jobID ID, params *ReadJobOutputParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "session_id", sessionID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	var pathParam1 string
+
+	pathParam1, err = runtime.StyleParamWithOptions("simple", false, "job_id", jobID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/extensions/run/sessions/%s/jobs/%s/output", pathParam0, pathParam1)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		// queryValues collects non-styled parameters (passthrough, JSON)
+		// that are safe to round-trip through url.Values.Encode().
+		queryValues := queryURL.Query()
+		// rawQueryFragments collects pre-encoded query fragments from
+		// styled parameters, preserving literal commas as delimiters
+		// per the OpenAPI spec (e.g. "color=blue,black,brown").
+		var rawQueryFragments []string
+
+		if params.Offset != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "offset", *params.Offset, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "integer", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if params.Limit != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "limit", *params.Limit, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "integer", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if encoded := queryValues.Encode(); encoded != "" {
+			rawQueryFragments = append(rawQueryFragments, encoded)
+		}
+		queryURL.RawQuery = strings.Join(rawQueryFragments, "&")
 	}
 
 	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)

@@ -185,6 +185,8 @@ pub type Message {
   ReadSummary(Subject(Summary))
   /// See `extension.Session.awaited`.
   ReadAwaited(Subject(Bool))
+  /// The kernel handle, for a read that must wait on it outside the actor.
+  ReadKernel(Subject(Option(python.Kernel)))
   ChangeConfiguration(
     session_configuration.Version,
     session_configuration.Patch,
@@ -1145,6 +1147,12 @@ fn handle(
     ReadCapture(reply) -> answer(state, reply, capture_state(state))
     ReadSummary(reply) -> answer(state, reply, summary_state(state))
     ReadAwaited(reply) -> answer(state, reply, awaited(state))
+    ReadKernel(reply) ->
+      answer(
+        state,
+        reply,
+        option.map(state.kernel, fn(session) { session.kernel }),
+      )
     ChangeConfiguration(expected, patch, reply) -> {
       let #(state, changed) =
         session_configure.change(
@@ -2167,6 +2175,10 @@ fn command_op(
     command.KernelStopJob(id) ->
       actor.call(session, 5000, StopJob(id, _))
       |> result.map(fn(_) { json.object([#("stopped", json.bool(True))]) })
+    command.KernelRead(read) ->
+      actor_call.try_call(session, 5000, ReadKernel)
+      |> result.replace_error("session unavailable")
+      |> result.try(read)
   }
 }
 

@@ -5,6 +5,7 @@ import os
 import time
 import unittest
 import urllib.error
+import urllib.parse
 
 from harness import (
     Albedo,
@@ -52,6 +53,24 @@ class JobWakeCase(unittest.TestCase):
                     f"import sys\njob = run(sys.executable, '-c', {program!r})\njob.id"
                 )
                 return python(code)
+            if last.get("role") == "user" and "start a chatty job" in user:
+                gate = str(self.job_gate)
+                program = (
+                    "print('first é', flush=True)\n"
+                    f"open({gate!r}, 'rb').read(1)\n"
+                    "print('second 漢', flush=True)"
+                )
+                return python(
+                    f"import sys\njob = run(sys.executable, '-c', {program!r})\njob.id"
+                )
+            if last.get("role") == "user" and "start a noisy job" in user:
+                gate = str(self.job_gate)
+                program = (
+                    f"print('é' * 75000, flush=True)\nopen({gate!r}, 'rb').read(1)"
+                )
+                return python(
+                    f"import sys\njob = run(sys.executable, '-c', {program!r})\njob.id"
+                )
             if last.get("role") == "user" and "await a slow job past its cell" in user:
                 program = (
                     f"open({str(self.job_gate)!r}, 'rb').read(1); print('wake-done')"
@@ -231,6 +250,100 @@ class JobWakeTests(JobWakeCase):
         wait_for(lambda: release_fifo(gate))
         wait_for(lambda: len(self.users()) >= 3)
         self.assertIn("background job finished", self.users()[2])
+
+    def job_api(self, session, tail, **query):
+        path = f"/extensions/run/sessions/{session}/jobs/{tail}"
+        if query:
+            path += "?" + urllib.parse.urlencode(query)
+        return json.loads(self.app.api(path).read())
+
+    def refused(self, session, tail, **query):
+        with self.assertRaises(urllib.error.HTTPError) as refusal:
+            self.job_api(session, tail, **query)
+        body = json.loads(refusal.exception.read())
+        return refusal.exception.code, body["code"]
+
+    def test_a_job_is_read_while_it_runs_and_after_it_ends(self):
+        session = self.start_blocked_job("start a chatty job")
+        job = self.job_api(session, "recent")["items"][0]
+        self.assertEqual(
+            (job["state"], job["exit_code"], job["ended_at"]), ("running", None, None)
+        )
+        self.assertIn(str(self.job_gate), job["command"])
+        self.assertLess(abs(job["started_at"] - time.time() * 1000), 60_000)
+
+        def first_page():
+            page = self.job_api(session, f"{job['id']}/output")
+            return page if page["text"] == "first é\n" else None
+
+        page = wait_for(first_page)
+        self.assertEqual((page["offset"], page["next_offset"]), (0, 9))
+        self.assertEqual(page["job"]["bytes"], 9)
+        self.assertEqual(page["job"]["state"], "running")
+
+        gate = self.job_gate
+        assert gate is not None
+        wait_for(lambda: release_fifo(gate))
+        wait_for(lambda: len(self.users()) >= 3)
+        self.assertIn("background job finished", self.users()[2])
+
+        # The kernel keeps the finished job, its exit and its output; reading
+        # them left the model's wake alone (one notice, above).
+        finished = self.job_api(session, "recent")["items"][0]
+        self.assertEqual(
+            (finished["id"], finished["state"], finished["exit_code"]),
+            (job["id"], "exited", 0),
+        )
+        self.assertGreaterEqual(finished["ended_at"], finished["started_at"])
+        rest = self.job_api(session, f"{job['id']}/output", offset=9)
+        self.assertEqual((rest["text"], rest["next_offset"]), ("second 漢\n", 20))
+
+        # Four-byte pages cut through characters, and lose none of them.
+        shown, offset = "", 0
+        while offset < finished["bytes"]:
+            page = self.job_api(session, f"{job['id']}/output", offset=offset, limit=4)
+            self.assertGreater(page["next_offset"], offset)
+            shown, offset = shown + page["text"], page["next_offset"]
+        self.assertEqual(shown, "first é\nsecond 漢\n")
+        self.assertEqual(
+            self.job_api(session, f"{job['id']}/output", offset=20)["text"], ""
+        )
+
+    def test_the_end_of_a_long_output_is_the_page_a_viewer_opens_on(self):
+        session = self.start_blocked_job("start a noisy job")
+        job = self.job_api(session, "recent")["items"][0]
+        wait_for(
+            lambda: self.job_api(session, "recent")["items"][0]["bytes"] >= 150_001
+        )
+        page = self.job_api(session, f"{job['id']}/output", limit=1000)
+        # 149_001 would open inside a two-byte character; the page starts after it.
+        self.assertEqual((page["offset"], page["next_offset"]), (149_002, 150_001))
+        self.assertEqual(page["text"], "é" * 499 + "\n")
+        self.app.api(
+            f"/extensions/run/sessions/{session}/jobs/{job['id']}/stop", method="POST"
+        ).read()
+        wait_for(
+            lambda: self.job_api(session, "recent")["items"][0]["state"] == "exited"
+        )
+
+    def test_reading_a_job_refuses_what_it_cannot_serve(self):
+        session = self.start_blocked_job("start a chatty job")
+        job = self.job_api(session, "recent")["items"][0]["id"]
+        self.assertEqual(
+            self.refused(session, "missing/output"), (404, "job_not_found")
+        )
+        for query in ({"limit": 3}, {"limit": 65_537}, {"offset": -1}, {"since": 1}):
+            with self.subTest(query=query):
+                self.assertEqual(
+                    self.refused(session, f"{job}/output", **query)[0], 400
+                )
+        other = self.app.session()
+        self.assertEqual(self.job_api(other, "recent"), {"items": []})
+        self.assertEqual(self.refused(other, f"{job}/output"), (404, "job_not_found"))
+        stop = self.app.api(
+            f"/extensions/run/sessions/{session}/jobs/{job}/stop", method="POST"
+        )
+        stop.read()
 
     def test_stopping_one_job_and_rejecting_unknown_job(self):
         session = self.start_blocked_job()
