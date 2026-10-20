@@ -57,6 +57,7 @@
   let scroller = $state<HTMLElement>();
   let top = $state<HTMLElement>();
   let pinned = true;
+  let dockHeight = $state(0);
   let settled = $state(false);
   let older = false;
 
@@ -117,6 +118,14 @@
     await tick();
     if (scroller) scroller.scrollTop = scroller.scrollHeight;
   }
+
+  // On a phone the composer floats over the thread, which scrolls on under it;
+  // a draft growing taller must not bury the end of a chat that was there.
+  $effect(() => {
+    if (!inline) return;
+    dockHeight;
+    if (pinned) toBottom();
+  });
 
   function scrolled() {
     if (scroller) pinned = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 40;
@@ -179,7 +188,7 @@
 
 {#snippet modelChip()}<ModelPicker session={session!} />{/snippet}
 
-<div class="chat" class:inline>
+<div class="chat" class:inline style:--dock={inline ? `${dockHeight}px` : undefined}>
   <div class="scroller nowheel" bind:this={scroller} onscroll={scrolled}>
     {#if !settled && !transcript.error}
       <!-- Shaped like the end of a typical chat, as measured at phone width:
@@ -274,7 +283,7 @@
     </div>
   </div>
 
-  <div class="dock">
+  <div class="dock" bind:offsetHeight={dockHeight}>
     {@render handle?.()}
     {#if tied.length}
       <button class="notes" disabled={sendingNotes} onclick={sendTied}>send {tied.length} {tied.length === 1 ? 'note' : 'notes'} tied to this chat</button>
@@ -302,15 +311,21 @@
   /* On a phone the chat is the whole screen: no scaling, the reading size
      set outright, and the room at the sides given back to the text. */
   .chat.inline {
+    position: relative;
     zoom: 1;
   }
+  /* The thread ends clear of the floating composer and the handle above it. */
   .inline .thread {
     gap: 12px;
-    padding: 12px 16px 16px;
+    padding: 12px 16px calc(var(--dock, 0px) + 32px);
     font-size: 16px;
     line-height: 1.55;
   }
   .inline .dock {
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    left: 0;
     padding: 0 10px 8px;
   }
   /* Until the first page is in and scrolled to its end, the thread stays
@@ -333,7 +348,7 @@
     pointer-events: none;
   }
   .inline .skeleton {
-    padding: 12px 16px 16px;
+    padding: 12px 16px calc(var(--dock, 0px) + 32px);
   }
   .skeleton > * {
     flex: none;
