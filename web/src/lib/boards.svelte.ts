@@ -1,4 +1,4 @@
-import type { Session } from './api';
+import { uuidv7, type Session } from './api';
 import { Board } from './board.svelte';
 
 // A board is a named canvas of panels: sessions from any folders, arranged
@@ -64,7 +64,7 @@ class Boards {
     const taken = new Set(this.entries.map((entry) => entry.name));
     let number = this.entries.length + 1;
     while (taken.has(`board ${number}`)) number++;
-    const entry = { id: crypto.randomUUID(), name: `board ${number}`, open: true };
+    const entry = { id: uuidv7(), name: `board ${number}`, open: true };
     this.#get(entry.id);
     this.entries = [...this.entries, entry];
     this.active = entry.id;

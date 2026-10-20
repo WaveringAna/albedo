@@ -1,4 +1,5 @@
 import type { Edge, Node, Viewport, useSvelteFlow } from '@xyflow/svelte';
+import { uuidv7 } from './api';
 
 // A board is an open canvas: windows sit anywhere, the view pans freely and
 // zooms out to an overview. Svelte Flow draws, drags and sizes the windows;
@@ -146,7 +147,7 @@ export class Board {
 
   /** Puts a note on the canvas at a point in canvas coordinates; returns its id. */
   addNote(position: { x: number; y: number }, target?: Target, text = ''): string {
-    const id = `note:${crypto.randomUUID()}`;
+    const id = `note:${uuidv7()}`;
     const note: NoteWindow = { id, type: 'note', position, width: NOTE.width, zIndex: NOTE_LAYER, dragHandle: HANDLES.note, data: { text, target } };
     this.nodes = [...this.nodes.map((node) => ({ ...node, selected: false })), { ...note, selected: true }];
     this.fresh.add(id);

@@ -123,6 +123,22 @@ export async function readEntryContent(url: string): Promise<Record<string, stri
   return fields;
 }
 
+/**
+ * Puts text on the clipboard. Over plain http from another device the page
+ * is not a secure context and has no Clipboard API, so it falls back to the
+ * older copy command.
+ */
+export async function copyText(text: string): Promise<void> {
+  if (navigator.clipboard) return navigator.clipboard.writeText(text);
+  const field = Object.assign(document.createElement('textarea'), { value: text });
+  field.style.cssText = 'position:fixed;opacity:0';
+  document.body.append(field);
+  field.select();
+  const copied = document.execCommand('copy');
+  field.remove();
+  if (!copied) throw new Error('copying is not available here');
+}
+
 /** A UUIDv7: the daemon keys inputs by one, so a retried send is the same send. */
 export function uuidv7(): string {
   const bytes = crypto.getRandomValues(new Uint8Array(16));

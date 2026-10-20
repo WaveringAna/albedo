@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { copyText } from './api';
   import { ACCENTS, DEFAULTS, FONT_FALLBACK, fontStack, prefs, readPalette, SEASONS, type Mode, type Palette, type Theme } from './prefs.svelte';
 
   // A pane at the top right, beside the button that opens it. It is not
@@ -78,7 +79,7 @@
   }
 
   async function copyTheme() {
-    await navigator.clipboard.writeText(JSON.stringify({ light: prefs.palettes.light, dark: prefs.palettes.dark }, null, 2));
+    await copyText(JSON.stringify({ light: prefs.palettes.light, dark: prefs.palettes.dark }, null, 2));
     say('copied both modes (˶ᵔ ᵕ ᵔ˶)');
   }
 

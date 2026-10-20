@@ -2,7 +2,7 @@
   import { onMount, tick } from 'svelte';
   import { busy } from '../live.svelte';
   import { boards } from '../boards.svelte';
-  import { interruptSession, type Session } from '../api';
+  import { copyText, interruptSession, type Session } from '../api';
   import { sendNotes } from '../notes';
   import type { Attached } from './attachments';
   import LiveFace from '../LiveFace.svelte';
@@ -25,7 +25,7 @@
   let copied = $state<string | null>(null);
 
   async function copy(key: string, text: string) {
-    await navigator.clipboard.writeText(text);
+    await copyText(text);
     copied = key;
     setTimeout(() => copied === key && (copied = null), 1400);
   }
