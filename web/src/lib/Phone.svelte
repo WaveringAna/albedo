@@ -1,12 +1,12 @@
 <script lang="ts">
   import Chat from './chat/Chat.svelte';
   import { layout } from './layout.svelte';
-  import Rail from './Rail.svelte';
+  import SessionPicker from './SessionPicker.svelte';
   import { sessions } from './sessions.svelte';
 
   // The client on a narrow screen: the session list, or one session's chat
   // filling the screen. A review opens inside the chat.
-  let { onsettings, onpalette, onnew }: { onsettings: () => void; onpalette: () => void; onnew: () => void } = $props();
+  let { onsettings, onnew }: { onsettings: () => void; onnew: () => void } = $props();
   const session = $derived(layout.session ? sessions.byId.get(layout.session) : undefined);
 
   // The way out of a chat is a drawer, not a gesture taken from the
@@ -45,7 +45,7 @@
   let sheet = $state<HTMLElement>();
 
   function lowerStart(event: TouchEvent, fromHandle: boolean) {
-    const list = sheet?.querySelector('nav');
+    const list = sheet?.querySelector('.scroll');
     if (!fromHandle && list && list.scrollTop > 0) return;
     lowering = { y: event.touches[0].clientY, moved: false };
   }
@@ -88,9 +88,6 @@
   <header>
       <span class="brand"><span class="spark" aria-hidden="true">✦</span> albedo</span>
       <span class="spacer"></span>
-      <button class="icon" aria-label="search" onclick={onpalette}>
-        <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><circle cx="7" cy="7" r="4.5" fill="none" stroke="currentColor" stroke-width="1.4" /><path d="M10.5 10.5 14 14" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" /></svg>
-      </button>
       <button class="icon" data-settings-toggle aria-label="settings" onclick={onsettings}>
         <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M2.5 5h6M11.5 5h2M2.5 11h2M7.5 11h6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" /><circle cx="10" cy="5" r="1.6" fill="none" stroke="currentColor" stroke-width="1.3" /><circle cx="6" cy="11" r="1.6" fill="none" stroke="currentColor" stroke-width="1.3" /></svg>
       </button>
@@ -130,12 +127,12 @@
             ontouchcancel={lowerEnd}
           >
             <button class="handle grip" aria-label="close sessions" onclick={() => (drawer = false)}><span></span></button>
-            <Rail {onnew} />
+            <SessionPicker {onnew} />
           </div>
         {/if}
       {/key}
     {:else}
-      <Rail {onnew} />
+      <SessionPicker {onnew} />
     {/if}
   </main>
 </div>
@@ -190,7 +187,7 @@
     min-height: 0;
     flex-direction: column;
   }
-  main > :global(aside) {
+  main > :global(.sessions) {
     flex: 1;
     width: 100%;
     min-height: 0;
@@ -245,7 +242,7 @@
   .drawer.held {
     transition: none;
   }
-  .drawer > :global(aside) {
+  .drawer > :global(.sessions) {
     flex: 1;
     min-height: 0;
   }

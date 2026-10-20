@@ -15,7 +15,7 @@ export interface Session {
   model: string | null;
   provider_profile: string | null;
   effort: string | null;
-  preferences: { pinned: boolean; archived: boolean };
+  preferences: { pinned: boolean; archived: boolean; opens?: number };
   preview: { text: string; transcript_count: number } | null;
   status: { phase: Phase; blocking_reason: string | null } | null;
   /** The tail of what the session is doing right now: thinking, tool output, reply text. */

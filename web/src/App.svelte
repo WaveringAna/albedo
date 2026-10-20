@@ -142,7 +142,7 @@
 <svelte:window onkeydown={keydown} />
 
 {#if layout.phone}
-  <Phone onsettings={() => (settingsOpen = !settingsOpen)} onpalette={() => (paletteOpen = true)} onnew={() => (newOpen = true)} />
+  <Phone onsettings={() => (settingsOpen = !settingsOpen)} onnew={() => (newOpen = true)} />
 {:else}
 <div class="shell" class:rail-closed={!railOpen}>
   <header class="topbar">
