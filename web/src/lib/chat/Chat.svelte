@@ -2,7 +2,8 @@
   import { onMount, tick, type Snippet } from 'svelte';
   import { busy } from '../live.svelte';
   import { boards } from '../boards.svelte';
-  import { copyText, interruptSession, type Session } from '../api';
+  import { copyText, interruptSession, uuidv7, type Session } from '../api';
+  import { sessions } from '../sessions.svelte';
   import { sendNotes } from '../notes';
   import type { Attached } from './attachments';
   import LiveFace from '../LiveFace.svelte';
@@ -13,6 +14,7 @@
   import WorkSteps from './WorkSteps.svelte';
   import ReviewView from '../views/ReviewView.svelte';
   import ModelPicker from './ModelPicker.svelte';
+  import { catalogue, invoke, type Command } from '../commands';
 
   // On the canvas a chat is a window, whose reviews and notes open beside
   // it. `inline` is the phone's single chat: a review opens inside the chat,
@@ -145,6 +147,34 @@
     pinned = true;
     transcript.send(text, images);
   }
+
+  // Slash commands: skills and command inputs join the transcript like a
+  // message; reads and changes answer here, above the composer, until dismissed.
+  let commands = $state<Command[]>([]);
+  let answer = $state<{ name: string; text: string; failed: boolean } | null>(null);
+  $effect(() => {
+    catalogue(sessionId).then((found) => (commands = found));
+  });
+
+  async function command(chosen: Command, rest: string) {
+    answer = null;
+    try {
+      const outcome = await invoke(sessionId, chosen, rest, uuidv7());
+      if (outcome) answer = { name: chosen.slash_name, text: chosen.delivery === 'mutation' ? 'done' : describe(outcome.result), failed: false };
+      else pinned = true;
+      if (chosen.delivery === 'mutation') sessions.refresh();
+    } catch (error) {
+      answer = { name: chosen.slash_name, text: String((error as Error).message ?? error), failed: true };
+    }
+  }
+
+  /** A command's answer as text: its message when it has one, else the JSON. */
+  function describe(result: unknown): string {
+    if (typeof result === 'string') return result;
+    const record = result as Record<string, unknown> | null;
+    for (const key of ['text', 'message', 'summary']) if (typeof record?.[key] === 'string') return record[key] as string;
+    return JSON.stringify(result, null, 2);
+  }
 </script>
 
 {#snippet modelChip()}<ModelPicker session={session!} />{/snippet}
@@ -249,7 +279,13 @@
     {#if tied.length}
       <button class="notes" disabled={sendingNotes} onclick={sendTied}>send {tied.length} {tied.length === 1 ? 'note' : 'notes'} tied to this chat</button>
     {/if}
-    <Composer onsend={send} busy={running} compact={inline} extra={session && !inline ? modelChip : undefined} onpopout={inline ? undefined : popout} onstop={() => interruptSession(sessionId)} />
+    {#if answer}
+      <section class="answer" class:failed={answer.failed} aria-live="polite">
+        <header><span>{answer.name}</span><button aria-label="dismiss" onclick={() => (answer = null)}>×</button></header>
+        <pre>{answer.text}</pre>
+      </section>
+    {/if}
+    <Composer onsend={send} busy={running} {commands} oncommand={command} compact={inline} extra={session && !inline ? modelChip : undefined} onpopout={inline ? undefined : popout} onstop={() => interruptSession(sessionId)} />
   </div>
 </div>
 
@@ -546,6 +582,40 @@
     font-size: 11.5px;
     white-space: nowrap;
     text-overflow: ellipsis;
+  }
+  .answer {
+    margin-bottom: 8px;
+    padding: 8px 12px 10px;
+    background: var(--well);
+    border-radius: 12px;
+  }
+  .answer header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    color: var(--muted);
+    font-family: var(--mono);
+    font-size: 12px;
+  }
+  .answer header button {
+    padding: 0 4px;
+    color: var(--faint);
+    font-size: 16px;
+    background: none;
+    border: 0;
+    cursor: pointer;
+  }
+  .answer pre {
+    max-height: 220px;
+    margin: 6px 0 0;
+    overflow: auto;
+    font-family: var(--mono);
+    font-size: 12px;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+  .answer.failed pre {
+    color: var(--danger);
   }
   .dock {
     display: flex;

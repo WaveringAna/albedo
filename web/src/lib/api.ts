@@ -241,6 +241,11 @@ export interface ImageUpload {
   data: string;
 }
 
+/** Sends a slash command or skill as an input, with its arguments as a form. */
+export function sendCommand(sessionId: string, inputId: string, commandId: string, fields: Record<string, unknown>): Promise<unknown> {
+  return request('PUT', `/sessions/${sessionId}/inputs/${inputId}`, { body: { kind: 'command', command_id: commandId, arguments: fields } });
+}
+
 export function sendMessage(sessionId: string, inputId: string, text: string, images: ImageUpload[] = []): Promise<unknown> {
   const body = images.length ? { kind: 'message', text, images } : { kind: 'message', text };
   return request('PUT', `/sessions/${sessionId}/inputs/${inputId}`, { body });

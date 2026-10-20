@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
   import { SvelteMap } from 'svelte/reactivity';
+  import { parse, suggest, type Command } from '../commands';
   import { attachable, marker, MAX_IMAGES, readImage, referenced, resolve, unmark, type Attached } from './attachments';
 
   // Enter sends, Shift-Enter starts a new line. A draft survives until it is
@@ -13,6 +14,8 @@
     busy,
     compact = false,
     extra,
+    commands = [],
+    oncommand,
     placeholder = 'message albedo…',
   }: {
     onsend: (text: string, images: Attached[]) => void;
@@ -23,6 +26,9 @@
     compact?: boolean;
     /** More controls for the bar, after the picture button: the chat's model chip. */
     extra?: Snippet;
+    /** The session's slash commands; a line starting with one runs it instead of sending. */
+    commands?: Command[];
+    oncommand?: (command: Command, rest: string) => void;
     placeholder?: string;
   } = $props();
   let stopping = $state(false);
@@ -47,10 +53,29 @@
   let next = 0;
 
   const marked = $derived(referenced(text, images));
+  // While the name is being typed, the commands it could be.
+  const menu = $derived(oncommand && /^\/\S*$/.test(text) ? suggest(commands, text).slice(0, 8) : []);
+  let highlighted = $state(0);
+  $effect(() => {
+    menu;
+    highlighted = 0;
+  });
+
+  function complete(command: Command) {
+    text = command.slash_name + (command.arguments.length || commands.some((other) => other.slash_name === command.slash_name && other.arguments.length) ? ' ' : '');
+    field?.focus();
+  }
   const ready = $derived(text.trim().length > 0 || marked.length > 0);
 
   function send() {
     if (!ready) return;
+    const typed = oncommand && !marked.length ? parse(commands, text) : null;
+    if (typed) {
+      oncommand!(typed.command, typed.rest);
+      text = '';
+      notice = '';
+      return;
+    }
     const message = resolve(text, images);
     onsend(message.text, message.images);
     text = '';
@@ -89,6 +114,24 @@
   }
 
   function keydown(event: KeyboardEvent) {
+    if (menu.length) {
+      const exact = menu[highlighted]?.slash_name === text;
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault();
+        highlighted = (highlighted + (event.key === 'ArrowDown' ? 1 : menu.length - 1)) % menu.length;
+        return;
+      }
+      if (event.key === 'Tab' || (event.key === 'Enter' && !event.shiftKey && !exact)) {
+        event.preventDefault();
+        complete(menu[highlighted]);
+        return;
+      }
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        text = '';
+        return;
+      }
+    }
     // Escape in an empty field stops the turn, as in the terminal.
     if (event.key === 'Escape' && busy && !text) {
       event.preventDefault();
@@ -129,6 +172,18 @@
   ondragleave={() => (dragging = false)}
   ondrop={drop}
 >
+  {#if menu.length}
+    <ul class="commands" role="listbox" aria-label="commands">
+      {#each menu as command, index (command.slash_name)}
+        <li role="option" aria-selected={index === highlighted}>
+          <button type="button" tabindex="-1" onpointerdown={(event) => event.preventDefault()} onclick={() => complete(command)} onpointerenter={() => (highlighted = index)}>
+            <span class="slash">{command.slash_name}</span>
+            <span class="what">{command.description}</span>
+          </button>
+        </li>
+      {/each}
+    </ul>
+  {/if}
   {#if marked.length}
     <ul class="images" aria-label="attached images">
       {#each marked as n (n)}
@@ -186,6 +241,56 @@
 </form>
 
 <style>
+  .commands {
+    position: absolute;
+    right: 0;
+    bottom: calc(100% + 8px);
+    left: 0;
+    z-index: 10;
+    display: grid;
+    gap: 1px;
+    margin: 0;
+    padding: 6px;
+    list-style: none;
+    background: var(--surface);
+    border-radius: 14px;
+    box-shadow: var(--shadow-lg);
+  }
+  .commands li {
+    min-width: 0;
+  }
+  .commands button {
+    display: flex;
+    overflow: hidden;
+    align-items: baseline;
+    gap: 10px;
+    width: 100%;
+    padding: 6px 10px;
+    color: var(--text);
+    font: inherit;
+    font-size: 13px;
+    text-align: left;
+    background: none;
+    border: 0;
+    border-radius: 8px;
+    cursor: pointer;
+  }
+  [aria-selected='true'] button {
+    background: var(--hover);
+  }
+  .slash {
+    flex: none;
+    font-family: var(--mono);
+    font-size: 12.5px;
+  }
+  .what {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--muted);
+    font-size: 12px;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
   .composer {
     position: relative;
     display: flex;
