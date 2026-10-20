@@ -124,11 +124,12 @@
     padding: 0;
     list-style: none;
   }
+  /* Each name sits right beside what belongs to it, so the eye never has
+     to cross the pane to pair them. */
   li {
     display: flex;
     align-items: baseline;
-    justify-content: space-between;
-    gap: 12px;
+    gap: 8px;
     font-size: 13px;
   }
   .name {

@@ -218,7 +218,7 @@
     background: var(--hover);
   }
   .path {
-    flex: 1;
+    flex: 0 1 auto;
     min-width: 0;
     overflow: hidden;
     white-space: nowrap;

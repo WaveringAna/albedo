@@ -68,7 +68,7 @@ export function targetAt(x: number, y: number): Target | undefined {
 }
 
 /** The element a target points at now, when it is on screen. */
-function anchorOf(target: Target): Element | null {
+export function anchorOf(target: Target): Element | null {
   const window = document.querySelector(`.svelte-flow__node[data-id="${CSS.escape(target.window)}"]`);
   if (!window || target.kind === 'window') return window;
   if (target.kind === 'entry') return window.querySelector(`[data-entry="${CSS.escape(target.entry)}"]`) ?? window;
@@ -76,6 +76,30 @@ function anchorOf(target: Target): Element | null {
   const rows = [...(host?.shadowRoot?.querySelectorAll<HTMLElement>(`[data-line="${target.end}"]`) ?? [])];
   const deletion = target.side === 'deletions';
   return rows.find((row) => (row.dataset.lineType?.includes('deletion') ?? false) === deletion) ?? rows[0] ?? host ?? window;
+}
+
+/**
+ * Where a target sits on screen, held inside the window and whatever scrolls
+ * it, or nothing while it is scrolled out of sight or is the whole window.
+ */
+export function targetBox(target: Target): DOMRect | null {
+  if (target.kind === 'window') return null;
+  const first = anchorOf(target);
+  if (!first) return null;
+  let rect = first.getBoundingClientRect();
+  if (target.kind === 'lines' && target.start !== target.end) {
+    const top = anchorOf({ ...target, end: target.start })?.getBoundingClientRect();
+    if (top) rect = new DOMRect(rect.left, Math.min(top.top, rect.top), rect.width, Math.max(top.bottom, rect.bottom) - Math.min(top.top, rect.top));
+  }
+  const root = first.getRootNode();
+  const light = root instanceof ShadowRoot ? root.host : first;
+  const frame = (light.closest('.nowheel') ?? light.closest('.svelte-flow__node'))?.getBoundingClientRect();
+  if (!frame) return rect;
+  const top = Math.max(rect.top, frame.top);
+  const bottom = Math.min(rect.bottom, frame.bottom);
+  if (bottom <= top) return null;
+  const left = Math.max(rect.left, frame.left);
+  return new DOMRect(left, top, Math.min(rect.right, frame.right) - left, bottom - top);
 }
 
 /**
