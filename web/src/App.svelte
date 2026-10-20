@@ -27,11 +27,14 @@
   const VIEW_LINGER_MS = 4000;
   let viewShown = $state(false);
   let viewTimer: ReturnType<typeof setTimeout> | undefined;
-  $effect(() => {
-    boards.board?.viewport;
+  function lingerView() {
     viewShown = true;
     clearTimeout(viewTimer);
     viewTimer = setTimeout(() => (viewShown = false), VIEW_LINGER_MS);
+  }
+  $effect(() => {
+    boards.board?.viewport;
+    lingerView();
   });
   sessions.start();
 
@@ -158,7 +161,7 @@
       {#key boards.board}
         <Canvas board={boards.board} {minimap} onpalette={() => (paletteOpen = true)} />
       {/key}
-      <div class="view" class:shown={viewShown} role="toolbar" aria-label="View">
+      <div class="view" class:shown={viewShown} role="toolbar" aria-label="View" tabindex="-1" onpointerenter={() => clearTimeout(viewTimer)} onpointerleave={lingerView}>
         <button aria-label="Zoom out" title="Zoom out (−)" onclick={() => zoomStep(-1)}>
           <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 8h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" /></svg>
         </button>
@@ -277,9 +280,11 @@
     min-height: 0;
     overflow: hidden;
   }
+  /* Hidden, it lets clicks through to whatever window sits under it. */
   .view {
+    visibility: hidden;
     opacity: 0;
-    transition: opacity 600ms ease;
+    transition: opacity 600ms ease, visibility 0s linear 600ms;
     position: absolute;
     left: 14px;
     bottom: 14px;
@@ -292,10 +297,10 @@
     box-shadow: var(--shadow);
   }
   .view.shown,
-  .view:hover,
   .view:focus-within {
+    visibility: visible;
     opacity: 1;
-    transition-duration: 160ms;
+    transition: opacity 160ms ease, visibility 0s;
   }
   @media (prefers-reduced-motion: reduce) {
     .view {
