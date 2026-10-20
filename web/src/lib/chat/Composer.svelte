@@ -197,7 +197,7 @@
       {/each}
     </ul>
   {/if}
-  <textarea bind:this={field} bind:value={text} onkeydown={keydown} onpaste={paste} placeholder={compact && busy ? 'albedo is working…' : placeholder} rows="1" spellcheck="true" aria-label="message"></textarea>
+  <textarea bind:this={field} bind:value={text} onkeydown={keydown} onpaste={paste} {placeholder} rows="1" spellcheck="true" aria-label="message"></textarea>
   <div class="bar">
     <button type="button" class="attach" aria-label="attach images" title="attach images (or paste, or drop)" onclick={() => picker?.click()}>
       <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><rect x="2" y="3" width="12" height="10" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.3" /><circle cx="6" cy="6.6" r="1.2" fill="currentColor" /><path d="M2.6 11.6 6 8.6l2.4 2 2.2-1.8 2.8 2.6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" /></svg>
@@ -228,7 +228,7 @@
         <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M9 3h4v4M13 3 8 8M11.5 9.5V12a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5.5a1 1 0 0 1 1-1h2.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" /></svg>
       </button>
     {/if}
-    <span class="hint">{notice || (busy && !compact ? 'albedo is working · a new message waits its turn' : '')}</span>
+    <span class="hint">{notice}</span>
     {#if busy && onstop}
       <button type="button" class="stop" disabled={stopping} aria-label="Stop" title="stop albedo (Esc)" onclick={stop}>
         <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><rect x="3.5" y="3.5" width="9" height="9" rx="2" fill="currentColor" /></svg>
