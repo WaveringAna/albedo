@@ -38,8 +38,8 @@ export function quoteLines(diff: string, side: 'additions' | 'deletions', start:
     .join('\n');
 }
 
-/** What a note dropped at a point on screen is about, or nothing for empty canvas. */
-export function targetAt(x: number, y: number): Target | undefined {
+/** What a note dropped at a point on screen would be about, and the element that shows it. */
+export function pick(x: number, y: number): { target: Target; element: Element } | undefined {
   const hit = document.elementsFromPoint(x, y).find((element) => !element.closest('.svelte-flow__node-note'));
   if (!hit) return undefined;
   const window = windowOf(hit);
@@ -51,13 +51,20 @@ export function targetAt(x: number, y: number): Target | undefined {
     if (row && known) {
       const number = Number(row.dataset.line);
       const side = row.dataset.lineType?.includes('deletion') ? 'deletions' : 'additions';
-      return { kind: 'lines', window, path: known.path, change: known.change, side, start: number, end: number, quote: quoteLines(known.diff, side, number, number) };
+      return { target: { kind: 'lines', window, path: known.path, change: known.change, side, start: number, end: number, quote: quoteLines(known.diff, side, number, number) }, element: row };
     }
   }
 
   const entry = hit.closest<HTMLElement>('[data-entry]');
-  if (entry) return { kind: 'entry', window, entry: entry.dataset.entry!, quote: excerpt(entry.innerText) };
-  return { kind: 'window', window };
+  if (entry) {
+    const step = entry.classList.contains('tool') || entry.classList.contains('thought');
+    return { target: { kind: 'entry', window, entry: entry.dataset.entry!, step, quote: excerpt(entry.innerText) }, element: entry };
+  }
+  return { target: { kind: 'window', window }, element: hit.closest('.svelte-flow__node')! };
+}
+
+export function targetAt(x: number, y: number): Target | undefined {
+  return pick(x, y)?.target;
 }
 
 /** The element a target points at now, when it is on screen. */
@@ -94,7 +101,7 @@ export function anchorPoint(target: Target, from: { x: number; y: number }): { x
 export function describe(target: Target | undefined, title: (window: string) => string): string {
   if (!target) return 'a loose note';
   if (target.kind === 'window') return `on ${title(target.window)}`;
-  if (target.kind === 'entry') return `on a message in ${title(target.window)}`;
+  if (target.kind === 'entry') return `on ${target.step ? 'a step' : 'a message'} in ${title(target.window)}`;
   const name = target.path.split('/').pop();
   return `on ${name}:${target.start === target.end ? target.start : `${target.start}–${target.end}`}${target.side === 'deletions' ? ' (removed)' : ''}`;
 }

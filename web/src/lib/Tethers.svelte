@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { anchorPoint } from './anchors';
+  import { anchorPoint, pick } from './anchors';
   import type { Board, NoteWindow } from './board.svelte';
   import { tying } from './tie.svelte';
 
@@ -10,6 +10,8 @@
   let element = $state<SVGSVGElement>();
   let paths = $state<{ id: string; d: string; sent: boolean }[]>([]);
   let preview = $state<string | null>(null);
+  // While a tie is drawn, what it would land on.
+  let landing = $state<{ x: number; y: number; width: number; height: number; window: boolean } | null>(null);
 
   const tied = $derived(board.nodes.filter((node): node is NoteWindow => node.type === 'note' && !!node.data.target));
 
@@ -29,6 +31,7 @@
     if (!element || (!tied.length && !tying.note)) {
       paths = [];
       preview = null;
+      landing = null;
       return;
     }
     let frame = 0;
@@ -48,7 +51,10 @@
       if (tying.note) {
         const start = noteEnd(tying.note, tying.x);
         preview = start ? curve(local(start), local({ x: tying.x, y: tying.y })) : null;
-      } else preview = null;
+        const found = pick(tying.x, tying.y);
+        const rect = found?.element.getBoundingClientRect();
+        landing = rect ? { x: rect.left - origin.left, y: rect.top - origin.top, width: rect.width, height: rect.height, window: found!.target.kind === 'window' } : null;
+      } else [preview, landing] = [null, null];
       frame = requestAnimationFrame(draw);
     };
     draw();
@@ -61,6 +67,7 @@
     <path d={path.d} class:sent={path.sent} />
     <circle cx={path.d.split(' ').at(-2)} cy={path.d.split(' ').at(-1)} r="2.5" class:sent={path.sent} />
   {/each}
+  {#if landing}<rect class="landing" class:whole={landing.window} x={landing.x - 2} y={landing.y - 1} width={landing.width + 4} height={landing.height + 2} rx="6" />{/if}
   {#if preview}<path d={preview} class="preview" />{/if}
 </svg>
 
@@ -85,6 +92,15 @@
   }
   .sent {
     opacity: 0.4;
+  }
+  .landing {
+    fill: color-mix(in oklab, var(--accent) 12%, transparent);
+    stroke: color-mix(in oklab, var(--accent) 70%, transparent);
+    stroke-width: 1.5;
+  }
+  .landing.whole {
+    fill: none;
+    rx: 12px;
   }
   .preview {
     stroke: var(--accent);

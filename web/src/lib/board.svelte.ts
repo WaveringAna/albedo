@@ -20,7 +20,7 @@ export type ReviewWindow = Node<{ sessionId: string; turnId: string; from: numbe
  */
 export type Target =
   | { kind: 'window'; window: string }
-  | { kind: 'entry'; window: string; entry: string; quote: string }
+  | { kind: 'entry'; window: string; entry: string; step?: boolean; quote: string }
   | { kind: 'lines'; window: string; path: string; change: number; side: 'additions' | 'deletions'; start: number; end: number; quote: string };
 /** A note on the canvas: free, or tied to a window, a message or step in a chat, or lines in a diff. */
 export type NoteWindow = Node<{ text: string; target?: Target; sent?: boolean }, 'note'>;
