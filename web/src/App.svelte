@@ -30,26 +30,52 @@
   $effect(() => localStorage.setItem(MINIMAP_KEY, minimap ? 'on' : 'off'));
 
   // With the sessions hidden, the pointer at the canvas's left edge brings
-  // them out floating over it, until it wanders past them or leaves the
-  // canvas. It is watched from the canvas rather than a strip along the edge,
-  // so the edge still pans and clicks like the rest of the canvas.
+  // them out floating over it, at once. How near counts as the edge grows
+  // with how fast the pointer is heading left, so a flick toward the edge
+  // opens it early and a slow drift along the canvas only right at the edge.
+  // It is watched from the canvas rather than a strip along the edge, so the
+  // edge still pans and clicks like the rest of the canvas. Out, the card
+  // stays while the pointer is on it or near it (the top bar above it
+  // included, for an overshoot toward the first rows), while its filter has
+  // focus, and goes soon after the pointer is clearly elsewhere or leaves
+  // the page.
   const PEEK_EDGE = 20;
-  const PEEK_WIDTH = 264;
-  const PEEK_LINGER_MS = 20;
+  const PEEK_FLICK_EDGE = 50;
+  /** px of edge gained per px/ms of leftward speed */
+  const PEEK_PER_SPEED = 15;
+  const PEEK_NEAR = 48;
+  const PEEK_LINGER_MS = 100;
   let peek = $state(false);
   let peekEl = $state<HTMLElement>();
+  /** The pointer's last place on the canvas, and its leftward speed, smoothed. */
+  const heading = { x: 0, t: 0, speed: 0 };
   let peekTimer: ReturnType<typeof setTimeout> | undefined;
+  let pointerNear = false;
   $effect(() => {
     if (railOpen) peek = false;
   });
 
   function edge(event: PointerEvent) {
-    if (railOpen) return;
+    if (railOpen || peek) return;
     const x = event.clientX - (event.currentTarget as HTMLElement).getBoundingClientRect().left;
-    if (!peek) {
-      if (x <= PEEK_EDGE && !event.buttons) peek = true;
-    } else if (x > PEEK_WIDTH + 16) unpeek();
-    else clearTimeout(peekTimer);
+    const dt = event.timeStamp - heading.t;
+    const leftward = dt > 0 && dt < 100 ? Math.max(0, (heading.x - x) / dt) : 0;
+    heading.speed = heading.speed * 0.5 + leftward * 0.5;
+    heading.x = x;
+    heading.t = event.timeStamp;
+    const reach = Math.min(PEEK_FLICK_EDGE, PEEK_EDGE + heading.speed * PEEK_PER_SPEED);
+    if (x <= reach && !event.buttons) peek = true;
+  }
+
+  function near(event: PointerEvent) {
+    if (!peek || !peekEl) {
+      pointerNear = false;
+      return;
+    }
+    const card = peekEl.getBoundingClientRect();
+    pointerNear = event.clientX <= card.right + PEEK_NEAR && event.clientY <= card.bottom + PEEK_NEAR;
+    if (pointerNear) clearTimeout(peekTimer);
+    else unpeek();
   }
 
   function unpeek() {
@@ -182,7 +208,7 @@
   const linkLabel = { connecting: 'connecting', online: 'connected', offline: 'daemon unreachable', unauthorized: 'signed out: open the link albedo web printed' };
 </script>
 
-<svelte:window onkeydown={keydown} />
+<svelte:window onkeydown={keydown} onpointermove={near} onmouseout={(event) => peek && !event.relatedTarget && ((pointerNear = false), unpeek())} />
 
 {#if layout.phone}
   <Phone onsettings={() => (settingsOpen = !settingsOpen)} onnew={() => (newOpen = true)} />
@@ -215,12 +241,12 @@
 
   {#if railOpen}<Rail bind:search onnew={() => (newOpen = true)} />{/if}
 
-  <main onpointermovecapture={edge} onpointerleave={() => peek && unpeek()}>
+  <main onpointermovecapture={edge}>
     {#if peek}
       <div
         class="peek"
         bind:this={peekEl}
-        onfocusout={(event) => !peekEl?.contains(event.relatedTarget as Node) && unpeek()}
+        onfocusout={(event) => !pointerNear && !peekEl?.contains(event.relatedTarget as Node) && unpeek()}
       >
         <Rail bind:search onnew={() => (newOpen = true)} />
       </div>
