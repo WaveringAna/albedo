@@ -48,6 +48,7 @@
           {/each}
         </div>
       {/if}
+      {#if tiles.length && rest.length}<hr />{/if}
       {#each rest as session (session.id)}{@render row(session)}{/each}
       {#if sessions.loaded && !shown.length}<p class="none">no sessions yet (・ω・)ﾉ</p>{/if}
     {/if}
@@ -155,6 +156,20 @@
     border: 0;
     border-radius: 10px;
     cursor: pointer;
+  }
+  /* Hairlines between rows, inset to the text, and a fuller one under the tiles. */
+  .row + .row {
+    box-shadow: inset 0 1px 0 color-mix(in oklab, var(--text) 8%, transparent);
+    border-radius: 0;
+  }
+  .row:active {
+    border-radius: 10px;
+  }
+  hr {
+    height: 1px;
+    margin: 0 0 4px;
+    background: color-mix(in oklab, var(--text) 12%, transparent);
+    border: 0;
   }
   .row .name {
     flex: 1;
