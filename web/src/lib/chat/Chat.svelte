@@ -260,7 +260,7 @@
   }
   .inline .thread {
     gap: 12px;
-    padding: 60px 16px 16px;
+    padding: 12px 16px 16px;
     font-size: 16px;
     line-height: 1.55;
   }
@@ -287,7 +287,7 @@
     pointer-events: none;
   }
   .inline .skeleton {
-    padding: 60px 16px 16px;
+    padding: 12px 16px 16px;
   }
   .skeleton > * {
     flex: none;
