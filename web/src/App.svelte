@@ -26,6 +26,37 @@
   let search = $state<HTMLInputElement>();
 
   $effect(() => localStorage.setItem(RAIL_KEY, railOpen ? 'open' : 'closed'));
+
+  // With the sessions hidden, the pointer at the canvas's left edge brings
+  // them out floating over it, until it wanders past them or leaves the
+  // canvas. It is watched from the canvas rather than a strip along the edge,
+  // so the edge still pans and clicks like the rest of the canvas.
+  const PEEK_EDGE = 20;
+  const PEEK_WIDTH = 264;
+  const PEEK_LINGER_MS = 20;
+  let peek = $state(false);
+  let peekEl = $state<HTMLElement>();
+  let peekTimer: ReturnType<typeof setTimeout> | undefined;
+  $effect(() => {
+    if (railOpen) peek = false;
+  });
+
+  function edge(event: PointerEvent) {
+    if (railOpen) return;
+    const x = event.clientX - (event.currentTarget as HTMLElement).getBoundingClientRect().left;
+    if (!peek) {
+      if (x <= PEEK_EDGE && !event.buttons) peek = true;
+    } else if (x > PEEK_WIDTH + 16) unpeek();
+    else clearTimeout(peekTimer);
+  }
+
+  function unpeek() {
+    clearTimeout(peekTimer);
+    peekTimer = setTimeout(() => {
+      // Typing in its filter keeps it out.
+      if (!peekEl?.contains(document.activeElement)) peek = false;
+    }, PEEK_LINGER_MS);
+  }
   $effect(() => localStorage.setItem(MINIMAP_KEY, minimap ? 'on' : 'off'));
 
   // The view controls show while the view moves and for a while after, then
@@ -172,7 +203,16 @@
 
   {#if railOpen}<Rail bind:search onnew={() => (newOpen = true)} />{/if}
 
-  <main>
+  <main onpointermovecapture={edge} onpointerleave={() => peek && unpeek()}>
+    {#if peek}
+      <div
+        class="peek"
+        bind:this={peekEl}
+        onfocusout={(event) => !peekEl?.contains(event.relatedTarget as Node) && unpeek()}
+      >
+        <Rail bind:search onnew={() => (newOpen = true)} />
+      </div>
+    {/if}
     {#if boards.board}
       {#key boards.board}
         <Canvas board={boards.board} {minimap} onpalette={() => (paletteOpen = true)} />
@@ -311,6 +351,22 @@
     min-width: 0;
     min-height: 0;
     overflow: hidden;
+  }
+  /* The hidden sessions, out over the canvas while the pointer is at its edge. */
+  .peek {
+    position: absolute;
+    top: 8px;
+    bottom: 8px;
+    left: 8px;
+    z-index: 20;
+    display: flex;
+    width: 264px;
+    overflow: hidden;
+    border-radius: 14px;
+    box-shadow: var(--shadow-lg);
+  }
+  .peek > :global(aside) {
+    flex: 1;
   }
   /* Hidden, it lets clicks through to whatever window sits under it. */
   .view {
