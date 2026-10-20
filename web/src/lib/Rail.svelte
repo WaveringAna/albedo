@@ -41,17 +41,18 @@
 </script>
 
 <aside>
-  <form class="search" onsubmit={submit}>
-    <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><circle cx="7" cy="7" r="4.5" fill="none" stroke="currentColor" stroke-width="1.4" /><path d="M10.5 10.5L14 14" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" /></svg>
-    <input bind:this={search} bind:value={query} placeholder="filter sessions" aria-label="Filter sessions" spellcheck="false" onkeydown={(event) => event.key === 'Escape' && ((query = ''), search?.blur())} />
-    <kbd>/</kbd>
-  </form>
-  {#if onnew}
-    <button class="new" onclick={onnew}>
-      <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><path d="M8 3.5v9M3.5 8h9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" /></svg>
-      new session
-    </button>
-  {/if}
+  <div class="top">
+    <form class="search" onsubmit={submit}>
+      <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><circle cx="7" cy="7" r="4.5" fill="none" stroke="currentColor" stroke-width="1.4" /><path d="M10.5 10.5L14 14" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" /></svg>
+      <input bind:this={search} bind:value={query} placeholder="filter sessions" aria-label="Filter sessions" spellcheck="false" onkeydown={(event) => event.key === 'Escape' && ((query = ''), search?.blur())} />
+      <kbd>/</kbd>
+    </form>
+    {#if onnew}
+      <button class="new" aria-label="new session" title="new session" onclick={onnew}>
+        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M8 3.5v9M3.5 8h9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" /></svg>
+      </button>
+    {/if}
+  </div>
 
   <nav>
     {#each sections as section (section.label)}
@@ -86,12 +87,19 @@
     padding-top: 10px;
     background: var(--rail);
   }
+  /* The filter, and beside it a new session. */
+  .top {
+    display: flex;
+    gap: 6px;
+    margin: 0 10px 8px;
+  }
   .search {
     display: flex;
+    flex: 1;
     align-items: center;
     gap: 8px;
+    min-width: 0;
     height: 30px;
-    margin: 0 10px 8px;
     padding: 0 6px 0 9px;
     color: var(--muted);
     background: var(--field);
@@ -116,22 +124,19 @@
     visibility: hidden;
   }
   .new {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin: 0 10px 4px;
-    padding: 7px 10px;
-    color: var(--text);
-    font: inherit;
-    font-size: 13px;
-    text-align: left;
-    background: none;
+    display: grid;
+    flex: none;
+    place-items: center;
+    width: 30px;
+    height: 30px;
+    padding: 0;
+    background: var(--field);
     border: 0;
     border-radius: 8px;
     cursor: pointer;
   }
   .new:hover {
-    background: var(--hover);
+    background: var(--selected);
   }
   .new svg {
     color: var(--accent);
@@ -181,19 +186,6 @@
   }
   .row.open {
     background: var(--selected);
-  }
-  .name {
-    grid-area: name;
-    overflow: hidden;
-    font-size: 12.5px;
-    white-space: nowrap;
-    text-overflow: ellipsis;
-  }
-  .when {
-    grid-area: when;
-    color: var(--muted);
-    font-size: 11.5px;
-    font-variant-numeric: tabular-nums;
   }
   .where {
     grid-area: where;
