@@ -66,6 +66,7 @@
           next.push({ id: note.id, d: curve(local(start), local(end)), sent: !!note.data.sent, lit, box: box && { x: box.left - origin.left, y: box.top - origin.top, width: box.width, height: box.height } });
       }
       paths = next;
+      if (tying.note && !board.nodes.some((node) => node.id === tying.note)) tying.note = null;
       if (tying.note) {
         const start = noteEnd(tying.note, tying.x);
         preview = start ? curve(local(start), local({ x: tying.x, y: tying.y })) : null;

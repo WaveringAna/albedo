@@ -61,30 +61,35 @@
     if (event.key === 'Escape') field?.blur();
   }
 
+  // The tie follows the pointer on the whole document, not the grip: the
+  // note may redraw mid-drag and drop the grip's capture, and a tie that
+  // never heard its pointer go up would stay drawn after the note is gone.
   function tie(event: PointerEvent) {
     event.preventDefault();
     event.stopPropagation();
-    const grip = event.currentTarget as HTMLElement;
-    grip.setPointerCapture(event.pointerId);
+    const pointer = event.pointerId;
     Object.assign(tying, { note: id, x: event.clientX, y: event.clientY });
-    const move = (moved: PointerEvent) => Object.assign(tying, { x: moved.clientX, y: moved.clientY });
-    const end = (ended: PointerEvent) => {
-      grip.removeEventListener('pointermove', move);
-      grip.removeEventListener('pointerup', end);
-      grip.removeEventListener('pointercancel', cancel);
+    const move = (moved: PointerEvent) => moved.pointerId === pointer && Object.assign(tying, { x: moved.clientX, y: moved.clientY });
+    const stop = () => {
+      document.removeEventListener('pointermove', move, true);
+      document.removeEventListener('pointerup', end, true);
+      document.removeEventListener('pointercancel', stop, true);
       tying.note = null;
+    };
+    const end = (ended: PointerEvent) => {
+      if (ended.pointerId !== pointer) return;
+      stop();
       board?.updateNote(id, { target: targetAt(ended.clientX, ended.clientY), sent: false });
     };
-    const cancel = () => {
-      grip.removeEventListener('pointermove', move);
-      grip.removeEventListener('pointerup', end);
-      grip.removeEventListener('pointercancel', cancel);
-      tying.note = null;
-    };
-    grip.addEventListener('pointermove', move);
-    grip.addEventListener('pointerup', end);
-    grip.addEventListener('pointercancel', cancel);
+    document.addEventListener('pointermove', move, true);
+    document.addEventListener('pointerup', end, true);
+    document.addEventListener('pointercancel', stop, true);
   }
+
+  // A note dismissed mid-tie takes its tie with it.
+  $effect(() => () => {
+    if (tying.note === id) tying.note = null;
+  });
 </script>
 
 <article class="note" class:selected class:sent={data.sent} class:loose={!data.target}>
