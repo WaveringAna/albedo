@@ -57,8 +57,14 @@
 
   let scroller = $state<HTMLElement>();
   let top = $state<HTMLElement>();
-  let pinned = true;
+  let pinned = $state(true);
   let dockHeight = $state(0);
+  // The end of the chat as it was when the reader scrolled up from it, so a
+  // new message or more of a reply below can be told from older ones loading
+  // above.
+  const end = $derived(`${transcript.groups.at(-1)?.key ?? ''}:${transcript.live.reduce((length, item) => length + item.text.length, 0)}`);
+  let leftAt = $state<string | null>(null);
+  const unseen = $derived(!pinned && leftAt !== null && end !== leftAt);
   let settled = $state(false);
   let older = false;
 
@@ -129,7 +135,42 @@
   });
 
   function scrolled() {
-    if (scroller) pinned = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 40;
+    if (!scroller) return;
+    const was = pinned;
+    pinned = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 40;
+    if (was && !pinned) leftAt = end;
+    else if (pinned) leftAt = null;
+  }
+
+  // Back to the end in a quarter second however far it is (the browser's own
+  // smooth scroll crawls over a long chat); a wheel or touch takes over.
+  const LATEST_MS = 250;
+  function latest() {
+    const element = scroller;
+    if (!element) return;
+    if (matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      element.scrollTop = element.scrollHeight;
+      return;
+    }
+    const from = element.scrollTop;
+    const start = performance.now();
+    let frame = 0;
+    const stop = () => {
+      cancelAnimationFrame(frame);
+      element.removeEventListener('wheel', stop);
+      element.removeEventListener('touchstart', stop);
+    };
+    element.addEventListener('wheel', stop, { passive: true });
+    element.addEventListener('touchstart', stop, { passive: true });
+    const step = (now: number) => {
+      const t = Math.min(1, (now - start) / LATEST_MS);
+      // Measured each frame: the end can grow while it travels.
+      const to = element.scrollHeight - element.clientHeight;
+      element.scrollTop = from + (to - from) * (1 - (1 - t) ** 3);
+      if (t < 1) frame = requestAnimationFrame(step);
+      else stop();
+    };
+    frame = requestAnimationFrame(step);
   }
 
   // Notes tied to this chat or anything in it go as one message.
@@ -289,6 +330,12 @@
   </div>
 
   <div class="dock" bind:offsetHeight={dockHeight}>
+    {#if settled && !pinned}
+      <button class="latest" onclick={latest}>
+        <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><path d="M8 3v10M3.5 8.5 8 13l4.5-4.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" /></svg>
+        {unseen ? 'see new messages' : 'back to latest'}
+      </button>
+    {/if}
     {@render handle?.()}
     {#if tied.length}
       <button class="notes" disabled={sendingNotes} onclick={sendTied}>send {tied.length} {tied.length === 1 ? 'note' : 'notes'} tied to this chat</button>
@@ -332,6 +379,37 @@
     bottom: 0;
     left: 0;
     padding: 0 10px 8px;
+  }
+  /* Floats over the end of the thread while it is scrolled up, in the
+     composer's tone; on a phone, above the drawer's handle. */
+  .latest {
+    position: absolute;
+    bottom: calc(100% + 8px);
+    left: 50%;
+    z-index: 2;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 13px 6px 10px;
+    color: var(--text);
+    font: inherit;
+    font-size: 12.5px;
+    white-space: nowrap;
+    background: var(--field);
+    border: 0;
+    border-radius: 999px;
+    box-shadow: 0 1px 2px rgb(0 0 0 / 0.1);
+    cursor: pointer;
+    transform: translateX(-50%);
+  }
+  .latest:hover {
+    background: color-mix(in oklab, var(--field), var(--text) 6%);
+  }
+  .latest svg {
+    color: var(--accent);
+  }
+  .inline .latest {
+    bottom: calc(100% + 34px);
   }
   /* Until the first page is in and scrolled to its end, the thread stays
      unseen and the skeleton holds its place, so it never shows its top and
@@ -638,6 +716,7 @@
     color: var(--danger);
   }
   .dock {
+    position: relative;
     display: flex;
     flex-direction: column;
     flex: none;
