@@ -1,30 +1,34 @@
-<script lang="ts" generics="Note">
-  import { FileDiff, processFile, type DiffLineAnnotation, type SelectedLineRange } from '@pierre/diffs';
+<script lang="ts">
+  import { FileDiff, processFile, type SelectedLineRange } from '@pierre/diffs';
   import { untrack } from 'svelte';
+  import { diffs } from '../anchors';
   import { prefs } from '../prefs.svelte';
 
   // One file's diff, highlighted by @pierre/diffs (Shiki underneath). Notes
-  // do not open the file up: each is a bare anchor under its lines, made by
-  // `anchor`, and whoever owns the diff draws the note itself elsewhere. The
-  // margin's button asks `oncomment` to start one on the lines it covers.
+  // about its lines live on the canvas, not in the file: the diff only says
+  // which diff it is (`key`, for notes to find their lines) and asks
+  // `oncomment` to start one when the margin's button picks lines.
   let {
+    key,
     path,
+    change,
     diff,
-    notes = [],
-    anchor,
     oncomment,
-    onrender,
   }: {
+    key: string;
     path: string;
+    change: number;
     diff: string;
-    notes?: DiffLineAnnotation<Note>[];
-    anchor: (annotation: DiffLineAnnotation<Note>) => HTMLElement;
     oncomment?: (range: SelectedLineRange) => void;
-    onrender?: () => void;
   } = $props();
 
   let container = $state<HTMLElement>();
-  let view = $state.raw<FileDiff<Note>>();
+  let view = $state.raw<FileDiff>();
+
+  $effect(() => {
+    diffs.set(key, { path, change, diff });
+    return () => diffs.delete(key);
+  });
 
   // A trace's diff may lack git's file headers; give it some so the
   // language is known from the name.
@@ -32,7 +36,7 @@
 
   $effect(() => {
     if (!container) return;
-    const created = new FileDiff<Note>({
+    const created = new FileDiff({
       theme: { dark: 'pierre-dark', light: 'pierre-light' },
       themeType: untrack(() => prefs.resolved),
       diffStyle: 'unified',
@@ -47,8 +51,6 @@
         oncomment?.(range);
         setTimeout(() => created.setSelectedLines(null));
       },
-      renderAnnotation: (annotation) => anchor(annotation),
-      onPostRender: () => onrender?.(),
       // The canvas's own ground and diff colours, under Pierre's token colours.
       unsafeCSS: `:host {
         --diffs-light-bg: var(--well) !important;
@@ -62,7 +64,6 @@
         --diffs-bg-deletion-override: color-mix(in oklab, var(--danger) 8%, var(--well));
         --diffs-bg-deletion-number-override: color-mix(in oklab, var(--danger) 12%, var(--well));
         --diffs-bg-deletion-emphasis-override: color-mix(in oklab, var(--danger) 20%, var(--well));
-        --diffs-annotation-min-height: 0px;
         --diffs-font-family: var(--mono);
         --diffs-font-size: 12px;
         --diffs-line-height: 19px;
@@ -81,7 +82,7 @@
 
   $effect(() => {
     if (!view || !container || !parsed) return;
-    view.render({ fileDiff: parsed, containerWrapper: container, lineAnnotations: notes });
+    view.render({ fileDiff: parsed, containerWrapper: container });
   });
 
   function hash(text: string) {
@@ -91,7 +92,7 @@
   }
 </script>
 
-<div class="diff" bind:this={container}></div>
+<div class="diff" data-diff={key} bind:this={container}></div>
 
 <style>
   .diff {

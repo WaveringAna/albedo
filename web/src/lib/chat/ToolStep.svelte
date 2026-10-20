@@ -47,7 +47,7 @@
   }
 </script>
 
-<div class="tool" class:open class:failed={result?.failed}>
+<div class="tool" class:open class:failed={result?.failed} data-entry={entry.id}>
   <button class="line" onclick={toggle} aria-expanded={open}>
     {#if !done}<span class="spinner" aria-label="running"></span>{/if}
     <span class="name">{name}</span>

@@ -45,6 +45,7 @@
     { label: 'previous board', hint: '⇧[', run: () => boards.step(-1) },
     { label: 'close board tab', run: () => boards.active && boards.close(boards.active) },
     { label: 'delete board', run: () => boards.active && boards.delete(boards.active) },
+    { label: 'new note', hint: 'N', run: () => boards.board?.noteAt() },
     { label: 'fit all windows', hint: '⇧1', run: () => boards.board?.fit() },
     { label: 'zoom to 100%', hint: '⇧0', run: () => boards.board?.zoomTo(1) },
     { label: 'next window', hint: '⌥→', run: () => boards.board?.step(1) },
@@ -117,6 +118,7 @@
     else if (event.key === '!' && event.code === 'Digit1') boards.board?.fit();
     else if (event.key === ')' && event.code === 'Digit0') boards.board?.zoomTo(1);
     else if (event.key === 'm') minimap = !minimap;
+    else if (event.key === 'n') boards.board?.noteAt();
     else if (event.key === '+' || event.key === '=') zoomStep(1);
     else if (event.key === '-' || event.key === '_') zoomStep(-1);
     else if (event.key === '/') {

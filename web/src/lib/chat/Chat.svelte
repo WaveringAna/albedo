@@ -3,6 +3,7 @@
   import type { Session } from '../api';
   import { busy } from '../live.svelte';
   import { boards } from '../boards.svelte';
+  import { sendNotes } from '../notes';
   import type { Attached } from './attachments';
   import LiveFace from '../LiveFace.svelte';
   import { face, formatElapsed } from '../moods';
@@ -99,6 +100,27 @@
     if (scroller) pinned = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 40;
   }
 
+  // Notes tied to this chat or anything in it go as one message.
+  const tied = $derived((boards.board?.notesOn(windowId) ?? []).filter((note) => !note.data.sent && note.data.text.trim()));
+  let sendingNotes = $state(false);
+  async function sendTied() {
+    if (!boards.board) return;
+    sendingNotes = true;
+    try {
+      await sendNotes(boards.board, tied);
+    } finally {
+      sendingNotes = false;
+    }
+  }
+
+  /** Moves the draft into a note beside the window, for writing at length. */
+  function popout(text: string) {
+    const board = boards.board;
+    const frame = scroller?.closest('.svelte-flow__node')?.getBoundingClientRect();
+    const spot = frame && board?.besideWindow(windowId, frame.bottom - 240);
+    if (board && spot) board.addNote(spot, { kind: 'window', window: windowId }, text);
+  }
+
   function send(text: string, images: Attached[]) {
     pinned = true;
     transcript.send(text, images);
@@ -121,7 +143,7 @@
 
       {#each transcript.groups as group (group.key)}
         {#if group.kind === 'user'}
-          <div class="user" class:failed={group.state === 'failed'}>
+          <div class="user" class:failed={group.state === 'failed'} data-entry={group.key}>
             {#if group.from || group.gap}
               <span class="plate"><span class:you={!group.from}>{group.from ?? 'you'}</span>{#if group.gap}<span class="meta">{' · '}{group.gap}</span>{/if}</span>
             {/if}
@@ -146,7 +168,7 @@
             {/if}
           </div>
         {:else if group.kind === 'assistant'}
-          <div class="assistant">
+          <div class="assistant" data-entry={group.key}>
             {#if group.plate}<span class="plate agent">albedo</span>{/if}
             <Markdown text={group.text} />
           </div>
@@ -180,7 +202,10 @@
   </div>
 
   <div class="dock">
-    <Composer onsend={send} busy={running} />
+    {#if tied.length}
+      <button class="notes" disabled={sendingNotes} onclick={sendTied}>send {tied.length} {tied.length === 1 ? 'note' : 'notes'} tied to this chat</button>
+    {/if}
+    <Composer onsend={send} busy={running} onpopout={popout} />
   </div>
 </div>
 
@@ -289,6 +314,18 @@
   .copy:hover {
     color: var(--text);
   }
+  .notes {
+    align-self: flex-start;
+    margin: 0 0 8px 6px;
+    padding: 3px 10px;
+    color: var(--accent);
+    font: inherit;
+    font-size: 12px;
+    background: color-mix(in oklab, var(--accent) 10%, transparent);
+    border: 0;
+    border-radius: 999px;
+    cursor: pointer;
+  }
   .bubble {
     max-width: 85%;
     padding: 8px 13px;
@@ -359,6 +396,8 @@
     text-overflow: ellipsis;
   }
   .dock {
+    display: flex;
+    flex-direction: column;
     flex: none;
     width: 100%;
     max-width: 720px;

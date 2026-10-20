@@ -14,7 +14,22 @@ export type SessionWindow = Node<{ sessionId: string; parent?: string }, 'sessio
 /** The changes one turn made, walked file by file. `from` is the turn's first history position. */
 /** `jump` asks the window to bring one file into view; `at` makes each ask new. */
 export type ReviewWindow = Node<{ sessionId: string; turnId: string; from: number; parent?: string; jump?: { path: string; at: number } }, 'review'>;
-export type Window = SessionWindow | ReviewWindow;
+/**
+ * What a note is about. The quote is taken when the note is tied, so a sent
+ * note says what it pointed at even if that has since scrolled or closed.
+ */
+export type Target =
+  | { kind: 'window'; window: string }
+  | { kind: 'entry'; window: string; entry: string; quote: string }
+  | { kind: 'lines'; window: string; path: string; change: number; side: 'additions' | 'deletions'; start: number; end: number; quote: string };
+/** A note on the canvas: free, or tied to a window, a message or step in a chat, or lines in a diff. */
+export type NoteWindow = Node<{ text: string; target?: Target; sent?: boolean }, 'note'>;
+export type Window = SessionWindow | ReviewWindow | NoteWindow;
+
+export const NOTE = { width: 260 };
+/** Notes float over windows, whichever window was picked last. */
+const NOTE_LAYER = 1000;
+const HANDLES = { note: '.note-handle' };
 
 type Flow = ReturnType<typeof useSvelteFlow>;
 
@@ -40,13 +55,15 @@ export class Board {
   nodes = $state.raw<Window[]>([]);
   edges = $derived(
     this.nodes.flatMap((node): Edge[] =>
-      node.data.parent && this.nodes.some((other) => other.id === node.data.parent)
+      node.type !== 'note' && node.data.parent && this.nodes.some((other) => other.id === node.data.parent)
         ? [{ id: `${node.data.parent}->${node.id}`, source: node.data.parent, target: node.id, type: 'default', selectable: false, focusable: false, class: 'tether' }]
         : [],
     ),
   );
   viewport = $state.raw<Viewport>({ x: 0, y: 0, zoom: 1 });
   flow: Flow | null = null;
+  /** Notes made since the page loaded and not yet written in, which take the focus once. */
+  fresh = new Set<string>();
   #key: string;
   #save: ReturnType<typeof setTimeout> | undefined;
   #whenShown: ((flow: Flow) => void) | null = null;
@@ -55,11 +72,16 @@ export class Board {
   constructor(id: string) {
     const key = (this.#key = `albedo.board.v2:${id}`);
     const saved = load(key);
-    this.nodes = saved.nodes.map((node) => ({ ...node, height: node.height ?? 720, dragHandle: '.window-handle', selected: false }));
+    // A note takes the height of what it says; windows keep the height they were given.
+    this.nodes = saved.nodes.map((node) =>
+      node.type === 'note'
+        ? { ...node, height: undefined, zIndex: NOTE_LAYER, dragHandle: HANDLES.note, selected: false }
+        : { ...node, height: node.height ?? 720, dragHandle: '.window-handle', selected: false },
+    );
     this.viewport = saved.viewport ?? { x: 40, y: 72, zoom: 1 };
     this.#stop = $effect.root(() => {
       $effect(() => {
-        const snapshot = { nodes: this.nodes.map(({ id, type, position, width, height, data }) => ({ id, type, position, width, height, data })), viewport: this.viewport };
+        const snapshot = { nodes: this.nodes.map(({ id, type, position, width, height, data }) => ({ id, type, position, width, height: type === 'note' ? undefined : height, data })), viewport: this.viewport };
         clearTimeout(this.#save);
         this.#save = setTimeout(() => localStorage.setItem(key, JSON.stringify(snapshot)), 250);
       });
@@ -122,10 +144,55 @@ export class Board {
     if (jump) this.nodes = this.nodes.map((node) => (node.id === id && node.type === 'review' ? { ...node, data: { ...node.data, jump } } : node));
   }
 
+  /** Puts a note on the canvas at a point in canvas coordinates; returns its id. */
+  addNote(position: { x: number; y: number }, target?: Target, text = ''): string {
+    const id = `note:${crypto.randomUUID()}`;
+    const note: NoteWindow = { id, type: 'note', position, width: NOTE.width, zIndex: NOTE_LAYER, dragHandle: HANDLES.note, data: { text, target } };
+    this.nodes = [...this.nodes.map((node) => ({ ...node, selected: false })), { ...note, selected: true }];
+    this.fresh.add(id);
+    return id;
+  }
+
+  updateNote(id: string, data: Partial<NoteWindow['data']>) {
+    this.nodes = this.nodes.map((node) => (node.id === id && node.type === 'note' ? { ...node, data: { ...node.data, ...data } } : node));
+  }
+
+  /** Puts a loose note at a point on screen, or the middle of the view. */
+  noteAt(screen?: { x: number; y: number }): string | null {
+    const pane = paneRect();
+    if (!this.flow || !pane) return null;
+    const point = this.flow.screenToFlowPosition(screen ?? { x: pane.left + pane.width / 2, y: pane.top + pane.height / 2 });
+    return this.addNote({ x: point.x - NOTE.width / 2, y: point.y - 20 });
+  }
+
+  /**
+   * A spot for a note beside a window, at a height on screen: right of it
+   * unless another window sits there, then left.
+   */
+  besideWindow(window: string, screenY: number): { x: number; y: number } | null {
+    const node = this.nodes.find((candidate) => candidate.id === window);
+    if (!node || !this.flow) return null;
+    const y = this.flow.screenToFlowPosition({ x: 0, y: screenY }).y;
+    const right = { x: node.position.x + (node.width ?? SIZE.width) + 40, y };
+    const blocked = this.nodes.some((other) => other.type !== 'note' && other.id !== window && overlaps(other, right, NOTE.width, 160));
+    return blocked ? { x: node.position.x - NOTE.width - 40, y } : right;
+  }
+
+  /** Notes tied to anything in one window. */
+  notesOn(window: string): NoteWindow[] {
+    return this.nodes.filter((node): node is NoteWindow => node.type === 'note' && node.data.target?.window === window);
+  }
+
+  /** The session a window belongs to, for sending what is tied to it. */
+  sessionOf(window: string): string | null {
+    const node = this.nodes.find((candidate) => candidate.id === window);
+    return node && node.type !== 'note' ? node.data.sessionId : null;
+  }
+
   #open(window: Pick<SessionWindow, 'id' | 'type' | 'data'> | Pick<ReviewWindow, 'id' | 'type' | 'data'>, width = SIZE.width) {
     if (!this.nodes.some((node) => node.id === window.id)) {
       const height = Math.round(Math.min(860, Math.max(480, (paneRect()?.height ?? 800) / this.viewport.zoom - 140)));
-      const anchor = this.nodes.find((node) => node.id === window.data.parent);
+      const anchor = this.nodes.find((node) => node.id === window.data.parent && node.type !== 'note');
       const placed = { ...window, position: this.#freeSpot(height, width, anchor), width, height, dragHandle: '.window-handle' } as Window;
       this.nodes = [...this.nodes, placed];
     }
@@ -182,14 +249,15 @@ export class Board {
    * past anything in the way, so windows never land on each other.
    */
   #freeSpot(height: number, width: number, near?: Window) {
-    const anchor = near ?? this.nodes.find((node) => node.selected) ?? this.nodes.at(-1);
+    const windows = this.nodes.filter((node) => node.type !== 'note');
+    const anchor = near ?? windows.find((node) => node.selected) ?? windows.at(-1);
     if (!anchor) {
       const { x, y, zoom } = this.viewport;
       return { x: Math.round((48 - x) / zoom), y: Math.round((88 - y) / zoom) };
     }
     const spot = { x: anchor.position.x + (anchor.width ?? SIZE.width) + GAP, y: anchor.position.y };
     let blocker: Window | undefined;
-    while ((blocker = this.nodes.find((node) => overlaps(node, spot, width, height)))) spot.x = blocker.position.x + (blocker.width ?? SIZE.width) + GAP;
+    while ((blocker = windows.find((node) => overlaps(node, spot, width, height)))) spot.x = blocker.position.x + (blocker.width ?? SIZE.width) + GAP;
     return spot;
   }
 }

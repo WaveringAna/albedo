@@ -4,7 +4,9 @@
   import { prefs } from './prefs.svelte';
   import FlowBinder from './FlowBinder.svelte';
   import { shortcut } from './keys';
+  import NoteNode from './nodes/NoteNode.svelte';
   import ReviewNode from './nodes/ReviewNode.svelte';
+  import Tethers from './Tethers.svelte';
   import SessionNode from './nodes/SessionNode.svelte';
 
   // Mounted again on every tab switch (keyed on the board), so each board
@@ -16,7 +18,12 @@
   // and every other scroll pans the canvas freely.
   let { board, onpalette, minimap }: { board: Board; onpalette: () => void; minimap: boolean } = $props();
 
-  const nodeTypes: NodeTypes = { session: SessionNode, review: ReviewNode };
+  const nodeTypes: NodeTypes = { session: SessionNode, review: ReviewNode, note: NoteNode };
+
+  // A double-click on empty canvas leaves a note there.
+  function dblclick(event: MouseEvent) {
+    if ((event.target as HTMLElement).classList.contains('svelte-flow__pane')) board.noteAt({ x: event.clientX, y: event.clientY });
+  }
   const READABLE = 0.6;
   let element = $state<HTMLElement>();
   // The dots fade out as the view zooms out, before they crowd into a texture.
@@ -49,7 +56,7 @@
   });
 </script>
 
-<div class="canvas" bind:this={element} style:--dots-opacity={Math.min(1, (zoom - 0.5) * 4)}>
+<div class="canvas" bind:this={element} style:--dots-opacity={Math.min(1, (zoom - 0.5) * 4)} ondblclick={dblclick} role="presentation">
   <SvelteFlow
     bind:nodes={board.nodes}
     edges={board.edges}
@@ -76,12 +83,13 @@
     {/if}
     <FlowBinder {board} />
   </SvelteFlow>
+  <Tethers {board} />
 
   {#if board.nodes.length === 0}
     <div class="empty">
       <p class="face kaomoji" aria-hidden="true">(・ω・)ﾉ</p>
       <p class="lead">an empty board</p>
-      <p>open a session to start. windows can sit anywhere; pinch to zoom out and see them all.</p>
+      <p>open a session to start. windows can sit anywhere; pinch to zoom out and see them all. double-click to leave a note.</p>
       <button onclick={onpalette}>open a session <kbd>{shortcut('K')}</kbd></button>
     </div>
   {/if}

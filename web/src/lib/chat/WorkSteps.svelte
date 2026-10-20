@@ -69,7 +69,7 @@
     <div class="steps">
       {#each steps as step (step.key)}
         {#if step.kind === 'thinking'}
-          <button class="thought" class:whole={whole.has(step.key)} onclick={() => toggle(step.key)}><Markdown text={step.text} /></button>
+          <button class="thought" data-entry={step.key} class:whole={whole.has(step.key)} onclick={() => toggle(step.key)}><Markdown text={step.text} /></button>
         {:else if step.kind === 'tool'}
           <ToolStep entry={step.entry} name={step.name} done={step.done} {transcript} />
         {:else if step.kind === 'progress'}

@@ -5,7 +5,12 @@
   // Enter sends, Shift-Enter starts a new line. A draft survives until it is
   // sent. Images come by paste, drop or the picker; each leaves a marker in
   // the text where it was attached.
-  let { onsend, busy, placeholder = 'message albedo…' }: { onsend: (text: string, images: Attached[]) => void; busy: boolean; placeholder?: string } = $props();
+  let {
+    onsend,
+    onpopout,
+    busy,
+    placeholder = 'message albedo…',
+  }: { onsend: (text: string, images: Attached[]) => void; onpopout?: (text: string) => void; busy: boolean; placeholder?: string } = $props();
   let text = $state('');
   let field = $state<HTMLTextAreaElement>();
   let picker = $state<HTMLInputElement>();
@@ -119,6 +124,20 @@
         attach(input.files ?? []).then(() => (input.value = ''));
       }}
     />
+    {#if onpopout}
+      <button
+        type="button"
+        class="attach"
+        aria-label="pop out into a note"
+        title="pop out into a note on the canvas"
+        onclick={() => {
+          onpopout(text);
+          text = '';
+        }}
+      >
+        <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M9 3h4v4M13 3 8 8M11.5 9.5V12a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5.5a1 1 0 0 1 1-1h2.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" /></svg>
+      </button>
+    {/if}
     <span class="hint">{notice || (busy ? 'albedo is working · a new message waits its turn' : '')}</span>
     <button type="submit" class="send" disabled={!ready} aria-label="Send" title="Send (Enter)">
       <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M8 13V3.5M3.5 8 8 3.5 12.5 8" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" /></svg>

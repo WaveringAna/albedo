@@ -1,32 +1,41 @@
 <script lang="ts">
+  import type { SelectedLineRange } from '@pierre/diffs';
   import type { NodeProps } from '@xyflow/svelte';
-  import type { ReviewWindow } from '../board.svelte';
+  import { useViewport } from '@xyflow/svelte';
+  import { diffKey, diffs, quoteLines } from '../anchors';
+  import { sendMessage, uuidv7 } from '../api';
+  import { NOTE, type ReviewWindow } from '../board.svelte';
+  import { boards } from '../boards.svelte';
   import { namer } from '../burst';
+  import { sendNotes } from '../notes';
   import { readTurn, turnChanges, type FileChanges } from '../review';
   import { sessions } from '../sessions.svelte';
-  import type { DiffLineAnnotation } from '@pierre/diffs';
-  import { useViewport } from '@xyflow/svelte';
-  import { Review, type Note } from '../review.svelte';
-  import CommentNote from '../views/CommentNote.svelte';
   import WindowFrame from './WindowFrame.svelte';
 
   // The highlighter is large; it loads with the first review.
   const DiffView = import('../views/DiffView.svelte').then((module) => module.default);
 
   // A turn's changes, file by file, read from its history and highlighted.
-  // The margin beside any line starts a comment on it (drag to cover
-  // several); "send review" posts every comment as one message. Comments do
-  // not break the file open: each sits out on the canvas to the right of the
-  // window, level with its lines, tied to them by a short line.
+  // The margin beside any line (drag for several) leaves a note out on the
+  // canvas beside the window, tied to those lines; "send review" sends every
+  // note tied into this review as one message.
   let { id, data, selected }: NodeProps<ReviewWindow> = $props();
   const session = $derived(sessions.byId.get(data.sessionId));
   const name = $derived(namer(session?.workspace ?? ''));
+  const viewport = useViewport();
 
   let files = $state<FileChanges[] | null>(null);
   let error = $state<string | null>(null);
   let body = $state<HTMLElement>();
-  // svelte-ignore state_referenced_locally
-  const review = new Review(data.sessionId, () => files ?? []);
+  let node = $state<HTMLElement>();
+  let summary = $state('');
+  let sending = $state(false);
+  let problem = $state('');
+  // Where the last press in the window was, so a note lands level with the line it came from.
+  let pointerY = 0;
+
+  const notes = $derived(boards.board?.notesOn(id) ?? []);
+  const waiting = $derived(notes.filter((note) => !note.data.sent && note.data.text.trim()));
 
   $effect(() => {
     const { sessionId, turnId, from } = data;
@@ -57,63 +66,42 @@
     if (index >= 0) requestAnimationFrame(() => jump(index));
   });
 
-  // Where each comment's lines are, in the window's own pixels, measured
-  // from the anchors the diffs leave; read again as the body scrolls or the
-  // diffs redraw.
-  const viewport = useViewport();
-  let node = $state<HTMLElement>();
-  let places = $state<Record<string, { y: number; shown: boolean }>>({});
-  let frame = 0;
-
-  function anchor(annotation: DiffLineAnnotation<Note>) {
-    const element = document.createElement('div');
-    element.dataset.commentAnchor = annotation.metadata.id;
-    return element;
+  /** Leaves a note beside the window, level with the lines it is about. */
+  function comment(path: string, change: number, range: SelectedLineRange) {
+    const board = boards.board;
+    const known = diffs.get(diffKey(id, path, change));
+    if (!board?.flow || !node || !known) return;
+    const side = range.endSide ?? range.side ?? 'additions';
+    const [start, end] = range.start <= range.end ? [range.start, range.end] : [range.end, range.start];
+    const spot = board.besideWindow(id, pointerY - 16);
+    if (!spot) return;
+    // Step down past notes already there, so they never stack.
+    for (const other of board.notesOn(id)) if (Math.abs(other.position.x - spot.x) < NOTE.width && Math.abs(other.position.y - spot.y) < 60) spot.y = other.position.y + 72;
+    board.addNote(spot, { kind: 'lines', window: id, path, change, side, start, end, quote: quoteLines(known.diff, side, start, end) });
   }
 
-  function measure() {
-    cancelAnimationFrame(frame);
-    frame = requestAnimationFrame(() => {
-      if (!node || !body) return;
-      const zoom = viewport.current.zoom || 1;
-      const origin = node.getBoundingClientRect();
-      const visible = body.getBoundingClientRect();
-      const next: typeof places = {};
-      for (const element of node.querySelectorAll<HTMLElement>('[data-comment-anchor]')) {
-        const at = element.getBoundingClientRect().top;
-        next[element.dataset.commentAnchor!] = { y: (at - origin.top) / zoom, shown: at >= visible.top - 4 && at <= visible.bottom + 4 };
-      }
-      places = next;
-    });
+  async function send() {
+    const board = boards.board;
+    if (!board || (!waiting.length && !summary.trim())) return;
+    sending = true;
+    problem = '';
+    try {
+      if (waiting.length) await sendNotes(board, waiting, `Review of your changes:${summary.trim() ? `\n\n${summary.trim()}` : ''}`);
+      else await sendMessage(data.sessionId, uuidv7(), `Review of your changes:\n\n${summary.trim()}`);
+      summary = '';
+    } catch (failure) {
+      problem = String((failure as Error).message ?? failure);
+    } finally {
+      sending = false;
+    }
   }
-
-  // Cards keep their order down the margin and never overlap.
-  const CARD_GAP = 8;
-  let heights = $state<Record<string, number>>({});
-  const cards = $derived.by(() => {
-    let floor = -Infinity;
-    return review.comments
-      .filter((comment) => places[comment.id]?.shown)
-      .sort((a, b) => places[a.id].y - places[b.id].y)
-      .map((comment) => {
-        const line = places[comment.id].y;
-        const top = Math.max(line - 14, floor);
-        floor = top + (heights[comment.id] ?? 60) + CARD_GAP;
-        return { comment, line, top };
-      });
-  });
-
-  $effect(() => {
-    review.comments;
-    measure();
-  });
 
   function count(path: string) {
-    return review.added.filter((comment) => comment.path === path).length;
+    return notes.filter((note) => note.data.target?.kind === 'lines' && note.data.target.path === path && !note.data.sent).length;
   }
 </script>
 
-<div class="review-node" bind:this={node}>
+<div class="review-node" bind:this={node} onpointerdowncapture={(event) => (pointerY = event.clientY)}>
 <WindowFrame {id} selected={!!selected} title="review · {session?.name || 'untitled session'}">
   {#snippet meta()}
     {#if files}
@@ -122,7 +110,7 @@
     {/if}
   {/snippet}
 
-  <div class="review nowheel" bind:this={body} onscroll={measure}>
+  <div class="review nowheel" bind:this={body}>
     {#if error}
       <p class="quiet error">(｡•︿•｡) couldn't read this turn: {error}</p>
     {:else if !files}
@@ -147,7 +135,7 @@
               <p class="quiet">no diff to show: {change.reason}</p>
             {:else}
               {#await DiffView then View}
-                <View path={file.path} diff={change.diff} notes={review.notesFor(file.path, step)} {anchor} oncomment={(range) => review.start(file.path, step, range)} onrender={measure} />
+                <View key={diffKey(id, file.path, step)} path={file.path} change={step} diff={change.diff} oncomment={(range) => comment(file.path, step, range)} />
               {/await}
             {/if}
           {/each}
@@ -157,23 +145,16 @@
   </div>
   {#if files?.length}
     <footer class="send">
-      <textarea bind:value={review.summary} rows="1" placeholder={review.sent ? 'sent ✓ · anything more?' : 'overall, optional'}></textarea>
-      {#if review.error}<span class="problem" title={review.error}>not sent</span>{/if}
-      <button disabled={review.sending || (!review.added.length && !review.summary.trim())} onclick={() => review.send()}>
-        send review{review.added.length ? ` · ${review.added.length}` : ''}
+      <textarea bind:value={summary} rows="1" placeholder={waiting.length ? 'overall, optional' : 'overall, or + beside a line to leave a note'}></textarea>
+      {#if problem}<span class="problem" title={problem}>not sent</span>{/if}
+      <button disabled={sending || (!waiting.length && !summary.trim())} onclick={send}>
+        send review{waiting.length ? ` · ${waiting.length}` : ''}
       </button>
     </footer>
   {/if}
 </WindowFrame>
 
-{#each cards as card (card.comment.id)}
-  <svg class="tie" style:top="{card.line}px" style:height="{Math.max(2, card.top + 14 - card.line + 2)}px" aria-hidden="true">
-    <path d="M0 1 H18 V{Math.max(1, card.top + 14 - card.line + 1)} H36" fill="none" />
-  </svg>
-  <div class="card nodrag nowheel" style:top="{card.top}px" bind:clientHeight={heights[card.comment.id]}>
-    <CommentNote comment={card.comment} {review} />
-  </div>
-{/each}
+
 </div>
 
 <style>
@@ -182,23 +163,6 @@
     display: flex;
     width: 100%;
     height: 100%;
-  }
-  .tie {
-    position: absolute;
-    left: calc(100% - 4px);
-    width: 40px;
-    overflow: visible;
-    pointer-events: none;
-  }
-  .tie path {
-    stroke: color-mix(in oklab, var(--accent) 55%, transparent);
-    stroke-width: 1.5;
-    stroke-dasharray: 3 4;
-  }
-  .card {
-    position: absolute;
-    left: calc(100% + 36px);
-    z-index: 2;
   }
   .review {
     flex: 1;
