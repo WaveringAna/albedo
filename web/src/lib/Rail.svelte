@@ -203,35 +203,22 @@
   .row:hover {
     background-image: linear-gradient(var(--selected), var(--selected));
   }
-  /* Open on the board: a wash of the accent from the left edge, fading out
-     by the middle, so it reads as a hue over the stripes' tones; hovered,
-     the hover's step lies over it. */
-  .row.open {
-    --open: linear-gradient(90deg, var(--open-wash), transparent 40%);
-    background-image: var(--open);
+  /* Open on the board: one flat tint of the accent, opaque so the stripes
+     don't show through it and a run of open rows reads as one block, its
+     meeting corners squared. Hover still lays its step over it. */
+  .rows > .row.open {
+    background-color: var(--open-tint);
   }
-  .row.open:hover {
-    background-image: linear-gradient(var(--selected), var(--selected)), var(--open);
-  }
-  /* Open rows that meet share the edge their wash is on, so a run of them
-     reads as one; the other side keeps the stripes' corners. */
   .row.open:has(+ .row.open) {
+    border-bottom-right-radius: 0;
     border-bottom-left-radius: 0;
   }
+  /* The rows sit at fractional heights, so the edges the two meet on come out
+     half covered; a pixel of the tint over the join closes it. */
   .row.open + .row.open {
     border-top-left-radius: 0;
-  }
-  /* With the sidebar on the right, all of it mirrored. */
-  :global([data-sidebar='right']) .row.open {
-    --open: linear-gradient(270deg, var(--open-wash), transparent 40%);
-  }
-  :global([data-sidebar='right']) .row.open:has(+ .row.open) {
-    border-bottom-right-radius: 0;
-    border-bottom-left-radius: 7px;
-  }
-  :global([data-sidebar='right']) .row.open + .row.open {
     border-top-right-radius: 0;
-    border-top-left-radius: 7px;
+    box-shadow: 0 -1px 0 var(--open-tint);
   }
   .name {
     grid-area: name;

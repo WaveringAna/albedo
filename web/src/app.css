@@ -41,8 +41,8 @@
   --dots: color-mix(in oklab, var(--seed-fg) calc(36% * var(--k)), transparent);
   /* The sidebar's stripes: the step the phone's stripes take from its ground, taken from the rail's. */
   --rail-stripe: color-mix(in oklab, var(--rail), var(--shade) calc(3.2% * var(--k)));
-  /* Where a sidebar row's wash starts, for a session open on the board. */
-  --open-wash: color-mix(in oklab, var(--accent) 22%, transparent);
+  /* A sidebar row for a session open on the board. */
+  --open-tint: color-mix(in oklab, var(--rail), var(--accent) 12%);
   --minimap-window: var(--field);
   --minimap-mask: color-mix(in oklab, var(--seed-bg) 65%, transparent);
   --shade: color-mix(in oklab, var(--seed-fg) 70%, #000);
@@ -79,7 +79,7 @@
   --shadow-raised: 0 2px 4px rgb(0 0 0 / 0.45), 0 24px 56px -12px rgb(0 0 0 / 0.75);
   --shadow-lg: 0 4px 12px rgb(0 0 0 / 0.5), 0 32px 80px -16px rgb(0 0 0 / 0.8);
   --rail-stripe: color-mix(in oklab, var(--rail), var(--shade) calc(19% * var(--k)));
-  --open-wash: color-mix(in oklab, var(--accent) 34%, transparent);
+  --open-tint: color-mix(in oklab, var(--rail), var(--accent) 18%);
 }
 
 * {
