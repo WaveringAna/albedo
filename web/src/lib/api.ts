@@ -36,11 +36,11 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(method: string, path: string, init: { signal?: AbortSignal; body?: unknown } = {}): Promise<T> {
+async function request<T>(method: string, path: string, init: { signal?: AbortSignal; body?: unknown; headers?: Record<string, string> } = {}): Promise<T> {
   const response = await fetch(`/api${path}`, {
     method,
     signal: init.signal,
-    headers: { accept: 'application/json', ...(init.body === undefined ? {} : { 'content-type': 'application/json' }) },
+    headers: { accept: 'application/json', ...(init.body === undefined ? {} : { 'content-type': 'application/json' }), ...init.headers },
     body: init.body === undefined ? undefined : JSON.stringify(init.body),
   });
   if (!response.ok) {
@@ -160,6 +160,78 @@ export function uuidv7(): string {
 export async function interruptSession(sessionId: string): Promise<void> {
   const session = await get<{ status: { run_id: string | null }; input_order: number }>(`/sessions/${sessionId}`);
   await request('POST', `/sessions/${sessionId}/interrupt`, { body: { run_id: session.status.run_id, through_input_order: session.input_order } });
+}
+
+/** A folder sessions have worked in, most used first. */
+export interface RecentWorkspace {
+  location: string;
+  use_count: number;
+  activity_at: string | null;
+}
+
+export interface Directory {
+  directory: string;
+  parent: string | null;
+  home: string;
+  items: { name: string; location: string; vcs: string | null; hidden: boolean }[];
+}
+
+export function recentWorkspaces(): Promise<RecentWorkspace[]> {
+  return get<Page<RecentWorkspace>>('/workspaces?limit=200').then((page) => page.items);
+}
+
+export function browse(location: string): Promise<Directory> {
+  return get<Directory>(`/workspaces?location=${encodeURIComponent(location)}&limit=200`);
+}
+
+/** A provider profile: an account and endpoint, with the model and effort a new session starts on. */
+export interface Profile {
+  id: string;
+  extension: string;
+  model: string | null;
+  effort: string | null;
+}
+
+export async function profiles(): Promise<{ fallback: string | null; profiles: Profile[] }> {
+  const providers = await get<{ default_profile: string | null; profiles: Record<string, Omit<Profile, 'id'>> }>('/settings?group=providers');
+  const list = Object.entries(providers.profiles).map(([id, profile]) => ({ ...profile, id }));
+  return { fallback: providers.default_profile, profiles: list.sort((a, b) => a.id.localeCompare(b.id)) };
+}
+
+export interface Model {
+  id: string;
+  label: string;
+  efforts: { id: string; label: string }[];
+}
+
+export function models(profile: string): Promise<Model[]> {
+  return get<Page<Model>>(`/models?provider_profile=${encodeURIComponent(profile)}`).then((page) => page.items);
+}
+
+export interface Choice {
+  provider_profile: string | null;
+  model: string | null;
+  effort: string | null;
+}
+
+/** Starts a session in a folder; null choices take the defaults. */
+export function createSession(workspace: string, choice: Choice): Promise<Session> {
+  // If-None-Match makes the PUT a create: it never replaces a session.
+  return request<Session>('PUT', `/sessions/${uuidv7()}`, { body: { kind: 'new', workspace, ...choice }, headers: { 'if-none-match': '*' } });
+}
+
+/** Changes a session's profile, model or effort, against the configuration it was read at. */
+export async function configureSession(sessionId: string, change: Partial<Choice>): Promise<void> {
+  const url = `/sessions/${sessionId}?view=configuration`;
+  const response = await fetch(`/api${url}`, { headers: { accept: 'application/json' } });
+  if (!response.ok) throw new ApiError(response.status, 'http_error', response.statusText);
+  const etag = response.headers.get('etag') ?? '';
+  await request('PATCH', url, { body: change, headers: { 'content-type': 'application/merge-patch+json', 'if-match': etag } });
+}
+
+/** A session's current choice of profile, model and effort. */
+export function sessionChoice(sessionId: string): Promise<Choice> {
+  return get<Choice>(`/sessions/${sessionId}?view=configuration`);
 }
 
 export interface ImageUpload {

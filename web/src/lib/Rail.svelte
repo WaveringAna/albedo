@@ -6,7 +6,7 @@
   import LiveFace from './LiveFace.svelte';
   import { sessions } from './sessions.svelte';
 
-  let { search = $bindable() }: { search?: HTMLInputElement } = $props();
+  let { search = $bindable(), onnew }: { search?: HTMLInputElement; onnew?: () => void } = $props();
   let query = $state('');
 
   const visible = $derived(
@@ -46,6 +46,12 @@
     <input bind:this={search} bind:value={query} placeholder="filter sessions" aria-label="Filter sessions" spellcheck="false" onkeydown={(event) => event.key === 'Escape' && ((query = ''), search?.blur())} />
     <kbd>/</kbd>
   </form>
+  {#if onnew}
+    <button class="new" onclick={onnew}>
+      <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><path d="M8 3.5v9M3.5 8h9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" /></svg>
+      new session
+    </button>
+  {/if}
 
   <nav>
     {#each sections as section (section.label)}
@@ -108,6 +114,27 @@
   }
   .search:focus-within kbd {
     visibility: hidden;
+  }
+  .new {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0 10px 4px;
+    padding: 7px 10px;
+    color: var(--text);
+    font: inherit;
+    font-size: 13px;
+    text-align: left;
+    background: none;
+    border: 0;
+    border-radius: 8px;
+    cursor: pointer;
+  }
+  .new:hover {
+    background: var(--hover);
+  }
+  .new svg {
+    color: var(--accent);
   }
   nav {
     flex: 1;

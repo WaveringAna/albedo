@@ -8,6 +8,7 @@
   import { busy } from './lib/live.svelte';
   import About from './lib/About.svelte';
   import { layout } from './lib/layout.svelte';
+  import NewSession from './lib/NewSession.svelte';
   import Phone from './lib/Phone.svelte';
   import Rail from './lib/Rail.svelte';
   import Settings from './lib/Settings.svelte';
@@ -21,6 +22,7 @@
   let paletteOpen = $state(false);
   let settingsOpen = $state(false);
   let aboutOpen = $state(false);
+  let newOpen = $state(false);
   let search = $state<HTMLInputElement>();
 
   $effect(() => localStorage.setItem(RAIL_KEY, railOpen ? 'open' : 'closed'));
@@ -43,6 +45,7 @@
   sessions.start();
 
   const commands: Omit<Item, 'kind' | 'key'>[] = [
+    { label: 'new session', run: () => (newOpen = true) },
     { label: 'new board', run: () => boards.create() },
     { label: 'rename board', hint: 'F2', run: () => (boards.renaming = boards.active) },
     { label: 'next board', hint: '⇧]', run: () => boards.step(1) },
@@ -139,7 +142,7 @@
 <svelte:window onkeydown={keydown} />
 
 {#if layout.phone}
-  <Phone onsettings={() => (settingsOpen = !settingsOpen)} onpalette={() => (paletteOpen = true)} />
+  <Phone onsettings={() => (settingsOpen = !settingsOpen)} onpalette={() => (paletteOpen = true)} onnew={() => (newOpen = true)} />
 {:else}
 <div class="shell" class:rail-closed={!railOpen}>
   <header class="topbar">
@@ -167,7 +170,7 @@
     </div>
   </header>
 
-  {#if railOpen}<Rail bind:search />{/if}
+  {#if railOpen}<Rail bind:search onnew={() => (newOpen = true)} />{/if}
 
   <main>
     {#if boards.board}
@@ -197,6 +200,10 @@
 
 {#if settingsOpen}
   <Settings onclose={() => (settingsOpen = false)} />
+{/if}
+
+{#if newOpen}
+  <NewSession onclose={() => (newOpen = false)} />
 {/if}
 
 {#if aboutOpen}
