@@ -19,12 +19,12 @@
   --rail: color-mix(in oklab, var(--seed-bg), var(--seed-fg) calc(3% * var(--k)));
   --surface: color-mix(in oklab, var(--seed-bg), #fff 78%);
   --title-bar: color-mix(in oklab, var(--surface), var(--seed-fg) calc(2% * var(--k)));
-  --well: color-mix(in oklab, var(--surface), var(--seed-fg) calc(3.5% * var(--k)));
-  --field: color-mix(in oklab, var(--surface), var(--seed-fg) calc(6% * var(--k)));
+  --well: color-mix(in oklab, var(--surface), var(--seed-fg) calc(8% * var(--k)));
+  --field: color-mix(in oklab, var(--surface), var(--seed-fg) calc(11% * var(--k)));
   --bubble: color-mix(in oklab, var(--field), var(--seed-accent) 7%);
   --text: var(--seed-fg);
-  --muted: color-mix(in oklab, var(--seed-fg), var(--surface) calc(46% - 20% * var(--contrast)));
-  --faint: color-mix(in oklab, var(--seed-fg), var(--surface) calc(64% - 20% * var(--contrast)));
+  --muted: color-mix(in oklab, var(--seed-fg), var(--surface) calc(28% - 20% * var(--contrast)));
+  --faint: color-mix(in oklab, var(--seed-fg), var(--surface) calc(45% - 20% * var(--contrast)));
   --hover: color-mix(in oklab, var(--seed-fg) calc(5% * var(--k)), transparent);
   --selected: color-mix(in oklab, var(--seed-fg) calc(8% * var(--k)), transparent);
   --accent: var(--seed-accent);
