@@ -3,6 +3,7 @@
   stdenv,
   rustPlatform,
   buildGoModule,
+  buildNpmPackage,
   symlinkJoin,
   fetchurl,
   gleam,
@@ -174,6 +175,34 @@
       platforms = lib.platforms.unix;
     };
   };
+  # The browser client `albedo web` serves: a static Vite build of web/.
+  web = buildNpmPackage {
+    pname = "albedo-web";
+    version = "1.0.0";
+    src = lib.fileset.toSource {
+      root = ./web;
+      fileset = lib.fileset.unions [
+        ./web/package.json
+        ./web/package-lock.json
+        ./web/index.html
+        ./web/svelte.config.js
+        ./web/tsconfig.json
+        ./web/vite.config.ts
+        ./web/src
+      ];
+    };
+    npmDepsHash = "sha256-snQi1aEkWmfqAqsAo6yj78IHLhM5bWb7T7JgdRKuftU=";
+    installPhase = ''
+      runHook preInstall
+      cp -R dist $out
+      runHook postInstall
+    '';
+    meta = {
+      description = "canvas web client for the albedo coding agent";
+      license = lib.licenses.wtfpl;
+      platforms = lib.platforms.unix;
+    };
+  };
   client = buildGoModule {
     pname = "albedo-client";
     version = "1.0.0";
@@ -203,10 +232,11 @@ in
     postBuild = ''
       rm $out/bin/albedo
       makeWrapper ${client}/bin/albedo $out/bin/albedo \
-        --set-default ALBEDO_DAEMON ${server}/bin/albedo-daemon
+        --set-default ALBEDO_DAEMON ${server}/bin/albedo-daemon \
+        --set-default ALBEDO_WEB_DIST ${web}
     '';
     passthru = {
-      inherit client server render usageCore;
+      inherit client server render usageCore web;
       daemon = server;
     };
     meta =

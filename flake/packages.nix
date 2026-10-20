@@ -17,6 +17,7 @@
       };
       albedo-client = albedo.client;
       albedo-server = albedo.server;
+      albedo-web = albedo.web;
       inherit (albedo) daemon render usageCore;
       default = albedo;
     };

@@ -2,7 +2,7 @@
 
 `web/` is the browser client: a canvas (Svelte 5, Svelte Flow) where sessions open as panels. It is a client like the TUI, not an extension; it reads the same daemon HTTP API.
 
-`albedo web` (`cli/internal/cli/web.go`) finds or starts the daemon, serves `web/dist` (or `ALBEDO_WEB_DIST`) on `127.0.0.1:4317` (`--port`, 0 for any), prints a launch link and opens it unless `--no-open` or `ALBEDO_NO_BROWSER` is set. `cli/internal/webui` owns the boundary:
+`albedo web` (`cli/internal/cli/web.go`) finds or starts the daemon, serves `web/dist` (or `ALBEDO_WEB_DIST`, which the Nix package sets to its `web` build, `.#albedo-web`: `buildNpmPackage` over `web/`, so bump `npmDepsHash` in `default.nix` when `package-lock.json` changes) on `127.0.0.1:4317` (`--port`, 0 for any), prints a launch link and opens it unless `--no-open` or `ALBEDO_NO_BROWSER` is set. `cli/internal/webui` owns the boundary:
 
 - The daemon token never reaches the browser. The page calls `/api/...` on its own origin; the proxy strips `/api`, drops `Origin`, `Cookie` and `Referer`, and adds `Authorization: Bearer <token>`. Session streams pass through unbuffered.
 - Each run draws a launch key. `/?key=<key>` sets an `HttpOnly`, `SameSite=Strict` cookie and redirects to `/`; `/api` without that cookie answers `401 web_signed_out`. A restarted `albedo web` signs every tab out.
@@ -10,7 +10,7 @@
 - A transport failure or a 401 from the daemon triggers `Connection.Refresh`, so a restarted daemon is found on the next request.
 - `/assets/*` (content-hashed by Vite) is cached as immutable; everything else is `no-cache`.
 
-In development, `npm run dev` in `web/` proxies `/api` the same way from `$ALBEDO_HOME/daemon.json`, read once at start, dropping `Origin` and `Cookie`. It listens on the local network, open, so other devices at home can try the client.
+In development, `npm run dev` in `web/` proxies `/api` the same way from `$ALBEDO_HOME/daemon.json`, read once at start (only when serving, so a build needs no daemon), dropping `Origin` and `Cookie`. It listens on the local network, open, so other devices at home can try the client.
 
 Words: a **board** is a named canvas of panels, and the open boards are the tabs along the top (`boards.svelte.ts`). A board holds sessions from any folders. **Workspace** keeps its albedo meaning, a session's folder, and the sidebar shows each session's folder under its name. `+` makes a new board; double-click or F2 renames one; closing a tab keeps the board, which the palette reopens (`Open board: <name>`); `Delete board` removes it. The last tab cannot be closed, so there is always a canvas.
 

@@ -18,6 +18,7 @@ _: {
           ty
           cargo
           rustc
+          nodejs
         ])
         ++ [
           gleam

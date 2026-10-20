@@ -24,9 +24,11 @@ function daemonProxy(): ProxyOptions {
   };
 }
 
-export default defineConfig({
+// Only the dev server talks to a daemon, so a build (in the Nix sandbox, say)
+// never needs daemon.json.
+export default defineConfig(({ command }) => ({
   plugins: [svelte()],
   // Open to the local network, so other devices at home can try the client.
-  server: { host: true, proxy: { '/api': daemonProxy() } },
+  server: { host: true, proxy: command === 'serve' ? { '/api': daemonProxy() } : undefined },
   build: { target: 'es2022', cssCodeSplit: false, reportCompressedSize: true },
-});
+}));

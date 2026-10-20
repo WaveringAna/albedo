@@ -86,14 +86,20 @@ full ID. Add `--yes` to skip confirmation in scripts.
 ## Web usage
 
 The web client is a canvas of chat windows on a desktop and one chat at a
-time on a phone. It lives in `web/` (Svelte) and isn't in the Nix package yet,
-so build it once from the checkout, then serve it:
+time on a phone. It lives in `web/` (Svelte). The Nix package includes it, so
+`albedo web` works straight away:
+
+```sh
+nix run . -- web           # serves on 127.0.0.1:4317 and opens the browser
+albedo web --port 0 --no-open
+nix build .#albedo-web     # just the built client
+```
+
+From a checkout without Nix, build it once first:
 
 ```sh
 npm --prefix web ci
 npm --prefix web run build
-albedo web                 # serves on 127.0.0.1:4317 and opens the browser
-albedo web --port 0 --no-open
 ```
 
 `albedo web` finds or starts the daemon the same way the terminal client does,
