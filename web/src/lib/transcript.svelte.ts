@@ -9,7 +9,7 @@ import { formatGap, outcome, type Mood } from './moods';
 // fetched when it is needed: message text at once, tool output on opening.
 
 export type Block =
-  | { kind: 'user'; key: string; text: string; images: Picture[]; from: string | null; gap: string | null; state: 'sent' | 'sending' | 'failed'; error?: string }
+  | { kind: 'user'; key: string; text: string; images: Picture[]; from: string | null; gap: string | null; state: 'sending' | 'sent' | 'seen' | 'failed'; error?: string }
   | { kind: 'assistant'; key: string; text: string; plate: boolean }
   | { kind: 'thinking'; key: string; text: string; ms: number | null }
   | { kind: 'tool'; key: string; name: string; entry: HistoryEntry; done: boolean; trace?: Trace; failed: boolean }
@@ -66,6 +66,8 @@ interface Pending {
   id: string;
   text: string;
   images: Attached[];
+  /** The daemon has it, waiting for the loop to take it into the conversation. */
+  accepted?: boolean;
   error?: string;
 }
 
@@ -146,6 +148,8 @@ export class Transcript {
 
   blocks = $derived(this.#blocks());
   groups = $derived(group(this.blocks));
+  /** Your newest message, until a reply follows it, so the chat can say whether the model has it. */
+  receipt = $derived(this.#receipt());
 
   #expanding = new Set<string>();
   #polling = false;
@@ -291,6 +295,14 @@ export class Transcript {
     this.pending = this.pending.filter((send) => send.id !== id);
   }
 
+  #receipt(): string | null {
+    for (const block of this.blocks.toReversed()) {
+      if (block.kind === 'assistant') return null;
+      if (block.kind === 'user' && !block.from) return block.key;
+    }
+    return null;
+  }
+
   /** Where a turn starts among the loaded entries, for a review of it. */
   turnStart(turnId: string): number | null {
     return this.entries.find((entry) => entry.turn_id === turnId)?.position ?? null;
@@ -312,6 +324,7 @@ export class Transcript {
   async #deliver(send: Pending) {
     try {
       await sendMessage(this.sessionId, send.id, send.text, send.images.map(({ mime_type, data }) => ({ mime_type, data })));
+      this.pending = this.pending.map((candidate) => (candidate.id === send.id ? { ...candidate, accepted: true } : candidate));
     } catch (error) {
       const message = String((error as Error).message ?? error);
       this.pending = this.pending.map((candidate) => (candidate.id === send.id ? { ...candidate, error: message } : candidate));
@@ -349,7 +362,7 @@ export class Transcript {
         case 'user': {
           const gap = previous && at(entry) - previous >= AWAY_MS ? formatGap(at(entry) - previous) : null;
           const from = entry.mail?.sender_label?.toLowerCase() ?? (entry.turn_type && !['user', 'chat'].includes(entry.turn_type) ? entry.turn_type : null);
-          blocks.push({ kind: 'user', key: entry.id, text, images: picturesOf(entry), from, gap, state: 'sent' });
+          blocks.push({ kind: 'user', key: entry.id, text, images: picturesOf(entry), from, gap, state: 'seen' });
           speaker = 'you';
           break;
         }
@@ -400,7 +413,7 @@ export class Transcript {
     }
     for (const send of this.pending) {
       const images = send.images.map((image) => ({ src: image.preview }));
-      blocks.push({ kind: 'user', key: `pending:${send.id}`, text: send.text, images, from: null, gap: null, state: send.error ? 'failed' : 'sending', error: send.error });
+      blocks.push({ kind: 'user', key: `pending:${send.id}`, text: send.text, images, from: null, gap: null, state: send.error ? 'failed' : send.accepted ? 'sent' : 'sending', error: send.error });
     }
     return blocks;
   }

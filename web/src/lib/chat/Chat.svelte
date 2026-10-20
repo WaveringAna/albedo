@@ -11,6 +11,7 @@
   import { Transcript } from '../transcript.svelte';
   import Composer from './Composer.svelte';
   import Markdown from './Markdown.svelte';
+  import Receipt from './Receipt.svelte';
   import WorkSteps from './WorkSteps.svelte';
   import ReviewView from '../views/ReviewView.svelte';
   import ModelPicker from './ModelPicker.svelte';
@@ -216,12 +217,13 @@
 
       {#each transcript.groups as group (group.key)}
         {#if group.kind === 'user'}
+          {@const unseen = group.state === 'sending' || group.state === 'sent'}
           <div class="user" class:failed={group.state === 'failed'} data-entry={group.key}>
             {#if group.from || group.gap}
               <span class="plate"><span class:you={!group.from}>{group.from ?? 'you'}</span>{#if group.gap}<span class="meta">{' · '}{group.gap}</span>{/if}</span>
             {/if}
             {#if group.images.length}
-              <div class="pictures" class:sending={group.state === 'sending'}>
+              <div class="pictures" class:unseen>
                 {#each group.images as picture, index (index)}
                   <a href={picture.src} target="_blank" rel="noopener noreferrer" title="Image #{index + 1}">
                     <img src={picture.src} alt="Image #{index + 1}" width={picture.width} height={picture.height} loading="lazy" />
@@ -230,7 +232,10 @@
               </div>
             {/if}
             {#if group.text.trim()}
-              <div class="bubble" class:sending={group.state === 'sending'}>{group.text}</div>
+              <div class="bubble" class:unseen>{group.text}</div>
+            {/if}
+            {#if transcript.receipt === group.key && group.state !== 'failed'}
+              <Receipt state={group.state} />
             {/if}
             {#if group.state === 'failed'}
               <span class="problem">
@@ -537,8 +542,8 @@
     background: var(--bubble);
     border-radius: 16px 16px 4px 16px;
   }
-  .bubble.sending,
-  .pictures.sending {
+  .bubble.unseen,
+  .pictures.unseen {
     opacity: 0.6;
   }
   .pictures {
