@@ -1,7 +1,8 @@
 <script lang="ts">
-  // A pane at the top left, under the (?) beside the wordmark: what albedo
-  // is, who makes it, and whose work it is built on. Like settings, it is not
-  // modal; Escape or a click elsewhere closes it.
+  // A pane under the (?) beside settings: what albedo is, who makes it (on
+  // tiles two to a row, an odd one centred under them), and whose work it is
+  // built on (pills in centred rows). Like settings, it is not modal; Escape
+  // or a click elsewhere closes it.
   let { onclose }: { onclose: () => void } = $props();
   let pane = $state<HTMLElement>();
 
@@ -112,9 +113,10 @@
     color: var(--brand-from);
   }
   h3 {
-    margin: 0 0 8px;
+    margin: 0 0 10px;
     font-size: 13px;
     font-weight: 600;
+    text-align: center;
   }
   .lead {
     margin: 6px 0 0;
@@ -123,33 +125,63 @@
     line-height: 1.45;
   }
   ul {
-    display: grid;
-    gap: 4px;
     margin: 0;
     padding: 0;
     list-style: none;
   }
-  /* Each name sits right beside what belongs to it, so the eye never has
-     to cross the pane to pair them. */
-  li {
-    display: flex;
-    align-items: baseline;
-    gap: 8px;
+  /* The people two to a row on tiles, an odd one out centred under them. */
+  .people {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+  }
+  .people li {
+    display: grid;
+    justify-items: center;
+    gap: 1px;
+    padding: 9px 8px;
     font-size: 13px;
+    background: var(--well);
+    border-radius: 10px;
+  }
+  .people li:last-child:nth-child(odd) {
+    grid-column: 1 / -1;
+    justify-self: center;
+    width: calc(50% - 3px);
+  }
+  .people a {
+    font-size: 12px;
   }
   .name {
     font-weight: 560;
   }
+  /* What it is built on, flowing into centred rows of pills. */
+  .notices {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 6px;
+  }
+  .notices li {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    padding: 4px 10px;
+    font-size: 12.5px;
+    background: var(--well);
+    border-radius: 999px;
+  }
   .license {
     color: var(--faint);
-    font-size: 11.5px;
+    font-size: 11px;
     font-variant-numeric: tabular-nums;
   }
   .note {
-    margin: 10px 0 0;
+    margin: 12px 0 0;
     color: var(--muted);
     font-size: 12px;
     line-height: 1.45;
+    text-align: center;
   }
   a {
     color: var(--accent);
