@@ -145,16 +145,6 @@ input:focus-visible,
   --xy-background-color: var(--bg);
 }
 
-/* Sparse dots give panning something to move against; they fade out
-   as the view zooms out, before they crowd into a texture. */
-.svelte-flow__background-pattern.dots {
-  fill: var(--dots);
-}
-
-.svelte-flow__background {
-  opacity: var(--dots-opacity, 1);
-}
-
 .svelte-flow__node:focus-visible {
   outline: none;
 }

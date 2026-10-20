@@ -1,7 +1,8 @@
 <script lang="ts">
-  import { Background, BackgroundVariant, MiniMap, NodeResizer, SvelteFlow, type NodeTypes } from '@xyflow/svelte';
+  import { MiniMap, NodeResizer, SvelteFlow, type NodeTypes } from '@xyflow/svelte';
   import { ZOOM, type Board } from './board.svelte';
   import { prefs } from './prefs.svelte';
+  import Dots from './Dots.svelte';
   import FlowBinder from './FlowBinder.svelte';
   import { shortcut } from './keys';
   import NoteNode from './nodes/NoteNode.svelte';
@@ -27,8 +28,6 @@
   }
   const READABLE = 0.6;
   let element = $state<HTMLElement>();
-  // The dots fade out as the view zooms out, before they crowd into a texture.
-  const zoom = $derived(board.viewport.zoom);
 
   function scrollsItself(target: EventTarget | null, deltaY: number) {
     const scroller = (target as HTMLElement | null)?.closest<HTMLElement>('.nowheel');
@@ -114,7 +113,6 @@
   class:hand
   class:panning={panning !== null}
   bind:this={element}
-  style:--dots-opacity={Math.min(1, (zoom - 0.5) * 4)}
   ondblclick={dblclick}
   onpointermove={drag}
   onpointerup={release}
@@ -140,8 +138,8 @@
     proOptions={{ hideAttribution: true }}
     onmove={(_, viewport) => (board.viewport = viewport)}
   >
-    {#if prefs.dots && zoom >= 0.5}
-      <Background variant={BackgroundVariant.Dots} gap={36} size={3} />
+    {#if prefs.dots}
+      <Dots gap={36} size={3} />
     {/if}
     {#if minimap}
       <MiniMap position="bottom-right" pannable zoomable={false} width={168} height={104} nodeBorderRadius={6} bgColor="var(--surface)" nodeColor="var(--minimap-window)" maskColor="var(--minimap-mask)" />
