@@ -2597,6 +2597,19 @@ type SessionErrorEvent struct {
 // SessionEvent defines model for SessionEvent.
 type SessionEvent = json.RawMessage
 
+// SessionFile defines model for SessionFile.
+type SessionFile struct {
+	// ModifiedAt UTC RFC 3339.
+	ModifiedAt Timestamp `json:"modified_at"`
+
+	// Path Absolute location as the daemon spells it, `host:/path` for a remote workspace.
+	Path string  `json:"path"`
+	Size Counter `json:"size"`
+
+	// Text The file's contents. At most 1 MiB of UTF-8 without NUL.
+	Text string `json:"text"`
+}
+
 // SessionInputEvent defines model for SessionInputEvent.
 type SessionInputEvent struct {
 	Data struct {
@@ -3687,6 +3700,12 @@ type GetContextParams struct {
 	Next       *Next    `form:"next,omitempty" json:"next,omitempty"`
 }
 
+// GetSessionFileParams defines parameters for GetSessionFile.
+type GetSessionFileParams struct {
+	// Path Absolute on the workspace's machine, relative to the workspace, `~/...` in a local workspace, or the host-prefixed spelling `path` answers with.
+	Path string `form:"path" json:"path"`
+}
+
 // GetHistoryParams defines parameters for GetHistory.
 type GetHistoryParams struct {
 	View   *string  `form:"view,omitempty" json:"view,omitempty"`
@@ -4623,6 +4642,13 @@ type ClientInterface interface {
 	//
 	// Corresponds with GET /sessions/{session_id}/context-window (the `GetContextWindow` operationId).
 	GetContextWindow(ctx context.Context, sessionID ID, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetSessionFile Read a text file in the session's workspace
+	//
+	// Reads on the machine the workspace is on: the daemon for a local workspace, the host through one SSH gather for a remote one. A missing file, a directory or another non-regular file answers 404 `file_not_found`; an unknown session answers 404 like other session routes. A remote host that is not ready answers 503 `workspace_unavailable`, a failed gather 502. Requires capability `file_reading: 1`.
+	//
+	// Corresponds with GET /sessions/{session_id}/files (the `GetSessionFile` operationId).
+	GetSessionFile(ctx context.Context, sessionID ID, params *GetSessionFileParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// GetHistory Page history or fork checkpoints
 	//
@@ -6450,6 +6476,23 @@ func (c *Client) GetContext(ctx context.Context, sessionID ID, params *GetContex
 // Corresponds with GET /sessions/{session_id}/context-window (the `GetContextWindow` operationId).
 func (c *Client) GetContextWindow(ctx context.Context, sessionID ID, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewGetContextWindowRequest(c.Server, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// GetSessionFile Read a text file in the session's workspace
+//
+// Reads on the machine the workspace is on: the daemon for a local workspace, the host through one SSH gather for a remote one. A missing file, a directory or another non-regular file answers 404 `file_not_found`; an unknown session answers 404 like other session routes. A remote host that is not ready answers 503 `workspace_unavailable`, a failed gather 502. Requires capability `file_reading: 1`.
+//
+// Corresponds with GET /sessions/{session_id}/files (the `GetSessionFile` operationId).
+func (c *Client) GetSessionFile(ctx context.Context, sessionID ID, params *GetSessionFileParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetSessionFileRequest(c.Server, sessionID, params)
 	if err != nil {
 		return nil, err
 	}
@@ -10879,6 +10922,63 @@ func NewGetContextWindowRequest(server string, sessionID ID) (*http.Request, err
 	queryURL, err := serverURL.Parse(operationPath)
 	if err != nil {
 		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewGetSessionFileRequest constructs an http.Request for the GetSessionFile method
+func NewGetSessionFileRequest(server string, sessionID ID, params *GetSessionFileParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "session_id", sessionID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/sessions/%s/files", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		// queryValues collects non-styled parameters (passthrough, JSON)
+		// that are safe to round-trip through url.Values.Encode().
+		queryValues := queryURL.Query()
+		// rawQueryFragments collects pre-encoded query fragments from
+		// styled parameters, preserving literal commas as delimiters
+		// per the OpenAPI spec (e.g. "color=blue,black,brown").
+		var rawQueryFragments []string
+
+		if queryFrag, err := runtime.StyleParamWithOptions("form", true, "path", params.Path, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
+			return nil, err
+		} else {
+			for _, qp := range strings.Split(queryFrag, "&") {
+				rawQueryFragments = append(rawQueryFragments, qp)
+			}
+		}
+
+		if encoded := queryValues.Encode(); encoded != "" {
+			rawQueryFragments = append(rawQueryFragments, encoded)
+		}
+		queryURL.RawQuery = strings.Join(rawQueryFragments, "&")
 	}
 
 	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)

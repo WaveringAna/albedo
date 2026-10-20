@@ -94,6 +94,7 @@ own section. An omitted method is unsupported. `GET` defaults to JSON.
 | `/sessions/{session_id}/context` | GET | Prepared request inspection and provider request records |
 | `/sessions/{session_id}/context-window` | GET | The window this session compacts against, its source, and a sentence to show |
 | `/sessions/{session_id}/catalog` | GET | Fresh discovery and separately identified loaded composition |
+| `/sessions/{session_id}/files` | GET | Read one UTF-8 text file in the session's workspace, on its host |
 | `/sessions/{session_id}/reload` | POST | Reload session composition, model catalogs, or both |
 | `/sessions/{session_id}/kernel/upgrade` | POST | Explicitly replace this session's Python kernel |
 | `/sessions/{session_id}/compaction` | POST | Compact the model-facing conversation |
@@ -300,7 +301,7 @@ Capabilities are a map from stable feature names to integer contract versions.
 The required version-1 features are `durable_inputs`,
 `collection_invalidation`, and `tool_progress`; `session_replay` requires
 version 2. Optional features include
-`context`, `catalog`, `workspace_browsing`, `host_probes`, `provider_auth`,
+`context`, `catalog`, `workspace_browsing`, `file_reading`, `host_probes`, `provider_auth`,
 `history_rewind`, and `storage_report`. Extension entries identify enabled services and their
 contract versions. Builds cannot substitute for protocol compatibility.
 
@@ -1017,6 +1018,17 @@ fact is null with a diagnostic, rather than loss of the entire directory.
 The tree has at most 12 top-level entries and four children per directory;
 `more` counts omissions. Local and SSH locations share this representation.
 Paths are interpreted and canonicalized on the daemon's host.
+
+`GET /sessions/{session_id}/files?path=` reads one file for a client to show,
+on the machine the session's workspace is on, local or over the same SSH
+gather as browsing. `path` is absolute there, relative to the workspace,
+`~/...` in a local workspace, or the host-prefixed spelling the answer uses.
+The answer carries the canonical `path` (host-prefixed when remote), `size`
+in bytes, `modified_at`, and `text`. Only regular UTF-8 files without NUL are
+read: over 1 MiB, or too large to answer within the response limit, is 413
+`file_too_large`; binary or invalid UTF-8 is 415 `file_not_text`; missing, a
+directory, or not a regular file is 404 `file_not_found`. A host that is not
+ready is 503 `workspace_unavailable`, as for browsing.
 
 `GET /hosts` returns known SSH targets and cached state, optionally filtered by
 `target`. State is `unknown`, `probing`, `ready`, `needs_auth`, `unreachable`,

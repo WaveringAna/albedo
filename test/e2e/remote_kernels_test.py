@@ -1093,6 +1093,50 @@ print('live spill pages, disk failures, atomic saves, and pruning verified')
         self.assertEqual(listed["directory"], f"fakehost:{self.remote_home}")
         self.assertIn("proj", [entry["name"] for entry in listed["items"]])
 
+    def read_file(self, session, path):
+        query = urllib.parse.urlencode({"path": path})
+        with self.app.api(f"/sessions/{session}/files?{query}") as response:
+            return json.load(response)
+
+    def refused_file(self, session, path):
+        with self.assertRaises(urllib.error.HTTPError) as refused:
+            self.read_file(session, path)
+        return refused.exception.code, json.load(refused.exception)["code"]
+
+    def test_files_read_on_the_host_like_local_ones(self):
+        with self.app.api("/server") as response:
+            self.assertEqual(json.load(response)["capabilities"]["file_reading"], 1)
+        (self.project / "src").mkdir()
+        (self.project / "src" / "main.py").write_text("print('hi')\n")
+        (self.project / "big.txt").write_bytes(b"x" * (1024 * 1024 + 1))
+        (self.project / "blob.bin").write_bytes(b"a\0b")
+        (self.project / "latin1.txt").write_bytes(b"caf\xe9")
+        local = self.create(str(self.project))["id"]
+        remote = self.create(f"fakehost:{self.project}")["id"]
+        main = self.project / "src" / "main.py"
+        for session, shown in ((local, str(main)), (remote, f"fakehost:{main}")):
+            for path in ("src/main.py", "src/../src/main.py", str(main), shown):
+                read = self.read_file(session, path)
+                self.assertEqual(read["path"], shown)
+                self.assertEqual(read["text"], "print('hi')\n")
+                self.assertEqual(read["size"], 12)
+            self.assertEqual(
+                self.refused_file(session, "big.txt"), (413, "file_too_large")
+            )
+            for path in ("blob.bin", "latin1.txt"):
+                self.assertEqual(
+                    self.refused_file(session, path), (415, "file_not_text")
+                )
+            for path in ("missing.txt", "src"):
+                self.assertEqual(
+                    self.refused_file(session, path), (404, "file_not_found")
+                )
+            self.assertEqual(
+                self.refused_file(session, "other:/etc/hosts"),
+                (400, "invalid_request"),
+            )
+        self.assertEqual(self.refused_file(operation_id(), "src/main.py")[0], 404)
+
     def test_project_instructions_and_skills_come_from_the_host(self):
         (self.project / "AGENTS.md").write_text("remote rule: always say banana\n")
         skill = self.project / ".agents" / "skills" / "far-skill"

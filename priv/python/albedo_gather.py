@@ -11,7 +11,9 @@ back in one ssh round trip per question.
 
 Request: `{route, dir, plans, tracked, deadline, counted}`, `dir` absolute
 and normalised. `route` is list, repo, preview or project, or exists, which
-answers `directory` alone. `tracked` names, per kind, the planned command
+answers `directory` alone. The file route takes `{route, path, limit}` instead
+and answers `{size, modified, data}` (base64, left out past `limit`) or
+`{error}`. `tracked` names, per kind, the planned command
 that lists a preview's tracked files and the separator its output uses.
 
 Snapshot: `{directory, entries: {dir: [[name, dir, modified, symlink]]}, exists:
@@ -151,7 +153,34 @@ def project(directory: str) -> dict[str, str]:
     return files
 
 
+def read(path: str, limit: int) -> dict[str, object]:
+    """A regular file's size, mtime and bytes: at most one byte past `limit`,
+    so a file that grew since the stat still reads as too large."""
+    try:
+        info = os.stat(path)
+    except (FileNotFoundError, NotADirectoryError):
+        return {"error": "does not exist"}
+    except OSError:
+        return {"error": "cannot be read"}
+    if stat.S_ISDIR(info.st_mode):
+        return {"error": "is a directory"}
+    if not stat.S_ISREG(info.st_mode):
+        return {"error": "is not a regular file"}
+    found: dict[str, object] = {"size": info.st_size, "modified": int(info.st_mtime)}
+    if info.st_size > limit:
+        return found
+    try:
+        with open(path, "rb") as handle:
+            data = handle.read(limit + 1)
+    except OSError:
+        return {"error": "cannot be read"}
+    found["data"] = base64.b64encode(data).decode()
+    return found
+
+
 def gather(request: dict) -> dict[str, object]:
+    if request["route"] == "file":
+        return read(request["path"], int(request["limit"]))
     route, directory = request["route"], request["dir"]
     snapshot: dict[str, object] = {"directory": os.path.isdir(directory)}
     if not snapshot["directory"] or route == "exists":

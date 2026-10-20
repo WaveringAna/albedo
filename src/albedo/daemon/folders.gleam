@@ -1,5 +1,5 @@
-//// Native directory and preview observations behind `/workspaces` and `/cd`.
-//// A local path is
+//// Native directory and preview observations behind `/workspaces` and `/cd`,
+//// and the text files `/sessions/{id}/files` reads. A local path is
 //// read on the daemon, so the picker only offers folders the daemon can
 //// see; a `host:/path` is gathered on that host in one ssh round trip
 //// (priv/python/albedo_gather.py) and read by the same code, through a
@@ -9,6 +9,7 @@ import albedo/harness/languages.{type Language}
 import albedo/harness/location
 import albedo/harness/ssh
 import albedo/harness/vcs
+import gleam/bit_array
 import gleam/bool
 import gleam/dict.{type Dict}
 import gleam/dynamic/decode
@@ -341,6 +342,163 @@ pub fn exists(
 /// One stat on a host that already answered its probe.
 pub const exists_ms = 5000
 
+/// A text file as a client reads it: where it is, spelled as the
+/// workspace's locations are, its byte size, modification time in seconds,
+/// and its contents.
+pub type File {
+  File(location: String, size: Int, modified: Int, text: String)
+}
+
+pub type FileFailure {
+  BadPath(detail: String)
+  /// Missing, a directory, not a regular file, or unreadable: `why` says
+  /// which, after the location.
+  NotAFile(location: String, why: String)
+  TooLarge(location: String, size: Int)
+  /// Binary, or not valid UTF-8.
+  NotText(location: String)
+  /// The workspace's host could not be asked.
+  FileUnavailable(Failure)
+}
+
+/// The largest file `read_file` reads.
+pub const file_limit = 1_048_576
+
+/// The UTF-8 text file at `path` on the machine `workspace` is on. `path` is
+/// absolute there, relative to the workspace, `~/...` in a local workspace,
+/// or the host-prefixed spelling a `File` answers with.
+pub fn read_file(
+  workspace: location.Location,
+  path: String,
+) -> Result(File, FileFailure) {
+  use path <- result.try(resolve(workspace, path))
+  case workspace {
+    location.Local(_) ->
+      read_local(path, file_limit)
+      |> result.map_error(NotAFile(path, _))
+      |> result.try(checked(path, _))
+    location.Remote(user, host, _) -> read_remote(user, host, path)
+  }
+}
+
+/// `path` as an absolute, normalised path on the workspace's machine.
+fn resolve(
+  workspace: location.Location,
+  path: String,
+) -> Result(String, FileFailure) {
+  let #(dir, home) = case workspace {
+    location.Local(dir) -> {
+      let home = normalise(home())
+      #(normalise(expand(dir, home)), Ok(home))
+    }
+    location.Remote(path: dir, ..) -> #(dir, Error(Nil))
+  }
+  case path, location.parse(path) {
+    "", _ -> Error(BadPath("path is empty"))
+    "/" <> _, _ -> Ok(normalise(path))
+    "~", _ | "~/" <> _, _ ->
+      home
+      |> result.map(fn(home) { normalise(expand(path, home)) })
+      |> result.replace_error(BadPath("~ is only resolved in a local workspace"))
+    _, Ok(location.Remote(path: absolute, ..) as at) ->
+      case location.ssh_target(at) == location.ssh_target(workspace) {
+        True -> Ok(absolute)
+        False -> Error(BadPath("path is not on this session's host"))
+      }
+    _, _ -> Ok(normalise(child(dir, path)))
+  }
+}
+
+fn read_remote(
+  user: Option(String),
+  name: String,
+  path: String,
+) -> Result(File, FileFailure) {
+  let at = location.Remote(user, name, path)
+  let shown = location.to_string(at)
+  use target <- result.try(
+    location.ssh_target(at) |> result.replace_error(BadPath("not a host")),
+  )
+  use host <- result.try(
+    ssh.ready(target, ssh.boot_wait_ms)
+    |> result.map_error(fn(why) { FileUnavailable(unreachable(target, why)) }),
+  )
+  let request =
+    json.object([
+      #("route", json.string("file")),
+      #("path", json.string(path)),
+      #("limit", json.int(file_limit)),
+    ])
+  use answer <- result.try(
+    ssh.gather(host, request, gather_ms)
+    |> result.map_error(fn(why) { FileUnavailable(failure(502, why)) }),
+  )
+  use read <- result.try(
+    json.parse(answer, remote_file_decoder())
+    |> result.replace_error(
+      FileUnavailable(failure(
+        502,
+        "the gather on " <> target <> " answered badly",
+      )),
+    ),
+  )
+  read
+  |> result.map_error(NotAFile(shown, _))
+  |> result.try(checked(shown, _))
+}
+
+/// What a file read found, local or gathered: its size, modification time
+/// in seconds, and bytes, which are read only when the size is within the
+/// limit, and then at most one byte past it; or why it is not a file to
+/// read.
+type Read =
+  Result(#(Int, Int, BitArray), String)
+
+fn remote_file_decoder() -> decode.Decoder(Read) {
+  let found = {
+    use size <- decode.field("size", decode.int)
+    use modified <- decode.field("modified", decode.int)
+    use data <- decode.optional_field(
+      "data",
+      <<>>,
+      decode.then(decode.string, fn(data) {
+        case bit_array.base64_decode(data) {
+          Ok(bytes) -> decode.success(bytes)
+          Error(Nil) -> decode.failure(<<>>, "base64")
+        }
+      }),
+    )
+    decode.success(Ok(#(size, modified, data)))
+  }
+  decode.one_of(
+    decode.field("error", decode.string, fn(why) { decode.success(Error(why)) }),
+    [found],
+  )
+}
+
+/// A read within the limit whose bytes are UTF-8 without NUL, which marks
+/// a binary file. A file that grew past the limit after its stat is too
+/// large too.
+fn checked(
+  location: String,
+  read: #(Int, Int, BitArray),
+) -> Result(File, FileFailure) {
+  let #(size, modified, data) = read
+  let bytes = bit_array.byte_size(data)
+  use <- bool.guard(
+    size > file_limit || bytes > file_limit,
+    Error(TooLarge(location, int.max(size, bytes))),
+  )
+  case bit_array.to_string(data) {
+    Ok(text) ->
+      case string.contains(text, "\u{0}") {
+        True -> Error(NotText(location))
+        False -> Ok(File(location, bytes, modified, text))
+      }
+    Error(Nil) -> Error(NotText(location))
+  }
+}
+
 fn route_name(route: Route) -> String {
   case route {
     Listing -> "list"
@@ -631,3 +789,6 @@ fn entries(dir: String) -> List(Entry)
 
 @external(erlang, "albedo_folders", "file_size")
 fn file_size(path: String) -> Result(Int, Nil)
+
+@external(erlang, "albedo_folders", "read_file")
+fn read_local(path: String, limit: Int) -> Read

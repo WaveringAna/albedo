@@ -1649,6 +1649,71 @@ paths:
         required: true
         schema:
           $ref: '#/components/schemas/ID'
+  /sessions/{session_id}/files:
+    get:
+      operationId: getSessionFile
+      summary: Read a text file in the session's workspace
+      tags:
+      - sessions
+      responses:
+        '200':
+          description: Successful result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionFile'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '405':
+          $ref: '#/components/responses/Problem405'
+        '406':
+          $ref: '#/components/responses/Problem406'
+        '503':
+          $ref: '#/components/responses/Problem503'
+        '404':
+          $ref: '#/components/responses/Problem404'
+        '413':
+          description: The file is over 1 MiB, or its JSON answer would exceed the response limit
+            (`file_too_large`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '415':
+          description: The file is binary or not valid UTF-8 (`file_not_text`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '502':
+          description: The gather on the workspace's host failed or answered badly (`workspace_unavailable`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      description: 'Reads on the machine the workspace is on: the daemon for a local workspace, the host
+        through one SSH gather for a remote one. A missing file, a directory or another non-regular file
+        answers 404 `file_not_found`; an unknown session answers 404 like other session routes. A
+        remote host that is not ready answers 503 `workspace_unavailable`, a failed gather 502. Requires
+        capability `file_reading: 1`.'
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ID'
+      - name: path
+        in: query
+        required: true
+        description: Absolute on the workspace's machine, relative to the workspace, `~/...` in a local
+          workspace, or the host-prefixed spelling `path` answers with.
+        schema:
+          type: string
+          minLength: 1
   /sessions/{session_id}/reload:
     post:
       operationId: reloadSession
@@ -8243,6 +8308,21 @@ components:
           type: string
           description: One sentence a client can show as it is.
       required: [context_window, model_context_tokens, effective_context_tokens, source, message]
+      additionalProperties: false
+    SessionFile:
+      type: object
+      properties:
+        path:
+          type: string
+          description: Absolute location as the daemon spells it, `host:/path` for a remote workspace.
+        size:
+          $ref: '#/components/schemas/Counter'
+        modified_at:
+          $ref: '#/components/schemas/Timestamp'
+        text:
+          type: string
+          description: The file's contents. At most 1 MiB of UTF-8 without NUL.
+      required: [path, size, modified_at, text]
       additionalProperties: false
     ContextRead:
       oneOf:

@@ -176,6 +176,16 @@ Language shares use tracked file sizes and the bundled GitHub Linguist data.
 The tree shows tracked or changed paths, excluding ignored build output.
 Browsing jj uses `--ignore-working-copy` and does not create a snapshot.
 
+`GET /sessions/{session_id}/files?path=<path>` (capability `file_reading`)
+reads one text file for a client to open, on the machine the session's
+workspace is on: `folders.read_file` reads a local one on the daemon and a
+remote one through the same gather (route `file`). `path` is absolute there,
+relative to the workspace, `~/...` locally, or the `host:/path` spelling the
+answer uses; the answer is `{path, size, modified_at, text}`. Over 1 MiB (or a
+JSON answer past the 1 MiB response limit) is 413 `file_too_large`, binary or
+non-UTF-8 content 415 `file_not_text`, and a missing file or a directory 404
+`file_not_found`.
+
 `GET /hosts` lists recent and SSH-config targets with cached probe state.
 `POST /hosts/{host}/probe` starts or joins a probe. Clients poll `GET /hosts?target=<host>`
 until it completes, including targets absent from SSH config and session history.

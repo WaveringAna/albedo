@@ -1,6 +1,7 @@
 //// Daemon catalogs, workspace browsing, host observations, and storage reports.
 
 import albedo/daemon/configuration
+import albedo/daemon/conversation
 import albedo/daemon/folders
 import albedo/daemon/hosts
 import albedo/daemon/http_api
@@ -268,6 +269,78 @@ pub fn workspaces(
     }
   }
   http_api.answer(outcome)
+}
+
+/// A UTF-8 text file in a session's workspace, read on the machine the
+/// workspace is on.
+pub fn file(
+  registry: Subject(Message),
+  id: String,
+  req: request.Request(BitArray),
+) -> response.Response(mist.ResponseData) {
+  let outcome = {
+    use parameters <- result.try(http_api.json_parameters(req, ["path"]))
+    use path <- result.try(
+      list.key_find(parameters, "path")
+      |> result.replace_error(http_api.invalid("path is required")),
+    )
+    use host <- result.try(
+      registry.host(registry) |> result.map_error(http_api.failure),
+    )
+    use info <- result.try(
+      conversation.get(runtime.ledger(host), id)
+      |> result.map_error(http_api.failure),
+    )
+    use workspace <- result.try(
+      location.parse(info.cwd)
+      |> result.map_error(fn(why) {
+        http_api.Failure(503, "workspace_unavailable", why)
+      }),
+    )
+    use file <- result.try(
+      folders.read_file(workspace, path) |> result.map_error(file_failure),
+    )
+    let body =
+      json.object([
+        #("path", json.string(file.location)),
+        #("size", json.int(file.size)),
+        #("modified_at", http_wire.timestamp(file.modified * 1000)),
+        #("text", json.string(file.text)),
+      ])
+    // Escaping can carry a file within the read limit past the response one.
+    case http_api.encoded_size(body) > http_api.response_limit {
+      True ->
+        Error(http_api.Failure(
+          413,
+          "file_too_large",
+          file.location <> " is too large to answer as JSON",
+        ))
+      False -> Ok(http_api.reply(200, body))
+    }
+  }
+  http_api.answer(outcome)
+}
+
+fn file_failure(failure: folders.FileFailure) -> http_api.Failure {
+  case failure {
+    folders.BadPath(detail) -> http_api.invalid(detail)
+    folders.NotAFile(location, why) ->
+      http_api.Failure(404, "file_not_found", location <> " " <> why)
+    folders.TooLarge(location, size) ->
+      http_api.Failure(
+        413,
+        "file_too_large",
+        location
+          <> " is "
+          <> int.to_string(size)
+          <> " bytes, over the "
+          <> int.to_string(folders.file_limit)
+          <> " byte limit",
+      )
+    folders.NotText(location) ->
+      http_api.Failure(415, "file_not_text", location <> " is not UTF-8 text")
+    folders.FileUnavailable(failure) -> folder_failure(failure)
+  }
 }
 
 pub fn models(

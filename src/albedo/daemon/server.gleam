@@ -666,6 +666,7 @@ fn daemon_route(
       http_sessions.catalog(config, registry, id, req)
     Get, ["sessions", id, "context-window"] ->
       http_sessions.context_window(registry, id, req)
+    Get, ["sessions", id, "files"] -> http_resources.file(registry, id, req)
     Post, ["sessions", id, "reload"] -> http_sessions.reload(registry, id, req)
     Post, ["sessions", id, "rewind"] -> http_sessions.rewind(registry, id, req)
     Post, ["sessions", id, "kernel", "upgrade"] ->
@@ -806,6 +807,7 @@ fn protocol_method(path: List(String)) -> response.Response(mist.ResponseData) {
     | ["sessions", _, "active-output", _]
     | ["sessions", _, "context"]
     | ["sessions", _, "context-window"]
+    | ["sessions", _, "files"]
     | ["sessions", _, "catalog"] -> Some("GET")
     ["server", "shutdown"]
     | ["hosts", _, "probe"]
@@ -915,6 +917,7 @@ fn protocol_server(
               "catalog",
               "settings",
               "workspace_browsing",
+              "file_reading",
               "host_probes",
               "provider_auth",
               "history_rewind",
