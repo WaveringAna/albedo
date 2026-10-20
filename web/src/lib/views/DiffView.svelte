@@ -56,6 +56,12 @@
         --diffs-addition-color-override: var(--added);
         --diffs-deletion-color-override: var(--danger);
         --diffs-selection-color-override: var(--accent);
+        --diffs-bg-addition-override: color-mix(in oklab, var(--added) 8%, var(--well));
+        --diffs-bg-addition-number-override: color-mix(in oklab, var(--added) 12%, var(--well));
+        --diffs-bg-addition-emphasis-override: color-mix(in oklab, var(--added) 20%, var(--well));
+        --diffs-bg-deletion-override: color-mix(in oklab, var(--danger) 8%, var(--well));
+        --diffs-bg-deletion-number-override: color-mix(in oklab, var(--danger) 12%, var(--well));
+        --diffs-bg-deletion-emphasis-override: color-mix(in oklab, var(--danger) 20%, var(--well));
         --diffs-annotation-min-height: 0px;
         --diffs-font-family: var(--mono);
         --diffs-font-size: 12px;

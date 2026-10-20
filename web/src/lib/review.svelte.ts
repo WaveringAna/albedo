@@ -17,6 +17,8 @@ export interface Comment {
   text: string;
   /** Still being written; not part of the review until added. */
   draft: boolean;
+  /** What the open field holds, kept here so it survives the card redrawing. */
+  typed: string;
 }
 
 /** What a diff's anchor carries: the comment it stands for. */
@@ -46,7 +48,13 @@ export class Review {
   start(path: string, change: number, range: SelectedLineRange) {
     const side = range.endSide ?? range.side ?? 'additions';
     const [start, end] = range.start <= range.end ? [range.start, range.end] : [range.end, range.start];
-    this.comments = [...this.comments.filter((comment) => !(comment.draft && !comment.text.trim())), { id: uuidv7(), path, change, side, start, end, text: '', draft: true }];
+    // A draft someone typed into stays open; only empty ones give way.
+    const kept = this.comments.filter((comment) => !(comment.draft && !comment.typed.trim() && !comment.text));
+    this.comments = [...kept, { id: uuidv7(), path, change, side, start, end, text: '', draft: true, typed: '' }];
+  }
+
+  type(id: string, typed: string) {
+    this.comments = this.comments.map((comment) => (comment.id === id ? { ...comment, typed } : comment));
   }
 
   save(id: string, text: string) {
@@ -55,7 +63,7 @@ export class Review {
   }
 
   edit(id: string) {
-    this.comments = this.comments.map((comment) => (comment.id === id ? { ...comment, draft: true } : comment));
+    this.comments = this.comments.map((comment) => (comment.id === id ? { ...comment, draft: true, typed: comment.text } : comment));
   }
 
   remove(id: string) {

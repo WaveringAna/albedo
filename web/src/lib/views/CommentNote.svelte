@@ -4,12 +4,12 @@
   // One comment beside the lines it is about: a field while it is written,
   // then its text with edit and remove.
   let { comment, review }: { comment: Comment; review: Review } = $props();
-  // svelte-ignore state_referenced_locally
-  let text = $state(comment.text);
+  const text = $derived(comment.typed);
   let field = $state<HTMLTextAreaElement>();
 
+  // Focus a field when it opens, not on every keystroke elsewhere.
   $effect(() => {
-    if (comment.draft) field?.focus();
+    if (field) field.focus();
   });
 
   const quick = ['explain this', 'why this way?', 'change this:'];
@@ -24,10 +24,10 @@
 <div class="note" class:draft={comment.draft}>
   <span class="lines">{comment.start === comment.end ? `line ${comment.start}` : `lines ${comment.start}–${comment.end}`}{comment.side === 'deletions' ? ' (removed)' : ''}</span>
   {#if comment.draft}
-    <textarea bind:this={field} bind:value={text} onkeydown={keydown} rows="2" placeholder="what should albedo know about these lines?"></textarea>
+    <textarea bind:this={field} value={text} oninput={(event) => review.type(comment.id, event.currentTarget.value)} onkeydown={keydown} rows="2" placeholder="what should albedo know about these lines?"></textarea>
     <div class="actions">
       {#each quick as phrase (phrase)}
-        <button class="chip" onclick={() => (text = text ? `${text} ${phrase}` : phrase)}>{phrase}</button>
+        <button class="chip" onclick={() => review.type(comment.id, text ? `${text} ${phrase}` : phrase)}>{phrase}</button>
       {/each}
       <span class="spacer"></span>
       <button onclick={() => (comment.text ? review.save(comment.id, comment.text) : review.remove(comment.id))}>cancel</button>
