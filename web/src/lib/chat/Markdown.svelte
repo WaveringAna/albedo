@@ -1,12 +1,19 @@
 <script lang="ts">
+  import { enhance } from '../enhance';
   import { renderMarkdown } from '../markdown';
 
   let { text }: { text: string } = $props();
   const html = $derived(renderMarkdown(text));
+  let element = $state<HTMLElement>();
+
+  $effect(() => {
+    html;
+    if (element) enhance(element);
+  });
 </script>
 
 <!-- renderMarkdown escapes raw HTML and unsafe links; see markdown.ts. -->
-<div class="markdown">{@html html}</div>
+<div class="markdown" bind:this={element}>{@html html}</div>
 
 <style>
   .markdown {
@@ -49,6 +56,26 @@
     text-decoration: underline;
     text-decoration-color: color-mix(in oklab, var(--accent) 35%, transparent);
     text-underline-offset: 2px;
+  }
+  .markdown :global(.math[data-display='1']) {
+    margin: 0 0 0.75em;
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+  .markdown :global(.diagram) {
+    margin: 0 0 0.75em;
+    overflow-x: auto;
+    --pele-bg: transparent;
+    --pele-fg: var(--text);
+    --pele-muted: var(--muted);
+    --pele-line: var(--muted);
+    --pele-surface: var(--well);
+    --pele-surface-alt: var(--field);
+    --pele-border: color-mix(in oklab, var(--text) 22%, transparent);
+  }
+  .markdown :global(.diagram svg) {
+    max-width: 100%;
+    height: auto;
   }
   .markdown :global(code) {
     padding: 0.1em 0.35em;

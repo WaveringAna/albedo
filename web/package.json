@@ -20,6 +20,8 @@
   },
   "dependencies": {
     "@pierre/diffs": "^1.5.2",
-    "marked": "^18.1.1"
+    "katex": "^0.16.47",
+    "marked": "^18.1.1",
+    "pele": "^1.7.0"
   }
 }
