@@ -37,6 +37,45 @@
     lift = 0;
   }
 
+  // The open drawer follows a drag down from its handle, or from anywhere in
+  // it while its list is scrolled to the top, and closes past a third of its
+  // height; a tap on the handle closes it too.
+  let drop = $state(0);
+  let lowering: { y: number; moved: boolean } | null = null;
+  let sheet = $state<HTMLElement>();
+
+  function lowerStart(event: TouchEvent, fromHandle: boolean) {
+    const list = sheet?.querySelector('nav');
+    if (!fromHandle && list && list.scrollTop > 0) return;
+    lowering = { y: event.touches[0].clientY, moved: false };
+  }
+
+  function lowerMove(event: TouchEvent) {
+    if (!lowering) return;
+    const y = event.touches[0].clientY;
+    const dy = y - lowering.y;
+    if (!lowering.moved && dy < -4) return void (lowering = null);
+    if (dy > 4) lowering.moved = true;
+    if (lowering.moved) {
+      drop = Math.max(0, dy);
+      if (event.cancelable) event.preventDefault();
+    }
+  }
+
+  function lowerEnd() {
+    if (lowering?.moved && drop > (sheet?.offsetHeight ?? 600) / 3) drawer = false;
+    lowering = null;
+    drop = 0;
+  }
+
+  // Not passive, so a drag that lowers the drawer does not also scroll the list.
+  $effect(() => {
+    const element = sheet;
+    if (!element) return;
+    element.addEventListener('touchmove', lowerMove, { passive: false });
+    return () => element.removeEventListener('touchmove', lowerMove);
+  });
+
   // Choosing a session in the drawer closes it.
   $effect(() => {
     layout.session;
@@ -78,8 +117,19 @@
         </div>
         {#if drawer}
           <button class="scrim" aria-label="close sessions" onclick={() => (drawer = false)}></button>
-          <div class="drawer" role="dialog" aria-label="sessions">
-            <button class="handle" aria-label="close sessions" onclick={() => (drawer = false)}><span></span></button>
+          <div
+            class="drawer"
+            class:held={drop > 0}
+            role="dialog"
+            tabindex="-1"
+            aria-label="sessions"
+            bind:this={sheet}
+            style:transform={drop ? `translateY(${drop}px)` : undefined}
+            ontouchstart={(event) => lowerStart(event, !!(event.target as Element).closest('.grip'))}
+            ontouchend={lowerEnd}
+            ontouchcancel={lowerEnd}
+          >
+            <button class="handle grip" aria-label="close sessions" onclick={() => (drawer = false)}><span></span></button>
             <Rail {onnew} />
           </div>
         {/if}
@@ -163,6 +213,11 @@
     background: color-mix(in oklab, var(--text) 22%, transparent);
     border-radius: 3px;
   }
+  .handle.grip {
+    flex: none;
+    height: 28px;
+    margin: -6px 0 0;
+  }
   .scrim {
     position: absolute;
     inset: 0;
@@ -185,6 +240,10 @@
     border-radius: 18px 18px 0 0;
     box-shadow: var(--shadow-lg);
     animation: rise 240ms cubic-bezier(0.2, 0.8, 0.2, 1);
+    transition: transform 200ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  }
+  .drawer.held {
+    transition: none;
   }
   .drawer > :global(aside) {
     flex: 1;
@@ -202,7 +261,12 @@
   }
   @media (prefers-reduced-motion: reduce) {
     .drawer,
-    .scrim {
+    .handle.grip {
+    flex: none;
+    height: 28px;
+    margin: -6px 0 0;
+  }
+  .scrim {
       animation: none;
     }
   }
