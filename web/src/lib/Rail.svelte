@@ -203,17 +203,35 @@
   .row:hover {
     background-image: linear-gradient(var(--selected), var(--selected));
   }
-  /* Open on the board: a pill down the row's own margin, so nothing moves,
-     inset enough to clear its rounded corners. */
-  .row.open::before {
-    position: absolute;
-    top: 4px;
-    bottom: 4px;
-    left: 1px;
-    width: 3px;
-    background: var(--accent);
-    border-radius: 2px;
-    content: '';
+  /* Open on the board: a wash of the accent from the left edge, fading out
+     by the middle, so it reads as a hue over the stripes' tones; hovered,
+     the hover's step lies over it. */
+  .row.open {
+    --open: linear-gradient(90deg, var(--open-wash), transparent 40%);
+    background-image: var(--open);
+  }
+  .row.open:hover {
+    background-image: linear-gradient(var(--selected), var(--selected)), var(--open);
+  }
+  /* Open rows that meet share the edge their wash is on, so a run of them
+     reads as one; the other side keeps the stripes' corners. */
+  .row.open:has(+ .row.open) {
+    border-bottom-left-radius: 0;
+  }
+  .row.open + .row.open {
+    border-top-left-radius: 0;
+  }
+  /* With the sidebar on the right, all of it mirrored. */
+  :global([data-sidebar='right']) .row.open {
+    --open: linear-gradient(270deg, var(--open-wash), transparent 40%);
+  }
+  :global([data-sidebar='right']) .row.open:has(+ .row.open) {
+    border-bottom-right-radius: 0;
+    border-bottom-left-radius: 7px;
+  }
+  :global([data-sidebar='right']) .row.open + .row.open {
+    border-top-right-radius: 0;
+    border-top-left-radius: 7px;
   }
   .name {
     grid-area: name;
