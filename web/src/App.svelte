@@ -102,7 +102,13 @@
     ['double-click', 'note'],
   ];
   let viewShown = $state(false);
+  /** The overview map is as wide as the controls it sits on. */
+  let controlsWidth = $state(188);
   let viewTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Whether an event's target is in the overview map, which shows and fades with the controls. */
+  function mapUnder(event: { target: EventTarget | null }) {
+    return !!(event.target as Element | null)?.closest?.('.svelte-flow__minimap');
+  }
   function lingerView() {
     viewShown = true;
     clearTimeout(viewTimer);
@@ -244,7 +250,12 @@
 
   {#if railOpen}<Rail bind:search onnew={() => (newOpen = true)} />{/if}
 
-  <main onpointermovecapture={edge}>
+  <main
+    class:quiet={!viewShown}
+    onpointermovecapture={edge}
+    onpointerover={(event) => mapUnder(event) && clearTimeout(viewTimer)}
+    onpointerout={(event) => mapUnder(event) && !mapUnder({ target: event.relatedTarget }) && lingerView()}
+  >
     {#if peek}
       <div
         class="peek"
@@ -256,10 +267,13 @@
     {/if}
     {#if boards.board}
       {#key boards.board}
-        <Canvas board={boards.board} {minimap} onpalette={() => (paletteOpen = true)} />
+        <Canvas board={boards.board} {minimap} mapWidth={controlsWidth} onpalette={() => (paletteOpen = true)} />
       {/key}
       <div class="view" class:shown={viewShown} onpointerenter={() => clearTimeout(viewTimer)} onpointerleave={lingerView} role="presentation">
-        <div class="controls" role="toolbar" aria-label="View" tabindex="-1">
+        <p class="hints" aria-hidden="true">
+          {#each canvasHints as [key, does], index (key)}{#if index}<span class="dot">·</span>{/if}<span><kbd>{key}</kbd> {does}</span>{/each}
+        </p>
+        <div class="controls" role="toolbar" aria-label="View" tabindex="-1" bind:offsetWidth={controlsWidth}>
           <button aria-label="Zoom out" title="Zoom out (−)" onclick={() => zoomStep(-1)}>
             <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 8h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" /></svg>
           </button>
@@ -274,9 +288,6 @@
             <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><rect x="2" y="3" width="12" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="1.3" /><rect x="4.5" y="5.5" width="4" height="3" rx="0.75" fill="currentColor" /></svg>
           </button>
         </div>
-        <p class="hints" aria-hidden="true">
-          {#each canvasHints as [key, does], index (key)}{#if index}<span class="dot">·</span>{/if}<span><kbd>{key}</kbd> {does}</span>{/each}
-        </p>
       </div>
     {/if}
   </main>
@@ -480,16 +491,21 @@
     opacity: 0;
     transition: opacity 600ms ease, visibility 0s linear 600ms;
     position: absolute;
-    left: 14px;
+    right: 14px;
     bottom: 14px;
+    left: 14px;
     display: flex;
     align-items: center;
+    justify-content: space-between;
     gap: 8px;
+    /* The stretch between the hints and the controls is still canvas. */
+    pointer-events: none;
   }
   .controls {
     display: flex;
     align-items: center;
     gap: 2px;
+    pointer-events: auto;
     padding: 4px;
     background: var(--surface);
     border-radius: 12px;
@@ -524,6 +540,19 @@
     color: var(--muted);
     font: inherit;
     background: none;
+  }
+  main :global(.svelte-flow__minimap) {
+    transition: opacity 160ms ease, visibility 0s;
+  }
+  main.quiet :global(.svelte-flow__minimap) {
+    visibility: hidden;
+    opacity: 0;
+    transition: opacity 600ms ease, visibility 0s linear 600ms;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    main :global(.svelte-flow__minimap) {
+      transition: none !important;
+    }
   }
   .view.shown,
   .view:focus-within {

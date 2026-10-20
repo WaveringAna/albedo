@@ -183,7 +183,9 @@ input:focus-visible,
   border: 0;
 }
 
+/* Above the view controls in the same corner. */
 .svelte-flow__minimap {
+  margin: 14px 14px 60px;
   overflow: hidden;
   border-radius: 12px;
   box-shadow: var(--shadow);

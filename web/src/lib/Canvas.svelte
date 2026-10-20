@@ -19,7 +19,7 @@
   // a sideways one over something that scrolls sideways (a diff's code, a
   // wide table) scrolls that, and every other scroll pans the canvas freely. Holding space, or the
   // middle button, drags the canvas from anywhere, over windows too.
-  let { board, onpalette, minimap }: { board: Board; onpalette: () => void; minimap: boolean } = $props();
+  let { board, onpalette, minimap, mapWidth }: { board: Board; onpalette: () => void; minimap: boolean; mapWidth: number } = $props();
 
   const nodeTypes: NodeTypes = { session: SessionNode, review: ReviewNode, note: NoteNode };
 
@@ -160,7 +160,7 @@
       <Dots gap={36} size={3} />
     {/if}
     {#if minimap}
-      <MiniMap position="bottom-right" pannable zoomable={false} width={168} height={104} nodeBorderRadius={6} bgColor="var(--surface)" nodeColor="var(--minimap-window)" maskColor="var(--minimap-mask)" />
+      <MiniMap position="bottom-right" pannable zoomable={false} width={mapWidth} height={Math.round((mapWidth * 104) / 168)} nodeBorderRadius={6} bgColor="var(--surface)" nodeColor="var(--minimap-window)" maskColor="var(--minimap-mask)" />
     {/if}
     <FlowBinder {board} />
   </SvelteFlow>
