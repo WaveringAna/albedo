@@ -4,7 +4,7 @@
 
 Albedo is an agentic coding harness that can act on your device and soon able to manage sessions on other devices with agents that can act remotely on different machines or within containers. Our hope is that it being built on BEAM allows it to maintain low memory usage while running many concurrent agents and subagents across devices.
 
-It is daemonized with the CLI and (future) WebUI being clients of this daemon. This ensures the agents can be programatically created, controlled, and even stopped all while still providing an experience similar to other harnesses like Claude Code and Codex. Albedo provides a Python REPL for the agents to use as a scratchpad and data manipulation allowing them to experiment, reason, and play with code before actually writing it down. This is similar to what other harnesses call CodeMode, and is based on [prime-agent's](https://github.com/PrimeIntellect-ai/prime-agent/)'s Python REPL and design.
+It is daemonized with the CLI and the web client being clients of this daemon. This ensures the agents can be programatically created, controlled, and even stopped all while still providing an experience similar to other harnesses like Claude Code and Codex. Albedo provides a Python REPL for the agents to use as a scratchpad and data manipulation allowing them to experiment, reason, and play with code before actually writing it down. This is similar to what other harnesses call CodeMode, and is based on [prime-agent's](https://github.com/PrimeIntellect-ai/prime-agent/)'s Python REPL and design.
 
 The CLI is written in Go and uses the Charm stack. 
 
@@ -83,6 +83,42 @@ Cleanup shows a preview and asks for confirmation. To permanently delete session
 use `albedo storage prune --session SESSION_ID`, repeating `--session` for each
 full ID. Add `--yes` to skip confirmation in scripts.
 
+## Web usage
+
+The web client is a canvas of chat windows on a desktop and one chat at a
+time on a phone. It lives in `web/` (Svelte) and isn't in the Nix package yet,
+so build it once from the checkout, then serve it:
+
+```sh
+npm --prefix web ci
+npm --prefix web run build
+albedo web                 # serves on 127.0.0.1:4317 and opens the browser
+albedo web --port 0 --no-open
+```
+
+`albedo web` finds or starts the daemon the same way the terminal client does,
+and keeps the daemon's token to itself. It prints a link that signs the browser
+in, so don't share it. It only answers on localhost. Set `ALBEDO_WEB_DIST` to
+serve a client built somewhere else.
+
+What it does: new sessions (pick a folder, provider, model and effort), live
+chats with images, `/` commands and a model picker in the composer, reviews of
+a turn's changes on highlighted diffs, and notes you can tie to a message, a
+window or diff lines and send back as one message. Press ⌘K for everything
+else.
+
+To work on the client, run the Vite dev server against the running daemon:
+
+```sh
+npm --prefix web run dev   # http://localhost:5173, restart it after the daemon restarts
+npm --prefix web run check # svelte-check
+```
+
+The dev server listens on the local network with no sign-in, so other devices
+at home can open it, and anyone who reaches it gets full control of the daemon.
+Only run it on a network you trust. `robot-docs/web.md` describes how the client
+is put together.
+
 formatting
 
 ```sh
@@ -120,6 +156,6 @@ todo
 - [ish] oauth that we shamelessly rip from omp
 - [] ai powered approve for me (jev/llm)
 - [] improve verbose mode on tui
-- [] webui
+- [ish] webui: canvas on desktop, single chat on phones
 - [] connect to other albedos on tui/webui and manage sessions
 - [ish we have remote but model opts into it, not yet able to have the model natively act in a different machine] ability to offload tools like python/bash onto other machines/containers
