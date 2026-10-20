@@ -95,6 +95,7 @@
   // terminal's footer lists them: the key, then what it does.
   const canvasHints = [
     ['space', 'drag'],
+    [mac ? '⌥ drag' : 'alt drag', 'move window'],
     [mac ? '⌘ scroll' : 'ctrl scroll', 'zoom'],
     ['⇧1', 'fit all'],
     ['⌥←→', 'windows'],

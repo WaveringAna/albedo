@@ -18,7 +18,8 @@
   // anywhere, an up-down scroll over a readable window scrolls that window,
   // a sideways one over something that scrolls sideways (a diff's code, a
   // wide table) scrolls that, and every other scroll pans the canvas freely. Holding space, or the
-  // middle button, drags the canvas from anywhere, over windows too.
+  // middle button, drags the canvas from anywhere, over windows too; holding
+  // alt (option) drags a window by any part of it, not only its title bar.
   let { board, onpalette, minimap, mapWidth }: { board: Board; onpalette: () => void; minimap: boolean; mapWidth: number } = $props();
 
   const nodeTypes: NodeTypes = { session: SessionNode, review: ReviewNode, note: NoteNode };
@@ -64,12 +65,18 @@
 
   let hand = $state(false);
   let panning = $state<{ x: number; y: number } | null>(null);
+  let alt = $state(false);
+  let carrying = $state<{ id: string; pointer: { x: number; y: number }; from: { x: number; y: number } } | null>(null);
+  // The click that ends a carry is swallowed, so letting go over a link or a
+  // button presses nothing (option-click would download a link).
+  let swallow = false;
 
   function typing(target: EventTarget | null) {
     return !!(target as HTMLElement | null)?.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"])');
   }
 
   function keydown(event: KeyboardEvent) {
+    if (event.key === 'Alt') alt = true;
     if (event.key !== ' ' || typing(event.target) || event.metaKey || event.ctrlKey || event.altKey) return;
     // Held, not typed: no scrolling the page or pressing the focused button.
     event.preventDefault();
@@ -78,18 +85,29 @@
 
   function keyup(event: KeyboardEvent) {
     if (event.key === ' ') hand = false;
+    if (event.key === 'Alt') alt = false;
   }
 
   function grab(event: PointerEvent) {
-    if (!(event.button === 1 || (hand && event.button === 0))) return;
+    const frame = event.button === 0 && event.altKey && !hand ? (event.target as Element).closest<HTMLElement>('.svelte-flow__node') : null;
+    const node = frame && board.nodes.find((candidate) => candidate.id === frame.dataset.id);
+    if (!(event.button === 1 || (hand && event.button === 0) || node)) return;
     // Taken before Svelte Flow or a window sees it, so nothing drags, selects or autoscrolls.
     event.preventDefault();
     event.stopPropagation();
     element!.setPointerCapture(event.pointerId);
-    panning = { x: event.clientX, y: event.clientY };
+    const pointer = { x: event.clientX, y: event.clientY };
+    if (node) carrying = { id: node.id, pointer, from: node.position };
+    else panning = pointer;
   }
 
   function drag(event: PointerEvent) {
+    if (carrying) {
+      const { pointer, from } = carrying;
+      const zoom = board.viewport.zoom;
+      board.place(carrying.id, { x: from.x + (event.clientX - pointer.x) / zoom, y: from.y + (event.clientY - pointer.y) / zoom });
+      return;
+    }
     if (!panning) return;
     const { x, y, zoom } = board.viewport;
     board.setView({ x: x + event.clientX - panning.x, y: y + event.clientY - panning.y, zoom });
@@ -97,7 +115,18 @@
   }
 
   function release() {
+    if (carrying) {
+      swallow = true;
+      setTimeout(() => (swallow = false));
+    }
     panning = null;
+    carrying = null;
+  }
+
+  function click(event: MouseEvent) {
+    if (!swallow) return;
+    event.preventDefault();
+    event.stopPropagation();
   }
 
   $effect(() => {
@@ -124,14 +153,17 @@
   });
 </script>
 
-<svelte:window onkeydown={keydown} onkeyup={keyup} onblur={() => (hand = false)} />
+<svelte:window onkeydown={keydown} onkeyup={keyup} onblur={() => (hand = alt = false)} />
 
 <div
   class="canvas"
   class:hand
   class:panning={panning !== null}
+  class:alt
+  class:carrying={carrying !== null}
   bind:this={element}
   ondblclickcapture={dblclick}
+  onclickcapture={click}
   onpointermove={drag}
   onpointerup={release}
   onpointercancel={release}
@@ -189,6 +221,13 @@
   .panning,
   .panning :global(*) {
     cursor: grabbing !important;
+  }
+  .alt :global(.svelte-flow__node),
+  .alt :global(.svelte-flow__node *),
+  .carrying,
+  .carrying :global(*) {
+    cursor: move !important;
+    user-select: none;
   }
   .empty {
     position: absolute;

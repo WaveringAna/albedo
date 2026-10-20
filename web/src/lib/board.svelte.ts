@@ -213,6 +213,11 @@ export class Board {
     this.focus(window.id);
   }
 
+  /** Puts a window at a point in canvas coordinates, selected, as dragging it does. */
+  place(id: string, position: { x: number; y: number }) {
+    this.nodes = this.nodes.map((node) => (node.id === id ? { ...node, position, selected: true } : node.selected ? { ...node, selected: false } : node));
+  }
+
   focus(id: string) {
     this.nodes = this.nodes.map((node) => ({ ...node, selected: node.id === id }));
     this.#withFlow(() => this.reveal(id));
