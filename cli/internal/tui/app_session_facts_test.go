@@ -19,6 +19,9 @@ func TestPartialPreferencesKeepSharedFactsAndPickerInteraction(t *testing.T) {
 	t.Cleanup(m.Chat.Close)
 	m.applySessionList([]daemon.Session{active, {ID: "other", Title: "Other", Pinned: true, Opens: 3, ETag: "other-a"}})
 	m.ApplyUI(daemon.UIPreferences{ETag: "ui-a", Thinking: true, DismissedNotices: []string{"migration"}})
+	// The sessions screen is the one showing: it builds its rows on entry.
+	m.State = AppStateSessionPicker
+	m.SessionPicker.Init()
 	m.SessionPicker.SearchInput.SetValue("Other")
 	m.SessionPicker.applyFilter()
 	m.SessionPicker.focus("other")
@@ -51,10 +54,10 @@ func TestPartialPreferencesKeepSharedFactsAndPickerInteraction(t *testing.T) {
 	if !m.ActiveSession.Archived || m.ActiveSession.Pinned || !m.Sessions[1].Pinned {
 		t.Fatal("archive acknowledgement did not merge per session")
 	}
-	// Picker snapshots cannot write back into the root owner.
-	m.SessionPicker.raw[1].Pinned = false
-	if !m.Sessions[1].Pinned {
-		t.Fatal("picker snapshot aliases shared session facts")
+	// The screen draws the root's listing rather than a copy of it: one slice
+	// of session records serves the whole client.
+	if len(m.SessionPicker.raw) != len(m.Sessions) || &m.SessionPicker.raw[0] != &m.Sessions[0] {
+		t.Fatal("the sessions screen keeps a copy of the listing")
 	}
 }
 

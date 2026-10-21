@@ -32,6 +32,12 @@ func (m *AppModel) handleSessionResults(msg tea.Msg) (tea.Cmd, bool) {
 				m.updateSession(*msg.Preview.Session)
 			}
 		}
+		if m.State != AppStateSessionPicker {
+			// The reply belongs to the screen's preview cache, which nothing
+			// reads while the screen is off; building its rows to hold it would
+			// be work nobody asked for.
+			return nil, true
+		}
 		var cmd tea.Cmd
 		m.SessionPicker, cmd = m.SessionPicker.Update(msg)
 		return cmd, true
@@ -245,6 +251,9 @@ func creationRecoveryCmd(handle *daemon.OperationHandle, gen int) tea.Cmd {
 	return tea.Tick(15*time.Second, func(time.Time) tea.Msg { return sessionCreationRecoveryMsg{Handle: handle, Gen: gen} })
 }
 
+// updateSessionPickerItems hands the sessions screen the listing it draws. The
+// screen keeps the listing rather than a copy and builds its rows when it is
+// drawn, so a refresh in the chat costs one slice header.
 func (m *AppModel) updateSessionPickerItems() {
 	m.SessionPicker.SetSessions(m.Sessions, m.ActiveSession)
 }

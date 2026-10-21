@@ -31,7 +31,9 @@ func (m *AppModel) updateSession(session daemon.Session) {
 }
 
 func (m *AppModel) applySessionList(sessions []daemon.Session) {
-	m.Sessions = slices.Clone(sessions)
+	// The reply is the client's listing: the sessions screen shares it rather
+	// than keeping a copy of it.
+	m.Sessions = sessions
 	if m.ActiveSession != nil {
 		if i := slices.IndexFunc(sessions, func(s daemon.Session) bool { return s.ID == m.ActiveSession.ID }); i >= 0 {
 			// Listings omit details available from a session snapshot.

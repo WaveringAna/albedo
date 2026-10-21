@@ -34,6 +34,7 @@ func (m *AppModel) openLogin(name string) tea.Cmd {
 
 func (m *AppModel) openSessions() tea.Cmd {
 	m.State = AppStateSessionPicker
+	m.updateSessionPickerItems()
 	m.SessionGen++
 	return tea.Batch(m.SessionPicker.Init(), m.loadSessionsCmd(m.SessionGen), m.refreshSettingsCmd())
 }

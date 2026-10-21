@@ -132,7 +132,8 @@ func svSep() string { return DefaultStyles.Decor.Render(" │ ") }
 
 // View shows the grouped session list beside its preview when there is room,
 // and the list alone on narrow terminals.
-func (m SessionViewer) View() string {
+func (m *SessionViewer) View() string {
+	m.ensure()
 	width := cmp.Or(m.Width, 80)
 	now := m.clock()
 	f := listFrame{
@@ -192,11 +193,11 @@ func (m SessionViewer) hints() []hint {
 
 // counts is how many sessions the list holds, and how many of them today.
 func (m SessionViewer) counts(now time.Time) string {
-	count, today := len(m.Sessions), 0
+	count, today := len(m.order), 0
 	if m.ArchiveView {
 		count = len(m.archivedIDs)
 	} else {
-		for _, s := range m.Sessions {
+		for _, s := range m.order {
 			if dateSection(s, now) == secToday {
 				today++
 			}

@@ -66,6 +66,8 @@ func sessionsModel(width, height int, setup func(*SessionViewer)) SessionViewer 
 		{ID: "week", Title: "Read the folder picker spec", Model: "claude-opus-4", Workspace: "/Users/dawn/proj/other", LastAssistantAt: &older, TranscriptCount: 3},
 		{ID: "old", Title: "Design notes for the archive", Model: "gpt-5", Workspace: "/Users/dawn/proj/albedo", Archived: true},
 	}, nil)
+	// The screen is open before anything acts on it: it has built its rows.
+	m.Init()
 	m.focus("live")
 	m.previews["live"] = &cachedPreview{stamp: recent, SessionPreview: daemon.SessionPreview{Items: []daemon.PreviewItem{
 		{Type: "user", Preview: "why does the warm test flake under load"},

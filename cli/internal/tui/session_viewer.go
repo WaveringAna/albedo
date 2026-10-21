@@ -72,9 +72,17 @@ type SessionViewer struct {
 	archivedIDs  map[string]bool
 	Workspace    string
 	notice       string
-	Sessions     []daemon.Session
-	raw          []daemon.Session
-	groups       []sessionGroup
+	// raw is the root model's listing, held rather than copied: it is one
+	// slice the whole client shares, and every row here points into it.
+	raw []daemon.Session
+	// order is what the list shows: pointers into raw, with the active session
+	// standing for itself when the daemon's recent list does not carry it.
+	order  []*daemon.Session
+	groups []sessionGroup
+	// stale says order and the picker rows predate the listing SetSessions
+	// kept, and first that this viewer has never built them: its first build
+	// picks the session to open on. ensure does both.
+	stale, first bool
 
 	rename renameField
 	confirm
@@ -109,6 +117,8 @@ func NewSessionViewer(workspace string) SessionViewer {
 		section:     map[string]int{},
 		previews:    map[string]*cachedPreview{},
 		now:         time.Now,
+		stale:       true,
+		first:       true,
 	}
 	m.rebuildGroups()
 	return m
@@ -134,7 +144,7 @@ func (m SessionViewer) clock() time.Time {
 	return m.now()
 }
 
-func dateSection(s daemon.Session, now time.Time) int {
+func dateSection(s *daemon.Session, now time.Time) int {
 	if s.LastAssistantAt == nil {
 		return secEarlier
 	}
@@ -150,32 +160,52 @@ func dateSection(s daemon.Session, now time.Time) int {
 	return secEarlier
 }
 
+// SetSessions keeps the listing the client owns. Until the screen has been
+// drawn once it keeps nothing else: the rows it shows (the order, its items,
+// the groups) are built when it opens or is drawn (ensure), so a refresh in a
+// chat that never opens the screen costs one slice header. Once the rows exist
+// they are kept current, since something may be reading them.
 func (m *SessionViewer) SetSessions(sessions []daemon.Session, active *daemon.Session) {
-	initial := m.Loading
 	m.Loading = false
 	m.HasActive = active != nil
-	m.raw = slices.Clone(sessions)
+	m.raw = sessions
 	m.active = nil
 	if active != nil {
 		captured := *active
 		m.active = &captured
 	}
+	m.stale = true
+	if !m.first {
+		m.ensure()
+	}
+}
+
+// ensure builds the rows the list draws, once per listing: the order, the
+// picker items, and the grouped ranges. The first build picks the session to
+// open on; later ones keep the cursor and the highlighted session.
+func (m *SessionViewer) ensure() {
+	if !m.stale {
+		return
+	}
+	first := m.first
+	m.first, m.stale = false, false
 	previous, ok := m.Highlighted()
 	m.rebuild()
-	// Initial load favors the active or most recent session; later refreshes
-	// keep the cursor.
 	target := ""
-	if initial && active != nil && !m.archivedIDs[active.ID] && !m.ArchiveView {
-		target = active.ID
-	} else if ok && m.section[previous.ID] != secAction {
+	switch {
+	case first && m.active != nil && !m.archivedIDs[m.active.ID] && !m.ArchiveView:
+		target = m.active.ID
+	case ok && m.section[previous.ID] != secAction:
 		target = previous.ID
-	} else if i := slices.IndexFunc(m.Sessions, func(s daemon.Session) bool { return m.section[s.ID] >= secToday }); i >= 0 {
-		target = m.Sessions[i].ID
+	default:
+		if i := slices.IndexFunc(m.order, func(s *daemon.Session) bool { return m.section[s.ID] >= secToday }); i >= 0 {
+			target = m.order[i].ID
+		}
 	}
 	m.focus(target)
 }
 
-// rebuild orders sessions into sections and refreshes the picker items,
+// rebuild orders the listing into sections and refreshes the picker items,
 // keeping the search and the highlighted item.
 func (m *SessionViewer) rebuild() {
 	highlighted, ok := m.Highlighted()
@@ -199,28 +229,33 @@ func (m *SessionViewer) rebuild() {
 	if m.active != nil && m.active.Archived {
 		m.archivedIDs[m.active.ID] = true
 	}
-	listed := m.raw
+	// listed is every session the list knows, in the daemon's order, with the
+	// active one ahead of it when the recent list does not carry it.
+	listed := make([]*daemon.Session, 0, len(m.raw)+1)
 	if m.active != nil {
 		if _, exists := m.sessionIndex[m.active.ID]; !exists {
-			listed = append([]daemon.Session{*m.active}, listed...)
+			listed = append(listed, m.active)
 		}
+	}
+	for i := range m.raw {
+		listed = append(listed, &m.raw[i])
 	}
 	now := m.clock()
 	clear(m.section)
-	var ordered []daemon.Session
+	var ordered []*daemon.Session
 	for _, s := range listed {
 		if s.Pinned && !m.archivedIDs[s.ID] {
 			m.section[s.ID] = secPinned
 			ordered = append(ordered, s)
 		}
 	}
-	var frequent []daemon.Session
+	var frequent []*daemon.Session
 	for _, s := range listed {
 		if _, taken := m.section[s.ID]; !taken && !m.archivedIDs[s.ID] && s.Opens >= frequentMinOpens {
 			frequent = append(frequent, s)
 		}
 	}
-	slices.SortStableFunc(frequent, func(a, b daemon.Session) int {
+	slices.SortStableFunc(frequent, func(a, b *daemon.Session) int {
 		return cmp.Compare(b.Opens, a.Opens)
 	})
 	frequent = frequent[:min(len(frequent), frequentLimit)]
@@ -240,7 +275,7 @@ func (m *SessionViewer) rebuild() {
 		}
 		dated[i] = older
 	}
-	var rest, active []daemon.Session
+	var rest, active []*daemon.Session
 	for i, s := range listed {
 		if m.archivedIDs[s.ID] {
 			m.section[s.ID] = secArchived
@@ -252,7 +287,7 @@ func (m *SessionViewer) rebuild() {
 		m.section[s.ID] = dated[i]
 		if m.active != nil && s.ID == m.active.ID {
 			m.section[s.ID] = secToday
-			active = []daemon.Session{s}
+			active = []*daemon.Session{s}
 			continue
 		}
 		rest = append(rest, s)
@@ -260,13 +295,13 @@ func (m *SessionViewer) rebuild() {
 	// Navigation follows the grouping. Within a group warm sessions lead the
 	// rest, and the daemon's order holds otherwise.
 	warmFirst := byWarm(now)
-	slices.SortStableFunc(rest, func(a, b daemon.Session) int {
+	slices.SortStableFunc(rest, func(a, b *daemon.Session) int {
 		return cmp.Or(cmp.Compare(m.section[a.ID], m.section[b.ID]), warmFirst(a, b))
 	})
-	m.Sessions = slices.Concat(ordered, active, rest)
+	m.order = slices.Concat(ordered, active, rest)
 
 	var items []PickerItem
-	visible := m.Sessions
+	visible := m.order
 	if m.ArchiveView {
 		visible = listed
 	} else {
@@ -274,7 +309,7 @@ func (m *SessionViewer) rebuild() {
 	}
 	for _, s := range visible {
 		if m.ArchiveView == m.archivedIDs[s.ID] {
-			items = append(items, PickerItem{ID: s.ID, Label: sessionTitle(s), Detail: sessionText(s.Workspace + " " + s.Model + " " + s.Provider)})
+			items = append(items, PickerItem{ID: s.ID, Label: sessionTitle(*s), Detail: sessionText(s.Workspace + " " + s.Model + " " + s.Provider)})
 		}
 	}
 	m.Items = items
@@ -313,12 +348,12 @@ func warm(s daemon.Session, now time.Time) bool {
 }
 
 // byWarm orders warm sessions before the rest.
-func byWarm(now time.Time) func(a, b daemon.Session) int {
-	return func(a, b daemon.Session) int {
+func byWarm(now time.Time) func(a, b *daemon.Session) int {
+	return func(a, b *daemon.Session) int {
 		switch {
-		case warm(a, now) == warm(b, now):
+		case warm(*a, now) == warm(*b, now):
 			return 0
-		case warm(a, now):
+		case warm(*a, now):
 			return -1
 		}
 		return 1
@@ -447,7 +482,8 @@ func (m *SessionViewer) setArchive(open bool) {
 	m.ArchiveView = open
 	m.confirm.dismiss()
 	m.SearchInput.SetValue("")
-	m.rebuild()
+	m.stale = true
+	m.ensure()
 	m.Cursor = 0
 	if !open {
 		m.focus("archive")
@@ -459,7 +495,14 @@ func (m *SessionViewer) ForgetPreview(id string) {
 	m.confirm.dismiss()
 }
 
+// Init is the sessions screen opening: it builds the rows it draws.
+func (m *SessionViewer) Init() tea.Cmd {
+	m.ensure()
+	return m.PickerModel.Init()
+}
+
 func (m SessionViewer) Update(msg tea.Msg) (SessionViewer, tea.Cmd) {
+	m.ensure()
 	before, _ := m.Highlighted()
 	switch msg := msg.(type) {
 	case SessionPreviewMsg:
@@ -537,7 +580,8 @@ func (m SessionViewer) previewAfter(before string) tea.Cmd {
 
 // PreviewCmd requests the highlighted session's preview after a short pause,
 // so scrolling through the list does not fire a request per row.
-func (m SessionViewer) PreviewCmd() tea.Cmd {
+func (m *SessionViewer) PreviewCmd() tea.Cmd {
+	m.ensure()
 	item, ok := m.Highlighted()
 	if !ok || m.Fetch == nil || m.fresh(item.ID) {
 		return nil

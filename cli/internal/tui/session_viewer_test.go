@@ -134,6 +134,7 @@ func TestSessionViewerArchiveKeepsCursorSlot(t *testing.T) {
 	m := NewSessionViewer("/work/current")
 	m.SetSize(120, 30)
 	m.SetSessions([]daemon.Session{{ID: "a"}, {ID: "b"}, {ID: "c"}, {ID: "d"}}, nil)
+	m.Init() // the screen is shown: it builds the rows it draws
 	m.focus("b")
 	slot := m.Cursor
 	m.raw[1].Archived = true
@@ -183,5 +184,34 @@ func TestSessionViewerDeleteAsksThenTakesEnterOnly(t *testing.T) {
 	deleted, ok := cmd().(SessionDeleteMsg)
 	if !ok || deleted.ID != "gone" || deleted.Condition.ETag != "e1" {
 		t.Fatalf("enter did not delete the asked session: %#v", deleted)
+	}
+}
+
+// A listing refresh hands the screen the root's slice and builds nothing until
+// the screen is drawn: the rows are what a chat that never opens /sessions must
+// not pay for. The copies this replaced were three records-wide slices of the
+// listing (432 KB each at 283 sessions).
+func TestSessionListingIsKeptRatherThanCopied(t *testing.T) {
+	sessions := []daemon.Session{{ID: "a", Title: "one"}, {ID: "b", Title: "two"}}
+	m := NewSessionViewer("/work/current")
+	m.SetSessions(sessions, nil)
+	if len(m.raw) != len(sessions) || &m.raw[0] != &sessions[0] {
+		t.Fatal("the screen copied the listing")
+	}
+	listed := func() bool {
+		return slices.ContainsFunc(m.Items, func(item PickerItem) bool { return item.ID == "a" })
+	}
+	if len(m.order) != 0 || listed() {
+		t.Fatalf("a refresh built rows nobody asked for: %d ordered, items %v", len(m.order), m.Items)
+	}
+	m.SetSize(120, 30)
+	m.View()
+	if len(m.order) != len(sessions) || !listed() {
+		t.Fatalf("drawing the screen built %d rows: %v", len(m.order), m.Items)
+	}
+	// A refresh while the rows exist keeps them current rather than stale.
+	m.SetSessions(sessions, nil)
+	if len(m.order) != len(sessions) || len(m.Filtered) != len(m.Items) {
+		t.Fatalf("a refresh left the rows stale: %d ordered, %d filtered of %d", len(m.order), len(m.Filtered), len(m.Items))
 	}
 }

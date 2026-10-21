@@ -723,6 +723,49 @@ func BenchmarkScroll(b *testing.B) {
 	b.ReportMetric(float64(steps)/float64(b.N), "steps/op")
 }
 
+// ---------------------------------------------------------------- rebuild
+
+// BenchmarkRebuild is the exchange rate for anything that shrinks what the
+// transcript keeps. A rebuild renders every retained entry, and the markdown
+// piece cache is what makes that cheap, so a scheme that drops cached pieces (or
+// rendered rows) to save heap pays again on a resize or a scroll back to the
+// top: cold is what that costs.
+func BenchmarkRebuild(b *testing.B) {
+	fixture := perfFixtureFor(b)
+	app := perfAppWith(b, fixture, 200, 50, DisplayFlags{}, perfHistory(fixture, len(fixture.Full)))
+	chat := &app.Chat
+	if chat.History.Len() == 0 || chat.droppedSettledLines == 0 {
+		b.Fatalf("fixture: %d entries, %d rows dropped", chat.History.Len(), chat.droppedSettledLines)
+	}
+	b.Run("warm", func(b *testing.B) {
+		chat.rebuildSettledLines()
+		b.ReportAllocs()
+		b.ResetTimer()
+		for range b.N {
+			chat.rebuildSettledLines()
+		}
+	})
+	b.Run("cold", func(b *testing.B) {
+		b.ReportAllocs()
+		b.ResetTimer()
+		for range b.N {
+			clearPieces()
+			chat.rebuildSettledLines()
+		}
+	})
+	b.StopTimer()
+	b.ReportMetric(float64(chat.History.Len()), "entries")
+	b.ReportMetric(float64(len(chat.settledLines)), "rows")
+}
+
+// clearPieces empties the markdown piece cache, so a rebuild can be measured
+// with nothing of its transcript cached.
+func clearPieces() {
+	pieces.mu.Lock()
+	defer pieces.mu.Unlock()
+	pieces.fresh, pieces.stale, pieces.bytes = nil, nil, 0
+}
+
 // ---------------------------------------------------------------- idle
 
 // BenchmarkIdleTick is one wakeup of a client that never comes to rest: a face
