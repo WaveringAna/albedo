@@ -349,7 +349,7 @@ func (s *blockScan) seeks(text string, start int, whole bool) (starts []int, ok 
 // rendering prev on its own does not begin the rendering of both. Only a
 // finished block is kept: the last one may still be growing.
 func markdownPiece(prev, block string, width int, finished bool) (string, bool) {
-	key := pieceKey{width: width, prev: prev, block: block}
+	key := pieceKey{width: width, prev: sha256.Sum256([]byte(prev)), block: block}
 	if piece, ok := pieces.get(key); ok {
 		return piece, true
 	}
@@ -474,9 +474,15 @@ func fenceAfter(open, line string) string {
 	return open
 }
 
+// pieceKey is what a rendered piece answers: the block it renders, at a width,
+// after the block before it. That block is named by a digest of its text rather
+// than by the text, because the text is already cached as the block it is: a
+// key holding it would keep every block in a reply twice, once as itself and
+// once as whatever the next block follows.
 type pieceKey struct {
-	prev, block string
-	width       int
+	prev  [sha256.Size]byte
+	block string
+	width int
 }
 
 // pieceCache keeps rendered pieces in two generations: a hit moves a piece
@@ -510,10 +516,10 @@ func (c *pieceCache) get(key pieceKey) (string, bool) {
 	return piece, ok
 }
 
-// put keeps copies: the key and piece are slices of one moment's stream and
-// its rendering, and would hold all of it.
+// put keeps a copy of the block and the piece: they are slices of one moment's
+// stream and its rendering, and would hold all of it.
 func (c *pieceCache) put(key pieceKey, piece string) {
-	if len(key.prev)+len(key.block)+len(piece) > maxPieceBytes {
+	if pieceKeySize(key, piece) > maxPieceBytes {
 		return
 	}
 	c.mu.Lock()
@@ -521,15 +527,21 @@ func (c *pieceCache) put(key pieceKey, piece string) {
 	if _, exists := c.fresh[key]; exists {
 		return
 	}
-	key.prev, key.block = strings.Clone(key.prev), strings.Clone(key.block)
+	key.block = strings.Clone(key.block)
 	c.store(key, strings.Clone(piece))
+}
+
+// pieceKeySize is what a cached piece adds to the cache, excluding map
+// overhead.
+func pieceKeySize(key pieceKey, piece string) int {
+	return len(key.block) + len(piece) + sha256.Size
 }
 
 func (c *pieceCache) store(key pieceKey, piece string) {
 	if _, exists := c.fresh[key]; exists {
 		return
 	}
-	size := len(key.prev) + len(key.block) + len(piece)
+	size := pieceKeySize(key, piece)
 	if size > maxPieceBytes {
 		return
 	}

@@ -22,6 +22,12 @@ func shotTerminal(t *testing.T) {
 	}
 	styles, ramp := DefaultStyles, transcriptInk
 	t.Cleanup(func() { DefaultStyles, transcriptInk = styles, ramp })
+	useInk(testInk(t))
+}
+
+// testInk is what a catppuccin terminal that reported its colors gives.
+func testInk(t *testing.T) ink {
+	t.Helper()
 	palette := map[int]rgb{}
 	for slot, hex := range map[int]string{ansiRed: "#f38ba8", ansiGreen: "#a6e3a1", ansiBlue: "#89b4fa", ansiMagenta: "#cba6f7", ansiCyan: "#94e2d5"} {
 		palette[slot] = *parseHex(hex)
@@ -31,7 +37,7 @@ func shotTerminal(t *testing.T) {
 	if !ok {
 		t.Fatal("the mock terminal colors were not trusted")
 	}
-	useInk(mixed)
+	return mixed
 }
 
 func shot(t *testing.T, name, view string) {

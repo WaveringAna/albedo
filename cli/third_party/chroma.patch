@@ -1,0 +1,742 @@
+chroma v2.27.0 with lexers and styles built when they are asked for.
+
+upstream parses the config of all 279 embedded lexers and all 74 embedded
+styles when the package is initialised, keeps them for the life of the
+program, and every client pays for it — chroma is reached through glamour's
+ansi package, which our markdown rendering always imports. measured on a
+resting client: 511 kB of live heap (365 kB lexers, 146 kB styles).
+
+here the embedded lexers are reduced to an index of what they can be found by
+(name, aliases, file patterns, mime types, whether they analyse text), and a
+lexer's config, rules and analysers are built the first time a lookup, a file
+name match or a snippet reaches it. styles are parsed on the first Get of
+their name. Registry is filled as styles are built, so a caller that registers
+its own theme (our codeTheme) and glamour's lookup by name both still work.
+
+two smaller changes come with it. a LexerRegistry can now carry a Lookup
+function, so a rule that names another lexer (chroma's Using mutator) reaches
+one that is not built yet; and the ignored file suffixes moved to an exported
+IgnoredSuffixes, since the lexers package matches file names itself now.
+styles/compat.go is gone: its package-level vars snapshotted every embedded
+style at init, which is the cost this patch exists to remove, and nothing we
+link uses them.
+
+output is unchanged: cli/internal/tui/chroma_patch_test.go renders every
+language a reply names and every file name a diff names, in both of our
+palettes, against testdata/chroma_highlights.golden, which was taken from the
+stock module (build with a -modfile whose go.mod drops the replace).
+
+to bump chroma: copy the new release over third_party/chroma, delete its
+tests, CI and testdata, and apply this patch
+(patch -p1 -d third_party/chroma < third_party/chroma.patch).
+
+diff a/lexers/lexers.go b/lexers/lexers.go
+--- a/lexers/lexers.go
++++ b/lexers/lexers.go
+@@ -1,8 +1,22 @@
++// Package lexers ships the lexers chroma builds from the XML files in
++// embedded/, and builds them when they are asked for.
++//
++// Upstream keeps every lexer, config and analyser, for as long as the program
++// runs, which a terminal that renders a handful of languages pays for
++// nothing. Here an embedded lexer is reduced to what it can be found by — its
++// name, aliases and file patterns — and the lexer itself, its rules and its
++// compiled analysers, is built the first time something asks for it.
+ package lexers
+ 
+ import (
+ 	"embed"
++	"encoding/xml"
++	"fmt"
+ 	"io/fs"
++	"path/filepath"
++	"sort"
++	"strings"
++	"sync"
+ 
+ 	"github.com/alecthomas/chroma/v2"
+ )
+@@ -10,42 +24,268 @@
+ //go:embed embedded
+ var embedded embed.FS
+ 
+-// GlobalLexerRegistry is the global LexerRegistry of Lexers.
+-var GlobalLexerRegistry = func() *chroma.LexerRegistry {
+-	reg := chroma.NewLexerRegistry()
+-	// index(reg)
+-	paths, err := fs.Glob(embedded, "embedded/*.xml")
++// GlobalLexerRegistry is the global LexerRegistry of Lexers. It holds the
++// lexers built so far; Lookup is how a rule that names another lexer reaches
++// one that is not built yet.
++var GlobalLexerRegistry = chroma.NewLexerRegistry()
++
++func init() { // nolint:gochecknoinits
++	GlobalLexerRegistry.Lookup = Get
++}
++
++// entry is what an embedded lexer's config says about it. Its rules stay in
++// the file until the lexer is built.
++type entry struct {
++	path           string
++	name           string
++	aliases        []string
++	filenames      []string
++	aliasFilenames []string
++	mimeTypes      []string
++	analyse        bool
++	// lexer is what the entry resolved to, once something asked for it.
++	lexer chroma.Lexer
++}
++
++var (
++	mu    sync.Mutex
++	index []*entry
++	// byName and byAlias map what an embedded lexer can be found by to it,
++	// under its name and its lowercased one.
++	byName, byAlias map[string]*entry
++	indexOnce       sync.Once
++	// known maps the name and aliases of every lexer registered so far, and
++	// their lowercased forms, to it. A lexer a Go file registers under an
++	// embedded lexer's name is the newer definition, and stands in for it.
++	known = map[string]chroma.Lexer{}
++)
++
++func buildIndex() {
++	indexOnce.Do(func() {
++		byName, byAlias = map[string]*entry{}, map[string]*entry{}
++		paths, err := fs.Glob(embedded, "embedded/*.xml")
++		if err != nil {
++			panic(err)
++		}
++		for _, path := range paths {
++			e, err := readEntry(path)
++			if err != nil {
++				panic(err)
++			}
++			index = append(index, e)
++			byName[e.name] = e
++			byName[strings.ToLower(e.name)] = e
++			for _, alias := range e.aliases {
++				byAlias[alias] = e
++				byAlias[strings.ToLower(alias)] = e
++			}
++		}
++	})
++}
++
++// readEntry reads the config at the head of an embedded lexer, leaving its
++// rules in the file.
++func readEntry(path string) (*entry, error) {
++	f, err := embedded.Open(path)
+ 	if err != nil {
+-		panic(err)
++		return nil, err
+ 	}
+-	for _, path := range paths {
+-		reg.Register(chroma.MustNewXMLLexer(embedded, path))
++	defer f.Close()
++	var config struct {
++		Name           string    `xml:"name"`
++		Aliases        []string  `xml:"alias"`
++		Filenames      []string  `xml:"filename"`
++		AliasFilenames []string  `xml:"alias_filename"`
++		MimeTypes      []string  `xml:"mime_type"`
++		Analyse        *struct{} `xml:"analyse"`
+ 	}
+-	return reg
+-}()
++	decoder := xml.NewDecoder(f)
++	for {
++		token, err := decoder.Token()
++		if err != nil {
++			return nil, fmt.Errorf("%s: %w", path, err)
++		}
++		start, ok := token.(xml.StartElement)
++		if !ok || start.Name.Local != "config" {
++			continue
++		}
++		if err := decoder.DecodeElement(&config, &start); err != nil {
++			return nil, fmt.Errorf("%s: %w", path, err)
++		}
++		return &entry{
++			path:           path,
++			name:           config.Name,
++			aliases:        config.Aliases,
++			filenames:      config.Filenames,
++			aliasFilenames: config.AliasFilenames,
++			mimeTypes:      config.MimeTypes,
++			analyse:        config.Analyse != nil,
++		}, nil
++	}
++}
+ 
+-// Names of all lexers, optionally including aliases.
+-func Names(withAliases bool) []string {
+-	return GlobalLexerRegistry.Names(withAliases)
++// standIn is the lexer registered under the entry's name, if one is: the
++// registration replaces the lexer the file defines. mu must be held.
++func (e *entry) standIn() chroma.Lexer {
++	return known[e.name]
+ }
+ 
+-// Aliases of all the lexers, and skip those lexers who do not have any aliases,
+-// or show their name instead
+-func Aliases(skipWithoutAliases bool) []string {
+-	return GlobalLexerRegistry.Aliases(skipWithoutAliases)
++// resolve returns the lexer the entry stands for, building it the first time.
++// mu must be held.
++func (e *entry) resolve() chroma.Lexer {
++	if e.lexer != nil {
++		return e.lexer
++	}
++	if lexer := e.standIn(); lexer != nil {
++		e.lexer = lexer
++		return lexer
++	}
++	e.lexer = register(chroma.MustNewXMLLexer(embedded, e.path))
++	return e.lexer
++}
++
++// patterns is the file patterns the entry matches, from the lexer standing in
++// for it when there is one. mu must be held.
++func (e *entry) patterns(alias bool) []string {
++	if lexer := e.standIn(); lexer != nil {
++		if alias {
++			return lexer.Config().AliasFilenames
++		}
++		return lexer.Config().Filenames
++	}
++	if alias {
++		return e.aliasFilenames
++	}
++	return e.filenames
++}
++
++// hasAnalyser is whether the entry's lexer may score text it is given. mu must
++// be held.
++func (e *entry) hasAnalyser() bool {
++	return e.analyse || e.standIn() != nil
++}
++
++// register adds a lexer to the registry, and remembers what it can be found
++// by. mu must be held.
++func register(lexer chroma.Lexer) chroma.Lexer {
++	GlobalLexerRegistry.Register(lexer)
++	config := lexer.Config()
++	known[config.Name] = lexer
++	known[strings.ToLower(config.Name)] = lexer
++	for _, alias := range config.Aliases {
++		known[alias] = lexer
++		known[strings.ToLower(alias)] = lexer
++	}
++	return lexer
++}
++
++// others are the lexers the registry holds besides the embedded ones, which
++// match, Analyse and Names reach through the index. mu must be held.
++func others(yield func(chroma.Lexer)) {
++	for _, lexer := range GlobalLexerRegistry.Lexers {
++		if e := byName[lexer.Config().Name]; e != nil && e.standIn() == lexer {
++			continue
++		}
++		yield(lexer)
++	}
+ }
+ 
+ // Get a Lexer by name, alias or file extension.
+ //
+-// Note that this if there isn't an exact match on name or alias, this will
+-// call Match(), so it is not efficient.
++// Note that if there isn't an exact match on name or alias, this will call
++// Match(), so it is not efficient.
+ func Get(name string) chroma.Lexer {
+-	return GlobalLexerRegistry.Get(name)
++	mu.Lock()
++	defer mu.Unlock()
++	buildIndex()
++	if lexer, ok := known[name]; ok {
++		return lexer
++	}
++	if lexer, ok := known[strings.ToLower(name)]; ok {
++		return lexer
++	}
++	if e := byName[name]; e != nil {
++		return e.resolve()
++	}
++	if e := byName[strings.ToLower(name)]; e != nil {
++		return e.resolve()
++	}
++	if e := byAlias[name]; e != nil {
++		return e.resolve()
++	}
++	if e := byAlias[strings.ToLower(name)]; e != nil {
++		return e.resolve()
++	}
++	candidates := chroma.PrioritisedLexers{}
++	// Try file extension.
++	if lexer := match("filename." + name); lexer != nil {
++		candidates = append(candidates, lexer)
++	}
++	// Try exact filename.
++	if lexer := match(name); lexer != nil {
++		candidates = append(candidates, lexer)
++	}
++	if len(candidates) == 0 {
++		return nil
++	}
++	sort.Sort(candidates)
++	return candidates[0]
+ }
+ 
+-// MatchMimeType attempts to find a lexer for the given MIME type.
+-func MatchMimeType(mimeType string) chroma.Lexer {
+-	return GlobalLexerRegistry.MatchMimeType(mimeType)
++// Names of all lexers, optionally including aliases.
++func Names(withAliases bool) []string {
++	mu.Lock()
++	defer mu.Unlock()
++	buildIndex()
++	out := make([]string, 0, len(index))
++	for _, e := range index {
++		out = append(out, e.name)
++		if withAliases {
++			out = append(out, e.aliases...)
++		}
++	}
++	others(func(lexer chroma.Lexer) {
++		out = append(out, lexer.Config().Name)
++		if withAliases {
++			out = append(out, lexer.Config().Aliases...)
++		}
++	})
++	sort.Strings(out)
++	return out
++}
++
++// Aliases of all the lexers, and skip those lexers who do not have any
++// aliases, or show their name instead
++func Aliases(skipWithoutAliases bool) []string {
++	mu.Lock()
++	defer mu.Unlock()
++	buildIndex()
++	out := []string{}
++	add := func(config *chroma.Config) {
++		if len(config.Aliases) == 0 {
++			if skipWithoutAliases {
++				return
++			}
++			out = append(out, config.Name)
++		}
++		out = append(out, config.Aliases...)
++	}
++	for _, e := range index {
++		if lexer := e.standIn(); lexer != nil {
++			add(lexer.Config())
++			continue
++		}
++		if len(e.aliases) == 0 && skipWithoutAliases {
++			continue
++		}
++		out = append(out, e.aliases...)
++		if len(e.aliases) == 0 {
++			out = append(out, e.name)
++		}
++	}
++	others(func(lexer chroma.Lexer) { add(lexer.Config()) })
++	sort.Strings(out)
++	return out
+ }
+ 
+ // Match returns the first lexer matching filename.
+@@ -53,17 +293,131 @@
+ // Note that this iterates over all file patterns in all lexers, so it's not
+ // particularly efficient.
+ func Match(filename string) chroma.Lexer {
+-	return GlobalLexerRegistry.Match(filename)
++	mu.Lock()
++	defer mu.Unlock()
++	buildIndex()
++	return match(filename)
++}
++
++func match(filename string) chroma.Lexer {
++	filename = filepath.Base(filename)
++	// Primary file patterns decide on their own; only when no lexer claims
++	// the name does a secondary pattern.
++	for _, alias := range []bool{false, true} {
++		matched := chroma.PrioritisedLexers{}
++		for _, e := range index {
++			for _, glob := range e.patterns(alias) {
++				if globMatch(glob, filename) {
++					matched = append(matched, e.resolve())
++					break
++				}
++			}
++		}
++		others(func(lexer chroma.Lexer) {
++			config := lexer.Config()
++			patterns := config.Filenames
++			if alias {
++				patterns = config.AliasFilenames
++			}
++			for _, glob := range patterns {
++				if globMatch(glob, filename) {
++					matched = append(matched, lexer)
++					break
++				}
++			}
++		})
++		if len(matched) > 0 {
++			sort.Sort(matched)
++			return matched[0]
++		}
++	}
++	return nil
++}
++
++// globMatch reports whether filename matches a lexer's pattern, or the pattern
++// with the suffix an editor or a build tool leaves on a file of the same
++// language.
++func globMatch(glob, filename string) bool {
++	ok, err := filepath.Match(glob, filename)
++	if err != nil {
++		panic(err)
++	}
++	if ok {
++		return true
++	}
++	for _, suffix := range chroma.IgnoredSuffixes {
++		ok, err := filepath.Match(glob+suffix, filename)
++		if err != nil {
++			panic(err)
++		}
++		if ok {
++			return true
++		}
++	}
++	return false
++}
++
++// MatchMimeType attempts to find a lexer for the given MIME type.
++func MatchMimeType(mimeType string) chroma.Lexer {
++	mu.Lock()
++	defer mu.Unlock()
++	buildIndex()
++	matched := chroma.PrioritisedLexers{}
++	for _, e := range index {
++		mimeTypes := e.mimeTypes
++		if lexer := e.standIn(); lexer != nil {
++			mimeTypes = lexer.Config().MimeTypes
++		}
++		for _, mime := range mimeTypes {
++			if mimeType == mime {
++				matched = append(matched, e.resolve())
++				break
++			}
++		}
++	}
++	others(func(lexer chroma.Lexer) {
++		for _, mime := range lexer.Config().MimeTypes {
++			if mimeType == mime {
++				matched = append(matched, lexer)
++				break
++			}
++		}
++	})
++	if len(matched) == 0 {
++		return nil
++	}
++	sort.Sort(matched)
++	return matched[0]
+ }
+ 
+ // Register a Lexer with the global registry.
+ func Register(lexer chroma.Lexer) chroma.Lexer {
+-	return GlobalLexerRegistry.Register(lexer)
++	mu.Lock()
++	defer mu.Unlock()
++	return register(lexer)
+ }
+ 
+-// Analyse text content and return the "best" lexer..
++// Analyse text content and return the "best" lexer.
+ func Analyse(text string) chroma.Lexer {
+-	return GlobalLexerRegistry.Analyse(text)
++	mu.Lock()
++	defer mu.Unlock()
++	buildIndex()
++	var picked chroma.Lexer
++	highest := float32(0.0)
++	score := func(lexer chroma.Lexer) {
++		if analyser, ok := lexer.(chroma.Analyser); ok {
++			if weight := analyser.AnalyseText(text); weight > highest {
++				picked, highest = lexer, weight
++			}
++		}
++	}
++	for _, e := range index {
++		if e.hasAnalyser() {
++			score(e.resolve())
++		}
++	}
++	others(score)
++	return picked
+ }
+ 
+ // PlaintextRules is used for the fallback lexer as well as the explicit
+diff a/registry.go b/registry.go
+--- a/registry.go
++++ b/registry.go
+@@ -6,8 +6,10 @@
+ 	"strings"
+ )
+ 
++// IgnoredSuffixes are the suffixes a glob is retried with, so that a file an
++// editor or a build tool left behind still finds its language.
+ var (
+-	ignoredSuffixes = [...]string{
++	IgnoredSuffixes = [...]string{
+ 		// Editor backups
+ 		"~", ".bak", ".old", ".orig",
+ 		// Debian and derivatives apt/dpkg/ucf backups
+@@ -24,6 +26,10 @@
+ 	Lexers  Lexers
+ 	byName  map[string]Lexer
+ 	byAlias map[string]Lexer
++	// Lookup resolves a name the registry does not hold, so that a set of
++	// lexers can be built as it is asked for. A nil Lookup means the registry
++	// is the whole world.
++	Lookup func(name string) Lexer
+ }
+ 
+ // NewLexerRegistry creates a new LexerRegistry of Lexers.
+@@ -80,6 +86,11 @@
+ 	if lexer := l.byAlias[strings.ToLower(name)]; lexer != nil {
+ 		return lexer
+ 	}
++	if l.Lookup != nil {
++		if lexer := l.Lookup(name); lexer != nil {
++			return lexer
++		}
++	}
+ 
+ 	candidates := PrioritisedLexers{}
+ 	// Try file extension.
+@@ -130,7 +141,7 @@
+ 			} else if ok {
+ 				matched = append(matched, lexer)
+ 			} else {
+-				for _, suf := range &ignoredSuffixes {
++				for _, suf := range &IgnoredSuffixes {
+ 					ok, err := filepath.Match(glob+suf, filename)
+ 					if err != nil {
+ 						panic(err)
+@@ -157,7 +168,7 @@
+ 			} else if ok {
+ 				matched = append(matched, lexer)
+ 			} else {
+-				for _, suf := range &ignoredSuffixes {
++				for _, suf := range &IgnoredSuffixes {
+ 					ok, err := filepath.Match(glob+suf, filename)
+ 					if err != nil {
+ 						panic(err)
+diff a/styles/api.go b/styles/api.go
+--- a/styles/api.go
++++ b/styles/api.go
+@@ -5,6 +5,7 @@
+ 	"io/fs"
+ 	"sort"
+ 	"strings"
++	"sync"
+ 
+ 	"github.com/alecthomas/chroma/v2"
+ )
+@@ -12,34 +13,64 @@
+ //go:embed *.xml
+ var embedded embed.FS
+ 
+-// Registry of Styles.
+-var Registry = func() map[string]*chroma.Style {
+-	registry := map[string]*chroma.Style{}
+-	// Register all embedded styles.
+-	files, err := fs.ReadDir(embedded, ".")
++// Registry of Styles. It holds the styles built so far, not the ones the
++// package ships: those are parsed on first use, since almost every caller
++// wants one style by name and parsing all of them costs a terminal-free
++// renderer more than it will ever use.
++var Registry = map[string]*chroma.Style{}
++
++// files maps a style's file name, which is its name in the registry, to the
++// embedded file it is parsed from.
++var files = func() map[string]string {
++	entries, err := fs.ReadDir(embedded, ".")
+ 	if err != nil {
+ 		panic(err)
+ 	}
+-	for _, file := range files {
+-		if file.IsDir() {
+-			continue
++	files := map[string]string{}
++	for _, entry := range entries {
++		if name, ok := strings.CutSuffix(entry.Name(), ".xml"); ok {
++			files[name] = entry.Name()
+ 		}
+-		r, err := embedded.Open(file.Name())
+-		if err != nil {
+-			panic(err)
+-		}
+-		style, err := chroma.NewXMLStyle(r)
+-		if err != nil {
+-			panic(err)
+-		}
+-		registry[strings.ToLower(style.Name)] = style
+-		_ = r.Close()
+ 	}
+-	return registry
++	return files
+ }()
+ 
++var loading sync.Mutex
++
++// lookup returns the named style, parsing the embedded style of that name the
++// first time it is asked for.
++func lookup(name string) (*chroma.Style, bool) {
++	name = strings.ToLower(name)
++	if style, ok := Registry[name]; ok {
++		return style, true
++	}
++	file, ok := files[name]
++	if !ok {
++		return nil, false
++	}
++	loading.Lock()
++	defer loading.Unlock()
++	if style, ok := Registry[name]; ok {
++		return style, true
++	}
++	r, err := embedded.Open(file)
++	if err != nil {
++		panic(err)
++	}
++	style, err := chroma.NewXMLStyle(r)
++	_ = r.Close()
++	if err != nil {
++		panic(err)
++	}
++	Registry[strings.ToLower(style.Name)] = style
++	return style, true
++}
++
+ // Fallback style. Reassign to change the default fallback style.
+-var Fallback = Registry["swapoff"]
++var Fallback = func() *chroma.Style {
++	style, _ := lookup("swapoff")
++	return style
++}()
+ 
+ // Register a chroma.Style.
+ func Register(style *chroma.Style) *chroma.Style {
+@@ -47,8 +78,11 @@
+ 	return style
+ }
+ 
+-// Names of all available styles.
++// Names of all available styles. It parses every style the package ships.
+ func Names() []string {
++	for name := range files {
++		_, _ = lookup(name)
++	}
+ 	out := []string{}
+ 	for name := range Registry {
+ 		out = append(out, name)
+@@ -59,7 +93,7 @@
+ 
+ // Get named style, or Fallback.
+ func Get(name string) *chroma.Style {
+-	if style, ok := Registry[strings.ToLower(name)]; ok {
++	if style, ok := lookup(name); ok {
+ 		return style
+ 	}
+ 	return Fallback
+@@ -77,7 +111,7 @@
+ 	if style.Counterpart == "" {
+ 		return style
+ 	}
+-	counterpart, ok := Registry[style.Counterpart]
++	counterpart, ok := lookup(style.Counterpart)
+ 	if !ok || counterpart.Mode() != mode {
+ 		return style
+ 	}
+diff a/styles/compat.go b/styles/compat.go
+--- a/styles/compat.go
++++ b/styles/compat.go
+@@ -1,69 +0,0 @@
+-package styles
+-
+-// Present for backwards compatibility.
+-//
+-// Deprecated: use styles.Get(name) instead.
+-var (
+-	Abap                = Registry["abap"]
+-	Algol               = Registry["algol"]
+-	AlgolNu             = Registry["algol_nu"]
+-	Arduino             = Registry["arduino"]
+-	Autumn              = Registry["autumn"]
+-	Average             = Registry["average"]
+-	Base16Snazzy        = Registry["base16-snazzy"]
+-	Borland             = Registry["borland"]
+-	BlackWhite          = Registry["bw"]
+-	CatppuccinFrappe    = Registry["catppuccin-frappe"]
+-	CatppuccinLatte     = Registry["catppuccin-latte"]
+-	CatppuccinMacchiato = Registry["catppuccin-macchiato"]
+-	CatppuccinMocha     = Registry["catppuccin-mocha"]
+-	Colorful            = Registry["colorful"]
+-	DoomOne             = Registry["doom-one"]
+-	DoomOne2            = Registry["doom-one2"]
+-	Dracula             = Registry["dracula"]
+-	Emacs               = Registry["emacs"]
+-	Friendly            = Registry["friendly"]
+-	Fruity              = Registry["fruity"]
+-	GitHubDark          = Registry["github-dark"]
+-	GitHub              = Registry["github"]
+-	GruvboxLight        = Registry["gruvbox-light"]
+-	Gruvbox             = Registry["gruvbox"]
+-	HrDark              = Registry["hrdark"]
+-	HrHighContrast      = Registry["hr_high_contrast"]
+-	Igor                = Registry["igor"]
+-	KanagawaDragon      = Registry["kanagawa-dragon"]
+-	KanagawaLotus       = Registry["kanagawa-lotus"]
+-	KanagawaWave        = Registry["kanagawa-wave"]
+-	Lovelace            = Registry["lovelace"]
+-	Manni               = Registry["manni"]
+-	ModusOperandi       = Registry["modus-operandi"]
+-	ModusVivendi        = Registry["modus-vivendi"]
+-	Monokai             = Registry["monokai"]
+-	MonokaiLight        = Registry["monokailight"]
+-	Murphy              = Registry["murphy"]
+-	Native              = Registry["native"]
+-	Nord                = Registry["nord"]
+-	OnesEnterprise      = Registry["onesenterprise"]
+-	ParaisoDark         = Registry["paraiso-dark"]
+-	ParaisoLight        = Registry["paraiso-light"]
+-	Pastie              = Registry["pastie"]
+-	Perldoc             = Registry["perldoc"]
+-	Pygments            = Registry["pygments"]
+-	RainbowDash         = Registry["rainbow_dash"]
+-	RosePineDawn        = Registry["rose-pine-dawn"]
+-	RosePineMoon        = Registry["rose-pine-moon"]
+-	RosePine            = Registry["rose-pine"]
+-	Rrt                 = Registry["rrt"]
+-	SolarizedDark       = Registry["solarized-dark"]
+-	SolarizedDark256    = Registry["solarized-dark256"]
+-	SolarizedLight      = Registry["solarized-light"]
+-	SwapOff             = Registry["swapoff"]
+-	Tango               = Registry["tango"]
+-	Trac                = Registry["trac"]
+-	Vim                 = Registry["vim"]
+-	VisualStudio        = Registry["vs"]
+-	Vulcan              = Registry["vulcan"]
+-	WitchHazel          = Registry["witchhazel"]
+-	XcodeDark           = Registry["xcode-dark"]
+-	Xcode               = Registry["xcode"]
+-)

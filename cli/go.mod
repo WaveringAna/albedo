@@ -57,3 +57,5 @@ replace charm.land/glamour/v2 => tangled.org/okami.mom/glamour.git/v2 v2.0.0-202
 // demand-driven painting, see third_party/bubbletea.patch
 replace charm.land/bubbletea/v2 => ./third_party/bubbletea
 
+// lexers and styles that only build what is asked for, see third_party/chroma.patch
+replace github.com/alecthomas/chroma/v2 => ./third_party/chroma
