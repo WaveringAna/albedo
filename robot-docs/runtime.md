@@ -116,3 +116,7 @@ acknowledgment or explicit startup failure before inserting. The winning owner
 outlives the callers; concurrent losing creators acknowledge the existing
 table and exit. Keep this lifetime independent of daemon boot so embedded
 runtimes work too. Never replace readiness with a sleep or bounded polling.
+
+## HTTP route inventory
+
+`test/harness/http_routes_test.py` compares daemon and extension dispatch arms with `docs/openapi.yaml` operations without booting a daemon. It normalizes parameter names and checks method/path pairs in both directions. It reads outer dispatch arms in the current Gleam layout and the OpenAPI path/operation indentation; new routing syntax needs an extractor update. The Go E2E contract transport checks response schemas for requests it exercises, and `test.sh` separately checks generated Go bindings with `apigen -check`.

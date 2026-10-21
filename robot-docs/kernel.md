@@ -7,6 +7,12 @@ restart, keeping its namespace and its background jobs. the daemon connects
 to it directly, or through a bridge when it runs on another host, and every message between the two travels through a small
 session layer that neither loses nor repeats a message across a reconnect.
 
+## frame vocabulary
+
+The daemon sends `execute`, `reply`, `interrupt`, `shutdown`, `snapshot`, `restore`, `job_stop`, `job_list` and `job_read`. The kernel sends `ready`, `startup_error`, `call`, `done`, `job_start`, `job`, `trace`, `cleanup`, `cells` and `jobs`; job stop and job view replies repeat the request type. The remote plugin also sends `invoke`, `introspect` and `release`, and consumes `invoked`, `introspected` and `mirror`.
+
+`test/harness/kernel_frames_test.py` compares these names with the protocol TypedDicts and source literals without booting a kernel. Its explicit baseline records the missing TypedDicts for the cells and jobs observations. It checks names, not payload fields or delivery behavior; dynamically selected names need an extractor update.
+
 ## host calls
 
 `albedo_python.erl` decodes the Python call frame once and passes its method
