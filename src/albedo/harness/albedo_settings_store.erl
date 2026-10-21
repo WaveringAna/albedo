@@ -13,14 +13,19 @@ recover(Home) ->
         {error, enoent} -> {ok, nil};
         {ok, #file_info{type=regular, size=Size, mode=Mode}} when Size =< 12582912, Mode band 8#077 =:= 0 ->
             try
-                {ok, Bytes} = file:read_file(Journal),
+                Bytes = posix(<<"read the recovery record">>, file:read_file(Journal)),
                 {settings_group, 1, Documents} = binary_to_term(Bytes, [safe]),
                 validate_documents(Documents),
                 publish(Home, Documents),
-                ok = file:delete(Journal),
+                posix(<<"delete the recovery record">>, file:delete(Journal)),
                 sync_directory(Home),
                 {ok, nil}
-            catch _:_ -> {error, <<"settings recovery could not complete">>} end;
+            catch
+                %% Only steps and POSIX reasons reach the message; a
+                %% recovery record can hold credentials.
+                throw:{settings, Step} -> {error, <<"settings recovery could not complete: ", Step/binary>>};
+                _:_ -> {error, <<"settings recovery could not complete: the record is invalid">>}
+            end;
         _ -> {error, <<"settings recovery record is unsafe or unreadable">>}
     end.
 
@@ -50,7 +55,7 @@ validate_documents(_) -> throw({settings, <<"invalid settings replacement">>}).
 
 publish(Home, Documents) ->
     lists:foreach(fun({File, Bytes}) ->
-        check_write(albedo_credentials:write(filename:join(Home, File), Bytes))
+        posix(<<"write ", File/binary>>, albedo_credentials:write(filename:join(Home, File), Bytes))
     end, lists:sort(maps:to_list(Documents))),
     sync_directory(Home).
 
@@ -58,8 +63,15 @@ check_write(ok) -> ok;
 check_write(_) -> throw({settings, <<"could not publish settings">>}).
 
 sync_directory(Home) ->
-    {ok, Device} = file:open(Home, [read, raw, directory]),
-    try ok = file:sync(Device) after file:close(Device) end.
+    Device = posix(<<"open the settings directory">>, file:open(Home, [read, raw, directory])),
+    try posix(<<"sync the settings directory">>, file:sync(Device)) after file:close(Device) end.
+
+%% A file operation's result, or a settings failure naming the step and reason.
+posix(_, ok) -> ok;
+posix(_, {ok, Value}) -> Value;
+posix(Step, {error, Reason}) when is_atom(Reason) ->
+    throw({settings, <<Step/binary, " failed (", (atom_to_binary(Reason))/binary, ")">>});
+posix(Step, _) -> throw({settings, <<Step/binary, " failed">>}).
 
 %% Every persisted settings and credential mutation shares the home lock.
 with_lock(Home, Run) ->

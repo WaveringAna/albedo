@@ -1,10 +1,10 @@
 -module(albedo_settings_http).
 -export([observe/3, patch/9]).
--import(albedo_settings_store, [with_lock/2, object/2, check/1, commit_group/2]).
+-import(albedo_settings_store, [object/2, check/1, commit_group/2]).
 
 %% These are HTTP boundary projections. Persisted names remain owned by the
 %% harness, including callers from trusted model tools.
-observe(Home, Group, Declared) -> with_lock(Home, fun() -> guarded(fun() ->
+observe(Home, Group, Declared) -> locked(Home, fun() -> guarded(fun() ->
     Groups = case Group of
         <<"ui">> -> #{<<"ui">> => projection('albedo@harness@settings@projection':ui_group(albedo_settings_store:read(Home, <<"picker.json">>)))};
         _ -> projection('albedo@harness@settings@projection':groups(documents(Home), Declared))
@@ -19,7 +19,7 @@ observe(Home, Group, Declared) -> with_lock(Home, fun() -> guarded(fun() ->
 end) end).
 
 patch(Home, Group, Match, PatchJSON, Providers, Logins, Resolve, Defaults, Declared) ->
-    Captured = with_lock(Home, fun() -> guarded(fun() ->
+    Captured = locked(Home, fun() -> guarded(fun() ->
         Docs = documents(Home), Groups = projection('albedo@harness@settings@projection':groups(Docs, Declared)), Prior = group(Group, Groups),
         Revisions = albedo_settings_store:read(Home, <<"settings-revisions.json">>),
         match_group(Group, Match, Prior, Revisions),
@@ -40,7 +40,7 @@ patch(Home, Group, Match, PatchJSON, Providers, Logins, Resolve, Defaults, Decla
             lists:foreach(fun({Name, Definition, Secret}) ->
                 check(albedo_mcp:check_candidate(Name, Definition, Secret))
             end, Checked),
-            with_lock(Home, fun() -> guarded(fun() ->
+            locked(Home, fun() -> guarded(fun() ->
                 Docs = documents(Home), Prior = group(Group, projection('albedo@harness@settings@projection':groups(Docs, Declared))),
                 Revisions = albedo_settings_store:read(Home, <<"settings-revisions.json">>),
                 match_group(Group, Match, Prior, Revisions),
@@ -253,6 +253,14 @@ text(Value, Min, Max) -> true = is_binary(Value) andalso byte_size(Value) >= Min
 nullable_text(null, _) -> ok; nullable_text(Text, Max) -> text(Text, 1, Max).
 counter(Value, Min, Max) -> true = is_integer(Value) andalso Value >= Min andalso Value =< Max.
 strings(Values, Max, Width) -> true = is_list(Values) andalso length(Values) =< Max, lists:foreach(fun(V) -> text(V, 1, Width) end, Values).
+%% The store lock reports a busy store or an incomplete recovery as a bare
+%% reason; this boundary answers every failure as {Status, Code, Detail}.
+locked(Home, Run) ->
+    case albedo_settings_store:with_lock(Home, Run) of
+        {error, Reason} when is_binary(Reason) -> {error, {503, <<"settings_unavailable">>, Reason}};
+        Result -> Result
+    end.
+
 ensure(true, _, _, _) -> ok; ensure(false, Status, Code, Detail) -> refusal(Status, Code, Detail).
 refusal(Status, Code, Detail) -> throw({http_settings, {Status, Code, Detail}}).
 guarded(Run) -> try Run() catch

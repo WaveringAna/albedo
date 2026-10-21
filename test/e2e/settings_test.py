@@ -415,6 +415,47 @@ class SettingsTest(unittest.TestCase):
         stored = json.loads(picker.read_text())
         self.assertNotIn(self.session, json.dumps(stored))
 
+    # exclusive: leaves an unpublishable settings recovery record in the home
+    @exclusive
+    def test_stuck_settings_recovery_answers_503_with_its_reason_until_it_completes(
+        self,
+    ):
+        # A record publication left behind used to crash every settings read
+        # (badarg on the bare reason), so the CLI saw /server fail and called
+        # the daemon unhealthy without saying why.
+        documents = {
+            "picker.json": {"thinking": False},
+            "settings-revisions.json": {"ui": 1},
+        }
+        record = bytearray(b"\x83h\x03w\x0esettings_groupa\x01t")
+        record += len(documents).to_bytes(4, "big")
+        for name, value in documents.items():
+            for item in (name.encode(), json.dumps(value).encode()):
+                record += b"m" + len(item).to_bytes(4, "big") + item
+        picker = self.app.home / "picker.json"
+        picker.unlink(missing_ok=True)
+        picker.mkdir()
+        journal = self.app.home / ".settings-recovery"
+        journal.write_bytes(record)
+        journal.chmod(0o600)
+        for route in ("/server", "/settings?group=ui"):
+            with (
+                self.subTest(route=route),
+                self.assertRaises(urllib.error.HTTPError) as caught,
+            ):
+                self.read(route)
+            self.assertEqual(caught.exception.code, 503)
+            failure = json.loads(caught.exception.read())
+            self.assertEqual(failure["code"], "settings_unavailable")
+            self.assertIn("write picker.json failed (", failure["detail"])
+        self.assertIn(
+            self.session, [item["id"] for item in self.read("/sessions")["items"]]
+        )
+        picker.rmdir()
+        self.assertEqual(self.read("/server")["state"], "ready")
+        self.assertFalse(journal.exists())
+        self.assertEqual(json.loads(picker.read_text()), documents["picker.json"])
+
     # exclusive: global choices and explicit session overrides remain separate
     @exclusive
     # exclusive: changes daemon-wide extension and capability defaults
