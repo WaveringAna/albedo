@@ -21,11 +21,11 @@ export const clock = new Clock();
 /**
  * Whether a session has a turn in hand. The daemon reports preparing,
  * generating (the model is thinking or writing), running (a tool),
- * compacting and interrupting; only idle and interrupted are at rest.
+ * compacting and interrupting; only idle is at rest.
  */
 export function busy(session: Session | undefined): boolean {
   const phase = session?.status?.phase;
-  return !!phase && phase !== 'idle' && phase !== 'interrupted';
+  return !!phase && phase !== 'idle';
 }
 
 /** What a busy session is doing now, from its phase and the tail of its activity. */

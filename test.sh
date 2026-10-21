@@ -25,6 +25,8 @@ test/gleam-lint.sh
 cargo test --quiet --release --locked --manifest-path native/render/Cargo.toml
 native/render/install.sh
 go -C cli/tools/apigen run . -check
+test -d web/node_modules || npm --prefix web ci --no-audit --no-fund
+npm --prefix web run generate:check
 go -C cli vet ./...
 # the Python e2e suite drives the CLI through this binary
 go -C cli build -o bin/albedo ./cmd/albedo

@@ -1,4 +1,4 @@
-import { readEntryContent, readHistory, sendMessage, uuidv7, type ContentPart, type HistoryEntry } from './api';
+import { readEntryContent, readHistory, sendMessage, uuidv7, type ContentPart, type HistoryEntry, type Phase } from './api';
 import type { Trace } from './burst';
 import type { Attached } from './chat/attachments';
 import { follow, type Batch } from './stream';
@@ -87,7 +87,7 @@ export function jsonField(entry: HistoryEntry, field: string): unknown {
 }
 
 function traceOf(entry: HistoryEntry): Trace | undefined {
-  for (const part of entry.content) if (part.kind === 'trace') return part.trace as Trace;
+  for (const part of entry.content) if (part.kind === 'trace') return part.trace;
   return undefined;
 }
 
@@ -136,7 +136,7 @@ export class Transcript {
   /** Whether the session is busy, so its newest turn is not signed off yet. */
   running = $state(false);
   /** The phase the stream last reported, fresher than the session list's. */
-  phase = $state<string | null>(null);
+  phase = $state<Phase | null>(null);
   streaming = $state(false);
   live = $state.raw<Live[]>([]);
   progress = $state.raw<Progress[]>([]);
@@ -228,7 +228,7 @@ export class Transcript {
         }
         case 'status':
           this.phase = data.phase ?? null;
-          if (this.phase === 'idle' || this.phase === 'interrupted') this.#commit(null);
+          if (this.phase === 'idle') this.#commit(null);
           break;
         case 'text':
         case 'thinking': {
@@ -274,7 +274,7 @@ export class Transcript {
       this.#replacing = [];
       if (replacing === 'all') this.live = [];
       else if (replacing.length) this.live = this.live.filter((item) => !replacing.includes(item.id));
-      if (this.phase === 'idle' || this.phase === 'interrupted') [this.live, this.progress] = [[], []];
+      if (this.phase === 'idle') [this.live, this.progress] = [[], []];
     }, 60);
   }
 
@@ -374,7 +374,7 @@ export class Transcript {
           turn.text = text;
           break;
         case 'thinking':
-          if (text.trim()) blocks.push({ kind: 'thinking', key: entry.id, text, ms: entry.thinking_duration_ms });
+          if (text.trim()) blocks.push({ kind: 'thinking', key: entry.id, text, ms: entry.thinking_duration_ms ?? null });
           break;
         case 'tool_call':
           // A call shows until its result replaces it.
@@ -385,8 +385,10 @@ export class Transcript {
           turn.tools++;
           for (const change of traceOf(entry)?.changes ?? []) {
             turn.files.add(change.path);
-            turn.added += change.added ?? 0;
-            turn.removed += change.removed ?? 0;
+            if (change.kind === 'diff') {
+              turn.added += change.added;
+              turn.removed += change.removed;
+            }
           }
           blocks.push({ kind: 'tool', key: entry.id, name: entry.tool.name, entry, done: true, trace: traceOf(entry), failed: failedTool(entry) });
           break;

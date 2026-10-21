@@ -1,17 +1,11 @@
+import type { components } from './api.gen';
 import { readHistory, type HistoryEntry } from './api';
 import { hydrate } from './transcript.svelte';
 
 // The changes one turn made, read from its history: every tool call's trace
 // records each file it changed with the unified diff (robot-docs/web.md).
 
-export interface Change {
-  path: string;
-  diff: string;
-  added: number;
-  removed: number;
-  /** Why there is no diff (binary, unreadable, too large), when there is none. */
-  reason?: string;
-}
+export type Change = Omit<components['schemas']['FileDiff'], 'kind'> & Partial<Pick<components['schemas']['FileUnavailable'], 'reason'>>;
 
 /** One file's changes in a turn, in the order they were made. */
 export interface FileChanges {
@@ -47,12 +41,14 @@ export async function turnChanges(entries: HistoryEntry[]): Promise<FileChanges[
   for (const entry of results) {
     for (const part of entry.content) {
       if (part.kind !== 'trace') continue;
-      const trace = part.trace as { changes?: { path: string; kind: string; diff?: string; added?: number; removed?: number; reason?: string }[] };
+      const trace = part.trace;
       for (const change of trace.changes ?? []) {
         const file = files.get(change.path) ?? { path: change.path, changes: [], added: 0, removed: 0 };
-        file.changes.push({ path: change.path, diff: change.diff ?? '', added: change.added ?? 0, removed: change.removed ?? 0, reason: change.kind === 'diff' ? undefined : change.reason });
-        file.added += change.added ?? 0;
-        file.removed += change.removed ?? 0;
+        file.changes.push(change.kind === 'diff' ? change : { path: change.path, diff: '', added: 0, removed: 0, reason: change.reason });
+        if (change.kind === 'diff') {
+          file.added += change.added;
+          file.removed += change.removed;
+        }
         files.set(change.path, file);
       }
     }

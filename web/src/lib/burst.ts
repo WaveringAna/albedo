@@ -1,12 +1,11 @@
+import type { components } from './api.gen';
+
 // A burst is the work between two pieces of prose: thinking and tool calls,
 // read as one past-tense line, the way the terminal client writes it
 // (cli/internal/tui/burst.go): `thought 12s · read tui/{chat,moods}.go ·
 // ran go test ×2`.
 
-export interface Trace {
-  activities?: { kind: string; target: string; ok?: boolean }[];
-  changes?: { path: string; added?: number; removed?: number; kind?: string }[];
-}
+export type Trace = components['schemas']['ToolTrace'];
 
 export interface Step {
   kind: 'thinking' | 'tool';
@@ -128,8 +127,10 @@ export function summarize(steps: Step[], workspace: string): Summary {
     if (activities.length || changes.length) {
       for (const change of changes) {
         edited.add(name(change.path));
-        added += change.added ?? 0;
-        removed += change.removed ?? 0;
+        if (change.kind === 'diff') {
+          added += change.added;
+          removed += change.removed;
+        }
       }
       for (const activity of activities) {
         if (activity.kind === 'read') read.add(name(activity.target));

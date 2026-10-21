@@ -6,13 +6,16 @@
     "dev": "vite",
     "build": "vite build",
     "check": "svelte-check --tsconfig ./tsconfig.json",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "generate": "node scripts/apigen.mjs",
+    "generate:check": "node scripts/apigen.mjs --check"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^7.3.1",
     "@tsconfig/svelte": "^5.0.8",
     "@types/node": "^24.19.2",
     "@xyflow/svelte": "^1.7.0",
+    "openapi-typescript": "7.13.0",
     "svelte": "^5.57.2",
     "svelte-check": "^4.7.7",
     "typescript": "^5.9.3",

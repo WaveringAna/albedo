@@ -1,3 +1,4 @@
+import type { components } from './api.gen';
 import { ApiError, sendCommand } from './api';
 
 // Slash commands as the session's catalogue offers them (GET
@@ -7,29 +8,8 @@ import { ApiError, sendCommand } from './api';
 // arguments, or literals (cli/internal/daemon/action_bindings.go does the
 // same for the terminal).
 
-interface Binding {
-  source: 'literal' | 'session' | 'form' | 'row';
-  value?: unknown;
-  pointer?: string;
-}
-
-export interface Command {
-  id: string;
-  slash_name: string;
-  description: string;
-  arguments: { name: string; label: string; type: string; required: boolean; choices: unknown[] }[];
-  caller_permissions: string[];
-  delivery: 'input' | 'read' | 'mutation';
-  command_id?: string;
-  operation?: {
-    method: string;
-    path_template: string;
-    path: Record<string, Binding>;
-    query: Record<string, Binding>;
-    headers: Record<string, Binding>;
-    body: Record<string, Binding>;
-  };
-}
+type Binding = components['schemas']['Binding'];
+export type Command = components['schemas']['HTTPCommand'] | components['schemas']['InputCommand'];
 
 /** What a command answered, for the chat to show; inputs answer in the transcript instead. */
 export interface Outcome {
@@ -45,7 +25,8 @@ export async function catalogue(sessionId: string): Promise<Command[]> {
   for (;;) {
     const response = await fetch(`/api/sessions/${sessionId}/catalog?${query}`, { headers: { accept: 'application/json' } });
     if (!response.ok) break;
-    const loaded = (await response.json()).loaded;
+    const page: components['schemas']['Catalog'] = await response.json();
+    const loaded = page.loaded;
     commands.push(...(loaded?.commands ?? []));
     if (!loaded?.next) break;
     query = `kind=commands&limit=200&next=${encodeURIComponent(loaded.next)}`;
@@ -98,7 +79,7 @@ export function form(command: Command, text: string): Record<string, unknown> {
       [word, rest] = end < 0 ? [rest, ''] : [rest.slice(0, end), rest.slice(end).trim()];
     } else rest = '';
     if (!word && !argument.required) return;
-    fields[argument.name] = argument.type === 'integer' || argument.type === 'number' ? Number(word) : argument.type === 'boolean' ? word === 'true' : word;
+    fields[argument.name] = argument.type === 'integer' ? Number(word) : argument.type === 'boolean' ? word === 'true' : word;
   });
   if (rest) throw new Error(`${command.slash_name} takes no arguments`);
   return fields;
@@ -122,10 +103,10 @@ function resolve(binding: Binding, session: unknown, fields: Record<string, unkn
 export async function invoke(sessionId: string, command: Command, text: string, inputId: string): Promise<Outcome | null> {
   const fields = form(command, text);
   if (command.delivery === 'input') {
-    await sendCommand(sessionId, inputId, command.command_id ?? command.slash_name, fields);
+    await sendCommand(sessionId, inputId, command.command_id, fields);
     return null;
   }
-  const operation = command.operation!;
+  const operation = command.operation;
   const session = await fetch(`/api/sessions/${sessionId}`, { headers: { accept: 'application/json' } }).then((response) => response.json());
   let path = operation.path_template;
   for (const [name, binding] of Object.entries(operation.path)) path = path.replace(`{${name}}`, encodeURIComponent(String(resolve(binding, session, fields))));
