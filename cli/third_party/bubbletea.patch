@@ -1,0 +1,111 @@
+bubbletea v2.0.10 with demand-driven painting.
+
+upstream paints from a time.Ticker at the program's fps for as long as the
+program runs, so an idle TUI still wakes 60 times a second to flush a frame
+that did not change. here the frame writer sleeps until render() or
+execute() asks for a frame, then paints at most once per frame interval;
+the fps cap is unchanged while frames keep coming.
+
+to bump bubbletea: copy the new release over third_party/bubbletea and
+apply this patch (patch -p1 -d third_party/bubbletea < third_party/bubbletea.patch).
+
+--- a/tea.go
++++ b/tea.go
+@@ -539,8 +539,9 @@
+ 	// modes keeps track of terminal modes that have been enabled or disabled.
+ 	ignoreSignals uint32
+ 
+-	// ticker is the ticker that will be used to write to the renderer.
+-	ticker *time.Ticker
++	// frames wakes the frame writer when there is something to paint. It
++	// replaces upstream's always-on ticker, so an idle program never wakes.
++	frames chan struct{}
+ 
+ 	// once is used to stop the renderer.
+ 	once sync.Once
+@@ -606,6 +607,7 @@
+ 		msgs:         make(chan Msg),
+ 		errs:         make(chan error, 1),
+ 		rendererDone: make(chan struct{}),
++		frames:       make(chan struct{}, 1),
+ 	}
+ 
+ 	// Apply all options to the program.
+@@ -895,6 +897,16 @@
+ 	if p.renderer != nil {
+ 		p.renderer.render(model.View()) // send view to renderer
+ 	}
++	p.requestFrame()
++}
++
++// requestFrame asks the frame writer to paint. A pending request already
++// covers this one.
++func (p *Program) requestFrame() {
++	select {
++	case p.frames <- struct{}{}:
++	default:
++	}
+ }
+ 
+ func (p *Program) execSequenceMsg(msg sequenceMsg) {
+@@ -1224,6 +1236,7 @@
+ 	p.mu.Lock()
+ 	_, _ = p.outputBuf.WriteString(seq)
+ 	p.mu.Unlock()
++	p.requestFrame()
+ }
+ 
+ // executeQuery writes a terminal query to the program output. Queries expect a
+@@ -1414,16 +1427,10 @@
+ 	}
+ }
+ 
+-// startRenderer starts the renderer.
++// startRenderer starts the renderer. It paints when asked to, at most once
++// per frame, instead of on a fixed-rate ticker.
+ func (p *Program) startRenderer() {
+ 	framerate := time.Second / time.Duration(p.fps)
+-	if p.ticker == nil {
+-		p.ticker = time.NewTicker(framerate)
+-	} else {
+-		// If the ticker already exists, it has been stopped and we need to
+-		// reset it.
+-		p.ticker.Reset(framerate)
+-	}
+ 
+ 	// Since the renderer can be restarted after a stop, we need to reset
+ 	// the done channel and its corresponding sync.Once.
+@@ -1431,17 +1438,28 @@
+ 
+ 	// Start the renderer.
+ 	p.renderer.start()
++	p.requestFrame() // paint whatever was rendered while stopped
+ 	go func() {
++		pace := time.NewTimer(framerate)
++		pace.Stop()
++		var last time.Time
+ 		for {
+ 			select {
+ 			case <-p.rendererDone:
+-				p.ticker.Stop()
+ 				return
+-
+-			case <-p.ticker.C:
+-				_ = p.flush()
+-				_ = p.renderer.flush(false)
++			case <-p.frames:
++			}
++			if wait := framerate - time.Since(last); wait > 0 {
++				pace.Reset(wait)
++				select {
++				case <-p.rendererDone:
++					return
++				case <-pace.C:
++				}
+ 			}
++			_ = p.flush()
++			_ = p.renderer.flush(false)
++			last = time.Now()
+ 		}
+ 	}()
+ }

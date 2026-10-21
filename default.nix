@@ -40,6 +40,7 @@
       ./cli/go.sum
       ./cli/cmd
       ./cli/internal
+      ./cli/third_party
       ./test/fixtures/build-digest
     ];
   };
@@ -209,7 +210,7 @@
     src = clientSource;
     modRoot = "cli";
     subPackages = ["cmd/albedo"];
-    vendorHash = "sha256-bz16aHxbvOD8rxVDCP0bns292AnAL3uEw3tC7zlNZoY=";
+    vendorHash = "sha256-d2E5rcvRdcEhzHb30OHvR5VWppE1nyBbB1UGBUUnZnc=";
     nativeBuildInputs = [python311 makeWrapper];
     ALBEDO_NO_BROWSER = "1";
     ALBEDO_TEST_DAEMON = "${server}/bin/albedo-daemon";
