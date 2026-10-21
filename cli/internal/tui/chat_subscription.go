@@ -8,12 +8,21 @@ import (
 	tea "charm.land/bubbletea/v2"
 )
 
+// animating is whether the person is waiting on something: their message is
+// on its way, a turn is running, a tool is working, or a host is being
+// reached. The face animates through all of it, which is what makes the wait
+// readable.
+//
+// Background work is not a wait. An idle session with jobs running keeps the
+// static marker the status line already draws, and the resting poll is what
+// notices a job ending, so nothing redraws for as long as the work lasts.
 func (m ChatModel) animating() bool {
-	return m.isSending || m.pendingSendCount() > 0 || m.Stopping || m.latestProgress() != nil || m.Status.Running && !m.Status.Idle || m.reaching() != "" || m.backgroundJobCount() > 0
+	return m.isSending || m.pendingSendCount() > 0 || m.Stopping || m.latestProgress() != nil || m.Status.Running && !m.Status.Idle || m.reaching() != ""
 }
 
 func (m *ChatModel) startAnimation() tea.Cmd {
-	if m.streamStopped || m.animationActive || !m.animating() {
+	// a blurred terminal shows nothing anyone reads, so the face waits for focus
+	if m.streamStopped || m.blurred || m.animationActive || !m.animating() {
 		return nil
 	}
 	m.animationActive = true
@@ -129,8 +138,8 @@ func (m ChatModel) clearCopyStatusCmd() tea.Cmd {
 func (m ChatModel) statusCmd() tea.Cmd {
 	client, ctx, id, generation, revision := m.client, m.streamCtx, m.SessionID, m.Generation, m.statusRevision
 	return func() tea.Msg {
-		captured, err := client.GetSession(ctx)
-		return ChatStatusMsg{SessionID: id, Generation: generation, Revision: revision, Status: &captured.Status, Glances: captured.Glances, Err: err}
+		status, glances, err := client.GetSessionStatus(ctx)
+		return ChatStatusMsg{SessionID: id, Generation: generation, Revision: revision, Status: &status, Glances: glances, Err: err}
 	}
 }
 
@@ -178,20 +187,6 @@ func (m *ChatModel) hostHomeCmd() tea.Cmd {
 		status, err := client.Host(ctx, host)
 		return ChatHostMsg{SessionID: id, Generation: generation, Workspace: workspace, Status: status, Err: err}
 	}
-}
-
-// statusPollCmd schedules the next status read: often while anything is live,
-// rarely while the session rests. Only the newest scheduled poll fires, so a
-// status read started elsewhere never adds a second polling loop.
-func (m *ChatModel) statusPollCmd() tea.Cmd {
-	m.statusPoll++
-	m.statusPollResting = !m.animating() && m.Status.KernelLink != "booting" && m.Status.KernelLink != "reattaching"
-	every := 750 * time.Millisecond
-	if m.statusPollResting {
-		every = 5 * time.Second
-	}
-	id, generation, poll := m.SessionID, m.Generation, m.statusPoll
-	return tea.Tick(every, func(time.Time) tea.Msg { return ChatStatusPollMsg{SessionID: id, Generation: generation, Poll: poll} })
 }
 
 func (m ChatModel) Init() tea.Cmd {

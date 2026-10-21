@@ -229,6 +229,13 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.Quota.SetSize(msg.Width, msg.Height)
 		return m, nil
 
+	case tea.FocusMsg:
+		// the chat is the one screen that wakes up for input
+		return m, m.Chat.focus(true)
+
+	case tea.BlurMsg:
+		return m, m.Chat.focus(false)
+
 	case tea.ModeReportMsg:
 		// the reply Bubble Tea switches to grapheme widths on
 		if msg.Mode == ansi.ModeUnicodeCore {

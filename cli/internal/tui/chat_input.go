@@ -269,6 +269,9 @@ func (m *ChatModel) updateComposer(msg tea.Msg, cmds []tea.Cmd) tea.Cmd {
 	oldRows := m.inputRows()
 	var taCmd tea.Cmd
 	m.TextArea, taCmd = m.TextArea.Update(msg)
+	// any message may move the caret, a selection or the virtual cursor without
+	// changing the value the input block is cached on
+	m.frame.forgetComposer()
 	if m.inputRows() != oldRows {
 		m.syncLayout()
 	}

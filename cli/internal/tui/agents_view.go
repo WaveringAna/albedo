@@ -180,7 +180,7 @@ type AgentsViewModel struct {
 
 const (
 	agentsYou     = "you"
-	agentsFrame   = 70 * time.Millisecond
+	agentsFrame   = 120 * time.Millisecond
 	agentsSlotW   = 16
 	agentsLevelGp = 2
 )

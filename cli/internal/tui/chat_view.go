@@ -304,10 +304,17 @@ func (m ChatModel) reaching() string {
 	return cmp.Or(m.Host, host)
 }
 
-func (m ChatModel) View() string {
+// View draws the chat. The expensive pieces of the frame — the transcript body
+// with its glance column, and the input block — are built once per change and
+// reused, and a frame nothing changed in returns the string the last one
+// returned, so Bubble Tea's own comparison can skip parsing and painting it.
+func (m *ChatModel) View() string {
+	if m.frame == nil {
+		m.frame = &frameCache{}
+	}
 	width := m.chatWidth()
 	pad := strings.Repeat(" ", m.padding())
-	var rows []string
+	rows := m.frame.scratch[:0]
 	rows = append(rows, m.header(width), "")
 	for _, n := range m.Notices {
 		if n.Error {
@@ -320,30 +327,7 @@ func (m ChatModel) View() string {
 		rows = append(rows, "")
 	}
 
-	shown := m.Viewport
-	if m.History.Len() == 0 && len(m.pendingUsers) == 0 && m.transcript.activeText == "" && m.toolLabel() == "" {
-		textWidth := max(1, min(m.Renderer.BodyWidth, m.Viewport.Width())-railWidth)
-		shown.rows = nil
-		for _, line := range wrapOrChunkLine("What would you like to work on?", textWidth) {
-			shown.rows = append(shown.rows, m.Renderer.rail(laneNone)+DefaultStyles.Faint.Render(line))
-		}
-	}
-	content := shown.lines()
-	if m.sidebarWidth() > 0 {
-		// the transcript keeps its full width, so the sidebar holds its column
-		for i, line := range content {
-			content[i] = line + strings.Repeat(" ", max(0, shown.width-ansi.StringWidth(line)))
-		}
-		joined := lipgloss.JoinHorizontal(lipgloss.Top, strings.Join(content, "\n"), "  ", m.renderGlances())
-		content = pane{rows: strings.Split(joined, "\n"), height: shown.height}.lines()
-	}
-	if m.dragAnchor != nil {
-		// the selection is in transcript rows; the viewport shows from scrollOffset
-		anchor, head := *m.dragAnchor, m.dragHead
-		anchor.Row, head.Row = anchor.Row-m.scrollOffset, head.Row-m.scrollOffset
-		content = HighlightSelection(content, Selection{Anchor: anchor, Head: head, Gutter: railWidth})
-	}
-	rows = append(rows, content...)
+	rows = append(rows, m.body()...)
 	// one row: a job's command may span lines
 	status := oneLine(m.statusLine())
 	// the face trails the text, so its frames never move anything
@@ -375,32 +359,271 @@ func (m ChatModel) View() string {
 	if len(m.effortOptions) > 0 {
 		rows = append(rows, "", DefaultStyles.Bold.Render(ansi.Truncate("Reasoning effort", width, "")), m.effortSelectorView(), DefaultStyles.Faint.Render(ansi.Truncate("← → choose  ·  enter apply  ·  esc cancel", width, "")))
 	} else {
-		rows = append(rows, strings.Split(strings.TrimSuffix(m.composerView(), "\n"), "\n")...)
+		rows = append(rows, m.composer()...)
 		if menu := m.CommandMenu.View(m.TextArea.Value()); menu != "" {
 			rows = append(rows, strings.Split(strings.TrimSuffix(menu, "\n"), "\n")...)
 		}
 	}
 	rows = append(rows, DefaultStyles.Decor.Render(strings.Repeat("─", width)))
 	rows = append(rows, m.renderFooter())
-	for i, row := range rows {
-		rows[i] = pad + row
+	for i := range rows {
+		rows[i] = pad + rows[i]
 	}
-	return strings.Join(rows, "\n")
+
+	m.frame.scratch = rows
+	if m.frame.content != "" && sameStrings(rows, m.frame.rows) {
+		return m.frame.content
+	}
+	m.frame.rows = append(m.frame.rows[:0], rows...)
+	m.frame.content = stripPrivateMarks(strings.Join(rows, "\n"))
+	return m.frame.content
 }
 
-func (m ChatModel) composerView() string {
+// frameCache holds the pieces of a frame whose rendering costs more than
+// building the frame around them, each named by every input that shapes it.
+// Those inputs are compared by value rather than hashed: a stale screen is
+// worse than the microseconds a comparison costs. Everything else in a frame
+// (header, status, chips, footer) is cheap enough to build every time, and
+// building it means it cannot go stale.
+type frameCache struct {
+	sidebar      sidebarBlock
+	sidebarKey   sidebarKey
+	sidebarReady bool
+
+	body      []string
+	bodyKey   bodyKey
+	bodyReady bool
+
+	composer      []string
+	composerKey   composerKey
+	composerReady bool
+
+	// rows is the padded frame as last drawn and content the string handed to
+	// Bubble Tea, so a frame that changed nothing is not joined again.
+	rows    []string
+	content string
+	// scratch is the row slice the next frame is assembled into.
+	scratch []string
+}
+
+// sidebarBlock is the glance column: the rows it draws, the glances that did
+// not fit the height, and the column as padded for the frame.
+type sidebarBlock struct {
+	rows    []string
+	omitted []PageGlance
+	column  []string
+}
+
+// forgetComposer drops the cached input block: the textarea's own state moved,
+// in a way its value and caret may not show (a selection, the virtual cursor).
+func (c *frameCache) forgetComposer() {
+	if c != nil {
+		c.composerReady = false
+	}
+}
+
+// sidebarKey names what the glance column is built from. The glances are kept
+// as a copy of the fields the column draws: the model's own slice can be
+// mutated in place (a job's tone, a row's text), and a key that aliased it
+// would compare the change with itself.
+type sidebarKey struct {
+	glances []PageGlance
+	jobs    []PageRow
+	width   int
+	height  int
+}
+
+// same compares a stored key with what the model would build one from now.
+func (k sidebarKey) same(glances []PageGlance, jobs []PageRow, width, height int) bool {
+	return k.width == width && k.height == height &&
+		sameGlances(k.glances, glances) && samePageRows(k.jobs, jobs)
+}
+
+// glanceKey copies the glance list down to what the sidebar draws from it.
+func glanceKey(glances []PageGlance) []PageGlance {
+	key := make([]PageGlance, len(glances))
+	for i, g := range glances {
+		key[i] = PageGlance{Title: g.Title, Rows: make([]PageRow, len(g.Rows))}
+		for j, row := range g.Rows {
+			key[i].Rows[j] = PageRow{ID: row.ID, Text: row.Text, Tone: row.Tone}
+		}
+	}
+	return key
+}
+
+// bodyKey names what the transcript body is built from: the pane's rows and
+// width, and the glance column beside them.
+type bodyKey struct {
+	rows    []string
+	sidebar []string
+	width   int
+	height  int
+}
+
+func (k bodyKey) same(o bodyKey) bool {
+	return k.width == o.width && k.height == o.height &&
+		sameStrings(k.rows, o.rows) && sameStrings(k.sidebar, o.sidebar)
+}
+
+// composerKey names what the input block is drawn from. The textarea and frame
+// heights stand in for the prompt height, which walks every line.
+type composerKey struct {
+	value       string
+	placeholder string
+	line, col   int
+	width       int
+	textarea    int
+	frame       int
+	focused     bool
+}
+
+func (k composerKey) same(o composerKey) bool { return k == o }
+
+func sameStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// sameGlances compares two glance lists by what the sidebar draws from them.
+func sameGlances(a, b []PageGlance) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].Title != b[i].Title || !samePageRows(a[i].Rows, b[i].Rows) {
+			return false
+		}
+	}
+	return true
+}
+
+// samePageRows compares sidebar rows by the fields a row is drawn from.
+func samePageRows(a, b []PageRow) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].ID != b[i].ID || a[i].Text != b[i].Text || a[i].Tone != b[i].Tone {
+			return false
+		}
+	}
+	return true
+}
+
+// sidebar is the glance column, rendered again only when what it draws from
+// changed: a status poll replaces the glances wholesale, and a frame that only
+// moved a row must not re-render the column.
+func (c *frameCache) glances(m ChatModel) sidebarBlock {
+	width, height := m.sidebarWidth(), m.Viewport.Height()
+	jobs := m.jobRows()
+	if c.sidebarReady && c.sidebarKey.same(m.Glances, jobs, width, height) {
+		return c.sidebar
+	}
+	var block sidebarBlock
+	block.rows, block.omitted = m.buildSidebar()
+	block.column = strings.Split(lipgloss.NewStyle().Width(width).Render(strings.Join(block.rows, "\n")), "\n")
+	// the key keeps its own copy: the model's glances can change in place, and
+	// a key that aliased them would compare a change with itself
+	c.sidebarKey = sidebarKey{glances: glanceKey(m.Glances), jobs: jobs, width: width, height: height}
+	c.sidebar, c.sidebarReady = block, true
+	return block
+}
+
+// sidebarColumn is the glance column as the frame draws it: each row padded to
+// the sidebar's width, or nothing without one.
+func (m ChatModel) sidebarColumn() []string {
+	if m.sidebarWidth() <= 0 {
+		return nil
+	}
+	if m.frame != nil {
+		return m.frame.glances(m).column
+	}
+	rows, _ := m.buildSidebar()
+	return strings.Split(lipgloss.NewStyle().Width(m.sidebarWidth()).Render(strings.Join(rows, "\n")), "\n")
+}
+
+// body is the transcript as the frame draws it: the viewport's rows, padded to
+// the pane's width and joined with the glance column.
+func (m *ChatModel) body() []string {
+	shown := m.Viewport
+	if m.History.Len() == 0 && len(m.pendingUsers) == 0 && m.transcript.activeText == "" && m.toolLabel() == "" {
+		textWidth := max(1, min(m.Renderer.BodyWidth, m.Viewport.Width())-railWidth)
+		shown.rows = nil
+		for _, line := range wrapOrChunkLine("What would you like to work on?", textWidth) {
+			shown.rows = append(shown.rows, m.Renderer.rail(laneNone)+DefaultStyles.Faint.Render(line))
+		}
+	}
+	column := m.sidebarColumn()
+	key := bodyKey{rows: shown.rows, sidebar: column, width: shown.width, height: shown.height}
+	if m.dragAnchor == nil && m.frame != nil && m.frame.bodyReady && key.same(m.frame.bodyKey) {
+		return m.frame.body
+	}
+	rows := joinBody(shown.lines(), column, shown.width, m.sidebarWidth())
+	if m.dragAnchor != nil {
+		// the selection is in transcript rows; the viewport shows from scrollOffset
+		anchor, head := *m.dragAnchor, m.dragHead
+		anchor.Row, head.Row = anchor.Row-m.scrollOffset, head.Row-m.scrollOffset
+		return HighlightSelection(rows, Selection{Anchor: anchor, Head: head, Gutter: railWidth})
+	}
+	if m.frame != nil {
+		m.frame.bodyKey, m.frame.body, m.frame.bodyReady = key, rows, true
+	}
+	return rows
+}
+
+// joinBody pads each transcript row to the pane's width so the glance column
+// holds its own, then appends it. This is what lipgloss.JoinHorizontal built by
+// parsing both blocks back into styled lines and measuring every row again.
+func joinBody(rows, column []string, width, sidebar int) []string {
+	out := make([]string, len(rows))
+	blank := ""
+	if sidebar > 0 {
+		blank = "  " + strings.Repeat(" ", sidebar)
+	}
+	for i, row := range rows {
+		if sidebar <= 0 {
+			out[i] = row
+			continue
+		}
+		cell := blank
+		if i < len(column) {
+			cell = "  " + column[i]
+		}
+		out[i] = row + strings.Repeat(" ", max(0, width-ansi.StringWidth(row))) + cell
+	}
+	return out
+}
+
+// composer is the input block as rows, drawn again only when the textarea's
+// state changed. Any message that reaches the textarea forgets it regardless;
+// see updateComposer.
+func (m *ChatModel) composer() []string {
 	ta := m.TextArea
-	if m.waitingForInput() && ta.Value() == "" {
-		ta.Placeholder = "ctrl+g editor"
-	} else {
-		ta.Placeholder = ""
+	value := ta.Value()
+	placeholder := ""
+	if m.waitingForInput() && value == "" {
+		placeholder = "ctrl+g editor"
 	}
+	key := composerKey{value: value, placeholder: placeholder, line: ta.Line(), col: ta.Column(), width: ta.Width(), textarea: ta.Height(), frame: m.Height, focused: ta.Focused()}
+	if m.frame != nil && m.frame.composerReady && key.same(m.frame.composerKey) {
+		return m.frame.composer
+	}
+	ta.Placeholder = placeholder
 	lines := strings.Split(ta.View(), "\n")
-	h := m.promptHeight()
-	if h < len(lines) {
-		lines = lines[:h]
+	if height := m.promptHeight(); height < len(lines) {
+		lines = lines[:height]
 	}
-	return strings.Join(lines, "\n")
+	if m.frame != nil {
+		m.frame.composerKey, m.frame.composer, m.frame.composerReady = key, lines, true
+	}
+	return lines
 }
 
 // waitingForInput reports an opened session with no turn in flight, so an

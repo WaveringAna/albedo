@@ -179,6 +179,17 @@ func (m *ChatModel) handleStreamEvent(evt daemon.StreamEvent) {
 			m.Status.RunID = evt.Status.RunID
 			m.reconcileStopped()
 		}
+	case daemon.EventKernel:
+		if evt.Kernel != nil {
+			m.Status.ApplyKernel(*evt.Kernel)
+		}
+	case daemon.EventGlances:
+		m.Glances = evt.Glances
+		if m.sidebarWidth() != m.layoutSidebar {
+			m.SetSize(m.Width, m.Height)
+		} else {
+			m.syncViewportHeight()
+		}
 	case "input", daemon.EventTurnMembership:
 		if evt.Receipt != nil {
 			m.applyInputReceipt(*evt.Receipt)

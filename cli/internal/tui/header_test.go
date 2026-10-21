@@ -117,8 +117,8 @@ func TestBackgroundJobsRenderInHeaderStatusAndSidebar(t *testing.T) {
 	if got := m.statusLine(); got != "1 background job running · go test ./..." {
 		t.Fatalf("expected statusLine to show 1 running job, got %q", got)
 	}
-	if !m.animating() {
-		t.Fatalf("expected model to animate when background jobs are running")
+	if m.animating() {
+		t.Fatal("an idle session with a job running animated its face")
 	}
 
 	header := ansi.Strip(m.header(120))
@@ -172,8 +172,8 @@ func TestBackgroundJobsRefreshWithoutStartingATurn(t *testing.T) {
 		RunningJobs: []protocol.KernelJob{{ID: "j", Command: "sleep 10"}}}
 	m, cmd := m.Update(ChatStatusMsg{SessionID: m.SessionID, Generation: m.Generation,
 		Revision: m.statusRevision, Status: &status})
-	if !m.animating() || cmd == nil || !strings.Contains(m.statusLine(), "sleep 10") {
-		t.Fatal("idle background job did not start its status animation")
+	if m.animating() || cmd == nil || !strings.Contains(m.statusLine(), "sleep 10") {
+		t.Fatal("an idle background job did not keep its marker and poll")
 	}
 	status.KernelJobs, status.RunningJobs = new(int64(0)), nil
 	m, _ = m.Update(ChatStatusMsg{SessionID: m.SessionID, Generation: m.Generation,
@@ -183,26 +183,30 @@ func TestBackgroundJobsRefreshWithoutStartingATurn(t *testing.T) {
 	}
 }
 
-func TestStatusPollingRestsWhileIdleAndKeepsOneLoop(t *testing.T) {
-	// The loop count and cadence are invisible over HTTP; an extra status read
-	// once forked a second 750ms loop that never ended.
+func TestStatusPollingKeepsOneLoopAndLetsEventsCarryTheRest(t *testing.T) {
+	// The loop count is invisible over HTTP; an extra status read once forked
+	// a second loop that never ended. What a poll used to be woken for (a live
+	// event, seconds before its cadence) is now a pushed event, so a stream
+	// event must not schedule a read at all.
 	m := newTestChatModel(t, &daemon.Session{ID: "s"})
 	idle := daemon.AgentStatus{Idle: true}
+	polls := m.statusPoll
 	m, _ = m.Update(ChatStatusMsg{SessionID: m.SessionID, Generation: m.Generation,
 		Revision: m.statusRevision, Status: &idle})
-	stale := m.statusPoll
-	m, _ = m.Update(ChatStatusMsg{SessionID: m.SessionID, Generation: m.Generation,
-		Revision: m.statusRevision, Status: &idle})
-	if !m.statusPollResting {
-		t.Fatal("an idle session kept the fast status poll")
+	if m.statusPoll != polls+1 {
+		t.Fatalf("a status reply left %d polls scheduled", m.statusPoll-polls)
 	}
-	if _, cmd := m.Update(ChatStatusPollMsg{SessionID: m.SessionID, Generation: m.Generation, Poll: stale}); cmd != nil {
+	if _, cmd := m.Update(ChatStatusPollMsg{SessionID: m.SessionID, Generation: m.Generation, Poll: polls}); cmd != nil {
 		t.Fatal("a superseded poll read status again")
 	}
+	polls, revision := m.statusPoll, m.statusRevision
 	m, cmd := m.Update(ChatStreamEventMsg{SessionID: m.SessionID, Generation: m.Generation,
 		Event: daemon.StreamEvent{Type: daemon.EventNote}})
-	if m.statusPollResting || cmd == nil {
-		t.Fatal("live activity did not wake the resting status poll")
+	if cmd == nil || m.statusPoll != polls {
+		t.Fatal("live activity scheduled a status read")
+	}
+	if m.statusRevision == revision {
+		t.Fatal("live activity did not outdate the status reply in flight")
 	}
 }
 

@@ -44,18 +44,11 @@ func (m ChatModel) backgroundJobCount() int64 {
 	return count
 }
 
-// activeGlances lists the sidebar's sections in order, leaving out empty ones:
-// the extensions' glances (active work), then background jobs past their grace.
-func (m ChatModel) activeGlances() []PageGlance {
-	var glances []PageGlance
-	for _, g := range m.Glances {
-		if len(g.Rows) > 0 {
-			glances = append(glances, g)
-		}
-	}
+// jobRows is the background jobs past their grace, as the sidebar lists them.
+func (m ChatModel) jobRows() []PageRow {
 	jobs := m.agedJobs()
 	if len(jobs) == 0 {
-		return glances
+		return nil
 	}
 	rows := make([]PageRow, 0, len(jobs))
 	for _, job := range jobs {
@@ -65,7 +58,22 @@ func (m ChatModel) activeGlances() []PageGlance {
 		}
 		rows = append(rows, PageRow{Text: command, Tone: ToneActive})
 	}
-	return append(glances, PageGlance{Title: "background jobs", Rows: rows})
+	return rows
+}
+
+// activeGlances lists the sidebar's sections in order, leaving out empty ones:
+// the extensions' glances (active work), then background jobs past their grace.
+func (m ChatModel) activeGlances() []PageGlance {
+	var glances []PageGlance
+	for _, g := range m.Glances {
+		if len(g.Rows) > 0 {
+			glances = append(glances, g)
+		}
+	}
+	if rows := m.jobRows(); len(rows) > 0 {
+		glances = append(glances, PageGlance{Title: "background jobs", Rows: rows})
+	}
+	return glances
 }
 
 // glanceCounts counts each glance the sidebar leaves out: all of them without
@@ -86,15 +94,20 @@ func (m ChatModel) glanceCounts() []string {
 	return counts
 }
 
-func (m ChatModel) renderGlances() string {
-	rows, _ := m.sidebarRows()
-	return lipgloss.NewStyle().Width(m.sidebarWidth()).Render(strings.Join(rows, "\n"))
-}
-
 // sidebarRows stacks the glances, a blank row apart and at most 12 rows each,
 // within the viewport's height. A glance with no room for its title and one
-// row is returned as omitted.
+// row is returned as omitted. The stack is cached on what it draws from; see
+// frameCache.glances.
 func (m ChatModel) sidebarRows() ([]string, []PageGlance) {
+	if m.frame != nil {
+		block := m.frame.glances(m)
+		return block.rows, block.omitted
+	}
+	return m.buildSidebar()
+}
+
+// buildSidebar stacks the sidebar's rows without consulting the frame cache.
+func (m ChatModel) buildSidebar() ([]string, []PageGlance) {
 	var rows []string
 	var omitted []PageGlance
 	room := m.Viewport.Height()

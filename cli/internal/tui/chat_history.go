@@ -554,17 +554,90 @@ func (m ChatModel) rowsKey() burstRowsKey {
 	return burstRowsKey{entries: m.History.Len(), evicted: m.History.EvictedCount(), epoch: m.burstEpoch, width: m.Renderer.BodyWidth, workspace: m.Renderer.Workspace, flags: m.Flags}
 }
 
-// liveBlock is the reply streaming in as rows, rendered again only when the
-// reply or the transcript end before it changed.
+// liveBlock is the reply streaming in as rows. The blocks of it that are
+// finished are framed and wrapped once, so a draw renders only the block still
+// growing: the cost of the live reply follows what arrived, not its length.
 func (m *ChatModel) liveBlock(entry HistoryEntry) []string {
-	key := liveRowsKey{burstRowsKey: m.rowsKey(), text: entry.Text, kind: entry.Kind}
-	if key != m.liveRowsKey {
-		start := time.Now()
-		m.liveRows, _ = m.Renderer.Block(m.History.Entries(), entry, m.Flags)
-		m.liveRowsKey, m.liveDrawn = key, start
-		m.liveInterval = max(liveFrame, 4*time.Since(start))
+	if m.Renderer.live == nil {
+		m.Renderer.live = &liveRender{}
 	}
+	live := m.Renderer.live
+	grows := entry.Kind == EntryAssistant || entry.Kind == EntryThinking
+	key := liveRowsKey{burstRowsKey: m.rowsKey(), text: entry.Text, kind: entry.Kind}
+	previous := m.liveRowsKey
+	start := time.Now()
+	switch {
+	case !grows || previous.burstRowsKey != key.burstRowsKey || previous.kind != key.kind ||
+		live.ink != transcriptInk || !strings.HasPrefix(key.text, previous.text):
+		// a new reply, one whose transcript end or palette changed under it, or
+		// text that is not this reply growing
+		live.reset(m.Renderer, m.History.Entries(), entry, m.Flags)
+	case key.text != previous.text:
+		if !live.grow(m.Renderer, entry, m.Flags) {
+			live.reset(m.Renderer, m.History.Entries(), entry, m.Flags)
+		}
+	}
+	m.liveRowsKey, m.liveDrawn = key, start
+	m.liveInterval = max(liveFrame, 4*time.Since(start))
+	m.liveRows = live.shown
 	return m.liveRows
+}
+
+// liveRender is the entry streaming in as rows: the rows above its body, then
+// the body's finished blocks, framed once, and the block still growing, framed
+// again on each draw. shown is what the last draw left on screen.
+//
+// A finished piece ends at a position in the rendering rather than at a row's
+// end: the padding that fills out a row arrives with the piece after it, so the
+// line still growing is carried across pieces, and framed with them.
+type liveRender struct {
+	// rows are the rows of the text so far, shown the same with the block
+	// still growing framed on top; line is the row still arriving, and ink the
+	// palette the rows were framed for.
+	rows   []string
+	shown  []string
+	line   string
+	ink    ink
+	blocks growingMarkdown
+}
+
+// reset renders the entry whole, which is what a new reply and one whose
+// rendering changed under it need.
+func (l *liveRender) reset(r TranscriptRenderer, before []HistoryEntry, entry HistoryEntry, flags DisplayFlags) {
+	l.ink, l.blocks = transcriptInk, growingMarkdown{}
+	l.rows, l.line = r.LiveHead(before, entry, flags), ""
+	l.shown = l.rows
+	if !l.grow(r, entry, flags) {
+		// text that cannot be split into blocks is rendered in one piece
+		l.rows, _ = r.Block(before, entry, flags)
+		l.shown, l.line = l.rows, ""
+	}
+}
+
+// grow frames the lines the blocks that finished since the last draw completed,
+// and frames the block still growing again on top of them. It reports false
+// when the text has to be rendered whole.
+func (l *liveRender) grow(r TranscriptRenderer, entry HistoryEntry, flags DisplayFlags) bool {
+	faint := entry.Kind == EntryThinking
+	if faint && !flags.Thinking {
+		// a thought hides its text until tools and thinking are shown
+		return true
+	}
+	finished, open, ok := l.blocks.grow(entry.Text, r.textWidth(), false)
+	if !ok {
+		return false
+	}
+	for _, piece := range finished {
+		l.line += piece
+		at := strings.LastIndexByte(l.line, '\n')
+		if at < 0 {
+			continue
+		}
+		l.rows = r.LiveBody(l.rows, entry, l.line[:at], faint)
+		l.line = l.line[at+1:]
+	}
+	l.shown = r.LiveBody(l.rows, entry, l.line+open, faint)
+	return true
 }
 
 // pendingRows are your messages the daemon has not echoed yet, greyed out at

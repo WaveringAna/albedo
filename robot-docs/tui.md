@@ -84,15 +84,54 @@ to add a construct, write its goldmark parser and node, then its element, in one
 
 markdown's colors are ink accents (`markdownAccents` in `ink.go`), palette hues made legible on the background: headings violet, strong text yellow toward red, inline code green, links blue, math cyan. headings and strong text sit at a higher contrast than the others. without reported colors each falls back to its palette slot.
 
+a reply still arriving renders block by block (`growingMarkdown` in `markdown.go`, rows in `liveRender` in `chat_history.go`): a top-level block is rendered once against the block before it (`markdownPiece`), framed, wrapped and hung on the rail once, and kept; a draw renders, wraps and measures only the block still growing, so a 30 KB reply costs a draw what its newest block costs rather than the whole reply. the scan that finds block boundaries (`blockScan`) reads only the text that arrived since the last draw, and stops at the last newline while a line is still coming, since half a line cannot be told from a whole one.
+
+a piece ends at a *position* in the rendering, not at the end of a row: the spaces that fill out a row arrive with the piece after it, so a row can be split across pieces. `liveRender` therefore frames only the lines a piece completed and carries the line still growing (`line`) into the next piece, which is why the rows a draw shows are the rows of the whole rendering and not of a piecewise one. a thought is greyed through the same `faintRows` the settled path uses, `LiveHead`/`LiveBody` mirror `RenderAfter` row for row. text that cannot be split (a link definition, a raw `<pre>`) is rendered whole on every draw, which is what the live rows look like before the first block boundary. `live_rows_test.go` streams a reply with fences, lists, a table and display math and requires the live rows to equal a whole render's at every delta.
+
+code block themes are built once per palette (`codeStyle`, kept in a `sync.Map` keyed by the ink) and handed to chroma's formatter directly; `codeTheme` only names it in chroma's registry, because glamour resolves a code block's theme by name. chroma's own `styles` package init (1.9 MB) cannot be dropped: `charm.land/glamour/v2/ansi` imports it and `quick`, so it runs for every client (`GODEBUG=inittrace=1` shows it), and the import is not what a draw pays for.
+
+## the frame
+
+the chat's frame is one string: header, notices, the transcript pane, the status line, the chips, the composer, the command menu and the footer, joined and padded. three pieces cost more than building all the rest, so each is built once per change and reused (`frameCache` in `chat_view.go`):
+
+- the transcript body: the viewport's rows padded to the pane's width with the glance column appended beside them (`joinBody`), cached on the pane's rows, its width and the column.
+- the glance column: the sidebar's rows rendered and padded to its width, cached on the glances the daemon sent (compared by the fields a row draws from: the title, and each row's id, text and tone), the aged background jobs, and the width and height. a status poll replaces the glances wholesale, so an equal list reuses the column.
+- the input block: `textarea.View()` splits and re-wraps the draft and pads its whole viewport on every call. cached on the value, the caret, the size, the placeholder and the focus — and any message that reaches the textarea forgets it, because a selection or the virtual cursor moves without changing those.
+
+everything else (header, status line, chips, separators, footer) is rebuilt every frame: that is a few microseconds, and building it means it cannot be stale. the padded rows are kept too, so a frame nothing changed in returns the very string it returned last time, and Bubble Tea skips parsing and painting it (`viewEquals` in its renderer). every input to a cache is compared by value rather than hashed: a stale screen is worse than the comparison.
+
+`frame_cache_test.go` replays a scripted session through the cached and from-scratch paths and requires the same bytes at every step.
+
 ## terminal output
 
-transcript rows carry private `albedo:` APC marks for copy, wrap joining and click targets. they stay in the chat's internal rows, but `AppModel.View` removes them from the final content before Bubble Tea sees it. ultraviolet preserves APC payloads; terminal.app prints unknown ones, which corrupts the layout. remove only our private marks, not styling, hyperlinks or graphics sequences. the real-daemon TUI driver's view assertion checks the raw content before `ansi.Strip` can hide a leak.
+bubble tea is our patched copy in `cli/third_party/bubbletea` (`replace` in `cli/go.mod`; v2.0.10 plus `cli/third_party/bubbletea.patch`). upstream flushes from a ticker at the program's fps for as long as it runs, so an idle client still woke 60 times a second to compare an unchanged frame: about 80% of a resting client's cpu. the copy's frame writer sleeps until `render()` or `execute()` asks for a frame, then paints at most once per frame interval, so the fps cap still coalesces a stream and a change paints right away instead of on the next tick. anything that writes to the terminal outside `View` must go through `execute` so it gets flushed. to bump bubble tea, copy the new release over the directory and reapply the patch; `TestBubbleteaIsThePatchedCopy` fails if the `replace` is dropped.
+
+transcript rows carry private `albedo:` APC marks for copy, wrap joining and click targets. they stay in the chat's internal rows (`frameLines`), but no frame carries them: `ChatModel.View` strips them (`stripPrivateMarks`) as it joins the string Bubble Tea sees, and `AppModel.View` scans the other screens, which carry none. ultraviolet preserves APC payloads; terminal.app prints unknown ones, which corrupts the layout. remove only our private marks, not styling, hyperlinks or graphics sequences. the real-daemon TUI driver's view assertion checks the raw content before `ansi.Strip` can hide a leak.
+
+the view asks the terminal to report focus (`tea.View.ReportFocus`), so a client can stop animating while its terminal is in the background. a terminal or multiplexer that never reports focus never sends those messages and behaves as it always did; tmux forwards them only with `focus-events on`.
 
 ctrl- or cmd-click on a transcript row opens the file it names (`editor.go`, `openFileAt`); a plain click keeps its row action. the token under the click wins, else the row's only existing file; a numbered diff row opens its file at that line, read after the rail (`rowBody`). only regular files that exist under the workspace (or absolute) open. inside zed's or a vs code family terminal (`TERM_PROGRAM`, `VSCODE_PID`, `ZED_TERM`) the file opens through that editor's cli in the background; otherwise through `$EDITOR`, run on the terminal with `tea.Exec` unless it is a gui editor. `cli/test/e2e/tui_open_file_test.go` clicks real rendered rows.
 
 ## history navigation
 
 `/tree` rewinds the current session in place to before a selected user message (`GET /sessions/{id}/history?view=checkpoints` lists them, `POST /sessions/{id}/rewind` cuts). In the picker `enter` rewinds, `ctrl+s` rewinds and asks for a summary of what it removes, and `ctrl+g` forks a new session instead (plain letters stay with the type-to-filter field); each asks first, with the usual enter-or-esc question. `/fork` opens the same picker with only the fork, as `/tree` used to. A rewind keeps the session's id: the app rebuilds its chat model for that id so the daemon's reset hydrates it fresh, puts the removed message back in the composer unless a draft is there (a draft wins), and adds a note naming the archive the earlier conversation went to. See [rewind](sessions.md#rewind).
+
+## chat liveliness
+
+the chat wakes up for a handful of reasons, and each one is priced:
+
+| wakeup | when | cost |
+| --- | --- | --- |
+| face tick (`faceInterval`, 500ms) | only while the person waits on the session: a message on its way, a turn running, a tool working, a host being reached (`ChatModel.animating`) | one `View()` and one frame flush |
+| status read | one safety read a minute while the stream is healthy (`statusPollCmd`) | one `GET /sessions/{id}?view=status` and a frame; the daemon answers from the session's memory and its kernel, observing the composition only when no stream has published the sidebars ([sessions](sessions.md#live-status-without-a-poll)) |
+| live reply draw | at most once per `liveFrame` (120ms) while a reply grows, or 4x the last render | rendering the block still growing, and framing what it adds |
+| agents canvas frame | 120ms while a node moves (`agentsFrame`) | one canvas frame |
+
+what the client shows about the kernel and the sidebar is pushed, not polled: the stream's reset carries everything on attach, `kernel` arrives when the job facts change, and `glances` when the sidebar's values do. the minute-long read is there for a daemon too old to push them (the events are additive, so an old daemon simply never sends them); a live event bumps `statusRevision`, which drops any reply already in flight.
+
+background work is not a wait. an idle session whose `run()` jobs are still going keeps the status line's static marker (`N background jobs running · <command>`) and the sidebar's job glance, both kept current by the pushed facts, and draws no face: an hour-long job costs the client nothing per second. the face only moves for what the person is waiting on, which is also why an idle session with a job shows the composer's hint — it is a session you can type into.
+
+a terminal that reports focus (`ReportFocus`, bubbletea's `FocusMsg`/`BlurMsg`) also says when nobody is looking: losing focus ends the face animation, and focus coming back reads status at once and starts the face again. a terminal that never reports focus never blurs, and behaves as it always did.
 
 ## tests
 

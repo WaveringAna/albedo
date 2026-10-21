@@ -91,7 +91,7 @@ type liveRowsKey struct {
 }
 
 // liveFrame is the shortest wait between two renderings of a growing reply.
-const liveFrame = 33 * time.Millisecond
+const liveFrame = 120 * time.Millisecond
 
 type ChatModel struct {
 	streamCtx        context.Context
@@ -141,10 +141,11 @@ type ChatModel struct {
 	// Its key names every input the rows depend on, so a refresh that changes
 	// nothing redraws nothing, and nothing can ask for a stale frame.
 	burstRows []string
-	// liveRows is the reply streaming in, rendered whole. While only its
-	// text grows it is rendered again at most once per liveInterval, a few
-	// times what the last rendering took, so a long reply cannot spend the
-	// whole stream re-rendering itself; liveDue is a later redraw on its way.
+	// liveRows is the reply streaming in: its finished blocks are framed
+	// once and only the block still growing is rendered again, so a draw
+	// costs what arrived rather than the length of the reply. While only
+	// its text grows it redraws at most once per liveInterval, a few times
+	// what the last rendering took; liveDue is a later redraw on its way.
 	// settled is each named entry's rows from the last rebuild while reading
 	// older history; see rebuildSettledLines.
 	settled      map[settledKey]settledBlock
@@ -163,8 +164,10 @@ type ChatModel struct {
 	// layoutSidebar is the sidebar width the last layout reserved.
 	layoutSidebar int
 	frameLines    []string
-	CommandMenu   CommandMenuModel
-	Viewport      pane
+	// frame caches the pieces of the last frame; see frameCache in chat_view.go.
+	frame       *frameCache
+	CommandMenu CommandMenuModel
+	Viewport    pane
 
 	transcript         transcriptState
 	TextArea           textarea.Model
@@ -187,9 +190,7 @@ type ChatModel struct {
 	settledLinesBytes   int64
 	statusRevision      uint64
 	statusPoll          uint64
-	// statusPollResting is set while the next status poll is the slow one.
-	statusPollResting bool
-	scrollOffset      int
+	scrollOffset        int
 
 	scrollLimit int
 	dragDir     int
@@ -205,6 +206,9 @@ type ChatModel struct {
 	Stopping        bool
 	Stopped         bool
 	animationActive bool
+	// blurred is set while the terminal reports it is unfocused, where a face
+	// nobody sees is not worth a frame.
+	blurred bool
 	// rebuilding defers trimming until a re-render has placed the reading position.
 	rebuilding bool
 
@@ -383,18 +387,12 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 		if msg.SessionID != m.SessionID || msg.Generation != m.Generation || m.streamStopped {
 			return m, nil
 		}
-		var wake tea.Cmd
 		// only a live event outdates a status reply in flight
 		if !msg.Event.Replayed {
 			m.statusRevision++
-			// a resting poll would learn of the new activity seconds late
-			if m.statusPollResting {
-				m.statusPollResting = false
-				wake = m.statusCmd()
-			}
 		}
 		if msg.Event.Type == daemon.EventInvalidate {
-			return m, tea.Batch(m.waitForNextEvent(), wake)
+			return m, m.waitForNextEvent()
 		}
 		before, entries := m.transcript, m.History.Len()
 		m.handleStreamEvent(msg.Event)
@@ -422,7 +420,7 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 				}
 			}
 		}
-		reconcile = append(reconcile, m.waitForNextEvent(), m.startAnimation(), window, fade, wake, draw)
+		reconcile = append(reconcile, m.waitForNextEvent(), m.startAnimation(), window, fade, draw)
 		return m, tea.Batch(reconcile...)
 
 	case ChatLiveDrawMsg:
@@ -461,7 +459,9 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 		if msg.SessionID != m.SessionID || msg.Generation != m.Generation || m.streamStopped {
 			return m, nil
 		}
-		if !m.animating() {
+		// a blurred terminal ends the animation instead of carrying it on
+		// unseen; focus starts it again
+		if !m.animating() || m.blurred {
 			m.animationActive = false
 			return m, nil
 		}

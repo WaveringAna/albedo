@@ -35,6 +35,10 @@ type TranscriptRenderer struct {
 	BodyWidth int
 	// highlights keeps the chat's colored diff lines; nil keeps none.
 	highlights *highlightCache
+	// live is the reply streaming in, kept as rows so a draw renders only what
+	// arrived. Models are copied by value; the rows belong to the renderer the
+	// way the highlight cache does.
+	live *liveRender
 }
 
 func NewTranscriptRenderer() TranscriptRenderer {
@@ -757,19 +761,65 @@ func (r TranscriptRenderer) BurstBlock(before, burst []HistoryEntry, flags Displ
 // frame hangs body beside first's rail, after the blank row that separates
 // it from before when one belongs. head indexes body's first row.
 func (r TranscriptRenderer) frame(before []HistoryEntry, first HistoryEntry, flags DisplayFlags, body func(width int) string) (rows []string, head int) {
-	own := laneOf(first)
-	if n := len(before); n > 0 && Separated(&before[n-1], first, flags) {
-		rows = append(rows, strings.TrimRight(r.rail(joint(laneOf(before[n-1]), own)), " "))
+	if separate, ok := r.separator(before, first, flags); ok {
+		rows = append(rows, separate)
 	}
 	head = len(rows)
-	width := max(1, r.BodyWidth-railWidth)
+	return r.frameRows(rows, laneOf(first), body(r.textWidth())), head
+}
+
+// separator is the blank row that belongs between entry and the one before it,
+// on the lane the two share.
+func (r TranscriptRenderer) separator(before []HistoryEntry, entry HistoryEntry, flags DisplayFlags) (string, bool) {
+	if n := len(before); n > 0 && Separated(&before[n-1], entry, flags) {
+		return strings.TrimRight(r.rail(joint(laneOf(before[n-1]), laneOf(entry))), " "), true
+	}
+	return "", false
+}
+
+// textWidth is the width an entry's markdown is rendered at: the body's width
+// beside its rail.
+func (r TranscriptRenderer) textWidth() int { return max(1, r.BodyWidth-railWidth) }
+
+// frameRows adds a rendered body to rows: every line of it wrapped to the body
+// width beside rail, marked as the line it continues.
+func (r TranscriptRenderer) frameRows(rows []string, own lane, body string) []string {
+	width := r.textWidth()
 	gutter := r.rail(own)
-	for line := range strings.SplitSeq(body(width), "\n") {
+	for line := range strings.SplitSeq(body, "\n") {
 		for _, chunk := range markChunks(line, wrapOrChunkLine(line, width)) {
 			rows = append(rows, gutter+chunk)
 		}
 	}
-	return rows, head
+	return rows
+}
+
+// LiveHead is the rows above the body of an entry still streaming in: the row
+// separating it from the entry before, then its plate, or the word a thought's
+// rows are read as. It has to match RenderAfter, which is the same entry once
+// it settles row for row.
+func (r TranscriptRenderer) LiveHead(before []HistoryEntry, entry HistoryEntry, flags DisplayFlags) []string {
+	var rows []string
+	if separate, ok := r.separator(before, entry, flags); ok {
+		rows = append(rows, separate)
+	}
+	if entry.Kind == EntryThinking {
+		return r.frameRows(rows, laneOf(entry), markChrome+DefaultStyles.Faint.Render("thinking"))
+	}
+	if plate := r.nameplate(entry, flags, priorOf(before)); plate != "" {
+		rows = r.frameRows(rows, laneOf(entry), plate)
+	}
+	return rows
+}
+
+// LiveBody adds a piece of a live entry's markdown to rows. A thought is greyed
+// row by row; a reply keeps its markdown. Both are framed like the body of a
+// settled entry, which is what makes the rows the same ones.
+func (r TranscriptRenderer) LiveBody(rows []string, entry HistoryEntry, piece string, faint bool) []string {
+	if faint {
+		piece = strings.Join(r.faintRows(piece, r.textWidth()), "\n")
+	}
+	return r.frameRows(rows, laneOf(entry), piece)
 }
 
 // Settle is the rows entry settles after before: none for a compact entry,

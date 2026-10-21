@@ -24,9 +24,9 @@ func HighlightLines(lines []string, lexer chroma.Lexer, cache *highlightCache) [
 	if lexer == nil || len(lines) == 0 {
 		return lines
 	}
-	theme := codeTheme(transcriptInk)
+	style := codeStyle(transcriptInk)
 	key := func(line string) highlightKey {
-		return highlightKey{lexer.Config().Name, theme, line}
+		return highlightKey{lexer.Config().Name, style.Name, line}
 	}
 	out := make([]string, len(lines))
 	var missing []int
@@ -54,7 +54,7 @@ func HighlightLines(lines []string, lexer chroma.Lexer, cache *highlightCache) [
 		tokens = append(tokens, chroma.Token{Type: chroma.Text, Value: "\n"})
 	}
 	var b strings.Builder
-	if formatters.TTY256.Format(&b, chromastyles.Get(theme), chroma.Literator(tokens...)) != nil {
+	if formatters.TTY256.Format(&b, style, chroma.Literator(tokens...)) != nil {
 		return lines
 	}
 	colored := strings.Split(b.String(), "\n")
@@ -121,28 +121,45 @@ const (
 func codeFence(mark string) string { return decorInk() + mark + ansiReset }
 func quoteBar() string             { return decorInk() + "│ " + ansiReset }
 
-// Chroma themes are registered by name; key them by the detected terminal
-// palette so a theme change cannot reuse the previous palette's colors.
-func codeTheme(colors ink) string {
-	if colors.code == "" {
-		return "monokai"
+// codeStyles builds each palette's theme once: parsing style entries into a
+// chroma theme is most of a highlighting pass.
+var codeStyles sync.Map
+
+// codeStyle is the chroma theme for a palette. Its entries are ours: chroma's
+// bundled themes come from a stylesheet, and a terminal's palette, made legible
+// against its own background, is what this one follows. Each palette gets its
+// own name, so a theme change cannot reuse the previous palette's colors.
+func codeStyle(colors ink) *chroma.Style {
+	if cached, ok := codeStyles.Load(colors); ok {
+		return cached.(*chroma.Style)
 	}
-	palette := colors.code + colors.secondary + colors.brandFrom + colors.brandTo
-	hash := sha256.Sum256([]byte(palette))
-	name := fmt.Sprintf("albedo-%x", hash[:6])
-	markdownThemes.Lock()
-	defer markdownThemes.Unlock()
-	if chromastyles.Registry[name] == nil {
-		chromastyles.Register(chroma.MustNewStyle(name, chroma.StyleEntries{
+	style := chromastyles.Get("monokai")
+	if colors.code != "" {
+		palette := colors.code + colors.secondary + colors.brandFrom + colors.brandTo
+		hash := sha256.Sum256([]byte(palette))
+		style = chroma.MustNewStyle(fmt.Sprintf("albedo-%x", hash[:6]), chroma.StyleEntries{
 			chroma.Text:          colors.code,
 			chroma.Comment:       colors.secondary + " italic",
 			chroma.Keyword:       colors.brandFrom,
 			chroma.NameFunction:  colors.brandTo,
 			chroma.LiteralString: colors.brandTo,
 			chroma.LiteralNumber: colors.brandFrom,
-		}))
+		})
 	}
-	return name
+	codeStyles.Store(colors, style)
+	return style
+}
+
+// codeTheme names the palette's theme in chroma's registry: glamour looks a
+// code block's theme up by name, not by value.
+func codeTheme(colors ink) string {
+	style := codeStyle(colors)
+	markdownThemes.Lock()
+	defer markdownThemes.Unlock()
+	if chromastyles.Registry[style.Name] == nil {
+		chromastyles.Register(style)
+	}
+	return style.Name
 }
 
 // accent is a markdown accent color, or the palette slot when the terminal
@@ -199,20 +216,133 @@ func renderCopyable(text string, width int) string {
 // renderBlocks is text rendered at width, or unwrapped at 0. Unless whole,
 // its last block may still grow and is not cached.
 func renderBlocks(text string, width int, whole bool) string {
-	blocks := markdownBlocks(text)
+	var scan growingMarkdown
+	finished, open, ok := scan.grow(text, width, whole)
+	if !ok {
+		return strings.Trim(renderMarkdown(text, width), " \n")
+	}
 	var b strings.Builder
-	for i, block := range blocks {
-		prev := ""
-		if i > 0 {
-			prev = blocks[i-1]
-		}
-		piece, ok := markdownPiece(prev, block, width, whole || i < len(blocks)-1)
-		if !ok {
-			return strings.Trim(renderMarkdown(text, width), " \n")
-		}
+	for _, piece := range finished {
 		b.WriteString(piece)
 	}
+	b.WriteString(open)
 	return strings.Trim(b.String(), " \n")
+}
+
+// growingMarkdown is a markdown text rendered as it arrives. The blocks that
+// are finished are rendered once; each step renders only the block still
+// growing, so the cost of a draw follows what arrived, not the length of the
+// reply. A whole rendering stays equal to a stepwise one: both are the same
+// pieces in the same order.
+type growingMarkdown struct {
+	// width is what the pieces were rendered at: text rendered at another one
+	// cannot extend them.
+	width int
+	// text is the text scanned so far and scanned is how far into it the scan
+	// went, with fence and blank the state there; blockStart is where the
+	// block still growing begins, and prev the finished block it follows.
+	text                string
+	scanned, blockStart int
+	fence               string
+	blank               bool
+	prev                string
+	// started is whether a block has finished: the piece that finishes first
+	// carries the rendering's start, which a whole rendering trims.
+	started bool
+	// unsplit is set when a line reaches across blank lines, so the text has to
+	// be rendered in one piece.
+	unsplit bool
+}
+
+// grow scans text, which must extend the text scanned before, and returns the
+// rendered pieces of the blocks that finished since along with the rendering of
+// the block still growing, trimmed right the way a rendering ends. cacheTail
+// says the text is complete, so the block still growing is the text's last and
+// is kept in the piece cache. ok is false when the text cannot be told apart
+// from one piece, and the caller has to render it whole.
+func (g *growingMarkdown) grow(text string, width int, cacheTail bool) (finished []string, open string, ok bool) {
+	if g.unsplit || !strings.HasPrefix(text, g.text[:g.scanned]) {
+		return nil, "", false
+	}
+	if g.text == "" {
+		// the first text sets the width, since nothing was rendered yet
+		g.width = width
+	} else if g.width != width {
+		return nil, "", false
+	}
+	scan := blockScan{fence: g.fence, blank: g.blank, at: g.scanned}
+	starts, ok := scan.seeks(text, g.blockStart, cacheTail)
+	if !ok {
+		g.unsplit = true
+		return nil, "", false
+	}
+	for _, start := range starts {
+		block := text[g.blockStart:start]
+		piece, ok := markdownPiece(g.prev, block, width, true)
+		if !ok {
+			g.unsplit = true
+			return nil, "", false
+		}
+		if !g.started {
+			piece, g.started = strings.TrimLeft(piece, " \n"), true
+		}
+		finished = append(finished, piece)
+		g.prev, g.blockStart = block, start
+	}
+	// the scan may stop short of a line still arriving
+	g.text, g.scanned = text, scan.at
+	g.fence, g.blank = scan.fence, scan.blank
+	open, ok = markdownPiece(g.prev, text[g.blockStart:], width, cacheTail)
+	if !ok {
+		g.unsplit = true
+		return nil, "", false
+	}
+	open = strings.TrimRight(open, " \n")
+	if !g.started {
+		open = strings.TrimLeft(open, " \n")
+	}
+	return finished, open, true
+}
+
+// blockScan is where splitting markdown text into top-level blocks stands: the
+// fence open and whether the line last read was blank, at a position.
+type blockScan struct {
+	fence string
+	blank bool
+	at    int
+}
+
+// seeks reads text from the scan's position and returns where each new
+// top-level block begins after the one open at start: the line at the margin
+// after a blank line, outside a fence, that cannot continue a list or quote
+// above it. whole says text is complete, so a last line still to come by its
+// newline counts; a text still arriving is read only as far as its last
+// newline, since half a line cannot be told from a whole one. ok is false when
+// a line reaches across blank lines, which keeps the text whole.
+func (s *blockScan) seeks(text string, start int, whole bool) (starts []int, ok bool) {
+	limit := len(text)
+	if !whole {
+		limit = strings.LastIndexByte(text, '\n') + 1
+	}
+	for s.at < limit {
+		i := strings.IndexByte(text[s.at:limit], '\n')
+		end := limit
+		if i >= 0 {
+			end = s.at + i + 1
+		}
+		line := strings.TrimRight(text[s.at:end], "\r\n")
+		if s.fence == "" && spansBlocks.MatchString(line) {
+			return nil, false
+		}
+		if s.fence == "" && s.blank && s.at > start && opensBlock(line) {
+			starts = append(starts, s.at)
+			start = s.at
+		}
+		s.fence = fenceAfter(s.fence, line)
+		s.blank = strings.TrimSpace(line) == ""
+		s.at = end
+	}
+	return starts, true
 }
 
 // markdownPiece is what block adds to the rendering of prev, or false when
@@ -292,32 +422,21 @@ var (
 	spansBlocks = regexp.MustCompile(`(?i)^ {0,3}(\[[^\]]+\]:|<(pre|script|style|textarea)\b|<!--)`)
 )
 
-// markdownBlocks splits text before every line that has to open a new
-// top-level block: one at the margin after a blank line, outside a fence,
-// that cannot continue a list or quote above it. Text that can reach across
-// blank lines outside a fence keeps it whole.
+// markdownBlocks is text split into the top-level blocks a rendering is built
+// from, or text whole when it cannot be split.
 func markdownBlocks(text string) []string {
-	var blocks []string
-	start, fence, blank := 0, "", false
-	for pos := 0; pos < len(text); {
-		i := strings.IndexByte(text[pos:], '\n')
-		end := len(text)
-		if i >= 0 {
-			end = pos + i + 1
-		}
-		line := strings.TrimRight(text[pos:end], "\r\n")
-		if fence == "" && spansBlocks.MatchString(line) {
-			return []string{text}
-		}
-		if fence == "" && blank && pos > start && opensBlock(line) {
-			blocks = append(blocks, text[start:pos])
-			start = pos
-		}
-		fence = fenceAfter(fence, line)
-		blank = strings.TrimSpace(line) == ""
-		pos = end
+	var scan blockScan
+	starts, ok := scan.seeks(text, 0, true)
+	if !ok {
+		return []string{text}
 	}
-	return append(blocks, text[start:])
+	blocks := make([]string, 0, len(starts)+1)
+	from := 0
+	for _, start := range starts {
+		blocks = append(blocks, text[from:start])
+		from = start
+	}
+	return append(blocks, text[from:])
 }
 
 func opensBlock(line string) bool {
