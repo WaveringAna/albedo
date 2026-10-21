@@ -9,7 +9,9 @@
       chrome-headless-shell = pkgs.callPackage ./chrome-headless-shell.nix {};
       albedo-lint = pkgs.callPackage ./albedo-lint.nix {
         inherit beamPackages gleam;
-        src = ../tools/lint;
+        # Not `../tools/lint`: that copies the directory to a store path of its own,
+        # which `nix flake check --no-build` does not create, so it fails on new content.
+        src = inputs.self + "/tools/lint";
       };
       albedo = pkgs.callPackage ../default.nix {
         inherit beamPackages gleam chrome-headless-shell;
