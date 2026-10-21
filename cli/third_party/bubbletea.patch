@@ -4,11 +4,31 @@ upstream paints from a time.Ticker at the program's fps for as long as the
 program runs, so an idle TUI still wakes 60 times a second to flush a frame
 that did not change. here the frame writer sleeps until render() or
 execute() asks for a frame, then paints at most once per frame interval;
-the fps cap is unchanged while frames keep coming.
+the fps cap is unchanged while frames keep coming. a frame taller than the
+screen keeps only the rows on screen, instead of a slice that holds the
+tallest frame ever drawn alive.
 
 to bump bubbletea: copy the new release over third_party/bubbletea and
 apply this patch (patch -p1 -d third_party/bubbletea < third_party/bubbletea.patch).
 
+--- a/cursed_renderer.go
++++ b/cursed_renderer.go
+@@ -345,9 +345,13 @@
+ 	content.Draw(s.cellbuf, s.cellbuf.Bounds())
+ 
+ 	// If the frame height is greater than the screen height, we drop the
+-	// lines from the top of the buffer.
++	// lines from the top of the buffer. The kept lines are copied: a slice of
++	// the tall frame would keep every line of it alive, so the buffer would
++	// hold the tallest frame it ever drew for as long as the program runs.
+ 	if frameHeight := frameArea.Dy(); frameHeight > s.height {
+-		s.cellbuf.Lines = s.cellbuf.Lines[frameHeight-s.height:]
++		kept := make([]uv.Line, s.height)
++		copy(kept, s.cellbuf.Lines[frameHeight-s.height:])
++		s.cellbuf.Lines = kept
+ 	}
+ 
+ 	// Alt screen mode.
 --- a/tea.go
 +++ b/tea.go
 @@ -539,8 +539,9 @@

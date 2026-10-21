@@ -345,9 +345,13 @@ func (s *cursedRenderer) flush(closing bool) error {
 	content.Draw(s.cellbuf, s.cellbuf.Bounds())
 
 	// If the frame height is greater than the screen height, we drop the
-	// lines from the top of the buffer.
+	// lines from the top of the buffer. The kept lines are copied: a slice of
+	// the tall frame would keep every line of it alive, so the buffer would
+	// hold the tallest frame it ever drew for as long as the program runs.
 	if frameHeight := frameArea.Dy(); frameHeight > s.height {
-		s.cellbuf.Lines = s.cellbuf.Lines[frameHeight-s.height:]
+		kept := make([]uv.Line, s.height)
+		copy(kept, s.cellbuf.Lines[frameHeight-s.height:])
+		s.cellbuf.Lines = kept
 	}
 
 	// Alt screen mode.
