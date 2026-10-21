@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "check": "svelte-check --tsconfig ./tsconfig.json",
+    "check": "svelte-check --tsgo --tsconfig ./tsconfig.json",
     "preview": "vite preview",
     "generate": "node scripts/apigen.mjs",
     "generate:check": "node scripts/apigen.mjs --check"
@@ -14,17 +14,23 @@
     "@sveltejs/vite-plugin-svelte": "^7.3.1",
     "@tsconfig/svelte": "^5.0.8",
     "@types/node": "^24.19.2",
+    "@typescript/native": "npm:typescript@^7.0.2",
     "@xyflow/svelte": "^1.7.0",
     "openapi-typescript": "7.13.0",
     "svelte": "^5.57.2",
     "svelte-check": "^4.7.7",
-    "typescript": "^5.9.3",
+    "typescript": "npm:@typescript/typescript6@^6.0.2",
     "vite": "^8.3.4"
   },
   "dependencies": {
-    "@pierre/diffs": "^1.5.2",
-    "katex": "^0.16.47",
+    "@pierre/diffs": "^1.6.0",
+    "katex": "^0.19.0",
     "marked": "^18.1.1",
-    "pele": "^1.7.0"
+    "pele": "^1.8.0"
+  },
+  "overrides": {
+    "openapi-typescript": {
+      "typescript": "$typescript"
+    }
   }
 }

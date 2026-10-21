@@ -191,7 +191,7 @@
         ./web/src
       ];
     };
-    npmDepsHash = "sha256-AVl9iD6uh+NFdmvC30X/F8D0bXsKoRUSzHCAkrP3uxw=";
+    npmDepsHash = "sha256-J7frp32iNwe3xBuFSSAzQFzYSF2zgyaQtoCMMO/z7TU=";
     installPhase = ''
       runHook preInstall
       cp -R dist $out
