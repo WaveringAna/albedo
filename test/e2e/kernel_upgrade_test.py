@@ -15,6 +15,7 @@ from pathlib import Path
 import sqlite3
 import time
 import unittest
+import urllib.error
 
 import harness
 from harness import alive
@@ -121,6 +122,28 @@ class KernelUpgradeTests(Swaps):
         swapped, _ = self.probe()
         self.assertIn("'new bundle'", swapped["value"])
         self.assertTrue(swapped["value"].startswith("(41,"), swapped)
+
+    def test_a_kernel_on_another_bundle_is_not_asked_for_its_job_book(self):
+        """An older kernel ends its link on a frame it does not know, so the
+        job routes must answer for it without sending one: a live job stays
+        unlisted, and the kernel and its variables survive the request."""
+        gate, job = self.held_job()
+        self.cell(f"import os\nsurvivor = 41\n{job}\nos.getpid()")
+        self.edit_bundle()
+        self.app.restart()
+        held, _ = self.probe()
+        self.assertIn("None", held["value"], "the old kernel must still run")
+        self.assertTrue(self.stale())
+        base = f"/extensions/run/sessions/{self.session}/jobs"
+        with self.app.api(f"{base}/recent") as response:
+            self.assertEqual(json.load(response)["items"], [])
+        with self.assertRaises(urllib.error.HTTPError) as refused:
+            with self.app.api(f"{base}/anything/output"):
+                pass
+        self.assertEqual(refused.exception.code, 503)
+        again, _ = self.probe()
+        self.assertTrue(again["value"].startswith("(41,"), again)
+        self.end_job(gate)
 
     def test_kernel_upgrade_forces_the_swap_past_a_live_job(self):
         self.cell("import os\nsurvivor = 41\nj = run('sleep', '60')\nos.getpid()")

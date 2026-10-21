@@ -112,7 +112,11 @@ plugin still knows of the jobs it started, newest first, up to 100: `id`,
 `started_at` and `ended_at` (wall-clock milliseconds), and `bytes` written. The
 kernel keeps the 64 newest finished jobs with their output, so a finished job
 stays listed that long (and only while its kernel lives); a plugin's own
-internal jobs are not listed. A session with no kernel has none. This is not
+internal jobs are not listed. A session with no kernel has none, and neither does one running another python
+bundle or protocol than the daemon (`stale` `bundle` or `protocol`, until its
+session is idle and it is swapped): a kernel that old ends its link on a frame
+it does not know, so the daemon never sends it `job_list` or `job_read`; the
+list is empty and a read is `503`. This is not
 the live observation above: that one comes from the port owner and covers
 remote jobs, this one from the kernel and covers finished ones.
 

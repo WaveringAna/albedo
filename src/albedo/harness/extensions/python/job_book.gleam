@@ -4,9 +4,10 @@
 //// kernel's retained output.
 
 import albedo/harness/extensions/python/kernel.{type Kernel}
+import gleam/bool
 import gleam/dynamic/decode
 import gleam/json
-import gleam/option.{type Option}
+import gleam/option.{type Option, Some}
 import gleam/result
 
 /// One job. `state` is `running` or `exited`; times are wall-clock
@@ -49,8 +50,19 @@ fn ask_read(
   limit: Int,
 ) -> Result(String, String)
 
-/// Every job the kernel knows, newest first.
+/// A kernel on another python bundle or protocol ends its link on a frame it
+/// does not know, so it is never asked: it has no job book to show.
+fn knows_the_book(attached: Kernel) -> Bool {
+  case kernel.stale(attached) {
+    Some(kernel.Bundle) | Some(kernel.Protocol) -> False
+    _ -> True
+  }
+}
+
+/// Every job the kernel knows, newest first; none for a kernel that does not
+/// know the job book yet.
 pub fn list(kernel: Kernel) -> Result(List(Record), Failure) {
+  use <- bool.guard(!knows_the_book(kernel), Ok([]))
   use reply <- result.try(ask_list(kernel) |> result.map_error(Unavailable))
   decode_reply(reply, {
     use jobs <- decode.field("jobs", decode.list(record()))
@@ -66,6 +78,12 @@ pub fn read(
   offset: Option(Int),
   limit: Int,
 ) -> Result(Page, Failure) {
+  use <- bool.guard(
+    !knows_the_book(kernel),
+    Error(Unavailable(
+      "this kernel predates the job book; it is replaced when its session is idle",
+    )),
+  )
   use reply <- result.try(
     ask_read(kernel, id, offset, limit) |> result.map_error(Unavailable),
   )
