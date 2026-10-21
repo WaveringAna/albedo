@@ -11,7 +11,7 @@ repos:
         entry: test/gleam-lint.sh
         language: system
         pass_filenames: false
-        files: ^((src|test)/.*\.gleam$|gleam\.toml$|test/gleam-lint\.sh$|flake/.*\.nix$|flake\.(nix|lock)$)
+        files: ^((src|test)/.*\.gleam$|tools/lint/.*|gleam\.toml$|test/gleam-lint\.sh$|flake/.*\.nix$|flake\.(nix|lock)$)
   - repo: local
     hooks:
       - id: treefmt

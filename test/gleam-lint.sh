@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# The default profile is the commit check; review and audit are opt-in.
+# The default profile is the commit check; review, audit and the albedo rules
+# with existing findings are opt-in. albedo-lint is glinter plus tools/lint.
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 project="$root"
@@ -15,12 +16,22 @@ case "${1:-}" in
   profile="glinter-all.toml"
   shift
   ;;
+--albedo)
+  profile="albedo"
+  shift
+  ;;
 esac
 if [[ -n $profile ]]; then
   scratch="$(mktemp -d)"
   project="$scratch"
-  cp "$root/test/manual/$profile" "$project/gleam.toml"
+  if [[ $profile == albedo ]]; then
+    sed -e 's/^albedo_text_scalars = "off"/albedo_text_scalars = "error"/' \
+      -e 's/^albedo_table_ownership = "off"/albedo_table_ownership = "error"/' \
+      "$root/gleam.toml" >"$project/gleam.toml"
+  else
+    cp "$root/test/manual/$profile" "$project/gleam.toml"
+  fi
   ln -s "$root/src" "$project/src"
   ln -s "$root/test" "$project/test"
 fi
-glinter --project "$project" "$@"
+albedo-lint --project "$project" "$@"

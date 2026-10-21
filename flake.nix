@@ -12,12 +12,6 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
 
-    # Development linter, separate from the daemon's Gleam dependencies.
-    glinter = {
-      url = "github:pairshaped/glinter";
-      flake = false;
-    };
-
     # Pinned Zig usage CLI consumed by the daemon as a non-flake archive.
     usage-core = {
       url = "https://api.next.tangled.org/xrpc/org.tangled.temp.git.getArchive?repo=did%3Aplc%3A2lf7buutfnfcucljnmaypf7u&ref=3951be3&format=tar.gz&prefix=provide-usage-main";

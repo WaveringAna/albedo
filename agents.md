@@ -12,7 +12,7 @@ PLEASE USE `gleam check` to type check and `gleam format src test` to format Gle
 
 For Go changes, use the Go and gopls supplied by `nix develop` (they come from the same pinned nixpkgs snapshot); do not mix a host gopls with a newer Go toolchain. Run gopls with `staticcheck` and all available analyses enabled, alongside vet and tests. Fix diagnostics by simplifying the code, without adding wrappers or obscuring control flow.
 
-- Gleam lint: `test/gleam-lint.sh` (pinned glinter in `nix develop`; eleven focused rules also run in pre-commit and `test.sh`; manual review and audit profiles are documented in `robot-docs/gleam-lint.md`)
+- Gleam lint: `test/gleam-lint.sh` (`albedo-lint` in `nix develop`: glinter plus albedo's own rules from `tools/lint`; eleven focused rules and `albedo_clock` also run in pre-commit and `test.sh`; the review, audit and `--albedo` profiles are documented in `robot-docs/gleam-lint.md`)
 - Keep generated lint reports under `/tmp`. Never commit CSV audit inventories or retrospective cleanup reports.
 - Gleam suites: `gleam test`
 - Go: `go -C cli vet ./...` and `go -C cli test ./...`

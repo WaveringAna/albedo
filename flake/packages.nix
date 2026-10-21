@@ -7,9 +7,9 @@
   }: {
     packages = rec {
       chrome-headless-shell = pkgs.callPackage ./chrome-headless-shell.nix {};
-      glinter = pkgs.callPackage ./glinter.nix {
+      albedo-lint = pkgs.callPackage ./albedo-lint.nix {
         inherit beamPackages gleam;
-        src = inputs.glinter;
+        src = ../tools/lint;
       };
       albedo = pkgs.callPackage ../default.nix {
         inherit beamPackages gleam chrome-headless-shell;

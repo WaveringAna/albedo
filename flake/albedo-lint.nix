@@ -22,7 +22,7 @@
     + "\n[git]\n");
 in
   stdenv.mkDerivation {
-    pname = "glinter";
+    pname = "albedo-lint";
     inherit (builtins.fromTOML (builtins.readFile "${src}/gleam.toml")) version;
     inherit src;
     nativeBuildInputs = [gleam beamPackages.erlang makeWrapper];
@@ -42,17 +42,17 @@ in
     '';
     installPhase = ''
       runHook preInstall
-      mkdir -p $out/lib/glinter $out/bin
-      cp -R build/erlang-shipment/. $out/lib/glinter/
-      makeWrapper $out/lib/glinter/entrypoint.sh $out/bin/glinter \
+      mkdir -p $out/lib/albedo-lint $out/bin
+      cp -R build/erlang-shipment/. $out/lib/albedo-lint/
+      makeWrapper $out/lib/albedo-lint/entrypoint.sh $out/bin/albedo-lint \
         --add-flags run \
         --prefix PATH : ${lib.makeBinPath [beamPackages.erlang]}
       runHook postInstall
     '';
     meta = {
-      description = "Gleam linter for development checks";
+      description = "Gleam linter for development checks (glinter with albedo's own rules, tools/lint)";
       license = lib.licenses.mit;
-      mainProgram = "glinter";
+      mainProgram = "albedo-lint";
       platforms = lib.platforms.unix;
     };
   }
