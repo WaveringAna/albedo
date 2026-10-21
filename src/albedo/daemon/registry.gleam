@@ -26,6 +26,7 @@ import albedo/daemon/usage
 import albedo/harness/credentials
 import albedo/harness/extension
 import albedo/harness/extensions/python/kernel as python
+import albedo/harness/extensions/python/link
 import albedo/harness/extensions/schedule/ledger as schedule
 import albedo/harness/location
 import albedo/harness/oauth
@@ -454,6 +455,8 @@ pub fn prepare_storage(
     <> ".sqlite"
   use moved <- result.try(migrations.run(runtime.ledger(host), backup))
   use upgraded <- result.try(runtime.migrate(host, backup))
+  // Before anything reattaches: kernels another daemon booted stay its own.
+  use disowned <- result.try(link.disown(runtime.ledger(host)))
   use _ <- result.try(python.recover_staged(runtime.ledger(host)))
   list.each(upgraded, fn(migration) {
     case migration.1 {
@@ -464,6 +467,15 @@ pub fn prepare_storage(
         )
     }
   })
+  case disowned {
+    0 -> Nil
+    rows ->
+      io.println(
+        "kernel records: left "
+        <> int.to_string(rows)
+        <> " kernels of another daemon's home alone",
+      )
+  }
   case moved {
     0 -> Nil
     rows ->

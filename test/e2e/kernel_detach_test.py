@@ -10,10 +10,12 @@ import ast
 import json
 import os
 import signal
+import sqlite3
 import subprocess
 import time
 import unittest
 
+import harness
 from harness import alive
 from harness import Albedo, Provider, exclusive, python, text
 
@@ -79,6 +81,28 @@ class KernelDetachTests(unittest.TestCase):
             if part["kind"] == "text"
         ]
         self.assertFalse([note for note in notes if "variables are gone" in note])
+
+    def test_a_daemon_booted_on_a_copy_of_the_database_leaves_its_kernels_alone(self):
+        """The copy carries this daemon's kernel records (socket, token,
+        process group); its daemon forgets them instead of attaching."""
+        first = self.cell("import os\nsurvivor = 41\nos.getpid()")
+        copy = harness.Daemon("copy")
+        with (
+            sqlite3.connect(self.app.home / "albedo.sqlite") as source,
+            sqlite3.connect(copy.home / "albedo.sqlite") as target,
+        ):
+            source.backup(target)
+        copy.boot()
+        self.addCleanup(copy._stop, 15)
+        with sqlite3.connect(copy.home / "albedo.sqlite") as db:
+            (left,) = db.execute("SELECT count(*) FROM kernel_links").fetchone()
+        self.assertEqual(left, 0)
+        self.assertIn(
+            "kernel records: left 1 kernels of another daemon's home alone",
+            (copy.home / "daemon.log").read_text(),
+        )
+        after = self.cell("survivor += 1\n(survivor, os.getpid())")
+        self.assertEqual(after["value"], f"(42, {first['value']})")
 
     def test_a_connection_dropped_mid_cell_still_delivers_the_result(self):
         first = self.cell("import os\nos.getpid()")

@@ -8,8 +8,14 @@
 //// `kernel_outbox`, so a reattach (or a restarted daemon) resends them.
 //// `kernel_calls` remembers every host call the kernel made until the kernel
 //// has its reply, so a replayed call never runs twice.
+////
+//// A row also names the `$ALBEDO_HOME` of the daemon that booted the kernel:
+//// a daemon started on a copy of this database must leave those kernels
+//// alone, since their sockets, tokens and process groups are still another
+//// daemon's.
 
 import albedo/daemon/store
+import albedo/harness/settings
 import gleam/dict
 import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
@@ -86,17 +92,24 @@ pub fn apply(db: sqlight.Connection) -> Result(Nil, String) {
   use _ <- result.try(
     store.add_columns(db, "kernel_links", [
       #("groups", "TEXT NOT NULL DEFAULT '{}'"),
+      #("home", "TEXT"),
     ]),
   )
   use _ <- result.try(store.exec(
     db,
-    "
-    CREATE TABLE IF NOT EXISTS kernel_stages (
+    "CREATE TABLE IF NOT EXISTS kernel_stages (
       session TEXT PRIMARY KEY, kernel TEXT NOT NULL UNIQUE, token TEXT NOT NULL,
       run_dir TEXT NOT NULL, cwd TEXT NOT NULL, modules TEXT NOT NULL,
       pid INTEGER, pgid INTEGER, leader TEXT, epoch INTEGER NOT NULL DEFAULT 0,
       out_seq INTEGER NOT NULL DEFAULT 0, groups TEXT NOT NULL DEFAULT '{}',
-      ready INTEGER NOT NULL DEFAULT 0);
+      ready INTEGER NOT NULL DEFAULT 0);",
+  ))
+  use _ <- result.try(
+    store.add_columns(db, "kernel_stages", [#("home", "TEXT")]),
+  )
+  use _ <- result.try(store.exec(
+    db,
+    "
     CREATE VIEW IF NOT EXISTS kernel_records AS
       SELECT session,kernel,token,run_dir,cwd,modules,pid,pgid,leader,epoch,out_seq,groups FROM kernel_links
       UNION ALL
@@ -105,8 +118,8 @@ pub fn apply(db: sqlight.Connection) -> Result(Nil, String) {
       UPDATE kernel_links SET pid=NEW.pid,pgid=NEW.pgid,leader=NEW.leader,epoch=NEW.epoch,out_seq=NEW.out_seq,groups=NEW.groups WHERE kernel=OLD.kernel;
       UPDATE kernel_stages SET pid=NEW.pid,pgid=NEW.pgid,leader=NEW.leader,epoch=NEW.epoch,out_seq=NEW.out_seq,groups=NEW.groups WHERE kernel=OLD.kernel;
     END;
-    INSERT OR IGNORE INTO kernel_links(session,kernel,token,run_dir,cwd,modules,pid,pgid,leader,epoch,out_seq,groups)
-      SELECT session,kernel,token,run_dir,cwd,modules,pid,pgid,leader,epoch,out_seq,groups FROM kernel_stages
+    INSERT OR IGNORE INTO kernel_links(session,kernel,token,run_dir,cwd,modules,pid,pgid,leader,epoch,out_seq,groups,home)
+      SELECT session,kernel,token,run_dir,cwd,modules,pid,pgid,leader,epoch,out_seq,groups,home FROM kernel_stages
       WHERE ready=1 AND NOT EXISTS(SELECT 1 FROM kernel_links WHERE kernel_links.session=kernel_stages.session);
     DELETE FROM kernel_stages WHERE EXISTS(SELECT 1 FROM kernel_links WHERE kernel_links.kernel=kernel_stages.kernel);
   ",
@@ -124,15 +137,8 @@ pub fn create(storage: store.Store, record: Record) -> Result(Nil, String) {
       use _ <- result.try(forget_session(db, record.session))
       store.run(
         db,
-        "INSERT INTO kernel_links(session,kernel,token,run_dir,cwd,modules) VALUES(?,?,?,?,?,?)",
-        [
-          sqlight.text(record.session),
-          sqlight.text(record.kernel),
-          sqlight.text(record.token),
-          sqlight.text(record.run_dir),
-          sqlight.text(record.cwd),
-          sqlight.text(record.modules),
-        ],
+        "INSERT INTO kernel_links(session,kernel,token,run_dir,cwd,modules,home) VALUES(?,?,?,?,?,?,?)",
+        values(record),
       )
     })
   })
@@ -145,18 +151,23 @@ pub fn stage(storage: store.Store, record: Record) -> Result(Nil, String) {
       use _ <- result.try(apply(db))
       store.run(
         db,
-        "INSERT INTO kernel_stages(session,kernel,token,run_dir,cwd,modules) VALUES(?,?,?,?,?,?)",
-        [
-          sqlight.text(record.session),
-          sqlight.text(record.kernel),
-          sqlight.text(record.token),
-          sqlight.text(record.run_dir),
-          sqlight.text(record.cwd),
-          sqlight.text(record.modules),
-        ],
+        "INSERT INTO kernel_stages(session,kernel,token,run_dir,cwd,modules,home) VALUES(?,?,?,?,?,?,?)",
+        values(record),
       )
     })
   })
+}
+
+fn values(record: Record) -> List(sqlight.Value) {
+  [
+    sqlight.text(record.session),
+    sqlight.text(record.kernel),
+    sqlight.text(record.token),
+    sqlight.text(record.run_dir),
+    sqlight.text(record.cwd),
+    sqlight.text(record.modules),
+    sqlight.text(settings.home()),
+  ]
 }
 
 pub fn ready(storage: store.Store, record: Record) -> Result(Nil, String) {
@@ -174,7 +185,7 @@ pub fn publish(storage: store.Store, record: Record) -> Result(Nil, String) {
       use _ <- result.try(
         store.run(
           db,
-          "INSERT INTO kernel_links(session,kernel,token,run_dir,cwd,modules,pid,pgid,leader,epoch,out_seq,groups) SELECT session,kernel,token,run_dir,cwd,modules,pid,pgid,leader,epoch,out_seq,groups FROM kernel_stages WHERE session=? AND kernel=? AND ready=1",
+          "INSERT INTO kernel_links(session,kernel,token,run_dir,cwd,modules,pid,pgid,leader,epoch,out_seq,groups,home) SELECT session,kernel,token,run_dir,cwd,modules,pid,pgid,leader,epoch,out_seq,groups,home FROM kernel_stages WHERE session=? AND kernel=? AND ready=1",
           [sqlight.text(record.session), sqlight.text(record.kernel)],
         ),
       )
@@ -398,33 +409,74 @@ pub fn forget_session(
   store.run(db, "DELETE FROM kernel_links WHERE session=?", id)
 }
 
+/// Forget, without touching them, the kernels another daemon booted: rows
+/// naming another home, and older rows without one whose run directory is
+/// local but not under this home. A daemon booted on a copy of the database
+/// would otherwise attach to them with the copied token, replay their
+/// outboxes, and stop their process groups. An older row of a remote kernel
+/// can't be told apart and is kept. Answers how many went.
+pub fn disown(storage: store.Store) -> Result(Int, String) {
+  let home = settings.home()
+  let runs = home <> "/run/"
+  store.query(storage, fn(db) {
+    store.transaction(db, fn() {
+      use _ <- result.try(apply(db))
+      use foreign <- result.try(
+        store.rows(
+          db,
+          "SELECT session,kernel FROM
+          (SELECT session,kernel,run_dir,home FROM kernel_links
+            UNION ALL SELECT session,kernel,run_dir,home FROM kernel_stages)
+          WHERE CASE WHEN home IS NULL
+            THEN instr(run_dir, '/.albedo-remote/run/') = 0 AND substr(run_dir, 1, length(?1)) <> ?1
+            ELSE home <> ?2 END",
+          [sqlight.text(runs), sqlight.text(home)],
+          {
+            use session <- decode.field(0, decode.string)
+            use kernel <- decode.field(1, decode.string)
+            decode.success(#(session, kernel))
+          },
+        ),
+      )
+      use _ <- result.try(
+        list.try_each(foreign, fn(row) { forget_kernel(db, row.0, row.1) }),
+      )
+      Ok(list.length(foreign))
+    })
+  })
+}
+
 /// Forget one kernel: its row, its outbox, and its call ledger.
 pub fn forget(storage: store.Store, record: Record) -> Result(Nil, String) {
   store.query(storage, fn(db) {
     store.transaction(db, fn() {
-      use _ <- result.try(
-        store.run(db, "DELETE FROM kernel_calls WHERE kernel=?", [
-          sqlight.text(record.kernel),
-        ]),
-      )
-      use _ <- result.try(
-        store.run(db, "DELETE FROM kernel_outbox WHERE session=? AND kernel=?", [
-          sqlight.text(record.session),
-          sqlight.text(record.kernel),
-        ]),
-      )
-      use _ <- result.try(
-        store.run(db, "DELETE FROM kernel_stages WHERE session=? AND kernel=?", [
-          sqlight.text(record.session),
-          sqlight.text(record.kernel),
-        ]),
-      )
-      store.run(db, "DELETE FROM kernel_links WHERE session=? AND kernel=?", [
-        sqlight.text(record.session),
-        sqlight.text(record.kernel),
-      ])
+      forget_kernel(db, record.session, record.kernel)
     })
   })
+}
+
+fn forget_kernel(
+  db: sqlight.Connection,
+  session: String,
+  kernel: String,
+) -> Result(Nil, String) {
+  let owned = [sqlight.text(session), sqlight.text(kernel)]
+  use _ <- result.try(
+    store.run(db, "DELETE FROM kernel_calls WHERE kernel=?", [
+      sqlight.text(kernel),
+    ]),
+  )
+  use _ <- result.try(store.run(
+    db,
+    "DELETE FROM kernel_outbox WHERE session=? AND kernel=?",
+    owned,
+  ))
+  use _ <- result.try(store.run(
+    db,
+    "DELETE FROM kernel_stages WHERE session=? AND kernel=?",
+    owned,
+  ))
+  store.run(db, "DELETE FROM kernel_links WHERE session=? AND kernel=?", owned)
 }
 
 /// The callbacks for one recorded kernel.

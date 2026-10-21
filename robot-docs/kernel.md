@@ -335,7 +335,8 @@ a bare `{"ack": m}`. `ack` is cumulative: everything up to it arrived.
 - **daemon side** (`python/link.gleam`, tables from the python extension's
   `kernel_links` schema migration): `kernel_links` (one row per session: kernel
   id, token, run dir, workspace, modules, pid/pgid/leader, epoch, last seq
-  sent, and the job groups it owns, rewritten as they change), `kernel_outbox` keyed (session, kernel, seq), bounded at 2048 frames /
+  sent, the job groups it owns, rewritten as they change, and the `$ALBEDO_HOME`
+  of the daemon that booted it), `kernel_outbox` keyed (session, kernel, seq), bounded at 2048 frames /
   64 MiB per kernel, and `kernel_calls`. the port owner persists each frame
   before writing it, deletes what the kernel acknowledges, and acknowledges
   kernel frames within 100 ms. its own last-seen seq lives in memory: after a
@@ -402,6 +403,13 @@ still for it, `generation_over` ends it and replays what waited.
 - the daemon crashes: its connection closes (a bridge sees EOF and exits); the kernel waits.
 - graceful shutdown: `runtime.detach_kernels` first, so closing sessions and
   stopping the runtime let kernels go instead of ending them.
+- daemon start: first `link.disown` forgets, without touching them, the
+  records another daemon wrote: a row naming another home, or an older row
+  without one whose local run directory is outside this home (an older
+  remote row can't be told apart and stays). a daemon booted on a copy of
+  `albedo.sqlite` would otherwise attach to the original's kernels with the
+  copied token, replay their outboxes into them, and stop their process
+  groups when it swapped them.
 - daemon start: `runtime.resume_kernels` reattaches every recorded kernel in
   the background, one at a time through the boot slots, so late results and
   job wakes arrive without waiting for the session. no actor is loaded for an
