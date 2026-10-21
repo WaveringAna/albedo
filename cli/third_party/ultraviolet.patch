@@ -1,0 +1,427 @@
+ultraviolet v0.0.0-20261007174847 (tangled.org/okami.mom/ultraviolet), with
+40-byte cells instead of 112-byte ones.
+
+a cell was a 16-byte content string, a 56-byte Style holding three color
+interfaces, a 32-byte Link holding two strings, and the width. the screen is a
+cell per column and row, so at 200x50 the screen is 10000 cells: 1.1MB while
+only a handful of styles appear on it, and bubbletea's frame buffer (sized to
+the content, not the screen) was 3.1MB by itself.
+
+a cell now holds its style and link by pointer, one record per distinct style:
+a parse interns one record per distinct style, a border shares one per side, and a
+nil pointer is the zero style, so a cell with no style is still the zero Cell.
+cells are 40 bytes: the 200x50 screen is 400KB.
+
+a parse interns the records it hands out, so a frame allocates one small
+record per distinct style it uses (about ten for a chat frame, 1.2KB) where it
+allocated none before: that is the price of the 72 bytes it saves per cell.
+
+what a renderer writes is unchanged. the pen in renderLine and in
+TerminalRenderer is still a value, and a zero style is still written as the
+reset it always was. cli/internal/terminal/ultraviolet_render_test.go renders a
+scripted sequence of frames through this build and compares the bytes with
+goldens taken from the unpatched one. one thing to know when reading the code:
+`Cell == Cell` compares the style pointers, so compare cells with Cell.Equal;
+Style.IsZero and Link.IsZero take a nil pointer as the zero value.
+
+to bump ultraviolet: copy the new version over third_party/ultraviolet, drop
+its tests and CI files, and apply this patch (patch -p1 -d third_party/ultraviolet
+< third_party/ultraviolet.patch). the fork's own tests need a `&` on any cell
+literal that sets Style or Link; they were run that way against this diff.
+
+--- a/border.go
++++ b/border.go
+@@ -190,26 +190,33 @@
+ 
+ // Draw draws the border around the given component.
+ func (b *Border) Draw(scr Screen, area Rectangle) {
++	// A side is the same cell along its whole run, and a screen copies the
++	// cells it is given, so one cell per side is enough.
++	top, bottom := borderCell(scr, &b.Top), borderCell(scr, &b.Bottom)
++	left, right := borderCell(scr, &b.Left), borderCell(scr, &b.Right)
++	topLeft, topRight := borderCell(scr, &b.TopLeft), borderCell(scr, &b.TopRight)
++	bottomLeft, bottomRight := borderCell(scr, &b.BottomLeft), borderCell(scr, &b.BottomRight)
++
+ 	for y := area.Min.Y; y < area.Max.Y; y++ {
+ 		for x := area.Min.X; x < area.Max.X; x++ {
+ 			var cell *Cell
+ 			switch {
+ 			case y == area.Min.Y && x == area.Min.X:
+-				cell = borderCell(scr, &b.TopLeft)
++				cell = topLeft
+ 			case y == area.Min.Y && x == area.Max.X-1:
+-				cell = borderCell(scr, &b.TopRight)
++				cell = topRight
+ 			case y == area.Max.Y-1 && x == area.Min.X:
+-				cell = borderCell(scr, &b.BottomLeft)
++				cell = bottomLeft
+ 			case y == area.Max.Y-1 && x == area.Max.X-1:
+-				cell = borderCell(scr, &b.BottomRight)
++				cell = bottomRight
+ 			case y == area.Min.Y:
+-				cell = borderCell(scr, &b.Top)
++				cell = top
+ 			case y == area.Max.Y-1:
+-				cell = borderCell(scr, &b.Bottom)
++				cell = bottom
+ 			case x == area.Min.X:
+-				cell = borderCell(scr, &b.Left)
++				cell = left
+ 			case x == area.Max.X-1:
+-				cell = borderCell(scr, &b.Right)
++				cell = right
+ 			default:
+ 				continue
+ 			}
+@@ -224,8 +231,8 @@
+ func borderCell(scr Screen, b *Side) *Cell {
+ 	c := NewCell(scr.WidthMethod(), b.Content)
+ 	if c != nil {
+-		c.Style = b.Style
+-		c.Link = b.Link
++		c.Style = StyleRef(b.Style)
++		c.Link = LinkRef(b.Link)
+ 	}
+ 	return c
+ }
+--- a/buffer.go
++++ b/buffer.go
+@@ -164,24 +164,30 @@
+ 			pending.Reset()
+ 		}
+ 
+-		if c.Style.IsZero() && !pen.IsZero() {
++		// A cell shares its style and link records with every cell that has
++		// the same ones, so render from a copy: the pen is a value, and the
++		// sequence written is the one a cell's own style and link always were.
++		style := styleValue(c.Style)
++		cellLink := linkValue(c.Link)
++
++		if style.IsZero() && !pen.IsZero() {
+ 			_, _ = buf.WriteString(ansi.ResetStyle)
+ 			pen = Style{}
+ 		}
+-		if !c.Style.Equal(&pen) {
+-			seq := c.Style.Diff(&pen)
++		if !style.Equal(&pen) {
++			seq := style.Diff(&pen)
+ 			_, _ = buf.WriteString(seq)
+-			pen = c.Style
++			pen = style
+ 		}
+ 
+ 		// Write the URL escape sequence
+-		if c.Link != link && link.URL != "" {
++		if cellLink != link && link.URL != "" {
+ 			_, _ = buf.WriteString(ansi.ResetHyperlink())
+ 			link = Link{}
+ 		}
+-		if c.Link != link {
+-			_, _ = buf.WriteString(ansi.SetHyperlink(c.Link.URL, c.Link.Params))
+-			link = c.Link
++		if cellLink != link {
++			_, _ = buf.WriteString(ansi.SetHyperlink(cellLink.URL, cellLink.Params))
++			link = cellLink
+ 		}
+ 
+ 		_, _ = buf.WriteString(c.String())
+--- a/cell.go
++++ b/cell.go
+@@ -12,23 +12,62 @@
+ var EmptyCell = Cell{Content: " ", Width: 1}
+ 
+ // Cell represents a single cell in the terminal screen.
++//
++// A screen is a cell per column and row, so what a cell costs is what a screen
++// costs. Style and Link are therefore shared records rather than values: every
++// cell that has the same style points at the same one, and a nil pointer is
++// the zero style or link, which is what most cells have.
+ type Cell struct {
+ 	// Content is the [Cell]'s content, which consists of a single grapheme
+ 	// cluster. Most of the time, this will be a single rune as well, but it
+ 	// can also be a combination of runes that form a grapheme cluster.
+ 	Content string
+ 
+-	// The style of the cell. Nil style means no style. Zero value prints a
+-	// reset sequence.
+-	Style Style
++	// The style of the cell, shared with every cell that has the same one. A
++	// nil style means no style. Zero value prints a reset sequence.
++	Style *Style
+ 
+-	// Link is the hyperlink of the cell.
+-	Link Link
++	// Link is the hyperlink of the cell, shared like [Cell.Style].
++	Link *Link
+ 
+ 	// Width is the mono-spaced width of the grapheme cluster.
+ 	Width int
+ }
+ 
++// StyleRef returns the style record for a cell: nil for the zero style, so a
++// cell with no style stays the zero [Cell], and a fresh record otherwise.
++// Cells that have the same style can share one record.
++func StyleRef(style Style) *Style {
++	if style.IsZero() {
++		return nil
++	}
++	return &style
++}
++
++// LinkRef returns the link record for a cell, like [StyleRef].
++func LinkRef(link Link) *Link {
++	if link.IsZero() {
++		return nil
++	}
++	return &link
++}
++
++// styleValue is the style a cell holds, with a nil style as the zero one.
++func styleValue(style *Style) Style {
++	if style == nil {
++		return Style{}
++	}
++	return *style
++}
++
++// linkValue is the link a cell holds, with a nil link as the zero one.
++func linkValue(link *Link) Link {
++	if link == nil {
++		return Link{}
++	}
++	return *link
++}
++
+ // NewCell creates a new cell from the given string grapheme. It will only use
+ // the first grapheme in the string and ignore the rest. The width of the cell
+ // is determined using the given width method.
+@@ -56,13 +95,13 @@
+ 	return o != nil &&
+ 		c.Width == o.Width &&
+ 		c.Content == o.Content &&
+-		c.Style.Equal(&o.Style) &&
+-		c.Link.Equal(&o.Link)
++		c.Style.Equal(o.Style) &&
++		c.Link.Equal(o.Link)
+ }
+ 
+ // IsZero returns whether the cell is an empty cell.
+ func (c *Cell) IsZero() bool {
+-	return *c == Cell{}
++	return c.Width == 0 && c.Content == "" && c.Style.IsZero() && c.Link.IsZero()
+ }
+ 
+ // isWidePlaceholder reports whether the cell is the continuation column of a
+@@ -101,17 +140,27 @@
+ 
+ // String returns a string representation of the hyperlink.
+ func (h *Link) String() string {
++	if h == nil {
++		return ""
++	}
+ 	return h.URL
+ }
+ 
+-// Equal returns whether the hyperlink is equal to the other hyperlink.
++// Equal returns whether the hyperlink is equal to the other hyperlink. A nil
++// link is the zero link.
+ func (h *Link) Equal(o *Link) bool {
+-	return o != nil && *h == *o
++	if h == o {
++		return true
++	}
++	if h == nil || o == nil {
++		return h.IsZero() && o.IsZero()
++	}
++	return *h == *o
+ }
+ 
+-// IsZero returns whether the hyperlink is empty.
++// IsZero returns whether the hyperlink is empty. A nil link is empty.
+ func (h *Link) IsZero() bool {
+-	return *h == Link{}
++	return h == nil || *h == Link{}
+ }
+ 
+ // These are the available text attributes that can be combined to create
+@@ -175,8 +224,12 @@
+ 	Attrs          uint8
+ }
+ 
+-// Equal returns true if the style is equal to the other style.
++// Equal returns true if the style is equal to the other style. A nil style is
++// the zero style.
+ func (s *Style) Equal(o *Style) bool {
++	if s == nil || o == nil {
++		return s.IsZero() && o.IsZero()
++	}
+ 	return s.Attrs == o.Attrs &&
+ 		s.Underline == o.Underline &&
+ 		colorEqual(s.Fg, o.Fg) &&
+@@ -425,9 +478,9 @@
+ 	return cr == or && cg == og && cb == ob && ca == oa
+ }
+ 
+-// IsZero returns true if the style is empty.
++// IsZero returns true if the style is empty. A nil style is empty.
+ func (s *Style) IsZero() bool {
+-	return *s == Style{}
++	return s == nil || *s == Style{}
+ }
+ 
+ // ConvertStyle converts a style to respect the given color profile.
+--- a/screen/context.go
++++ b/screen/context.go
+@@ -336,6 +336,8 @@
+ 		return x, y
+ 	}
+ 
++	// The cells share one style and one link record for the whole draw.
++	stylep, linkp := uv.StyleRef(style), uv.LinkRef(link)
+ 	wm := scr.WidthMethod()
+ 	for grs.Next() {
+ 		gr := string(grs.Value())
+@@ -364,8 +366,8 @@
+ 		scr.SetCell(x, y, &uv.Cell{
+ 			Content: gr,
+ 			Width:   w,
+-			Style:   style,
+-			Link:    link,
++			Style:   stylep,
++			Link:    linkp,
+ 		})
+ 
+ 		x += w
+--- a/styled.go
++++ b/styled.go
+@@ -145,6 +145,48 @@
+ 	return n >= 2 && seq[n-1] == '\\' && seq[n-2] == ansi.ESC
+ }
+ 
++// cellAttrs shares the style and link records a parse hands out. A string
++// repeats the same few styles across its cells, so a parse allocates one
++// record per style rather than per cell, and a string with no escapes
++// allocates none at all.
++type cellAttrs struct {
++	styles map[Style]*Style
++	links  map[Link]*Link
++}
++
++// style returns the shared record for style, creating it the first time this
++// parse sees it.
++func (a *cellAttrs) style(style Style) *Style {
++	if style.IsZero() {
++		return nil
++	}
++	if a.styles == nil {
++		a.styles = make(map[Style]*Style)
++	}
++	if shared, ok := a.styles[style]; ok {
++		return shared
++	}
++	shared := StyleRef(style)
++	a.styles[style] = shared
++	return shared
++}
++
++// link returns the shared record for link, like [cellAttrs.style].
++func (a *cellAttrs) link(link Link) *Link {
++	if link.IsZero() {
++		return nil
++	}
++	if a.links == nil {
++		a.links = make(map[Link]*Link)
++	}
++	if shared, ok := a.links[link]; ok {
++		return shared
++	}
++	shared := LinkRef(link)
++	a.links[link] = shared
++	return shared
++}
++
+ func printString[T []byte | string](
+ 	s Screen,
+ 	m WidthMethod,
+@@ -174,6 +216,9 @@
+ 	var cell Cell
+ 	var style Style
+ 	var link Link
++	var attrs cellAttrs
++	var stylep *Style
++	var linkp *Link
+ 	var state byte
+ 	lastX, lastY := -1, -1 // last cell written, for folding in combining marks
+ 	var pending []byte     // pass-through sequences awaiting a cell to ride on
+@@ -205,8 +250,8 @@
+ 				cell.Content = string(pending)
+ 				pending = pending[:0]
+ 			}
+-			cell.Style = style
+-			cell.Link = link
++			cell.Style = stylep
++			cell.Link = linkp
+ 
+ 			if s == nil {
+ 				// Building lines: unwrapped, no bounds
+@@ -229,8 +274,8 @@
+ 					if truncate && tailc.Width > 0 && x+cell.Width > bounds.Max.X-tailc.Width {
+ 						// Truncate the string and append the tail if any.
+ 						cell = tailc
+-						cell.Style = style
+-						cell.Link = link
++						cell.Style = stylep
++						cell.Link = linkp
+ 						s.SetCell(x, y, &cell)
+ 						lastX, lastY = x, y
+ 						x += tailc.Width
+@@ -252,9 +297,11 @@
+ 			case ansi.HasCsiPrefix(seq) && p.Command() == 'm':
+ 				// SGR - Select Graphic Rendition
+ 				ReadStyle(p.Params(), &style)
++				stylep = attrs.style(style)
+ 			case ansi.HasOscPrefix(seq) && p.Command() == 8:
+ 				// Hyperlinks
+ 				ReadLink(p.Data(), &link)
++				linkp = attrs.link(link)
+ 			case ansi.Equal(seq, T("\n")):
+ 				if s == nil {
+ 					// When building lines, we need to ensure empty lines are represented.
+--- a/terminal_renderer.go
++++ b/terminal_renderer.go
+@@ -601,10 +601,10 @@
+ 
+ 	// Downsample pen when we don't have a [colorprofile.TrueColor],
+ 	// otherwise, use the original style.
+-	newStyle := ConvertStyle(cell.Style, s.profile)
+-	newLink := ConvertLink(cell.Link, s.profile)
+-	oldStyle := ConvertStyle(s.cur.Style, s.profile)
+-	oldLink := ConvertLink(s.cur.Link, s.profile)
++	newStyle := ConvertStyle(styleValue(cell.Style), s.profile)
++	newLink := ConvertLink(linkValue(cell.Link), s.profile)
++	oldStyle := ConvertStyle(styleValue(s.cur.Style), s.profile)
++	oldLink := ConvertLink(linkValue(s.cur.Link), s.profile)
+ 
+ 	if !newStyle.Equal(&oldStyle) {
+ 		seq := newStyle.Diff(&oldStyle)
+@@ -633,8 +633,9 @@
+ 	// NOTE: This assumes that the terminal supports bce terminfo capability
+ 	// which all xterm-compatible terminals and terminals that use xterm*
+ 	// terminal types do.
+-	return c.Style.Underline == UnderlineNone &&
+-		c.Style.Attrs&^(AttrBold|AttrFaint|AttrItalic|AttrBlink|AttrRapidBlink) == 0 &&
++	style := styleValue(c.Style)
++	return style.Underline == UnderlineNone &&
++		style.Attrs&^(AttrBold|AttrFaint|AttrItalic|AttrBlink|AttrRapidBlink) == 0 &&
+ 		c.Link.IsZero()
+ }
+ 
+@@ -1713,7 +1714,7 @@
+ 					cell := newbuf.CellAt(fx+i, ty)
+ 					if cell != nil && cell.Width > 0 {
+ 						i += cell.Width - 1
+-						if !cell.Style.Equal(&s.cur.Style) || !cell.Link.Equal(&s.cur.Link) {
++						if !cell.Style.Equal(s.cur.Style) || !cell.Link.Equal(s.cur.Link) {
+ 							overwrite = false
+ 							break
+ 						}

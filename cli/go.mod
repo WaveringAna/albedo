@@ -50,9 +50,10 @@ require (
 	golang.org/x/sync v0.23.0 // indirect
 )
 
-replace github.com/charmbracelet/ultraviolet => tangled.org/okami.mom/ultraviolet v0.0.0-20261007174847-7bfbaab9c98a
+replace github.com/charmbracelet/ultraviolet => ./third_party/ultraviolet
 
 replace charm.land/glamour/v2 => tangled.org/okami.mom/glamour.git/v2 v2.0.0-20261013013552-052c391d9e1d
 
 // demand-driven painting, see third_party/bubbletea.patch
 replace charm.land/bubbletea/v2 => ./third_party/bubbletea
+
