@@ -2,6 +2,7 @@
 
 import albedo/daemon/server
 import albedo/daemon/store
+import albedo/harness/extensions/python/cell_storage
 import gleam/dict
 import gleam/dynamic/decode
 import gleam/io
@@ -242,21 +243,13 @@ fn projection(connection: sqlight.Connection) -> Result(json.Json, String) {
       use _ <- result.try(
         columns(connection, "cells", ["id", "session", "source", "payload"]),
       )
-      let #(join, trace) = case list.contains(tables, "cell_traces") {
-        True -> #(
-          "LEFT JOIN cell_traces t ON t.id=c.id",
-          "COALESCE(length(t.payload),0)",
-        )
-        False -> #("", "0")
-      }
       add_sizes(
         connection,
         sessions,
-        "SELECT c.session,COALESCE(sum(length(c.source)+COALESCE(length(c.payload),0)+"
-          <> trace
-          <> "),0) FROM cells c "
-          <> join
-          <> " GROUP BY c.session",
+        cell_storage.bytes_by_session_query(traces: list.contains(
+          tables,
+          "cell_traces",
+        )),
       )
     }
   })

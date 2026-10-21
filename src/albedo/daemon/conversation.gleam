@@ -15,6 +15,7 @@ import albedo/daemon/tool_results
 import albedo/daemon/transcript
 import albedo/daemon/usage
 import albedo/harness/cache_fade
+import albedo/harness/extensions/python/cell_storage
 import albedo/harness/extensions/python/cells as journal
 import albedo/openai_api/types
 import gleam/bool
@@ -1069,8 +1070,6 @@ fn delete_in(
     True -> journal.session_hashes(db, id)
     False -> Ok([])
   })
-  // Cell rows stay here: deleting them feeds the image reference count
-  // released below, in this transaction.
   use _ <- result.try(
     list.try_each(
       [
@@ -1084,29 +1083,24 @@ fn delete_in(
         "session_extensions",
         "session_selection",
         "session_family",
-        "cells",
       ],
       fn(table) {
         case list.contains(tables, table) {
           False -> Ok(Nil)
-          True -> {
-            use _ <- result.try(case table {
-              "cells" ->
-                store.run(
-                  db,
-                  "DELETE FROM cell_traces WHERE id IN (SELECT id FROM cells WHERE session=?)",
-                  [sqlight.text(id)],
-                )
-              _ -> Ok(Nil)
-            })
+          True ->
             store.run(db, "DELETE FROM " <> table <> " WHERE session=?", [
               sqlight.text(id),
             ])
-          }
         }
       },
     ),
   )
+  // Cell rows stay until here: deleting them feeds the image reference count
+  // released below, in this transaction.
+  use _ <- result.try(case list.contains(tables, "cells") {
+    True -> cell_storage.delete_session(db, id)
+    False -> Ok(Nil)
+  })
   use _ <- result.try(list.try_each(cleaners, fn(clean) { clean(db, id) }))
   use _ <- result.try(
     store.run(db, "DELETE FROM sessions WHERE id=?", [sqlight.text(id)]),

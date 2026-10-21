@@ -2,6 +2,7 @@
 //// inspection runs in the HTTP request process after the projection returns.
 
 import albedo/daemon/store
+import albedo/harness/extensions/python/cell_storage
 import gleam/dynamic/decode
 import gleam/list
 import gleam/option.{type Option}
@@ -84,20 +85,11 @@ fn projection(db: sqlight.Connection) -> Result(Database, String) {
     "COALESCE((SELECT SUM(LENGTH(payload)) FROM transcript WHERE session=s.id),0)"
   let cells = case list.contains(tables, "cells") {
     False -> "0"
-    True -> {
-      let #(join, trace) = case list.contains(tables, "cell_traces") {
-        True -> #(
-          "LEFT JOIN cell_traces t ON t.id=c.id",
-          "COALESCE(LENGTH(t.payload),0)",
-        )
-        False -> #("", "0")
-      }
-      "COALESCE((SELECT SUM(LENGTH(c.source)+COALESCE(LENGTH(c.payload),0)+"
-      <> trace
-      <> ") FROM cells c "
-      <> join
-      <> " WHERE c.session=s.id),0)"
-    }
+    True ->
+      cell_storage.bytes_of_session(
+        traces: list.contains(tables, "cell_traces"),
+        session: "s.id",
+      )
   }
   let fork_traces = case list.contains(tables, "transcript_traces") {
     True ->

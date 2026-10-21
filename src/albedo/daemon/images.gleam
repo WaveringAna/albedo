@@ -7,6 +7,7 @@
 
 import albedo/daemon/image_payloads
 import albedo/daemon/store
+import albedo/harness/extensions/python/cell_storage
 import albedo/openai_api/types
 import gleam/bool
 import gleam/dynamic/decode
@@ -123,12 +124,6 @@ pub fn release(
   candidates: List(String),
 ) -> Result(Nil, String) {
   use <- bool.guard(candidates == [], Ok(Nil))
-  use tables <- result.try(store.rows(
-    db,
-    "SELECT name FROM sqlite_master WHERE type='table' AND name='cells'",
-    [],
-    decode.field(0, decode.string, decode.success),
-  ))
   let payload = decode.field(0, decode.bit_array, decode.success)
   use rows <- result.try(store.rows(
     db,
@@ -136,16 +131,7 @@ pub fn release(
     [],
     payload,
   ))
-  use cells <- result.try(case tables {
-    [] -> Ok([])
-    _ ->
-      store.rows(
-        db,
-        "SELECT payload FROM cells WHERE payload IS NOT NULL AND instr(payload,CAST('stored_data' AS BLOB))>0",
-        [],
-        payload,
-      )
-  })
+  use cells <- result.try(cell_storage.image_payloads(db))
   let named = referenced(list.append(rows, cells), candidates)
   candidates
   |> list.filter(fn(hash) { !list.contains(named, hash) })
@@ -231,23 +217,11 @@ fn elide_rows(
 
 /// Remove image references from the cell when its tool output is evicted.
 fn elide_cell(db: sqlight.Connection, id: String) -> Result(Nil, String) {
-  let decoder = {
-    use cell_id <- decode.field(0, decode.string)
-    use payload <- decode.field(1, decode.bit_array)
-    decode.success(#(cell_id, payload))
-  }
-  case
-    sqlight.query(
-      "SELECT id, payload FROM cells WHERE (id=? OR id LIKE ?) AND payload IS NOT NULL",
-      db,
-      [sqlight.text(id), sqlight.text(id <> "-%")],
-      decoder,
-    )
-  {
+  case cell_storage.payloads_of_call(db, id) {
     Ok(rows) ->
       list.try_each(rows, fn(row) {
         case elide_cell_images(row.1) {
-          Ok(elided) -> write(db, "cells", "id", sqlight.text(row.0), elided)
+          Ok(elided) -> cell_storage.write_payload(db, row.0, elided)
           Error(_) -> Ok(Nil)
         }
       })
