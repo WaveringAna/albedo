@@ -9,6 +9,7 @@ import albedo/harness/runtime
 import albedo/harness/runtime/state as runtime_state
 import albedo/harness/ssh
 import albedo/text_scalars
+import gleam/erlang/process
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -29,6 +30,53 @@ pub type KernelObservation {
     live_job_count: Option(Int),
     running_jobs: Option(List(python.Job)),
   )
+}
+
+/// The stream's view of those facts: what a watching client draws.
+pub fn kernel_facts(observed: KernelObservation) -> view.KernelFacts {
+  view.KernelFacts(
+    instance_id: observed.instance_id,
+    build: observed.build,
+    state: observed.state,
+    stage: observed.stage,
+    stale: observed.stale,
+    live_job_count: observed.live_job_count,
+    running_jobs: observed.running_jobs,
+  )
+}
+
+/// The kernel's port owner sends `state.kernel_changed` when its job facts
+/// change, so a watching client learns of a job starting or ending without a
+/// status read. A stale notification from a kernel this session dropped
+/// re-observes whatever it holds now and publishes nothing when that is
+/// unchanged.
+pub fn watch_kernel(
+  state: session_state.State(message),
+) -> session_state.State(message) {
+  case state.kernel {
+    None -> state
+    Some(kernel) -> {
+      python.watch(kernel.kernel, fn() {
+        process.send(state.self, state.kernel_changed)
+      })
+      state
+    }
+  }
+}
+
+/// A kernel the session will not observe again stops publishing to it.
+pub fn forget(kernel: runtime.Session) -> Nil {
+  python.unwatch(kernel.kernel)
+}
+
+/// Publish the kernel's facts now, if they differ from what the stream carried.
+pub fn announce_kernel(
+  state: session_state.State(message),
+) -> session_state.State(message) {
+  case observe_kernel(state) {
+    Error(_) -> state
+    Ok(observed) -> session_state.announce_kernel(state, kernel_facts(observed))
+  }
 }
 
 /// Capture the live kernel's facts without starting or replacing it.
@@ -289,7 +337,10 @@ pub fn ready(
     Some(kernel) ->
       case runtime.alive(kernel) && !runtime_state.upgradable(kernel) {
         True -> #(state, Some(kernel))
-        False -> #(session_state.State(..state, kernel: None), None)
+        False -> {
+          forget(kernel)
+          #(session_state.State(..state, kernel: None), None)
+        }
       }
     None -> #(state, None)
   }
@@ -316,7 +367,18 @@ pub fn adopt(
   state: session_state.State(message),
   kernel: runtime.Session,
 ) -> session_state.State(message) {
-  let state = session_state.State(..state, released: None)
+  // Watching and publishing are one step: a client that kept the old kernel's
+  // job count must not wait for the next job to start to see it end.
+  session_state.State(..state, released: None)
+  |> adopted_origin(kernel)
+  |> watch_kernel
+  |> announce_kernel
+}
+
+fn adopted_origin(
+  state: session_state.State(message),
+  kernel: runtime.Session,
+) -> session_state.State(message) {
   case runtime.origin(kernel) {
     runtime_state.Resumed -> resumed(state, kernel)
     runtime_state.Upgraded(carried) -> upgraded(state, kernel, carried)
@@ -528,7 +590,10 @@ pub fn upgrade(
 ) -> session_state.State(message) {
   case report.session {
     Some(kernel) -> adopt(state, kernel)
-    None -> session_state.State(..state, kernel: None)
+    None -> {
+      let _ = option.map(state.kernel, forget)
+      session_state.State(..state, kernel: None) |> announce_kernel
+    }
   }
 }
 

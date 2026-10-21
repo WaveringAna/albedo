@@ -33,11 +33,15 @@ func (c *ChatClient) History(ctx context.Context, before int64, rows int) (*Hist
 	if len(wire.Items) > 0 {
 		page.Before = wire.Items[0].Position
 	}
-	wire.Items, err = hydrateHistory(ctx, c.conn, c.agentID, wire.Items)
+	entries, err := decodeHistoryEntries(wire.Items)
 	if err != nil {
 		return nil, err
 	}
-	page.Events, err = historyEvents(wire.Items)
+	entries, err = hydrateHistory(ctx, c.conn, c.agentID, entries)
+	if err != nil {
+		return nil, err
+	}
+	page.Events, err = historyEvents(entries)
 	return page, err
 }
 
@@ -57,16 +61,63 @@ func readHistory(ctx context.Context, conn *Connection, session string, params p
 	return wire, err
 }
 
-func historyEvents(entries []protocol.HistoryEntry) ([]StreamEvent, error) {
+// historyPart is one decoded content part. Decoding once lets reference
+// resolution, rewriting and projection share a single walk of the bytes.
+type historyPart struct {
+	Kind      string                    `json:"kind"`
+	Text      string                    `json:"text"`
+	Field     string                    `json:"field"`
+	Value     json.RawMessage           `json:"value"`
+	Image     *protocol.ImageMetadata   `json:"image"`
+	Trace     json.RawMessage           `json:"trace"`
+	Reference protocol.ContentReference `json:"reference"`
+}
+
+// historyEntry is a history entry whose content parts are decoded, so the raw
+// encoding of a large field is never held beside the value it produced.
+type historyEntry struct {
+	wire  protocol.HistoryEntry
+	parts []historyPart
+}
+
+func decodeHistoryEntries(entries []protocol.HistoryEntry) ([]historyEntry, error) {
+	decoded := make([]historyEntry, len(entries))
+	for i, entry := range entries {
+		parts, err := decodeHistoryParts(entry.Content)
+		if err != nil {
+			return nil, err
+		}
+		entry.Content = nil
+		decoded[i] = historyEntry{wire: entry, parts: parts}
+	}
+	return decoded, nil
+}
+
+// decodeHistoryParts keeps a nil content list nil: an entry without content is
+// a protocol error, while an empty one carries no parts yet is valid.
+func decodeHistoryParts(raw []json.RawMessage) ([]historyPart, error) {
+	if raw == nil {
+		return nil, nil
+	}
+	parts := make([]historyPart, len(raw))
+	for i, value := range raw {
+		if err := json.Unmarshal(value, &parts[i]); err != nil {
+			return nil, err
+		}
+	}
+	return parts, nil
+}
+
+func historyEvents(entries []historyEntry) ([]StreamEvent, error) {
 	events := []StreamEvent{}
-	arguments := map[string][]json.RawMessage{}
+	arguments := map[string][]historyPart{}
 	for _, entry := range entries {
-		if entry.Kind == "tool_call" && entry.Tool != nil {
-			arguments[entry.Tool.ToolCallID] = entry.Content
+		if entry.wire.Kind == "tool_call" && entry.wire.Tool != nil {
+			arguments[entry.wire.Tool.ToolCallID] = entry.parts
 			continue
 		}
-		if entry.Kind == "tool_result" && entry.Tool != nil {
-			entry.Content = append(arguments[entry.Tool.ToolCallID], entry.Content...)
+		if entry.wire.Kind == "tool_result" && entry.wire.Tool != nil {
+			entry.parts = slices.Concat(arguments[entry.wire.Tool.ToolCallID], entry.parts)
 		}
 		converted, err := historyEntryEvents(entry)
 		if err != nil {
@@ -79,28 +130,18 @@ func historyEvents(entries []protocol.HistoryEntry) ([]StreamEvent, error) {
 	}
 	return events, nil
 }
-func historyEntryEvents(entry protocol.HistoryEntry) ([]StreamEvent, error) {
-	if entry.Kind == "continuation" {
+
+func historyEntryEvents(entry historyEntry) ([]StreamEvent, error) {
+	wire := entry.wire
+	if wire.Kind == "continuation" {
 		return nil, nil
 	}
-	if entry.ID == "" || entry.Position < 1 || entry.Content == nil {
+	if wire.ID == "" || wire.Position < 1 || entry.parts == nil {
 		return nil, fieldError("history entry")
 	}
-	event := StreamEvent{EntryID: entry.ID, Position: entry.Position, TurnType: value(entry.TurnType), Timestamp: timestampMilliseconds(value(entry.CreatedAt)), TurnID: value(entry.TurnID), OperationID: value(entry.InputID), Replayed: true}
+	event := StreamEvent{EntryID: wire.ID, Position: wire.Position, TurnType: value(wire.TurnType), Timestamp: timestampMilliseconds(value(wire.CreatedAt)), TurnID: value(wire.TurnID), OperationID: value(wire.InputID), Replayed: true}
 	var text strings.Builder
-	for _, raw := range entry.Content {
-		var part struct {
-			Kind      string                    `json:"kind"`
-			Text      string                    `json:"text"`
-			Field     string                    `json:"field"`
-			Value     json.RawMessage           `json:"value"`
-			Image     *protocol.ImageMetadata   `json:"image"`
-			Trace     json.RawMessage           `json:"trace"`
-			Reference protocol.ContentReference `json:"reference"`
-		}
-		if err := json.Unmarshal(raw, &part); err != nil {
-			return nil, err
-		}
+	for _, part := range entry.parts {
 		switch part.Kind {
 		case "text":
 			text.WriteString(part.Text)
@@ -142,12 +183,12 @@ func historyEntryEvents(entry protocol.HistoryEntry) ([]StreamEvent, error) {
 		}
 	}
 	event.Text = text.String()
-	if entry.Mail != nil {
-		event.Speaker = entry.Mail.SenderLabel
-		event.MailKind = entry.Mail.Kind
-		event.SenderSessionID = value(entry.Mail.SenderSessionID)
+	if wire.Mail != nil {
+		event.Speaker = wire.Mail.SenderLabel
+		event.MailKind = wire.Mail.Kind
+		event.SenderSessionID = value(wire.Mail.SenderSessionID)
 	}
-	switch entry.Kind {
+	switch wire.Kind {
 	case "user":
 		event.Type = EventUser
 		switch event.TurnType {
@@ -168,59 +209,93 @@ func historyEntryEvents(entry protocol.HistoryEntry) ([]StreamEvent, error) {
 		event.Type = EventMessage
 	case "thinking":
 		event.Type = EventThinking
-		if entry.ThinkingDurationMs != nil {
-			event.ElapsedMs = *entry.ThinkingDurationMs
+		if wire.ThinkingDurationMs != nil {
+			event.ElapsedMs = *wire.ThinkingDurationMs
 			event.ElapsedObserved = true
 		}
 	case "tool_call":
 		return nil, nil
 	case "tool_result":
 		event.Type = EventTool
-		if entry.Tool == nil {
+		if wire.Tool == nil {
 			return nil, fieldError("history tool")
 		}
-		event.ToolName = entry.Tool.Name
-		event.ProgressCallID = value(entry.Tool.ProgressCallID)
+		event.ToolName = wire.Tool.Name
+		event.ProgressCallID = value(wire.Tool.ProgressCallID)
 		if event.ToolResult == "" {
 			event.ToolResult = event.Text
 		}
 		event.Text = ""
 	case "note", "image_fit":
 		event.Type = EventNote
-	case "continuation":
-		return nil, nil
 	case "compaction":
 		event.Type = EventCompacted
 		event.Summary = event.Text
 	default:
 		return nil, fieldError("history entry kind")
 	}
-	return []StreamEvent{event, {Type: EventCommitted, Seq: entry.Position, Replayed: true}}, nil
+	return []StreamEvent{event, {Type: EventCommitted, Seq: wire.Position, Replayed: true}}, nil
 }
 
 // ReadEntryContent reconstructs complete stored fields with verified byte offsets.
 func ReadEntryContent(ctx context.Context, conn *Connection, session, entry string) (map[string][]byte, error) {
-	fields := map[string][]byte{}
-	complete := map[string]bool{}
-	params := protocol.GetHistoryContentParams{}
+	fields, err := readEntryContents(ctx, conn, session, []string{entry})
+	if err != nil {
+		return nil, err
+	}
+	return fields[entry], nil
+}
+
+// The batched content route names at most 200 entries of at most 128
+// characters each; a history page never comes close.
+const (
+	contentBatchEntries = 200
+	contentEntryIDBytes = 128
+)
+
+// readEntryContents reconstructs the stored text fields of several entries,
+// walking the batched content route until every field it serves is complete.
+func readEntryContents(ctx context.Context, conn *Connection, session string, entries []string) (map[string]map[string][]byte, error) {
+	if len(entries) > contentBatchEntries {
+		return nil, fieldError("content entries")
+	}
+	requested := make(map[string]bool, len(entries))
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry == "" || len(entry) > contentEntryIDBytes {
+			return nil, fieldError("content entries")
+		}
+		if requested[entry] {
+			continue
+		}
+		requested[entry] = true
+		names = append(names, entry)
+	}
+	params := protocol.GetHistoryContentBatchParams{Entries: strings.Join(names, ",")}
+	fields := map[string]map[string][]byte{}
+	complete := map[string]map[string]bool{}
 	total := 0
-	err := walkPages(func(next *string) (protocol.EntryContentPage, *string, error) {
+	err := walkPages(func(next *string) (protocol.EntryContentBatch, *string, error) {
 		params.Next = next
-		var page protocol.EntryContentPage
+		var page protocol.EntryContentBatch
 		pageErr := executeRead(ctx, conn, operation{Name: "read history content", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
-			return protocol.NewGetHistoryContentRequest(base, session, entry, &params)
+			return protocol.NewGetHistoryContentBatchRequest(base, session, &params)
 		}, Policy: readRecovery}, func(data []byte) error { return decodeRequired(data, &page) })
 		return page, page.Next, pageErr
-	}, func(page protocol.EntryContentPage) error {
-		if page.EntryID != entry || page.Parts == nil {
-			return fieldError("history content identity")
+	}, func(page protocol.EntryContentBatch) error {
+		if page.Parts == nil {
+			return fieldError("content parts")
 		}
 		for _, part := range page.Parts {
-			if part.Field == "" || complete[part.Field] || part.OffsetBytes != int64(len(fields[part.Field])) {
-				return fieldError("content byte offset")
+			if part.Field == "" || part.Encoding != "utf8" || !requested[part.EntryID] {
+				return fieldError("content part")
 			}
-			if part.Encoding != "utf8" {
-				return fieldError("content encoding")
+			if fields[part.EntryID] == nil {
+				fields[part.EntryID] = map[string][]byte{}
+				complete[part.EntryID] = map[string]bool{}
+			}
+			if complete[part.EntryID][part.Field] || part.OffsetBytes != int64(len(fields[part.EntryID][part.Field])) {
+				return fieldError("content byte offset")
 			}
 			data := []byte(part.Text)
 			if !utf8.Valid(data) {
@@ -230,98 +305,98 @@ func ReadEntryContent(ctx context.Context, conn *Connection, session, entry stri
 			if total > 50*1024*1024 {
 				return errors.New("entry content exceeds the client display limit")
 			}
-			fields[part.Field] = append(fields[part.Field], data...)
-			complete[part.Field] = part.Complete
+			fields[part.EntryID][part.Field] = append(fields[part.EntryID][part.Field], data...)
+			complete[part.EntryID][part.Field] = part.Complete
 		}
 		return nil
 	}, "repeated content page")
 	if err != nil {
 		return nil, err
 	}
-	for name := range fields {
-		if !complete[name] {
-			return nil, fieldError("incomplete content field")
+	for entry := range complete {
+		for _, done := range complete[entry] {
+			if !done {
+				return nil, fieldError("incomplete content field")
+			}
 		}
 	}
 	return fields, nil
 }
 
-func hydrateHistory(ctx context.Context, conn *Connection, session string, entries []protocol.HistoryEntry) ([]protocol.HistoryEntry, error) {
-	result := entries
-	cloned := false
-	for i, entry := range entries {
-		if entry.ContentComplete {
-			continue
-		}
-		needsContent := false
-		for _, raw := range entry.Content {
-			var part struct {
-				Kind      string                    `json:"kind"`
-				Reference protocol.ContentReference `json:"reference"`
-			}
-			if err := json.Unmarshal(raw, &part); err != nil {
-				return nil, err
-			}
+// hydrateHistory resolves every content reference of a page in one walk of the
+// batch content route and expands it in place of the reference.
+func hydrateHistory(ctx context.Context, conn *Connection, session string, entries []historyEntry) ([]historyEntry, error) {
+	needed := []string{}
+	references := map[string][]string{}
+	for _, entry := range entries {
+		names := []string{}
+		for _, part := range entry.parts {
 			if part.Kind == "reference" && !strings.HasPrefix(part.Reference.Field, "image-") {
-				needsContent = true
+				names = append(names, part.Reference.Field)
 			}
 		}
-		if !needsContent {
+		if len(names) == 0 {
 			continue
 		}
-		fields, err := ReadEntryContent(ctx, conn, session, entry.ID)
-		if err != nil {
-			return nil, err
+		needed = append(needed, entry.wire.ID)
+		references[entry.wire.ID] = names
+	}
+	if len(needed) == 0 {
+		return entries, nil
+	}
+	content, err := readEntryContents(ctx, conn, session, needed)
+	if err != nil {
+		return nil, err
+	}
+	result := slices.Clone(entries)
+	for i, entry := range result {
+		names, referenced := references[entry.wire.ID]
+		if !referenced {
+			continue
 		}
-		if !cloned {
-			result = slices.Clone(entries)
-			cloned = true
-		}
-		result[i].Content = nil
-		for _, raw := range entry.Content {
-			var part struct {
-				Kind      string                    `json:"kind"`
-				Reference protocol.ContentReference `json:"reference"`
-			}
-			_ = json.Unmarshal(raw, &part)
-			if part.Kind != "reference" {
-				result[i].Content = append(result[i].Content, raw)
-				continue
-			}
-			field := part.Reference.Field
-			if strings.HasPrefix(field, "image-") {
-				result[i].Content = append(result[i].Content, raw)
-				continue
-			}
-			content, ok := fields[field]
-			if !ok || int64(len(content)) != part.Reference.Bytes {
+		fields := content[entry.wire.ID]
+		for _, name := range names {
+			if _, served := fields[name]; !served {
 				return nil, fieldError("referenced content size")
 			}
-			var expanded any
-			switch field {
-			case "text":
-				expanded = map[string]any{"kind": "text", "text": string(content)}
-			case "arguments", "result":
-				if !json.Valid(content) {
-					return nil, fieldError("referenced JSON")
-				}
-				expanded = map[string]any{"kind": "json", "field": field, "value": json.RawMessage(content)}
-			case "trace":
-				expanded = map[string]any{"kind": "trace", "trace": json.RawMessage(content)}
-			default:
-				if !json.Valid(content) {
-					return nil, fieldError("referenced JSON")
-				}
-				expanded = map[string]any{"kind": "json", "field": field, "value": json.RawMessage(content)}
+		}
+		parts := slices.Clone(entry.parts)
+		for j, part := range parts {
+			if part.Kind != "reference" || strings.HasPrefix(part.Reference.Field, "image-") {
+				continue
 			}
-			encoded, err := json.Marshal(expanded)
+			expanded, err := expandReference(part, fields)
 			if err != nil {
 				return nil, err
 			}
-			result[i].Content = append(result[i].Content, encoded)
+			parts[j] = expanded
 		}
+		result[i].parts = parts
 	}
 	return result, nil
+}
+
+// expandReference turns a content reference into the part it stands for, with
+// the stored bytes as the value rather than another JSON encoding of them.
+func expandReference(part historyPart, fields map[string][]byte) (historyPart, error) {
+	content, ok := fields[part.Reference.Field]
+	if !ok || int64(len(content)) != part.Reference.Bytes {
+		return historyPart{}, fieldError("referenced content size")
+	}
+	switch part.Reference.Field {
+	case "text":
+		return historyPart{Kind: "text", Text: string(content)}, nil
+	case "trace":
+		if !json.Valid(content) {
+			return historyPart{}, fieldError("referenced JSON")
+		}
+		return historyPart{Kind: "trace", Trace: content}, nil
+	default:
+		if !json.Valid(content) {
+			return historyPart{}, fieldError("referenced JSON")
+		}
+		return historyPart{Kind: "json", Field: part.Reference.Field, Value: content}, nil
+	}
 }
 
 // Live summaries read the same durable content resources as history pages.
@@ -329,14 +404,6 @@ type eventContentReader struct {
 	ctx     context.Context
 	conn    *Connection
 	session string
-}
-
-func (reader *eventContentReader) hydrateEntry(entry protocol.HistoryEntry) (protocol.HistoryEntry, error) {
-	entries, err := hydrateHistory(reader.ctx, reader.conn, reader.session, []protocol.HistoryEntry{entry})
-	if err != nil {
-		return protocol.HistoryEntry{}, err
-	}
-	return entries[0], nil
 }
 
 func (reader *eventContentReader) hydrateTool(data *toolEventData) error {

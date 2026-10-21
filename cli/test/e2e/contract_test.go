@@ -107,22 +107,29 @@ func (contract *wireContract) validate(schema map[string]any, value any) error {
 
 func (contract *wireContract) responseSchema(request *http.Request, response *http.Response) (map[string]any, error) {
 	paths := contract.document["paths"].(map[string]any)
+	// A literal segment beats a parameter, as it does in routing, so a path
+	// like /history/content is not read as /history/{entry_id}.
 	var operation map[string]any
+	literals := -1
 	for path, definition := range paths {
 		expected, actual := strings.Split(path, "/"), strings.Split(request.URL.Path, "/")
 		if len(expected) != len(actual) {
 			continue
 		}
-		matches := true
+		matched, specific := true, 0
 		for index, segment := range expected {
-			if !strings.HasPrefix(segment, "{") && segment != actual[index] {
-				matches = false
+			if strings.HasPrefix(segment, "{") {
+				continue
+			}
+			if segment != actual[index] {
+				matched = false
 				break
 			}
+			specific++
 		}
-		if matches {
+		if matched && specific > literals {
 			operation, _ = definition.(map[string]any)[strings.ToLower(request.Method)].(map[string]any)
-			break
+			literals = specific
 		}
 	}
 	if operation == nil {

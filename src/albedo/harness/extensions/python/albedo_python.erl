@@ -21,6 +21,7 @@
 -export([start/1, execute/4, interrupt/1, stop/1, detach/1, events/1, alive/1, os_pid/1, job_count/1, stop_job/2, local_paths/0, paths/0, grace/0, rebind/2, clean_environment/0]).
 -export([stale/1, mark_stale/2]).
 -export([observation/1, stop_recorded/2, stop_jobs/1, job_list/1, job_read/4]).
+-export([watch/2, unwatch/1]).
 
 -define(PROTOCOL, 1).
 -define(STARTUP_TIMEOUT, 10000). %% bridge, kernel, and plugins, end to end
@@ -351,6 +352,21 @@ stop_recorded({record, _Session, _Kernel, _Token, RunDir, _Cwd, _Modules, _OutSe
 %% its namespace and jobs, and a later start in attach mode picks it up again.
 detach(Pid) -> _ = call(Pid, detach), nil.
 
+%% A session's actor registers a closure to run when this kernel's job facts
+%% change. The port owner sees every job frame, so a watching client learns a
+%% job started or ended here, without the daemon observing the kernel on a
+%% timer. The closure notifies; it never reads the kernel back.
+%% A watcher of another shape is inert rather than fatal: the registry only
+%% calls a closure of the arity it was asked for.
+watch(Pid, Watcher) ->
+    albedo_registry:register(albedo_kernel_watch, Pid, Watcher),
+    nil.
+
+%% A kernel handle the session dropped: nothing will publish its facts again.
+unwatch(Pid) ->
+    albedo_registry:forget(albedo_kernel_watch, Pid),
+    nil.
+
 alive(Pid) -> is_process_alive(Pid).
 
 %% The native reason the kernel should be swapped, or none while current.
@@ -516,8 +532,8 @@ loop(S = #{port := Port, active := Active}) ->
             end;
         {Port, {data, Data}} when Port =/= none, byte_size(Data) =< 8388608 ->
             case wire(Data, S) of
-                {frame, Frame, S1} -> loop(handle_frame(Frame, S1));
-                {hello, Hello, S1} -> loop(hello(Hello, S1));
+                {frame, Frame, S1} -> loop(notice(S1, handle_frame(Frame, S1)));
+                {hello, Hello, S1} -> loop(notice(S1, hello(Hello, S1)));
                 {refused, Reason, S1} -> log({kernel_refused_attach, Reason}), abandon(S1);
                 {skip, S1} -> loop(S1);
                 invalid -> abandon(S)
@@ -771,6 +787,29 @@ handle_frame(#{<<"type">> := <<"jobs">>, <<"live">> := Live} = Message, S)
 handle_frame(#{<<"type">> := <<"trace">>} = Message, S) ->
     journal(Message, S);
 handle_frame(Message, S) -> track(Message, S).
+
+%% A watching session publishes the kernel's facts, so it is told here rather
+%% than observing on a timer. Comparing the facts keeps a frame that changed
+%% nothing about them (a trace, a job's command echoing back) from waking it.
+notice(Before, After) ->
+    case facts(Before) =:= facts(After) of
+        true -> After;
+        false ->
+            _ = albedo_registry:call(albedo_kernel_watch, self(), 0, [], ok, ok),
+            After
+    end.
+
+%% The kernel's state and the jobs it runs, as cheaply as they compare: the
+%% same facts the observation reply and the session stream carry.
+facts(S) ->
+    {maps:get(port, S, none) =/= none,
+     maps:get(kernel_bundle, S, none),
+     maps:get(stale, S, none),
+     maps:get(groups, S),
+     maps:get(external, S, 0),
+     maps:get(awaited_external, S, 0),
+     maps:get(external_jobs, S, []),
+     maps:get(cells, S, 0)}.
 
 host_reply(Id, Reply, S = #{calls := Calls, out := Out}) ->
     Seq = Out + 1,

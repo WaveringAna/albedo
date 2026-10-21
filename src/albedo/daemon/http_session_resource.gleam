@@ -1,6 +1,7 @@
 //// A complete session resource, captured once by the session owner.
 
 import albedo/daemon/conversation
+import albedo/daemon/events
 import albedo/daemon/http_active_output
 import albedo/daemon/http_api
 import albedo/daemon/http_configuration
@@ -11,7 +12,6 @@ import albedo/daemon/session
 import albedo/daemon/session_submission
 import albedo/daemon/store
 import albedo/harness/extension/selection
-import albedo/harness/page
 import albedo/harness/runtime
 import gleam/dict
 import gleam/int
@@ -112,31 +112,19 @@ fn composition_value(observed: runtime.CompositionObservation) -> json.Json {
   ])
 }
 
-fn glance_row(row: page.Row) -> json.Json {
+/// The live facts alone: what a watching client's footer draws, without
+/// configuration or history.
+pub fn status(
+  read: session.StatusRead,
+  glances: List(selection.Glance),
+) -> json.Json {
   json.object([
-    #("id", json.string(row.id)),
-    #("text", json.string(http_api.scalar_prefix(row.text, 256))),
-    #("badge", json.string(row.badge)),
-    #("detail", json.string(http_api.scalar_prefix(row.detail, 256))),
-    #("resource", json.null()),
-    #(
-      "tone",
-      json.string(case row.tone {
-        page.Plain -> "plain"
-        page.Active -> "active"
-        page.Warning -> "warning"
-        page.Muted -> "muted"
-      }),
-    ),
-  ])
-}
-
-fn glance_value(glance: selection.Glance) -> json.Json {
-  json.object([
-    #("extension", json.string(glance.extension)),
-    #("title", json.string(glance.value.title)),
-    #("rows", json.array(glance.value.rows, glance_row)),
-    #("url", json.string(glance.url)),
+    #("id", json.string(read.id)),
+    #("cursor", http_wire.cursor(read.cursor)),
+    #("status", events.status(read.status)),
+    #("kernel", http_wire.kernel(read.kernel)),
+    #("usage", http_wire.usage(read.usage)),
+    #("glances", events.glances(glances)),
   ])
 }
 
@@ -287,7 +275,7 @@ pub fn encode(
         #("input_order", json.int(capture.input_order)),
         #("usage", http_wire.usage(capture.usage)),
         #("history", history),
-        #("glances", json.array(capture.composition.glances, glance_value)),
+        #("glances", events.glances(capture.composition.glances)),
       ]),
     ),
   )

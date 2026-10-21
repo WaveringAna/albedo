@@ -15,6 +15,7 @@ import albedo/daemon/tool_progress
 import albedo/daemon/transcript
 import albedo/daemon/turn.{type Submission}
 import albedo/daemon/usage
+import albedo/harness/extension/selection
 import albedo/harness/loop
 import albedo/harness/runtime
 import gleam/erlang/process.{type Subject}
@@ -65,6 +66,17 @@ pub type State(message) {
     progress_timer: Option(process.Timer),
     live_activity: session_activity.Projection,
     announced_status: Option(session_activity.Status),
+    /// What the stream last carried about the kernel and the extension
+    /// sidebars. A client that keeps them needs no status read, so these are
+    /// published only when they differ.
+    announced_kernel: Option(view.KernelFacts),
+    announced_glances: Option(List(selection.Glance)),
+    /// The actor's own messages: ask for the next sidebar read, and report a
+    /// kernel the port owner saw change.
+    glances_due: message,
+    kernel_changed: message,
+    /// The pending sidebar timer, armed only while a client watches.
+    glance_timer: Option(process.Timer),
     /// Text and thinking deltas held for the end of the frame, newest first,
     /// the timer that publishes them, when output was last published, and
     /// the actor's own message that publishes them.
@@ -265,6 +277,75 @@ fn announce_status(state: State(message)) -> State(message) {
         State(..state, announced_status: Some(status)),
         view.Status(status),
       )
+  }
+}
+
+/// The kernel's facts changed: a job started or ended, or the kernel itself
+/// attached, booted, or went stale. A client keeps its job count from this, so
+/// it is published once per change and never on a timer.
+pub fn announce_kernel(
+  state: State(message),
+  facts: view.KernelFacts,
+) -> State(message) {
+  case state.announced_kernel {
+    Some(previous) if previous == facts -> state
+    _ ->
+      publish(State(..state, announced_kernel: Some(facts)), view.Kernel(facts))
+  }
+}
+
+/// The extension sidebars changed; published once per change.
+pub fn announce_glances(
+  state: State(message),
+  glances: List(selection.Glance),
+) -> State(message) {
+  case state.announced_glances {
+    Some(previous) if previous == glances -> state
+    _ ->
+      publish(
+        State(..state, announced_glances: Some(glances)),
+        view.Glances(glances),
+      )
+  }
+}
+
+/// Another session's work, a vent, or a scheduled prompt changes a sidebar
+/// with no event here to hang off, so a watching session re-reads them at this
+/// pace. Nobody watching means nobody asks.
+pub const glance_ms = 10_000
+
+/// Keep asking for sidebar reads while a client watches the stream. A timer
+/// already pending is left alone: a stream acknowledges every frame it
+/// delivers, and rearming here would push the read past every keepalive.
+pub fn watch_glances(state: State(message)) -> State(message) {
+  case state.watchers, state.glance_timer {
+    [], _ -> unwatch_glances(state)
+    [_, ..], None ->
+      State(
+        ..state,
+        glance_timer: Some(process.send_after(
+          state.self,
+          glance_ms,
+          state.glances_due,
+        )),
+      )
+    [_, ..], Some(_) -> state
+  }
+}
+
+/// The timer fired: the read that follows arms the next one.
+pub fn glance_fired(state: State(message)) -> State(message) {
+  State(..state, glance_timer: None)
+}
+
+/// The last client left: the session stops reading what nobody shows.
+pub fn unwatch_glances(state: State(message)) -> State(message) {
+  case state.glance_timer {
+    None -> state
+    Some(timer) -> {
+      let _ = process.cancel_timer(timer)
+      State(..state, glance_timer: None)
+    }
   }
 }
 

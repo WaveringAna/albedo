@@ -855,6 +855,24 @@ type ETag = string
 // EmptyRequest defines model for EmptyRequest.
 type EmptyRequest = map[string]interface{}
 
+// EntryContentBatch defines model for EntryContentBatch.
+type EntryContentBatch struct {
+	Next  *PageToken              `json:"next" nullable:"true"`
+	Parts []EntryContentBatchPart `json:"parts"`
+}
+
+// EntryContentBatchPart One field piece of one named entry; offsets count exact stored UTF-8 bytes.
+type EntryContentBatchPart struct {
+	Complete bool   `json:"complete"`
+	Encoding string `json:"encoding"`
+
+	// EntryID Opaque identity. Never infer a resource type or route from its contents.
+	EntryID     ID      `json:"entry_id"`
+	Field       string  `json:"field"`
+	OffsetBytes Counter `json:"offset_bytes"`
+	Text        string  `json:"text"`
+}
+
 // EntryContentPage defines model for EntryContentPage.
 type EntryContentPage struct {
 	// EntryID Opaque identity. Never infer a resource type or route from its contents.
@@ -2647,6 +2665,15 @@ type SessionFile struct {
 	Text string `json:"text"`
 }
 
+// SessionGlancesEvent The loaded extensions' sidebar values changed, observed at a low rate while a client watches the stream.
+type SessionGlancesEvent struct {
+	Data struct {
+		Glances []Glance `json:"glances"`
+	} `json:"data"`
+	Sequence Counter `json:"sequence"`
+	Type     string  `json:"type"`
+}
+
 // SessionInputEvent defines model for SessionInputEvent.
 type SessionInputEvent struct {
 	Data struct {
@@ -2664,6 +2691,15 @@ type SessionInvalidateEvent struct {
 
 		// URL Daemon-relative URL, including any representation query. No foreign origin or fragment.
 		URL ResourceURL `json:"url"`
+	} `json:"data"`
+	Sequence Counter `json:"sequence"`
+	Type     string  `json:"type"`
+}
+
+// SessionKernelEvent The kernel's job facts changed. Published only when they differ from what the stream last carried, so a client that keeps them needs no status poll.
+type SessionKernelEvent struct {
+	Data struct {
+		Kernel Kernel `json:"kernel"`
 	} `json:"data"`
 	Sequence Counter `json:"sequence"`
 	Type     string  `json:"type"`
@@ -2800,6 +2836,18 @@ type SessionStatusEvent struct {
 	Data     SessionStatus `json:"data"`
 	Sequence Counter       `json:"sequence"`
 	Type     string        `json:"type"`
+}
+
+// SessionStatusRead The live facts a watching client keeps current, read from the session's own memory and its kernel, with no configuration, history, or composition read. Kernel job changes and glance changes also arrive on the session stream, so this is a safety read rather than the cadence.
+type SessionStatusRead struct {
+	Cursor  Cursor   `json:"cursor"`
+	Glances []Glance `json:"glances"`
+
+	// ID Opaque identity. Never infer a resource type or route from its contents.
+	ID     ID            `json:"id"`
+	Kernel Kernel        `json:"kernel"`
+	Status SessionStatus `json:"status"`
+	Usage  Usage         `json:"usage"`
 }
 
 // SessionSummary Live fields and cursor are captured together. Extra response fields may be ignored.
@@ -3767,6 +3815,13 @@ type GetHistoryParams struct {
 	Limit  *int64   `form:"limit,omitempty" json:"limit,omitempty"`
 }
 
+// GetHistoryContentBatchParams defines parameters for GetHistoryContentBatch.
+type GetHistoryContentBatchParams struct {
+	// Entries Comma separated history entry ids, in display order, at most 200 of them, each at most 128 characters.
+	Entries string `form:"entries" json:"entries"`
+	Next    *Next  `form:"next,omitempty" json:"next,omitempty"`
+}
+
 // GetHistoryContentParams defines parameters for GetHistoryContent.
 type GetHistoryContentParams struct {
 	Next *Next `form:"next,omitempty" json:"next,omitempty"`
@@ -4622,7 +4677,7 @@ type ClientInterface interface {
 
 	// GetSession Read or watch one session
 	//
-	// JSON defaults to complete Session. Configuration JSON excludes tail and replay parameters. SSE accepts tail and after_generation/after_seq, without view. Initial subscription omits both cursors; reconnect keeps the fully consumed pair. A missing generation requests reset. after_generation without after_seq is invalid. Neither auth failure nor closure starts a daemon.
+	// JSON defaults to complete Session. Configuration and status JSON exclude tail and replay parameters. SSE accepts tail and after_generation/after_seq, without view. Initial subscription omits both cursors; reconnect keeps the fully consumed pair. A missing generation requests reset. after_generation without after_seq is invalid. Neither auth failure nor closure starts a daemon.
 	//
 	// Corresponds with GET /sessions/{session_id} (the `GetSession` operationId).
 	GetSession(ctx context.Context, sessionID ID, params *GetSessionParams, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -4722,6 +4777,13 @@ type ClientInterface interface {
 	//
 	// Corresponds with GET /sessions/{session_id}/history (the `GetHistory` operationId).
 	GetHistory(ctx context.Context, sessionID ID, params *GetHistoryParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetHistoryContentBatch Read several entries' full content in one walk
+	//
+	// The same parts and byte offsets as the single-entry route, for up to 200 entries, in the order `entries` names them. Follow next until null, repeating entries. One page stays inside the common encoded response bound, so a page whose entries are mostly references costs one request per byte budget instead of one request per entry.
+	//
+	// Corresponds with GET /sessions/{session_id}/history/content (the `GetHistoryContentBatch` operationId).
+	GetHistoryContentBatch(ctx context.Context, sessionID ID, params *GetHistoryContentBatchParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// GetHistoryContent Read full content in bounded pieces
 	//
@@ -6389,7 +6451,7 @@ func (c *Client) DeleteSession(ctx context.Context, sessionID ID, params *Delete
 
 // GetSession Read or watch one session
 //
-// JSON defaults to complete Session. Configuration JSON excludes tail and replay parameters. SSE accepts tail and after_generation/after_seq, without view. Initial subscription omits both cursors; reconnect keeps the fully consumed pair. A missing generation requests reset. after_generation without after_seq is invalid. Neither auth failure nor closure starts a daemon.
+// JSON defaults to complete Session. Configuration and status JSON exclude tail and replay parameters. SSE accepts tail and after_generation/after_seq, without view. Initial subscription omits both cursors; reconnect keeps the fully consumed pair. A missing generation requests reset. after_generation without after_seq is invalid. Neither auth failure nor closure starts a daemon.
 //
 // Corresponds with GET /sessions/{session_id} (the `GetSession` operationId).
 func (c *Client) GetSession(ctx context.Context, sessionID ID, params *GetSessionParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
@@ -6610,6 +6672,23 @@ func (c *Client) GetSessionFile(ctx context.Context, sessionID ID, params *GetSe
 // Corresponds with GET /sessions/{session_id}/history (the `GetHistory` operationId).
 func (c *Client) GetHistory(ctx context.Context, sessionID ID, params *GetHistoryParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewGetHistoryRequest(c.Server, sessionID, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// GetHistoryContentBatch Read several entries' full content in one walk
+//
+// The same parts and byte offsets as the single-entry route, for up to 200 entries, in the order `entries` names them. Follow next until null, repeating entries. One page stays inside the common encoded response bound, so a page whose entries are mostly references costs one request per byte budget instead of one request per entry.
+//
+// Corresponds with GET /sessions/{session_id}/history/content (the `GetHistoryContentBatch` operationId).
+func (c *Client) GetHistoryContentBatch(ctx context.Context, sessionID ID, params *GetHistoryContentBatchParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetHistoryContentBatchRequest(c.Server, sessionID, params)
 	if err != nil {
 		return nil, err
 	}
@@ -11289,6 +11368,75 @@ func NewGetHistoryRequest(server string, sessionID ID, params *GetHistoryParams)
 		if params.Limit != nil {
 
 			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "limit", *params.Limit, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "integer", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if encoded := queryValues.Encode(); encoded != "" {
+			rawQueryFragments = append(rawQueryFragments, encoded)
+		}
+		queryURL.RawQuery = strings.Join(rawQueryFragments, "&")
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewGetHistoryContentBatchRequest constructs an http.Request for the GetHistoryContentBatch method
+func NewGetHistoryContentBatchRequest(server string, sessionID ID, params *GetHistoryContentBatchParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "session_id", sessionID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/sessions/%s/history/content", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		// queryValues collects non-styled parameters (passthrough, JSON)
+		// that are safe to round-trip through url.Values.Encode().
+		queryValues := queryURL.Query()
+		// rawQueryFragments collects pre-encoded query fragments from
+		// styled parameters, preserving literal commas as delimiters
+		// per the OpenAPI spec (e.g. "color=blue,black,brown").
+		var rawQueryFragments []string
+
+		if queryFrag, err := runtime.StyleParamWithOptions("form", true, "entries", params.Entries, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
+			return nil, err
+		} else {
+			for _, qp := range strings.Split(queryFrag, "&") {
+				rawQueryFragments = append(rawQueryFragments, qp)
+			}
+		}
+
+		if params.Next != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "next", *params.Next, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
 				return nil, err
 			} else {
 				for _, qp := range strings.Split(queryFrag, "&") {

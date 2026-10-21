@@ -17,7 +17,6 @@ import albedo/daemon/session_namespace
 import albedo/daemon/stream_trace
 import albedo/daemon/tool_progress
 import albedo/daemon/usage
-import albedo/harness/extensions/python/kernel as python
 import albedo/harness/location
 import albedo/harness/vcs
 import albedo/openai_api/types
@@ -27,7 +26,8 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 
-fn cursor(cursor: session.Cursor) -> json.Json {
+/// A replay position: the generation a sequence belongs to, and the sequence.
+pub fn cursor(cursor: session.Cursor) -> json.Json {
   json.object([
     #("generation", json.string(cursor.generation)),
     #("sequence", json.int(cursor.sequence)),
@@ -236,37 +236,10 @@ pub fn timestamp(value: Int) -> json.Json {
   json.string(http_api.timestamp(value))
 }
 
+/// One encoding for the session resource and the stream: a client reads a
+/// kernel the same way whichever carried it.
 pub fn kernel(observed: session_namespace.KernelObservation) -> json.Json {
-  let reasons = case observed.stale {
-    None -> []
-    Some(python.Bundle) -> [
-      http_api.reason("bundle", "kernel bundle differs from the daemon"),
-    ]
-    Some(python.Modules) -> [
-      http_api.reason(
-        "modules",
-        "kernel modules differ from the session selection",
-      ),
-    ]
-    Some(python.Protocol) -> [
-      http_api.reason("protocol", "kernel protocol differs from the daemon"),
-    ]
-  }
-  json.object([
-    #("instance_id", json.nullable(observed.instance_id, json.string)),
-    #("build", json.nullable(observed.build, json.string)),
-    #("state", json.string(observed.state)),
-    #("stage", json.nullable(observed.stage, json.string)),
-    #("stale", json.bool(observed.stale != None)),
-    #("staleness_reasons", json.preprocessed_array(reasons)),
-    #("live_job_count", json.nullable(observed.live_job_count, json.int)),
-    #(
-      "running_jobs",
-      json.nullable(observed.running_jobs, fn(jobs) {
-        json.array(jobs, python.job_json)
-      }),
-    ),
-  ])
+  events.kernel(session_namespace.kernel_facts(observed))
 }
 
 pub fn input(outcome: operations.InputOutcome) -> json.Json {

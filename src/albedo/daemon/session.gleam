@@ -126,6 +126,20 @@ pub type Summary {
   )
 }
 
+/// The live facts a watching client keeps current: no configuration, no
+/// history, and no composition read once the stream has published the
+/// sidebars. What `GET /sessions/{id}?view=status` answers.
+pub type StatusRead {
+  StatusRead(
+    id: String,
+    cursor: Cursor,
+    status: session_activity.Status,
+    kernel: session_namespace.KernelObservation,
+    usage: Option(usage.Metadata),
+    glances: Option(List(selection.Glance)),
+  )
+}
+
 pub type InputCancellation {
   Cancelled
   InterruptRequested
@@ -183,6 +197,13 @@ pub type Message {
   Rewarm
   ReadCapture(Subject(Result(Unobserved, String)))
   ReadSummary(Subject(Summary))
+  /// The live facts alone, for a client that keeps its history over the stream.
+  ReadStatus(Subject(Result(StatusRead, String)))
+  /// The kernel's port owner saw its job facts change.
+  KernelJobs
+  /// A watching client is due a read of the extension sidebars.
+  GlancesDue
+  GlancesObserved(Result(runtime.CompositionObservation, String))
   /// See `extension.Session.awaited`.
   ReadAwaited(Subject(Bool))
   /// The kernel handle, for a read that must wait on it outside the actor.
@@ -407,6 +428,11 @@ pub fn start(
           captured.current_request,
         ),
         announced_status: None,
+        announced_kernel: None,
+        announced_glances: None,
+        glances_due: GlancesDue,
+        kernel_changed: KernelJobs,
+        glance_timer: None,
         pending_output: [],
         output_timer: None,
         output_published_at: clock.monotonic_ms(),
@@ -543,6 +569,13 @@ pub fn reload(session: Session) -> Result(session_extensions.Reloaded, String) {
 pub fn summary(session: Session) -> Result(Summary, String) {
   actor_call.try_call(session, 5000, ReadSummary)
   |> result.replace_error("session summary unavailable")
+}
+
+/// The live facts alone: what a watching client's footer draws.
+pub fn status_read(session: Session) -> Result(StatusRead, String) {
+  actor_call.try_call(session, 5000, ReadStatus)
+  |> result.replace_error("session status unavailable")
+  |> result.flatten
 }
 
 pub fn change_configuration(
@@ -1046,6 +1079,42 @@ fn summary_state(state: State) -> Summary {
   )
 }
 
+/// Everything the footer draws, from memory and the kernel's port owner: no
+/// store read, no composition read. `glances` is what the stream last
+/// published; a caller that finds none observes the composition itself.
+fn status_state(state: State) -> Result(StatusRead, String) {
+  use observed <- result.try(session_namespace.observe_kernel(state))
+  Ok(StatusRead(
+    state.info.id,
+    Cursor(state.generation, state.sequence),
+    session_state.current_status(state),
+    observed,
+    state.latest_usage,
+    state.announced_glances,
+  ))
+}
+
+/// Another session may have written the work ledger or a vent since the last
+/// read; the observation runs off the actor because it queues behind kernel
+/// boots. A change publishes itself on the stream.
+fn glances_due(state: State) -> State {
+  let state = session_state.glance_fired(state)
+  let #(host, home, id, self) = #(
+    state.host,
+    state.home,
+    state.info.id,
+    state.self,
+  )
+  let _ =
+    process.spawn_unlinked(fn() {
+      process.send(
+        self,
+        GlancesObserved(runtime.observe_composition(host, home, id)),
+      )
+    })
+  session_state.watch_glances(state)
+}
+
 /// A capture finished by its caller with the session's composition. The
 /// runtime observes composition on worker slots that kernel boots share, so
 /// it can queue for seconds; the caller waits for it, never the actor.
@@ -1125,6 +1194,7 @@ fn handle(
   let state = case message {
     Submit(..)
     | ReadCapture(..)
+    | ReadStatus(..)
     | ChangeConfiguration(..)
     | InterruptCaptured(..)
     | ReadCommands(..)
@@ -1146,6 +1216,14 @@ fn handle(
   case message {
     ReadCapture(reply) -> answer(state, reply, capture_state(state))
     ReadSummary(reply) -> answer(state, reply, summary_state(state))
+    ReadStatus(reply) -> answer(state, reply, status_state(state))
+    KernelJobs -> actor.continue(session_namespace.announce_kernel(state))
+    GlancesDue -> actor.continue(glances_due(state))
+    GlancesObserved(result) ->
+      actor.continue(case result {
+        Error(_) -> state
+        Ok(observed) -> session_state.announce_glances(state, observed.glances)
+      })
     ReadAwaited(reply) -> answer(state, reply, awaited(state))
     ReadKernel(reply) ->
       answer(
@@ -1457,7 +1535,9 @@ fn handle(
           [session_state.Watcher(owner, notify, False), ..state.watchers]
         }
       }
-      actor.continue(session_state.State(..state, watchers: watchers))
+      actor.continue(session_state.watch_glances(
+        session_state.State(..state, watchers: watchers),
+      ))
     }
     Consumed(owner, cursor, wake_consumed) -> {
       let watchers = case
@@ -1483,7 +1563,9 @@ fn handle(
             }
           })
       }
-      actor.continue(session_state.State(..state, watchers: watchers))
+      actor.continue(session_state.watch_glances(
+        session_state.State(..state, watchers: watchers),
+      ))
     }
     Read(after, reply) -> {
       let cursor = Cursor(state.generation, state.sequence)
@@ -1837,6 +1919,7 @@ fn handle(
             watcher.owner != pid
           }),
         )
+        |> session_state.watch_glances
       case turn.running(state.activity) {
         Some(run) if run.pid == pid ->
           case run.work {
@@ -1892,6 +1975,7 @@ fn handle(
         Some(kernel), None -> {
           let saved =
             session_namespace.save_state(state.home, state.info.id, kernel)
+          session_namespace.forget(kernel)
           runtime.reset_session(state.host, state.info.id)
           process.send(state.self, Collect)
           answer(

@@ -6,6 +6,7 @@ import albedo/daemon/http_history
 import albedo/daemon/images
 import albedo/daemon/store
 import albedo/openai_api/types
+import albedo/text_scalars
 import gleam/bytes_tree
 import gleam/dynamic/decode
 import gleam/http/request
@@ -13,7 +14,7 @@ import gleam/http/response
 import gleam/int
 import gleam/json
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import mist
@@ -452,6 +453,206 @@ pub fn content(
     ))
   }
   http_api.answer(outcome)
+}
+
+/// The most entries one batched content read may name.
+const content_batch_entries = 200
+
+/// Encoded bytes of parts one batch page carries. Escaping can double a piece
+/// of quotes or control characters, so the page stays at half the response
+/// limit and the walk stops before it is full.
+const content_batch_bytes = 524_288
+
+pub type ContentCursor {
+  ContentCursor(entry: Int, part: Int, offset: Int)
+}
+
+fn content_cursor_decoder() -> decode.Decoder(ContentCursor) {
+  use entry <- decode.field("entry", decode.int)
+  use part <- decode.field("part", decode.int)
+  use offset <- decode.field("offset", decode.int)
+  decode.success(ContentCursor(entry, part, offset))
+}
+
+/// The stored text of several entries' content fields in one walk: a history
+/// page whose entries are mostly references costs one request per byte
+/// budget instead of one per entry. `entries` is comma separated, in the order
+/// the page names them; image fields stay out, as in the single-entry route.
+pub fn contents(
+  secret: String,
+  storage: Result(store.Store, String),
+  id: String,
+  req: request.Request(BitArray),
+) -> response.Response(mist.ResponseData) {
+  let outcome = {
+    use parameters <- result.try(
+      http_api.json_parameters(req, ["entries", "next"]),
+    )
+    use ledger <- result.try(storage |> result.map_error(http_api.failure))
+    use _ <- result.try(
+      conversation.get(ledger, id) |> result.map_error(http_api.failure),
+    )
+    use ids <- result.try(content_entry_ids(parameters))
+    // One continuation belongs to one set of entries.
+    let binding = req.path <> http_api.etag(string.join(ids, ","))
+    use cursor <- result.try(case list.key_find(parameters, "next") {
+      Error(_) -> Ok(ContentCursor(0, 0, 0))
+      Ok(token) -> {
+        use state <- result.try(
+          http_api.page_state(secret, binding, token)
+          |> result.map_error(fn(_) {
+            http_api.invalid(
+              "content continuation does not belong to these entries",
+            )
+          }),
+        )
+        json.parse(state, content_cursor_decoder())
+        |> result.map_error(fn(_) {
+          http_api.invalid("invalid content continuation")
+        })
+      }
+    })
+    use entries <- result.try(
+      list.try_map(ids, fn(entry_id) {
+        use entry <- result.try(history_entry(ledger, id, entry_id))
+        Ok(#(entry_id, text_parts(entry.parts)))
+      }),
+    )
+    use #(parts, next) <- result.try(content_walk(
+      ledger,
+      id,
+      entries,
+      cursor,
+      [],
+      0,
+    ))
+    let token = case next {
+      None -> json.null()
+      Some(cursor) ->
+        json.string(http_api.page_token(
+          secret,
+          binding,
+          json.object([
+            #("entry", json.int(cursor.entry)),
+            #("part", json.int(cursor.part)),
+            #("offset", json.int(cursor.offset)),
+          ])
+            |> json.to_string,
+        ))
+    }
+    Ok(http_api.reply(
+      200,
+      json.object([
+        #("parts", json.array(parts, fn(part) { part })),
+        #("next", token),
+      ]),
+    ))
+  }
+  http_api.answer(outcome)
+}
+
+fn content_entry_ids(
+  parameters: List(#(String, String)),
+) -> Result(List(String), http_api.Failure) {
+  let invalid =
+    http_api.invalid(
+      "entries names the history entries to read, comma separated",
+    )
+  use raw <- result.try(
+    list.key_find(parameters, "entries")
+    |> result.replace_error(invalid),
+  )
+  let ids = string.split(raw, ",")
+  case list.length(ids) <= content_batch_entries {
+    False -> Error(invalid)
+    True ->
+      case
+        list.any(ids, fn(entry_id) {
+          entry_id == "" || text_scalars.length(entry_id) > 128
+        })
+      {
+        True -> Error(invalid)
+        False -> Ok(ids)
+      }
+  }
+}
+
+fn text_parts(parts: List(http_history.Part)) -> List(http_history.Part) {
+  list.filter(parts, fn(part) {
+    case part {
+      http_history.Image(..) -> False
+      _ -> True
+    }
+  })
+}
+
+/// Serve parts in entry order from `cursor` until the byte budget is spent.
+fn content_walk(
+  ledger: store.Store,
+  id: String,
+  entries: List(#(String, List(http_history.Part))),
+  cursor: ContentCursor,
+  kept: List(json.Json),
+  used: Int,
+) -> Result(#(List(json.Json), Option(ContentCursor)), http_api.Failure) {
+  case list.drop(entries, cursor.entry) {
+    [] -> Ok(#(list.reverse(kept), None))
+    [#(entry_id, parts), ..] ->
+      case list.drop(parts, cursor.part) {
+        [] ->
+          content_walk(
+            ledger,
+            id,
+            entries,
+            ContentCursor(cursor.entry + 1, 0, 0),
+            kept,
+            used,
+          )
+        [part, ..] -> {
+          use #(field, text) <- result.try(stored_text(ledger, id, part))
+          use #(piece, next_offset, complete) <- result.try(
+            text
+            |> result.try(http_api.content_slice(_, cursor.offset, 262_144))
+            |> result.replace_error(http_api.Failure(
+              503,
+              "content_unavailable",
+              "entry content is unavailable",
+            )),
+          )
+          let encoded =
+            json.object([
+              #("entry_id", json.string(entry_id)),
+              #("field", json.string(field)),
+              #("offset_bytes", json.int(cursor.offset)),
+              #("encoding", json.string("utf8")),
+              #("text", json.string(piece)),
+              #("complete", json.bool(complete)),
+            ])
+          let size = http_api.encoded_size(encoded)
+          case used > 0 && used + size > content_batch_bytes {
+            True ->
+              Ok(#(
+                list.reverse(kept),
+                Some(ContentCursor(cursor.entry, cursor.part, cursor.offset)),
+              ))
+            False -> {
+              let following = case complete {
+                True -> ContentCursor(cursor.entry, cursor.part + 1, 0)
+                False -> ContentCursor(cursor.entry, cursor.part, next_offset)
+              }
+              content_walk(
+                ledger,
+                id,
+                entries,
+                following,
+                [encoded, ..kept],
+                used + size,
+              )
+            }
+          }
+        }
+      }
+  }
 }
 
 /// A part's field name and stored UTF-8, read from the entry a reference

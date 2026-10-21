@@ -117,7 +117,11 @@ const (
 	EventToolProgress   EventType = "tool_progress"
 	EventTool           EventType = "tool"
 	EventUsage          EventType = "usage"
-	EventInvalidate     EventType = "invalidate"
+	// EventKernel carries the kernel's job facts after a change; EventGlances
+	// carries the extension sidebars. A watching client needs no status read.
+	EventKernel     EventType = "kernel"
+	EventGlances    EventType = "glances"
+	EventInvalidate EventType = "invalidate"
 	// EventCommitted says transcript rows up to Seq now cover what was shown.
 	EventCommitted EventType = "committed"
 )
@@ -162,26 +166,30 @@ type StreamEvent struct {
 	SenderSessionID string
 	Invalidation    *ResourceInvalidation
 	Status          *AgentStatus
-	Snapshot        *Session
-	Receipt         *InputReceipt
-	OperationID     string
-	Images          []ImageMetadata
-	Usage           *Usage
-	ToolTrace       *ToolTrace
-	Timestamp       *int64
-	ToolArgs        map[string]any
-	Progress        *ToolProgress
-	TurnID          string
-	Type            EventType
-	Text            string
-	Source          string
-	Summary         string
-	Strategy        string
-	ToolName        string
-	ToolResult      string
-	ProgressCallID  string
-	SubmissionIDs   []string
-	Evicted         int
+	// Kernel is the kernel object a kernel event carried, and Glances the
+	// sidebar values a glances event carried.
+	Kernel         *protocol.Kernel
+	Glances        []PageGlance
+	Snapshot       *Session
+	Receipt        *InputReceipt
+	OperationID    string
+	Images         []ImageMetadata
+	Usage          *Usage
+	ToolTrace      *ToolTrace
+	Timestamp      *int64
+	ToolArgs       map[string]any
+	Progress       *ToolProgress
+	TurnID         string
+	Type           EventType
+	Text           string
+	Source         string
+	Summary        string
+	Strategy       string
+	ToolName       string
+	ToolResult     string
+	ProgressCallID string
+	SubmissionIDs  []string
+	Evicted        int
 	// ElapsedMs is how long a replayed thought took, when the daemon timed it.
 	ElapsedMs       int64
 	ElapsedObserved bool

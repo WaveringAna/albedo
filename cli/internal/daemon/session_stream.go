@@ -171,7 +171,11 @@ func (c *ChatClient) readStream(ctx context.Context, scanner *bufio.Scanner, onB
 				before = snapshot.wire.History.Items[0].Position
 			}
 			events = append(events, wireChatEvent{StreamEvent: StreamEvent{Type: EventReset, Before: before, More: snapshot.wire.History.Older != nil, Snapshot: &snapshot}})
-			hydrated, err := hydrateHistory(ctx, c.conn, c.agentID, snapshot.wire.History.Items)
+			decoded, err := decodeHistoryEntries(snapshot.wire.History.Items)
+			if err != nil {
+				return streamFailure(StreamProtocol, err)
+			}
+			hydrated, err := hydrateHistory(ctx, c.conn, c.agentID, decoded)
 			if err != nil {
 				return streamFailure(StreamTransient, err)
 			}

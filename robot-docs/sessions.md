@@ -21,6 +21,38 @@ phase is display metadata, not a failed connection. before live status is
 known, enter preserves the draft; superseded status replies cannot unblock
 it. starting a new turn does not require `/compact` to change the old phase.
 
+## Live status without a poll
+
+`GET /sessions/{session_id}?view=status` answers the live facts alone: `id`,
+`cursor`, `status`, `kernel`, `usage`, and `glances`. Its source is the session
+actor's own memory plus its kernel's port owner, never configuration, history,
+or a composition read; the one exception is a session whose sidebars no stream
+has published yet, where the handler observes the composition for that answer.
+Tail and replay parameters belong to the event stream and are refused here.
+
+Most of what that read covers also arrives on the stream, so a watching client
+needs no cadence of its own:
+
+- `kernel` carries `{"kernel": Kernel}`, the same object the session resource
+  carries. `albedo_python` runs the closure the session registered with
+  `kernel.watch` whenever a frame changes the job facts it reports (a job
+  starting or ending, a remote job listing, a live cell, the kernel attaching
+  or going stale), and the session publishes `session_namespace.kernel_facts`
+  only when they differ from what it last sent. Nothing observes the kernel on
+  a timer.
+- `glances` carries `{"glances": [Glance]}`, the extension sidebars. Another
+  session writing the work ledger or a vent publishes nothing here, so while at
+  least one client watches, the session re-reads the sidebars every 10 seconds
+  (`session_state.glance_ms`) and publishes only a change. The observation runs
+  on a spawned process because it queues behind kernel boots, and the last
+  watcher leaving cancels the timer.
+- The turn's own phase keeps arriving as `status`, usage as `usage`, and a
+  reset batch re-seeds all of it for a fresh attachment.
+
+A daemon from before these events never sends them, so the CLI keeps one safety
+read (the status view) every 60 seconds while its stream is healthy, plus the
+read it makes when it attaches or the terminal regains focus.
+
 ## Running observations
 
 `daemon/albedo_bus.erl` owns the ephemeral running cache. Only active turns
@@ -144,6 +176,16 @@ A session is loaded while its actor runs; only a loaded session has a stream
 cursor. Opening it, watching its stream, or submitting to it loads it. Reading
 `GET /sessions/{session_id}/history` never does, so the session list previews
 stored history instead of the session resource.
+
+A history page carries a reference instead of any content field over the page's
+inline budget. The client resolves every reference of a page in one walk of
+`GET /sessions/{session_id}/history/content?entries=...`, which serves the same
+parts as the single-entry route for up to 200 entries and stops on the same
+byte budget, so a page of oversized tool output costs one request per byte
+budget rather than one per entry. Decode each part once: the reference
+resolution, the projection into events, and the tool-call argument merge all
+read the decoded parts, and a decoded `json` part keeps the stored bytes as its
+value rather than another JSON encoding of them.
 
 The maintenance sweep releases an idle kernel after `ALBEDO_IDLE_SECONDS`
 (default 10 minutes) and unloads a session whose last turn (`activity_at`) is

@@ -4,6 +4,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 
 	"github.com/klauspost/compress/zstd"
 )
@@ -15,7 +16,17 @@ const compressedRequestBytes = 16 * 1024
 // The daemon compresses with a small window; anything larger is refused.
 const zstdWindowBytes = 8 << 20
 
+// EncodeAll is safe for concurrent use; one encoder amortises its tables
+// across every request body.
 var zstdEncoder, _ = zstd.NewWriter(nil, zstd.WithEncoderLevel(zstd.SpeedFastest), zstd.WithEncoderConcurrency(1))
+
+// Decoders are the expensive half: a fresh one allocates its frame state per
+// response. Each body borrows one for its exclusive use and hands it back
+// when it closes.
+var zstdDecoders = sync.Pool{New: func() any {
+	decoder, _ := zstd.NewReader(nil, zstd.WithDecoderConcurrency(1), zstd.WithDecoderMaxWindow(zstdWindowBytes))
+	return decoder
+}}
 
 // requestBody returns the payload to send and its Content-Encoding, empty
 // for identity.
@@ -39,12 +50,15 @@ func (transport codingTransport) RoundTrip(req *http.Request) (*http.Response, e
 	if err != nil || !strings.EqualFold(res.Header.Get("Content-Encoding"), "zstd") {
 		return res, err
 	}
-	decoder, err := zstd.NewReader(res.Body, zstd.WithDecoderConcurrency(1), zstd.WithDecoderMaxWindow(zstdWindowBytes))
-	if err != nil {
+	decoder := zstdDecoders.Get().(*zstd.Decoder)
+	// A frame that is not zstd fails on the first Read, as it does for any
+	// streamed decoder; only a closed decoder fails here.
+	if err := decoder.Reset(res.Body); err != nil {
+		decoder.Close()
 		_ = res.Body.Close()
 		return nil, err
 	}
-	res.Body = zstdBody{decoder: decoder, body: res.Body}
+	res.Body = &zstdBody{decoder: decoder, body: res.Body}
 	res.Header.Del("Content-Encoding")
 	res.Header.Del("Content-Length")
 	res.ContentLength = -1
@@ -59,13 +73,26 @@ func (transport codingTransport) CloseIdleConnections() {
 }
 
 type zstdBody struct {
-	decoder *zstd.Decoder
-	body    io.ReadCloser
+	decoder  *zstd.Decoder
+	body     io.ReadCloser
+	released bool
 }
 
-func (body zstdBody) Read(target []byte) (int, error) { return body.decoder.Read(target) }
+func (body *zstdBody) Read(target []byte) (int, error) {
+	if body.released {
+		return 0, io.ErrClosedPipe
+	}
+	return body.decoder.Read(target)
+}
 
-func (body zstdBody) Close() error {
-	body.decoder.Close()
-	return body.body.Close()
+func (body *zstdBody) Close() error {
+	if body.released {
+		return nil
+	}
+	body.released = true
+	err := body.body.Close()
+	// Detach the closed body before the decoder is reused for another stream.
+	_ = body.decoder.Reset(nil)
+	zstdDecoders.Put(body.decoder)
+	return err
 }

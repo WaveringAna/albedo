@@ -216,6 +216,34 @@ pub fn read(
             )
         }
       }
+      Ok("status") -> {
+        use _ <- result.try(case watching || list.length(parameters) != 1 {
+          True ->
+            Error(http_api.invalid(
+              "status view accepts JSON without tail or replay parameters",
+            ))
+          False -> Ok(Nil)
+        })
+        case actor.call(registry, 5000, Lookup(id, _)) {
+          Error("session not found") ->
+            missing_session_decision(runtime.ledger(host), id)
+          Error(reason) -> Error(http_api.failure(reason))
+          Ok(worker) -> {
+            use read <- result.try(
+              session.status_read(worker) |> result.map_error(http_api.failure),
+            )
+            use glances <- result.try(case read.glances {
+              // The stream has published them already: no composition read.
+              Some(glances) -> Ok(glances)
+              None ->
+                runtime.observe_composition(host, config.home, id)
+                |> result.map(fn(observed) { observed.glances })
+                |> result.map_error(http_api.failure)
+            })
+            Ok(http_api.reply(200, http_session_resource.status(read, glances)))
+          }
+        }
+      }
       Ok(_) -> Error(http_api.invalid("unknown session view"))
       Error(_) -> {
         use tail <- result.try(http_api.integer_parameter(

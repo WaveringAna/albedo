@@ -117,7 +117,7 @@ export interface paths {
         };
         /**
          * Read or watch one session
-         * @description JSON defaults to complete Session. Configuration JSON excludes tail and replay parameters. SSE accepts tail and after_generation/after_seq, without view. Initial subscription omits both cursors; reconnect keeps the fully consumed pair. A missing generation requests reset. after_generation without after_seq is invalid. Neither auth failure nor closure starts a daemon.
+         * @description JSON defaults to complete Session. Configuration and status JSON exclude tail and replay parameters. SSE accepts tail and after_generation/after_seq, without view. Initial subscription omits both cursors; reconnect keeps the fully consumed pair. A missing generation requests reset. after_generation without after_seq is invalid. Neither auth failure nor closure starts a daemon.
          */
         get: operations["getSession"];
         /**
@@ -256,6 +256,26 @@ export interface paths {
          * @description Use only one of before/after/next. Durable positions are independent of actor replay. Pages are ascending and preserve complete display groups where bounded.
          */
         get: operations["getHistory"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/sessions/{session_id}/history/content": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read several entries' full content in one walk
+         * @description The same parts and byte offsets as the single-entry route, for up to 200 entries, in the order `entries` names them. Follow next until null, repeating entries. One page stays inside the common encoded response bound, so a page whose entries are mostly references costs one request per byte budget instead of one request per entry.
+         */
+        get: operations["getHistoryContentBatch"];
         put?: never;
         post?: never;
         delete?: never;
@@ -2534,7 +2554,16 @@ export interface components {
             history: components["schemas"]["HistoryPage"];
             glances: components["schemas"]["Glance"][];
         };
-        SessionRead: components["schemas"]["Session"] | components["schemas"]["SessionConfiguration"];
+        SessionRead: components["schemas"]["Session"] | components["schemas"]["SessionConfiguration"] | components["schemas"]["SessionStatusRead"];
+        /** @description The live facts a watching client keeps current, read from the session's own memory and its kernel, with no configuration, history, or composition read. Kernel job changes and glance changes also arrive on the session stream, so this is a safety read rather than the cadence. */
+        SessionStatusRead: {
+            id: components["schemas"]["ID"];
+            cursor: components["schemas"]["Cursor"];
+            status: components["schemas"]["SessionStatus"];
+            kernel: components["schemas"]["Kernel"];
+            usage: components["schemas"]["Usage"];
+            glances: components["schemas"]["Glance"][];
+        };
         SessionChange: {
             resource: components["schemas"]["SessionConfigurationResource"];
             session: components["schemas"]["Session"];
@@ -2827,6 +2856,20 @@ export interface components {
         EntryContentPage: {
             entry_id: components["schemas"]["ID"];
             parts: components["schemas"]["ContentPart"][];
+            next: components["schemas"]["PageToken"] | null;
+        };
+        /** @description One field piece of one named entry; offsets count exact stored UTF-8 bytes. */
+        EntryContentBatchPart: {
+            entry_id: components["schemas"]["ID"];
+            field: string;
+            offset_bytes: components["schemas"]["Counter"];
+            /** @enum {string} */
+            encoding: "utf8";
+            text: string;
+            complete: boolean;
+        };
+        EntryContentBatch: {
+            parts: components["schemas"]["EntryContentBatchPart"][];
             next: components["schemas"]["PageToken"] | null;
         };
         ContextSection: {
@@ -3415,6 +3458,24 @@ export interface components {
             bytes: components["schemas"]["Counter"];
             sender_label: string | null;
         };
+        /** @description The kernel's job facts changed. Published only when they differ from what the stream last carried, so a client that keeps them needs no status poll. */
+        SessionKernelEvent: {
+            /** @constant */
+            type: "kernel";
+            sequence: components["schemas"]["Counter"];
+            data: {
+                kernel: components["schemas"]["Kernel"];
+            };
+        };
+        /** @description The loaded extensions' sidebar values changed, observed at a low rate while a client watches the stream. */
+        SessionGlancesEvent: {
+            /** @constant */
+            type: "glances";
+            sequence: components["schemas"]["Counter"];
+            data: {
+                glances: components["schemas"]["Glance"][];
+            };
+        };
         SessionStatusEvent: {
             /** @constant */
             type: "status";
@@ -3560,7 +3621,7 @@ export interface components {
                 url: components["schemas"]["ResourceURL"];
             };
         };
-        SessionEvent: components["schemas"]["SessionStatusEvent"] | components["schemas"]["SessionInputEvent"] | components["schemas"]["SessionTextEvent"] | components["schemas"]["SessionThinkingEvent"] | components["schemas"]["SessionMessageEvent"] | components["schemas"]["SessionToolProgressEvent"] | components["schemas"]["SessionToolEvent"] | components["schemas"]["SessionNoteEvent"] | components["schemas"]["SessionRetryEvent"] | components["schemas"]["SessionUsageEvent"] | components["schemas"]["SessionCommittedEvent"] | components["schemas"]["SessionTurnCompletedEvent"] | components["schemas"]["SessionCompactedEvent"] | components["schemas"]["SessionErrorEvent"] | components["schemas"]["SessionInvalidateEvent"];
+        SessionEvent: components["schemas"]["SessionStatusEvent"] | components["schemas"]["SessionInputEvent"] | components["schemas"]["SessionTextEvent"] | components["schemas"]["SessionThinkingEvent"] | components["schemas"]["SessionMessageEvent"] | components["schemas"]["SessionToolProgressEvent"] | components["schemas"]["SessionToolEvent"] | components["schemas"]["SessionNoteEvent"] | components["schemas"]["SessionRetryEvent"] | components["schemas"]["SessionUsageEvent"] | components["schemas"]["SessionCommittedEvent"] | components["schemas"]["SessionTurnCompletedEvent"] | components["schemas"]["SessionCompactedEvent"] | components["schemas"]["SessionErrorEvent"] | components["schemas"]["SessionInvalidateEvent"] | components["schemas"]["SessionKernelEvent"] | components["schemas"]["SessionGlancesEvent"];
         ResetEvent: {
             /** @constant */
             type: "reset";
@@ -4991,7 +5052,7 @@ export interface operations {
     getSession: {
         parameters: {
             query?: {
-                view?: "configuration";
+                view?: "configuration" | "status";
                 tail?: number;
                 after_generation?: components["schemas"]["Generation"];
                 after_seq?: components["schemas"]["Counter"];
@@ -5402,6 +5463,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HistoryRead"];
+                };
+            };
+            400: components["responses"]["Problem400"];
+            401: components["responses"]["Problem401"];
+            403: components["responses"]["Problem403"];
+            404: components["responses"]["Problem404"];
+            405: components["responses"]["Problem405"];
+            406: components["responses"]["Problem406"];
+            503: components["responses"]["Problem503"];
+        };
+    };
+    getHistoryContentBatch: {
+        parameters: {
+            query: {
+                /** @description Comma separated history entry ids, in display order, at most 200 of them, each at most 128 characters. */
+                entries: string;
+                next?: components["parameters"]["Next"];
+            };
+            header?: never;
+            path: {
+                session_id: components["schemas"]["ID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EntryContentBatch"];
                 };
             };
             400: components["responses"]["Problem400"];

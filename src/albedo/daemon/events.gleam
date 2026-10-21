@@ -12,6 +12,9 @@ import albedo/daemon/tool_progress as progress
 import albedo/daemon/transcript
 import albedo/daemon/usage
 import albedo/harness/compaction
+import albedo/harness/extension/selection
+import albedo/harness/extensions/python/kernel as python
+import albedo/harness/page
 import albedo/openai_api/types
 import gleam/dynamic/decode
 import gleam/int
@@ -20,6 +23,19 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+
+/// What a client shows about the kernel: its state and the jobs it runs.
+pub type KernelFacts {
+  KernelFacts(
+    instance_id: Option(String),
+    build: Option(String),
+    state: String,
+    stage: Option(String),
+    stale: Option(python.Stale),
+    live_job_count: Option(Int),
+    running_jobs: Option(List(python.Job)),
+  )
+}
 
 pub type Event {
   Status(session_activity.Status)
@@ -56,6 +72,10 @@ pub type Event {
   )
   Failure(run_id: Option(String), code: String, message: String)
   Invalidate(kind: String, url: String)
+  /// The kernel's job facts changed; published only when they did.
+  Kernel(KernelFacts)
+  /// The loaded extensions' sidebar values changed; published only when they did.
+  Glances(List(selection.Glance))
   /// A worker liveness handshake, never a public observation.
   Checkpoint
   ProviderStarted
@@ -193,6 +213,11 @@ pub fn encode(session: String, sequence: Int, event: Event) -> json.Json {
       "invalidate",
       json.object([#("kind", json.string(kind)), #("url", json.string(url))]),
     )
+    Kernel(facts) -> #("kernel", json.object([#("kernel", kernel(facts))]))
+    Glances(values) -> #(
+      "glances",
+      json.object([#("glances", glances(values))]),
+    )
     Checkpoint | ProviderStarted -> #("checkpoint", json.null())
   }
   json.object([
@@ -271,6 +296,71 @@ fn tool(
           #("bytes", json.int(result_bytes)),
         ])
     }),
+  ])
+}
+
+pub fn kernel(facts: KernelFacts) -> json.Json {
+  let reasons = case facts.stale {
+    None -> []
+    Some(python.Bundle) -> [
+      http_api.reason("bundle", "kernel bundle differs from the daemon"),
+    ]
+    Some(python.Modules) -> [
+      http_api.reason(
+        "modules",
+        "kernel modules differ from the session selection",
+      ),
+    ]
+    Some(python.Protocol) -> [
+      http_api.reason("protocol", "kernel protocol differs from the daemon"),
+    ]
+  }
+  json.object([
+    #("instance_id", json.nullable(facts.instance_id, json.string)),
+    #("build", json.nullable(facts.build, json.string)),
+    #("state", json.string(facts.state)),
+    #("stage", json.nullable(facts.stage, json.string)),
+    #("stale", json.bool(facts.stale != None)),
+    #("staleness_reasons", json.preprocessed_array(reasons)),
+    #("live_job_count", json.nullable(facts.live_job_count, json.int)),
+    #(
+      "running_jobs",
+      json.nullable(facts.running_jobs, fn(jobs) {
+        json.array(jobs, python.job_json)
+      }),
+    ),
+  ])
+}
+
+pub fn glances(values: List(selection.Glance)) -> json.Json {
+  json.array(values, glance)
+}
+
+pub fn glance(value: selection.Glance) -> json.Json {
+  json.object([
+    #("extension", json.string(value.extension)),
+    #("title", json.string(value.value.title)),
+    #("rows", json.array(value.value.rows, glance_row)),
+    #("url", json.string(value.url)),
+  ])
+}
+
+fn glance_row(row: page.Row) -> json.Json {
+  json.object([
+    #("id", json.string(row.id)),
+    #("text", json.string(http_api.scalar_prefix(row.text, 256))),
+    #("badge", json.string(row.badge)),
+    #("detail", json.string(http_api.scalar_prefix(row.detail, 256))),
+    #("resource", json.null()),
+    #(
+      "tone",
+      json.string(case row.tone {
+        page.Plain -> "plain"
+        page.Active -> "active"
+        page.Warning -> "warning"
+        page.Muted -> "muted"
+      }),
+    ),
   ])
 }
 

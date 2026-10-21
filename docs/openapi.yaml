@@ -632,8 +632,8 @@ paths:
           $ref: '#/components/responses/Problem404'
         '410':
           $ref: '#/components/responses/Problem410'
-      description: JSON defaults to complete Session. Configuration JSON excludes tail and replay parameters.
-        SSE accepts tail and after_generation/after_seq, without view. Initial subscription omits both
+      description: JSON defaults to complete Session. Configuration and status JSON exclude tail and
+        replay parameters. SSE accepts tail and after_generation/after_seq, without view. Initial subscription omits both
         cursors; reconnect keeps the fully consumed pair. A missing generation requests reset. after_generation
         without after_seq is invalid. Neither auth failure nor closure starts a daemon.
       parameters:
@@ -647,7 +647,7 @@ paths:
         required: false
         schema:
           type: string
-          enum: [configuration]
+          enum: [configuration, status]
       - name: tail
         in: query
         required: false
@@ -1407,6 +1407,53 @@ paths:
           minimum: 1
           maximum: 200
           default: 100
+  /sessions/{session_id}/history/content:
+    get:
+      operationId: getHistoryContentBatch
+      summary: Read several entries' full content in one walk
+      tags:
+      - sessions
+      responses:
+        '200':
+          description: Successful result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EntryContentBatch'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '404':
+          $ref: '#/components/responses/Problem404'
+        '405':
+          $ref: '#/components/responses/Problem405'
+        '406':
+          $ref: '#/components/responses/Problem406'
+        '503':
+          $ref: '#/components/responses/Problem503'
+      description: The same parts and byte offsets as the single-entry route, for up to 200 entries,
+        in the order `entries` names them. Follow next until null, repeating entries. One page stays
+        inside the common encoded response bound, so a page whose entries are mostly references
+        costs one request per byte budget instead of one request per entry.
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ID'
+      - name: entries
+        in: query
+        required: true
+        description: Comma separated history entry ids, in display order, at most 200 of them,
+          each at most 128 characters.
+        schema:
+          type: string
+          minLength: 1
+          maxLength: 26000
+      - $ref: '#/components/parameters/Next'
   /sessions/{session_id}/history/{entry_id}:
     get:
       operationId: getHistoryContent
@@ -7435,6 +7482,30 @@ components:
       oneOf:
       - $ref: '#/components/schemas/Session'
       - $ref: '#/components/schemas/SessionConfiguration'
+      - $ref: '#/components/schemas/SessionStatusRead'
+    SessionStatusRead:
+      type: object
+      properties:
+        id:
+          $ref: '#/components/schemas/ID'
+        cursor:
+          $ref: '#/components/schemas/Cursor'
+        status:
+          $ref: '#/components/schemas/SessionStatus'
+        kernel:
+          $ref: '#/components/schemas/Kernel'
+        usage:
+          $ref: '#/components/schemas/Usage'
+        glances:
+          type: array
+          items:
+            $ref: '#/components/schemas/Glance'
+          maxItems: 16
+      description: The live facts a watching client keeps current, read from the session's own memory
+        and its kernel, with no configuration, history, or composition read. Kernel job changes and
+        glance changes also arrive on the session stream, so this is a safety read rather than the cadence.
+      required: [id, cursor, status, kernel, usage, glances]
+      additionalProperties: false
     SessionChange:
       type: object
       properties:
@@ -8150,6 +8221,42 @@ components:
           - type: 'null'
       x-max-decoded-content-bytes: 262144
       required: [entry_id, parts, next]
+      additionalProperties: false
+    EntryContentBatchPart:
+      type: object
+      properties:
+        entry_id:
+          $ref: '#/components/schemas/ID'
+        field:
+          type: string
+          maxLength: 256
+        offset_bytes:
+          $ref: '#/components/schemas/Counter'
+        encoding:
+          type: string
+          enum: [utf8]
+        text:
+          type: string
+          maxLength: 1048576
+        complete:
+          type: boolean
+      description: One field piece of one named entry; offsets count exact stored UTF-8 bytes.
+      required: [entry_id, field, offset_bytes, encoding, text, complete]
+      additionalProperties: false
+    EntryContentBatch:
+      type: object
+      properties:
+        parts:
+          type: array
+          items:
+            $ref: '#/components/schemas/EntryContentBatchPart'
+          maxItems: 200
+        next:
+          anyOf:
+          - $ref: '#/components/schemas/PageToken'
+          - type: 'null'
+      x-max-decoded-content-bytes: 524288
+      required: [parts, next]
       additionalProperties: false
     ContextSection:
       type: object
@@ -9898,6 +10005,45 @@ components:
           - type: 'null'
       required: [mail_id, sender_session_id, receiver_session_id, kind, bytes, sender_label]
       additionalProperties: false
+    SessionKernelEvent:
+      type: object
+      properties:
+        type:
+          const: kernel
+        sequence:
+          $ref: '#/components/schemas/Counter'
+        data:
+          type: object
+          properties:
+            kernel:
+              $ref: '#/components/schemas/Kernel'
+          required: [kernel]
+          additionalProperties: false
+      description: The kernel's job facts changed. Published only when they differ from what the
+        stream last carried, so a client that keeps them needs no status poll.
+      required: [type, sequence, data]
+      additionalProperties: false
+    SessionGlancesEvent:
+      type: object
+      properties:
+        type:
+          const: glances
+        sequence:
+          $ref: '#/components/schemas/Counter'
+        data:
+          type: object
+          properties:
+            glances:
+              type: array
+              items:
+                $ref: '#/components/schemas/Glance'
+              maxItems: 16
+          required: [glances]
+          additionalProperties: false
+      description: The loaded extensions' sidebar values changed, observed at a low rate while a
+        client watches the stream.
+      required: [type, sequence, data]
+      additionalProperties: false
     SessionStatusEvent:
       type: object
       properties:
@@ -10225,6 +10371,8 @@ components:
       - $ref: '#/components/schemas/SessionCompactedEvent'
       - $ref: '#/components/schemas/SessionErrorEvent'
       - $ref: '#/components/schemas/SessionInvalidateEvent'
+      - $ref: '#/components/schemas/SessionKernelEvent'
+      - $ref: '#/components/schemas/SessionGlancesEvent'
     ResetEvent:
       type: object
       properties:

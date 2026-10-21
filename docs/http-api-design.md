@@ -90,6 +90,7 @@ own section. An omitted method is unsupported. `GET` defaults to JSON.
 | `/sessions/{session_id}/interrupt` | POST | Interrupt a captured turn and cancel captured waiting inputs |
 | `/sessions/{session_id}/history` | GET | Bounded transcript pages or checkpoint summaries |
 | `/sessions/{session_id}/history/{entry_id}` | GET | Read full content of a large transcript entry in bounded pieces |
+| `/sessions/{session_id}/history/content` | GET | Read several entries' full content in one walk |
 | `/sessions/{session_id}/active-output/{content_id}` | GET | Read an unfinished output prefix fixed by a captured snapshot |
 | `/sessions/{session_id}/context` | GET | Prepared request inspection and provider request records |
 | `/sessions/{session_id}/context-window` | GET | The window this session compacts against, its source, and a sentence to show |
@@ -878,6 +879,17 @@ dimensions, byte count, and a reference to
 `GET /sessions/{session_id}/history/{entry_id}/{field}`, which returns the
 stored bytes with the image's own `Content-Type`. Clients can reconstruct full
 arguments, results, and images without filesystem access.
+
+`GET /sessions/{session_id}/history/content?entries=a,b,c` reads those parts for
+up to 200 entries in one walk, in the order `entries` names them, so a page
+whose entries are mostly references costs one request per byte budget instead
+of one per entry. Each part carries the `entry_id` it belongs to, because a
+page can stop in the middle of an entry; offsets, the per-piece and per-page
+budgets, and the exclusion of image fields are the single-entry route's. A
+`next` continuation is bound to that request's path and its exact set of
+entries, so it cannot be replayed against another set. Entry IDs are at most
+128 characters. Clients that need one entry's content keep using the
+single-entry route.
 
 ### Prepared context and request records
 

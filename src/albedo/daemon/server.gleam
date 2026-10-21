@@ -636,6 +636,13 @@ fn daemon_route(
         id,
         req,
       )
+    Get, ["sessions", id, "history", "content"] ->
+      http_transcript.contents(
+        config.token,
+        registry.host(registry) |> result.map(runtime.ledger),
+        id,
+        req,
+      )
     Get, ["sessions", id, "history", entry_id, field] ->
       http_transcript.image(
         registry.host(registry) |> result.map(runtime.ledger),

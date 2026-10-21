@@ -90,9 +90,16 @@ seconds, the stop fails.
 The TUI uses these observations for its idle-job status, animation, and
 sidebar, and calls a job background only once it has run three seconds
 (`jobGrace`), so work a cell starts and awaits never flashes through the
-chrome; `/jobs` lists every live job regardless of age. The chat reads these
-every 750 ms while anything is live (a turn, a job, a booting or reattaching
-kernel) and every 5 s otherwise; a live stream event wakes a resting poll.
+chrome; `/jobs` lists every live job regardless of age.
+
+A watching session does not poll for them. It registers a closure with
+`albedo_python:watch/2` (the kernel's pid in the `albedo_kernel_watch`
+registry) and the port owner runs it after any frame that changes what an
+`observation` reply would carry, comparing a cheap facts tuple so a frame that
+changed nothing wakes nobody. The session then re-observes and publishes a
+`kernel` stream event only when the facts differ
+([sessions](sessions.md#live-status-without-a-poll)). A dropped kernel handle
+is forgotten with `albedo_python:unwatch/1`.
 The Erlang port owner truncates commands through `text_scalars.take`, which
 scans only the retained prefix and copies it. Do not convert the entire command
 to a codepoint list to take a bounded preview; see [runtime](runtime.md#unicode-scalar-limits).

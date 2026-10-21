@@ -83,11 +83,19 @@ func SplitLocation(workspace string) (host, path string) {
 func sessionValue(wire protocol.Session) Session {
 	location := &Location{Host: wire.Location.Host, User: wire.Location.User, Path: wire.Location.Path, Label: wire.Location.Label}
 	session := Session{ID: wire.ID, Title: wire.Name, Cursor: wire.Cursor, LastAssistantAt: timestampSeconds(value(wire.ActivityAt)), TranscriptCount: int(wire.Preview.TranscriptCount), Workspace: wire.Workspace, Location: location, Model: value(wire.Model), Effort: value(wire.Effort), ContextWindow: wire.ConfigurationResource.Value.ContextWindow, Provider: value(wire.ProviderProfile), ETag: wire.ConfigurationResource.ETag, FamilyRevision: wire.FamilyRevision, ParentID: wire.ParentID, RootID: wire.RootID, Depth: int(wire.Depth), Closed: wire.Closed, Pinned: wire.Preferences.Pinned, Archived: wire.Preferences.Archived, Opens: int(wire.Preferences.Opens), Status: capturedStatus(wire), wire: wire}
-	for _, glance := range wire.Glances {
-		session.Glances = append(session.Glances, *glanceValue(glance))
-	}
-	slices.SortFunc(session.Glances, func(first, second PageGlance) int { return strings.Compare(first.Title, second.Title) })
+	session.Glances = glancesValue(wire.Glances)
 	return session
+}
+
+// glancesValue is what a session and a pushed glances event both say, in the
+// order the sidebar lists them.
+func glancesValue(glances []protocol.Glance) []PageGlance {
+	var values []PageGlance
+	for _, glance := range glances {
+		values = append(values, *glanceValue(glance))
+	}
+	slices.SortFunc(values, func(first, second PageGlance) int { return strings.Compare(first.Title, second.Title) })
+	return values
 }
 func decodeSession(data []byte) (Session, error) {
 	var wire protocol.Session
@@ -346,11 +354,15 @@ func PreviewHistory(ctx context.Context, conn *Connection, id string, limit int)
 
 func previewItems(ctx context.Context, conn *Connection, id string, entries []protocol.HistoryEntry) ([]PreviewItem, error) {
 	// Long tool results arrive as references, read in full like the chat's.
-	entries, err := hydrateHistory(ctx, conn, id, entries)
+	decoded, err := decodeHistoryEntries(entries)
 	if err != nil {
 		return nil, err
 	}
-	events, err := historyEvents(entries)
+	hydrated, err := hydrateHistory(ctx, conn, id, decoded)
+	if err != nil {
+		return nil, err
+	}
+	events, err := historyEvents(hydrated)
 	if err != nil {
 		return nil, err
 	}

@@ -365,6 +365,91 @@ class HistoryContentTests(IntegrationScenario):
                     )
                 self.assertEqual(large_inputs, {})
 
+    def test_batched_content_reads_a_page_of_oversized_entries_in_one_walk(self):
+        # Opening a session used to cost one content request per oversized
+        # entry, three pages each; the batch route serves the whole page.
+        app = self.app_for("responses")
+        session = app.session()
+        inputs = {}
+        for index in range(3):
+            identity = operation_id()
+            body = f"batched content {index}: " + '😀e\u0301\\"\n' * 75_000
+            with app.api(
+                f"/sessions/{session}/inputs/{identity}",
+                {"kind": "message", "text": body},
+                method="PUT",
+            ) as response:
+                json.load(response)
+            app.idle(session, timeout=90)
+            inputs[identity] = body
+        references = {}
+        for entry in self.history(app, session):
+            if entry["input_id"] not in inputs:
+                continue
+            for part in entry["content"]:
+                if part["kind"] == "reference":
+                    references[entry["id"]] = (entry["input_id"], part["reference"])
+        self.assertEqual(
+            set(references),
+            {
+                entry["id"]
+                for entry in self.history(app, session)
+                if entry["input_id"] in inputs
+            },
+        )
+
+        def content(entries, token=None):
+            query = {"entries": ",".join(entries)}
+            if token is not None:
+                query["next"] = token
+            return self.read(
+                app,
+                f"/sessions/{session}/history/content?" + urllib.parse.urlencode(query),
+            )
+
+        named = list(references)
+        pieces = {entry: [] for entry in named}
+        offsets = {entry: 0 for entry in named}
+        token, first_token, pages = None, None, 0
+        while True:
+            page = content(named, token)
+            pages += 1
+            if first_token is None:
+                first_token = page["next"]
+            for part in page["parts"]:
+                self.assertIn(part["entry_id"], pieces)
+                self.assertEqual(part["encoding"], "utf8")
+                self.assertEqual(part["offset_bytes"], offsets[part["entry_id"]])
+                text = part["text"]
+                offsets[part["entry_id"]] += len(text.encode("utf-8"))
+                pieces[part["entry_id"]].append(text)
+            token = page["next"]
+            if token is None:
+                break
+            self.assertLess(pages, 100, "batched content pagination did not end")
+        self.assertGreater(pages, 1, "one field should cross the page bound")
+        for entry, (input_id, reference) in references.items():
+            rebuilt = "".join(pieces[entry])
+            self.assertEqual(len(rebuilt.encode("utf-8")), reference["bytes"])
+            self.assertEqual(rebuilt, inputs.pop(input_id))
+        self.assertEqual(inputs, {})
+
+        # A continuation belongs to the entries it was issued for, and the
+        # request names a bounded set of bounded ids.
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            content(named[:1], first_token)
+        self.assertEqual(caught.exception.code, 400)
+        for path in (
+            f"/sessions/{session}/history/content",
+            f"/sessions/{session}/history/content?entries=",
+            f"/sessions/{session}/history/content?entries="
+            + ",".join(f"missing-{index}" for index in range(201)),
+            f"/sessions/{session}/history/content?entries=" + "x" * 129,
+        ):
+            with self.assertRaises(urllib.error.HTTPError) as caught:
+                self.read(app, path)
+            self.assertIn(caught.exception.code, (400, 404))
+
     def test_fork_retains_continuation_and_trace_after_source_deletion(self):
         for protocol in ("responses", "chat_completions"):
             with self.subTest(protocol=protocol):

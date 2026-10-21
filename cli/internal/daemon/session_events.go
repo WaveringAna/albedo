@@ -100,14 +100,17 @@ func decodeChatEnvelope(envelope sessionEventEnvelope, wireBytes int, content *e
 		if err := decodeRequired(envelope.Data, &data, "entry"); err != nil {
 			return nil, err
 		}
+		decoded, err := decodeHistoryEntries([]protocol.HistoryEntry{data.Entry})
+		if err != nil {
+			return nil, err
+		}
 		if content != nil {
-			entry, err := content.hydrateEntry(data.Entry)
+			decoded, err = hydrateHistory(content.ctx, content.conn, content.session, decoded)
 			if err != nil {
 				return nil, classifyStreamFailure(err)
 			}
-			data.Entry = entry
 		}
-		entries, err := historyEntryEvents(data.Entry)
+		entries, err := historyEntryEvents(decoded[0])
 		if err != nil {
 			return nil, err
 		}
@@ -169,6 +172,25 @@ func decodeChatEnvelope(envelope sessionEventEnvelope, wireBytes int, content *e
 			return nil, err
 		}
 		event.Usage = usageValue(data)
+	case "kernel":
+		var data struct {
+			Kernel protocol.Kernel `json:"kernel"`
+		}
+		if err := decodeRequired(envelope.Data, &data, "kernel"); err != nil {
+			return nil, err
+		}
+		event.Kernel = &data.Kernel
+	case "glances":
+		var data struct {
+			Glances []protocol.Glance `json:"glances"`
+		}
+		if err := decodeRequired(envelope.Data, &data, "glances"); err != nil {
+			return nil, err
+		}
+		if len(data.Glances) > 16 {
+			return nil, fieldError("glances")
+		}
+		event.Glances = glancesValue(data.Glances)
 	case "committed":
 		var data struct {
 			HighWater       int64    `json:"high_water"`

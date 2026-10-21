@@ -401,6 +401,15 @@ pub fn rebind(
 @external(erlang, "albedo_python", "events")
 pub fn events(kernel: Kernel) -> List(String)
 
+/// Run `notify` when this kernel's job facts change. The closure runs in the
+/// port owner, which sees every job frame: it says a job started or ended, and
+/// the caller re-observes rather than trusting a payload it did not measure.
+@external(erlang, "albedo_python", "watch")
+pub fn watch(kernel: Kernel, notify: fn() -> Nil) -> Nil
+
+@external(erlang, "albedo_python", "unwatch")
+pub fn unwatch(kernel: Kernel) -> Nil
+
 @external(erlang, "albedo_python", "alive")
 pub fn alive(kernel: Kernel) -> Bool
 
