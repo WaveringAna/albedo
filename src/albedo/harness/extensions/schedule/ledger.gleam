@@ -157,12 +157,14 @@ pub fn delete(
   session: String,
   id: Int,
 ) -> Result(Bool, String) {
-  store.read(
-    db,
-    "DELETE FROM schedules WHERE id=? AND session=? RETURNING 1",
-    [sqlight.int(id), sqlight.text(session)],
-    decode.dynamic,
-  )
+  store.query(db, fn(connection) {
+    store.rows(
+      connection,
+      "DELETE FROM schedules WHERE id=? AND session=? RETURNING 1",
+      [sqlight.int(id), sqlight.text(session)],
+      decode.dynamic,
+    )
+  })
   |> result.map(fn(found) { !list.is_empty(found) })
 }
 

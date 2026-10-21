@@ -57,7 +57,7 @@ pub type Observation {
 }
 
 pub fn observe(db: store.Store, home: String) -> Result(Observation, String) {
-  use database <- result.try(store.query(db, projection))
+  use database <- result.try(store.snapshot(db, projection))
   use files <- result.try(inspect(
     home,
     list.map(database.sessions, fn(session) { session.id }),

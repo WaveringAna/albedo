@@ -312,7 +312,7 @@ fn publish(state: State(message), event: view.Event) -> State(message) {
   let observed = case committed_mail {
     True -> {
       let request =
-        store.query(runtime.ledger(state.host), fn(db) {
+        store.snapshot(runtime.ledger(state.host), fn(db) {
           mail.parent_request_in(db, state.info.id)
         })
       case request {

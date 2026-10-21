@@ -1,5 +1,5 @@
 //// Bounded durable session selection. A page's membership, metadata and
-//// family validator are read on one store connection turn; live fields are
+//// family validator are read in one snapshot; live fields are
 //// supplied separately by already running actors.
 
 import albedo/daemon/conversation
@@ -57,7 +57,7 @@ pub fn page(
   after: Option(Key),
   limit: Int,
 ) -> Result(Page, String) {
-  store.query(ledger, fn(db) {
+  store.snapshot(ledger, fn(db) {
     use group <- result.try(case filter.family {
       None -> Ok(None)
       Some(id) -> {

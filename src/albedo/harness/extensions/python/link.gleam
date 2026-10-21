@@ -555,12 +555,14 @@ pub fn pending(storage: store.Store, record: Record) -> List(#(Int, String)) {
 /// those in memory.
 pub fn call(storage: store.Store, record: Record, id: String) -> CallState {
   let claimed =
-    store.read(
-      storage,
-      "INSERT INTO kernel_calls(kernel,call) VALUES(?,?) ON CONFLICT DO NOTHING RETURNING call",
-      [sqlight.text(record.kernel), sqlight.text(id)],
-      decode.dynamic,
-    )
+    store.query(storage, fn(db) {
+      store.rows(
+        db,
+        "INSERT INTO kernel_calls(kernel,call) VALUES(?,?) ON CONFLICT DO NOTHING RETURNING call",
+        [sqlight.text(record.kernel), sqlight.text(id)],
+        decode.dynamic,
+      )
+    })
   case claimed {
     Ok([_]) -> Fresh
     Error(_) -> Fresh

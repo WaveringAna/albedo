@@ -469,7 +469,7 @@ pub fn page(
   after: Int,
   limit: Int,
 ) -> Result(#(List(Row), Int), String) {
-  store.query(database, fn(db) {
+  store.snapshot(database, fn(db) {
     use rows <- result.try(store.rows(
       db,
       "SELECT "
@@ -494,7 +494,7 @@ pub fn last_turn(
   database: store.Store,
   session: String,
 ) -> Result(Option(#(Row, List(Row))), String) {
-  store.query(database, fn(db) {
+  store.snapshot(database, fn(db) {
     use turns <- result.try(store.rows(
       db,
       "SELECT "
@@ -564,7 +564,7 @@ pub fn head_tokens(
   model: String,
   head_hash: String,
 ) -> Option(Int) {
-  store.query(database, fn(db) {
+  store.snapshot(database, fn(db) {
     store.rows(
       db,
       "SELECT COALESCE(cached_input_tokens,0)+cache_write_1h_tokens FROM provider_requests WHERE head_hash=? AND model=? AND profile=? AND cache_write_1h_tokens>0 ORDER BY id DESC LIMIT 1",
@@ -606,7 +606,7 @@ pub fn cache_loss(
   row_id: Int,
   whole_for_ms: Option(Int),
 ) -> Option(Loss) {
-  store.query(database, fn(db) {
+  store.snapshot(database, fn(db) {
     store.rows(
       db,
       "SELECT "

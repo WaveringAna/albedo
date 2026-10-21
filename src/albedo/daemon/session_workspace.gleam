@@ -161,7 +161,7 @@ pub fn report(
   ledger: store.Store,
   recorded: Recorded,
 ) -> Result(Report, String) {
-  store.query(ledger, fn(db) {
+  store.snapshot(ledger, fn(db) {
     use counts <- result.try(store.one(
       db,
       "SELECT COUNT(*),COALESCE(SUM(desired_workspace IS NULL AND cwd=?),0),COALESCE(SUM(desired_workspace IS NOT NULL),0) FROM sessions WHERE workspace_move_id=?",

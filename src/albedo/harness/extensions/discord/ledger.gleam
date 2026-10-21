@@ -225,7 +225,7 @@ fn overview_decoder() -> decode.Decoder(Overview) {
 
 /// Every session's bots, for the human's Discord page.
 pub fn list_all(db: store.Store) -> Result(List(Overview), Error) {
-  store.query(db, query(
+  store.snapshot(db, query(
     _,
     "SELECT "
       <> columns
@@ -237,7 +237,7 @@ pub fn list_all(db: store.Store) -> Result(List(Overview), Error) {
 }
 
 pub fn overview(db: store.Store, id: String) -> Result(Overview, Error) {
-  store.query(db, query(
+  store.snapshot(db, query(
     _,
     "SELECT "
       <> columns
@@ -250,7 +250,7 @@ pub fn overview(db: store.Store, id: String) -> Result(Overview, Error) {
 }
 
 pub fn find(db: store.Store, id: String) -> Result(Bot, Error) {
-  store.query(db, find_on(_, id))
+  store.snapshot(db, find_on(_, id))
 }
 
 fn find_on(connection: sqlight.Connection, id: String) -> Result(Bot, Error) {
@@ -265,7 +265,7 @@ fn find_on(connection: sqlight.Connection, id: String) -> Result(Bot, Error) {
 
 /// The bot a session acts through.
 pub fn for_session(db: store.Store, session: String) -> Result(Bot, Error) {
-  store.query(db, query(
+  store.snapshot(db, query(
     _,
     "SELECT " <> columns <> " FROM discord_bots b WHERE b.session=?",
     [sqlight.text(session)],
@@ -275,7 +275,7 @@ pub fn for_session(db: store.Store, session: String) -> Result(Bot, Error) {
 }
 
 pub fn runnable(db: store.Store) -> Result(List(Runnable), Error) {
-  store.query(
+  store.snapshot(
     db,
     query(_, "SELECT id,token,enabled FROM discord_bots", [], {
       use id <- decode.field(0, decode.string)
@@ -443,7 +443,7 @@ const channel_columns =
   "channel_id,guild_id,guild_name,channel_name,delivery,mentions_only"
 
 pub fn channels(db: store.Store, bot: String) -> Result(List(Channel), Error) {
-  store.query(db, query(
+  store.snapshot(db, query(
     _,
     "SELECT "
       <> channel_columns
@@ -516,7 +516,7 @@ pub fn set_channel(
 }
 
 pub fn allowed(db: store.Store, bot: String) -> Result(List(Allowed), Error) {
-  store.query(
+  store.snapshot(
     db,
     query(
       _,
@@ -534,7 +534,7 @@ pub fn allowed(db: store.Store, bot: String) -> Result(List(Allowed), Error) {
 
 /// Newest first.
 pub fn requests(db: store.Store, bot: String) -> Result(List(Request), Error) {
-  store.query(
+  store.snapshot(
     db,
     query(
       _,
@@ -658,7 +658,7 @@ pub fn may_dm(
   bot: Bot,
   user_id: String,
 ) -> Result(Bool, Error) {
-  store.query(db, whitelisted(_, bot.id, bot.owner_id, user_id))
+  store.snapshot(db, whitelisted(_, bot.id, bot.owner_id, user_id))
   |> result.map_error(Storage)
 }
 
@@ -746,7 +746,7 @@ pub fn cursors(
   db: store.Store,
   bot: String,
 ) -> Result(List(#(String, String)), Error) {
-  store.query(
+  store.snapshot(
     db,
     query(
       _,
@@ -768,7 +768,7 @@ pub fn visible(
   bot: String,
   channel: String,
 ) -> Result(Bool, Error) {
-  store.query(
+  store.snapshot(
     db,
     count(
       _,

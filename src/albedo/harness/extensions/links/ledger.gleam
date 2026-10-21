@@ -77,10 +77,10 @@ fn capture(db: sqlight.Connection, workspace: String) -> Result(Group, String) {
 }
 
 pub fn read(storage: store.Store, workspace: String) -> Result(Group, String) {
-  store.query(storage, metadata(_, workspace))
+  store.snapshot(storage, metadata(_, workspace))
 }
 
-/// Read only the requested bounded page in the same owner call as its metadata.
+/// Reads the bounded page and its metadata in one snapshot.
 pub fn page(
   storage: store.Store,
   workspace: String,
@@ -88,7 +88,7 @@ pub fn page(
   offset: Int,
   limit: Int,
 ) -> Result(Group, String) {
-  store.query(storage, fn(db) {
+  store.snapshot(storage, fn(db) {
     use group <- result.try(metadata(db, workspace))
     use _ <- result.try(case group.revision == revision && offset >= 0 {
       True -> Ok(Nil)

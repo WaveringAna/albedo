@@ -39,7 +39,7 @@ pub fn change(
   let ledger = runtime.ledger(state.host)
   let prepared = {
     use current <- result.try(
-      store.query(ledger, config.read_in(_, state.info.id)),
+      store.snapshot(ledger, config.read_in(_, state.info.id)),
     )
     use #(expected, patch) <- result.try(request_patch(state, current, request))
     use _ <- result.try(
@@ -381,7 +381,10 @@ fn resolve_choices(
   patch: config.Patch,
 ) -> Result(List(config.Choice), String) {
   use saved <- result.try(
-    store.query(runtime.ledger(state.host), config.choices_in(_, state.info.id)),
+    store.snapshot(runtime.ledger(state.host), config.choices_in(
+      _,
+      state.info.id,
+    )),
   )
   let selection = patch.selection
   case

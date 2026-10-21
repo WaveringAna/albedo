@@ -187,7 +187,7 @@ pub fn start_with_config(
     use ledger <- result.try(
       store.start(
         database,
-        "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=3000;",
+        "PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=3000;",
       )
       |> result.replace_error("could not open storage"),
     )

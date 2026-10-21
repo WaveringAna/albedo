@@ -102,7 +102,7 @@ fn saved_choices(
   inventory: Inventory,
   id: String,
 ) -> Result(#(String, Int, List(#(String, String, String, Bool))), String) {
-  store.query(inventory.ledger, fn(db) {
+  store.snapshot(inventory.ledger, fn(db) {
     use #(workspace, revision) <- result.try(store.one(
       db,
       "SELECT cwd,config_revision FROM sessions WHERE id=?",

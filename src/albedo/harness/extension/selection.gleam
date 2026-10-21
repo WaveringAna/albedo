@@ -589,7 +589,7 @@ pub fn overrides(
   ledger: store.Store,
   session: String,
 ) -> Result(List(#(String, Bool)), String) {
-  store.query(ledger, fn(db) {
+  store.snapshot(ledger, fn(db) {
     store.rows(
       db,
       "SELECT name,enabled FROM session_extensions WHERE session=?",

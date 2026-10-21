@@ -463,7 +463,7 @@ pub fn list_page(
   limit: Int,
   offset: Int,
 ) -> Result(NodeListPage, String) {
-  store.query(ledger, fn(db) {
+  store.snapshot(ledger, fn(db) {
     use total <- result.try(store.one(
       db,
       "SELECT COUNT(*) FROM lcm_compaction_node WHERE session=?",
@@ -591,7 +591,7 @@ pub fn covering_nodes(
   session: String,
   seqs: List(Int),
 ) -> Result(Dict(Int, Int), String) {
-  store.query(ledger, fn(db) {
+  store.snapshot(ledger, fn(db) {
     list.try_fold(seqs, dict.new(), fn(found, seq) {
       use rows <- result.try(store.rows(
         db,

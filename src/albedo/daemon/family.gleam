@@ -432,7 +432,7 @@ pub fn closed(db: store.Store, session: String) -> Result(Bool, String) {
   case get(db, session) {
     Ok(Some(member)) -> Ok(member.closed)
     Ok(None) ->
-      store.query(db, fn(connection) {
+      store.snapshot(db, fn(connection) {
         store.one(
           connection,
           "SELECT peer_closed_at IS NOT NULL FROM sessions WHERE id=?",
@@ -457,7 +457,7 @@ pub fn resolve(
   caller: String,
   to: String,
 ) -> Result(Address, String) {
-  store.query(db, fn(connection) {
+  store.snapshot(db, fn(connection) {
     use me <- result.try(
       rows(connection, members("WHERE session=?"), [sqlight.text(caller)]),
     )
@@ -527,7 +527,7 @@ pub fn resolve(
 /// How other agents address `session`: its family name, or when it is a root
 /// the name it was given or its title.
 pub fn name_of(db: store.Store, session: String) -> String {
-  store.query(db, fn(connection) { parent_name(connection, session) })
+  store.snapshot(db, fn(connection) { parent_name(connection, session) })
 }
 
 /// A parent's name as its children say it: its own family name, or when it

@@ -71,13 +71,12 @@ pub type CapturedInfo {
   )
 }
 
-/// One connection turn captures metadata and the transcript boundary. Another
-/// session's writes cannot interleave these reads on the store owner.
+/// Captures metadata and the transcript boundary in one read snapshot.
 pub fn capture(
   ledger: store.Store,
   id: String,
 ) -> Result(CapturedInfo, String) {
-  store.query(ledger, fn(db) { capture_in(db, id) })
+  store.snapshot(ledger, fn(db) { capture_in(db, id) })
 }
 
 /// Capture using the caller's connection so a collection shares one boundary.
@@ -992,7 +991,7 @@ pub fn activity(store: store.Store) -> Result(List(#(String, Int)), String) {
 }
 
 pub fn get(store: store.Store, id: String) -> Result(Info, String) {
-  store.query(store, read_info(_, id))
+  store.snapshot(store, read_info(_, id))
 }
 
 /// `get` inside a query the caller already holds.
@@ -1257,7 +1256,7 @@ pub fn source_stats(
   snapshot: Snapshot,
   covered: Int,
 ) -> Result(SourceStats, String) {
-  store.query(ledger, fn(db) {
+  store.snapshot(ledger, fn(db) {
     use latest <- result.try(store.one(
       db,
       "SELECT MAX(seq) FROM transcript WHERE session=? AND seq<=? AND row_class IN ('user','image_fit')",
@@ -1403,9 +1402,9 @@ fn fold_source_pages(
   schedule: FitSchedule,
   replacements: image_fit.Replacements,
 ) -> Result(a, String) {
-  let read = images.reader(ledger)
   use rows <- result.try(
-    store.query(ledger, fn(db) {
+    store.snapshot(ledger, fn(db) {
+      let read = fn(hash) { images.read(db, hash) }
       use rows <- result.try(store.rows(
         db,
         "SELECT seq,payload,timestamp,provider,thought_ms FROM transcript WHERE session=? AND seq>? AND seq<=? ORDER BY seq LIMIT 128",
@@ -1483,7 +1482,7 @@ pub fn load_sources(
   id: String,
 ) -> Result(List(transcript.SourcedEntry), String) {
   use upper <- result.try(
-    store.query(store, fn(db) {
+    store.snapshot(store, fn(db) {
       store.rows(
         db,
         "SELECT COALESCE(MAX(seq),-1) FROM transcript WHERE session=?",
@@ -1512,9 +1511,9 @@ fn load_source_pages(
   upper: Int,
   pages: List(List(LoadedRow)),
 ) -> Result(List(transcript.SourcedEntry), String) {
-  let read = images.reader(store)
   let page =
-    store.query(store, fn(db) {
+    store.snapshot(store, fn(db) {
+      let read = fn(hash) { images.read(db, hash) }
       use rows <- result.try(store.rows(
         db,
         "SELECT seq,payload,timestamp,provider,thought_ms FROM transcript WHERE session=? AND seq>? AND seq<=? ORDER BY seq LIMIT ?",
@@ -1618,7 +1617,7 @@ pub fn tool_result_position(
   run_id: String,
   call_id: String,
 ) -> Result(Option(Int), String) {
-  store.query(ledger, fn(db) {
+  store.snapshot(ledger, fn(db) {
     use rows <- result.try(
       store.rows(
         db,
@@ -1839,8 +1838,8 @@ pub fn read_range(
     Before(position) -> #("seq<?", "DESC", position)
     After(position) -> #("seq>?", "ASC", position)
   }
-  let read = images.reader(ledger)
-  store.query(ledger, fn(db) {
+  store.snapshot(ledger, fn(db) {
+    let read = fn(hash) { images.read(db, hash) }
     // Only integer metadata crosses the first query; large packed arguments,
     // results, and durable display bodies cannot multiply by the row limit.
     use sizes <- result.try(
@@ -2037,7 +2036,7 @@ pub fn read_range(
 
 /// The session's newest transcript sequence, or 0 when it has none.
 pub fn last_seq(store: store.Store, id: String) -> Result(Int, String) {
-  store.query(store, fn(db) {
+  store.snapshot(store, fn(db) {
     store.one(
       db,
       "SELECT COALESCE(MAX(seq),0) FROM transcript WHERE session=?",
@@ -2112,7 +2111,8 @@ pub fn prompt_pin(
   store: store.Store,
   id: String,
 ) -> Result(Option(#(PinnedPrompt, Int)), String) {
-  store.query(store, fn(db) {
+  store.snapshot(store, fn(db) {
+    let read = fn(hash) { images.read(db, hash) }
     use rows <- result.try(
       store.rows(
         db,
@@ -2129,7 +2129,7 @@ pub fn prompt_pin(
     case rows {
       [#(Some(instructions), Some(context), head)] ->
         Ok(
-          unpack_list(context, images.reader(store))
+          unpack_list(context, read)
           |> result.map(fn(context) {
             #(PinnedPrompt(instructions, context), head)
           })
@@ -2510,7 +2510,7 @@ pub fn load_usage(
   store: store.Store,
   id: String,
 ) -> Result(Option(usage.Metadata), String) {
-  store.query(store, fn(db) {
+  store.snapshot(store, fn(db) {
     store.one(
       db,
       "SELECT usage_model,usage_recorded_at,usage_prompt_tokens,usage_completion_tokens,usage_cached_prompt_tokens,usage_cache_creation_tokens,usage_cache_write_5m_tokens,usage_cache_write_1h_tokens,usage_reasoning_tokens,usage_cache,usage_cache_miss_tokens,usage_cache_drift_tokens FROM sessions WHERE id=?",

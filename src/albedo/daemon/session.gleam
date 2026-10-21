@@ -3577,7 +3577,7 @@ fn workspace_changed(state: State) -> State {
 fn apply_workspace_state(state: State) -> Result(State, #(State, String)) {
   let ledger = runtime.ledger(state.host)
   use pending <- result.try(
-    store.query(ledger, fn(db) {
+    store.snapshot(ledger, fn(db) {
       session_workspace.pending_in(db, state.info.id)
     })
     |> result.map_error(fn(error) { #(state, error) }),

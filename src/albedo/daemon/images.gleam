@@ -18,13 +18,13 @@ import sqlight
 pub const schema =
   "CREATE TABLE IF NOT EXISTS images(hash TEXT PRIMARY KEY,data BLOB NOT NULL); CREATE TABLE IF NOT EXISTS migrations(name TEXT PRIMARY KEY,applied_at INTEGER NOT NULL);"
 
-/// Fetches a stored payload. Never call the result from inside `store.query`:
-/// the read is itself a store query, and the store runs one at a time.
+/// Fetches stored payloads in separate snapshots; do not call inside a store callback.
 pub fn reader(ledger: store.Store) -> fn(String) -> Result(String, Nil) {
-  fn(hash) { store.query(ledger, fn(db) { read(db, hash) }) }
+  fn(hash) { store.snapshot(ledger, fn(db) { read(db, hash) }) }
 }
 
-fn read(db: sqlight.Connection, hash: String) -> Result(String, Nil) {
+/// Fetches a stored payload on the caller's connection.
+pub fn read(db: sqlight.Connection, hash: String) -> Result(String, Nil) {
   // Older databases can hold TEXT rows until their startup migration completes.
   case
     store.rows(
@@ -51,8 +51,7 @@ fn read(db: sqlight.Connection, hash: String) -> Result(String, Nil) {
   }
 }
 
-/// An image's decoded bytes, for serving the image itself. Same caveat as
-/// `reader`: never call this from inside `store.query`.
+/// An image's decoded bytes. Do not call inside a store callback.
 pub fn bytes(ledger: store.Store, image: types.Image) -> Result(BitArray, Nil) {
   case types.image_data(image) {
     types.InlineData(data) -> decode_legacy_base64(data)
@@ -61,7 +60,7 @@ pub fn bytes(ledger: store.Store, image: types.Image) -> Result(BitArray, Nil) {
 }
 
 fn stored_bytes(ledger: store.Store, hash: String) -> Result(BitArray, Nil) {
-  store.query(ledger, fn(db) {
+  store.snapshot(ledger, fn(db) {
     case
       store.rows(
         db,

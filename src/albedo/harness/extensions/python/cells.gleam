@@ -103,7 +103,11 @@ fn claim(
   values: List(sqlight.Value),
   lost: String,
 ) -> Result(Nil, String) {
-  use rows <- result.try(store.read(storage, update, values, decode.dynamic))
+  use rows <- result.try(
+    store.query(storage, fn(db) {
+      store.rows(db, update, values, decode.dynamic)
+    }),
+  )
   case rows {
     [_] -> Ok(Nil)
     _ -> Error(lost)

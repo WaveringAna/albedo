@@ -89,6 +89,14 @@ instead of indexing the state tuple or searching its fields by constructor tag.
 The memory inspector reports numbered fields and sizes; it must not mirror
 Gleam record names or create atoms for field labels.
 
+## storage concurrency
+
+`daemon/store.gleam` owns one ordered writer connection and four read-only connections for a file-backed database. `query` and `write` run on the writer. `read` uses SQLite's statement snapshot without opening an explicit transaction; `snapshot` runs a read-only callback in one deferred transaction on a reader. `store/readers.gleam` admits reads to idle connections on a separate actor, so a queued writer or one slow reader does not delay reads when another connection is free. Waiting reads use a FIFO queue. SQLite WAL permits readers and the writer to run together. Writes still serialize, and a session actor waiting for its own durable write cannot handle another message until that write returns.
+
+A snapshot sees committed data from its first read. All related reads, including image payload lookups, use the supplied connection. Snapshot callbacks must not call Store-level APIs, retain their connection, or write. Read-modify-write operations and mutations with `RETURNING` use `query` and stay on the writer. A read after an acknowledged write sees that commit; a read concurrent with an uncommitted write can see the previous committed state.
+
+Reader connections use private SQLite caches with a 128 KiB suggested page-cache limit each (512 KiB across four readers), rather than four default-sized caches. Schema and connection allocations are additional; this is not a total memory cap. Reader connections belong to the store lifetime and close before the writer. A failed connection owner fails the store rather than leaving a live handle with reduced capacity. Private in-memory databases retain one connection and serialize snapshots with writes. Their snapshots still enforce read-only access.
+
 ## finite actor calls
 
 `albedo/actor_call.gleam` owns monitored calls that return `TimedOut` or

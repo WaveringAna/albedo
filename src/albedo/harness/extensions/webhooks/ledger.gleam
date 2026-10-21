@@ -243,7 +243,7 @@ pub fn agent_management(
   db: store.Store,
   session: String,
 ) -> Result(Bool, Error) {
-  store.query(db, agent_manage(_, session))
+  store.snapshot(db, agent_manage(_, session))
 }
 
 /// Only the human-facing management path may grant agent self-management.
@@ -268,7 +268,7 @@ pub fn last_failure(
   session: String,
   id: String,
 ) -> Result(Option(String), Error) {
-  store.query(db, fn(connection) {
+  store.snapshot(db, fn(connection) {
     query(
       connection,
       "SELECT m.last_error FROM webhook_deliveries d JOIN mail m ON m.id=d.id WHERE d.session=? AND d.hook=? AND m.delivered_at IS NULL AND m.last_error IS NOT NULL ORDER BY m.created_at DESC,m.id DESC LIMIT 1",
@@ -284,7 +284,7 @@ pub fn pending_count(
   session: String,
   id: String,
 ) -> Result(Int, Error) {
-  store.query(db, fn(connection) {
+  store.snapshot(db, fn(connection) {
     query(
       connection,
       "SELECT count(*) FROM webhook_deliveries d JOIN mail m ON m.id=d.id WHERE d.session=? AND d.hook=? AND m.delivered_at IS NULL",
@@ -300,7 +300,7 @@ pub fn list(
   actor: Actor,
   session: String,
 ) -> Result(List(Hook), Error) {
-  store.query(db, fn(connection) {
+  store.snapshot(db, fn(connection) {
     use _ <- result.try(permitted(connection, actor, session))
     rows(
       connection,
@@ -314,7 +314,7 @@ pub fn list(
 
 /// Every session's hooks, for the human's Webhooks screen.
 pub fn list_all(db: store.Store) -> Result(List(Hook), Error) {
-  store.query(
+  store.snapshot(
     db,
     rows(
       _,
@@ -327,7 +327,7 @@ pub fn list_all(db: store.Store) -> Result(List(Hook), Error) {
 /// A hook by id in whichever session it targets. Only the human path uses
 /// this; the agent's lookups stay scoped to its own session.
 pub fn find(db: store.Store, id: String) -> Result(Hook, Error) {
-  store.query(
+  store.snapshot(
     db,
     rows(_, "SELECT " <> columns <> " FROM webhook_hooks WHERE id=?", [
       sqlight.text(id),
@@ -372,7 +372,7 @@ pub fn get(
   session: String,
   id: String,
 ) -> Result(Hook, Error) {
-  store.query(db, find_owned(_, actor, session, id))
+  store.snapshot(db, find_owned(_, actor, session, id))
 }
 
 pub fn to_json(hook: Hook) -> json.Json {
@@ -560,7 +560,7 @@ pub fn permission(
   db: store.Store,
   session: String,
 ) -> Result(Permission, Error) {
-  store.query(db, permission_on(_, session))
+  store.snapshot(db, permission_on(_, session))
 }
 
 pub fn patch_permission(
@@ -592,7 +592,7 @@ pub fn list_page(
   after: String,
   limit: Int,
 ) -> Result(List(Overview), Error) {
-  store.query(
+  store.snapshot(
     db,
     query(
       _,
@@ -646,7 +646,7 @@ pub fn receipts(
   after: String,
   limit: Int,
 ) -> Result(List(Receipt), Error) {
-  store.query(db, query(
+  store.snapshot(db, query(
     _,
     "SELECT "
       <> receipt_columns
@@ -667,7 +667,7 @@ pub fn receipt(
   db: store.Store,
   id: String,
 ) -> Result(#(Receipt, BitArray), Error) {
-  store.query(db, fn(connection) {
+  store.snapshot(db, fn(connection) {
     query(
       connection,
       "SELECT "
@@ -984,7 +984,7 @@ pub fn delivery(
   session: String,
   id: String,
 ) -> Result(Delivery, Error) {
-  store.query(db, fn(connection) {
+  store.snapshot(db, fn(connection) {
     query(
       connection,
       "SELECT id,hook,name,session,body FROM webhook_deliveries WHERE id=? AND session=?",

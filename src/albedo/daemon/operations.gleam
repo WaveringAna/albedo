@@ -295,7 +295,7 @@ pub fn lookup(
   ledger: store.Store,
   id: String,
 ) -> Result(Option(Receipt), String) {
-  store.query(ledger, lookup_in(_, id))
+  store.snapshot(ledger, lookup_in(_, id))
 }
 
 pub fn lookup_in(
@@ -316,7 +316,7 @@ pub fn check(
   ledger: store.Store,
   request: Request,
 ) -> Result(Option(Receipt), String) {
-  store.query(ledger, check_in(_, request))
+  store.snapshot(ledger, check_in(_, request))
 }
 
 pub fn check_in(
@@ -523,7 +523,7 @@ pub fn pending(
   ledger: store.Store,
   session: String,
 ) -> Result(List(Pending), String) {
-  store.query(ledger, pending_in(_, session))
+  store.snapshot(ledger, pending_in(_, session))
 }
 
 pub fn pending_in(
