@@ -49,6 +49,21 @@ exits restart it after a doubling pause: `Always` for the daemon's own port,
 `Bounded(attempts, stopped)` for the webhook intake, which stops and runs
 `stopped` after that many failed starts in a row.
 
+## code loading
+
+Erlang loads a module on its first call, and a package upgrade (Homebrew's
+cleanup, say) can delete the install a daemon is still running from; the
+first call into an unloaded OTP module then fails with `undef`. Right after
+readiness, `albedo_code:start/0` loads, in the background, every module of every
+application reachable from `albedo`: declared dependencies plus the owners of
+every module their code imports (inets is reached this way; build tools on the
+code path such as Elixir and Mix are not). The outcome is kept in the
+persistent term `{albedo_code, preloaded}`. A runtime call that names a module
+only dynamically, in an application nothing imports, is not covered: import
+it, or declare its application. ERTS port programs and OTP priv files cannot
+be preloaded, so `GET /server` adds a `runtime-removed-<instance>` warning
+notice once the install's `lib` directory is gone.
+
 ## native boundaries
 
 Keep process state, ports, monitors, ETF, and native binary matching in their

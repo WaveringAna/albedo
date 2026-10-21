@@ -716,6 +716,8 @@ pub fn main() -> Nil {
   // Before readiness, so a client that sees the daemon can already inspect it.
   inspect(home)
   let assert Ok(_) = ready(home, port, webhook_port, token)
+  // After readiness, so loading every reachable module never delays a client.
+  preload_code()
   watch_parent(env("ALBEDO_PARENT_PID"))
   process.sleep_forever()
 }
@@ -782,6 +784,12 @@ fn ready(
 @external(erlang, "albedo_inspect", "start")
 fn inspect(home: String) -> Nil
 
+@external(erlang, "albedo_code", "start")
+fn preload_code() -> Nil
+
+@external(erlang, "albedo_code", "runtime_removed")
+fn runtime_removed() -> Bool
+
 @external(erlang, "albedo_daemon", "watch_parent")
 fn watch_parent(pid: String) -> Nil
 
@@ -835,6 +843,35 @@ fn protocol_method(path: List(String)) -> response.Response(mist.ResponseData) {
         "resource was not found",
       ))
   }
+}
+
+/// Notices as #(id, kind, message). A removed runtime is named per instance,
+/// so dismissing it for one daemon leaves it visible for the next one in the
+/// same state.
+fn server_notices(instance_id: String) -> List(#(String, String, String)) {
+  let removed = case runtime_removed() {
+    True -> [
+      #(
+        "runtime-removed-" <> instance_id,
+        "warning",
+        "The Erlang install this daemon started from was removed, probably by a package upgrade. Restart the daemon (albedo daemon --stop) to run on the current one.",
+      ),
+    ]
+    False -> []
+  }
+  let migrated =
+    credentials.migrated()
+    |> list.take(100)
+    |> list.map(fn(file) {
+      #(
+        "credentials-migrated-" <> file,
+        "migration",
+        "Credentials from "
+          <> file
+          <> " were moved into creds.json; the original file is in backups.",
+      )
+    })
+  list.append(removed, migrated)
 }
 
 fn protocol_server(
@@ -956,23 +993,13 @@ fn protocol_server(
       #(
         "notices",
         json.array(
-          credentials.migrated()
-            |> list.take(100)
-            |> list.filter(fn(file) {
-              !list.contains(dismissed, "credentials-migrated-" <> file)
-            }),
-          fn(file) {
+          server_notices(instance_id)
+            |> list.filter(fn(notice) { !list.contains(dismissed, notice.0) }),
+          fn(notice) {
             json.object([
-              #("id", json.string("credentials-migrated-" <> file)),
-              #("kind", json.string("migration")),
-              #(
-                "message",
-                json.string(
-                  "Credentials from "
-                  <> file
-                  <> " were moved into creds.json; the original file is in backups.",
-                ),
-              ),
+              #("id", json.string(notice.0)),
+              #("kind", json.string(notice.1)),
+              #("message", json.string(notice.2)),
             ])
           },
         ),

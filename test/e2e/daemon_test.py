@@ -6,9 +6,13 @@ import http.client
 import http.server
 from collections.abc import Callable
 import json
+import os
+from pathlib import Path
 import resource
+import shutil
 import socket
 import sqlite3
+import subprocess
 import threading
 import time
 import unittest
@@ -621,6 +625,81 @@ class DaemonTest(unittest.TestCase):
                     time.sleep(0.1)
             record = json.loads((app.home / "daemon.json").read_text())
             self.assertEqual((record["pid"], record["port"]), (pid, port))
+
+    # exclusive: runs the daemon on a private Erlang install and deletes it
+    @exclusive
+    def test_a_daemon_whose_erlang_install_is_deleted_keeps_publishing_settings(
+        self,
+    ):
+        # A package upgrade deletes the install a long-running daemon started
+        # from, and Erlang loads modules on first call: the first settings save
+        # afterwards (the TUI's /v) needed one nothing had loaded, failed with
+        # undef halfway through its publication, and left every settings read
+        # failing until a restart.
+        root = Path(
+            subprocess.run(
+                ["erl", "-noshell", "-eval", "io:put_chars(code:root_dir()), halt()."],
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout
+        )
+
+        def prepare(app):
+            install = app.root / "erlang"
+            shutil.copytree(root, install, symlinks=True)
+            app.daemon.env.update(
+                ALBEDO_INSPECT="1",
+                PATH=f"{install / 'bin'}{os.pathsep}{app.daemon.env['PATH']}",
+            )
+
+        with Albedo(prepare=prepare) as app:
+            inspection = Inspection(app)
+            deadline = time.monotonic() + 60
+            while (
+                outcome := inspection.evaluate(
+                    'io:format("~p", [Call(persistent_term, get, '
+                    "[{albedo_code, preloaded}, pending])])"
+                )
+            ) == "pending":
+                self.assertLess(time.monotonic(), deadline, "preload never finished")
+                time.sleep(0.2)
+            self.assertTrue(outcome.startswith("{ok,"), outcome)
+            install = app.root / "erlang"
+            self.assertEqual(
+                inspection.evaluate("io:put_chars(Call(code, root_dir, []))"),
+                str(install),
+            )
+            shutil.rmtree(install)
+            # Which module a run happens to leave unloaded depends on its
+            # history, so check them all: an application the daemon uses has
+            # every module it ships loaded.
+            partial = inspection.evaluate(
+                'io:format("~p", [Call(erlang, apply, [fun() -> '
+                "[A || {A, _, _} <- application:loaded_applications(), "
+                "{ok, Ms} <- [application:get_key(A, modules)], "
+                "Loaded <- [[M || M <- Ms, code:is_loaded(M) =/= false]], "
+                "Loaded =/= [], length(Loaded) < length(Ms)] end, []])])"
+            )
+            self.assertEqual(partial, "[]")
+
+            route = "/settings?group=ui"
+            with app.api(route) as response:
+                tools = json.load(response)["tools"]
+                etag = response.headers["ETag"]
+            with app.api(
+                route, {"tools": not tools}, method="PATCH", headers={"If-Match": etag}
+            ) as response:
+                self.assertEqual(
+                    json.load(response)["resource"]["value"]["tools"], not tools
+                )
+            self.assertFalse((app.home / ".settings-recovery").exists())
+            with app.api("/server") as response:
+                notices = json.load(response)["notices"]
+            self.assertIn(
+                "warning",
+                [n["kind"] for n in notices if n["id"].startswith("runtime-removed-")],
+            )
 
     def test_a_thoughts_duration_is_kept_with_the_transcript(self):
         # summarized thinking streams once it is written: here the response
