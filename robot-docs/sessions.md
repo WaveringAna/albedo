@@ -74,7 +74,9 @@ Session streams require the `text/event-stream` content type, zstd-coded when
 the request accepts it ([encoding](../docs/http-api-design.md)): `http_stream`
 flushes the coder after every frame and ends the frame before a deliberate
 stop. A zstd context works only in the process that created it, so the stream
-process creates its own writer. Each batch carries
+process creates its own writer. Frames are coded with a 64 KiB window, which
+is the decoder memory a client holds for the life of the stream
+([encoding](../docs/http-api-design.md)). Each batch carries
 a nonempty `generation`, a nonnegative integer `cursor`, and an `events` array.
 The generation identifies one lifetime of the session actor. Reconnect requests
 send both `after_generation` and `after_seq`; an initial request omits both.

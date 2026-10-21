@@ -2,6 +2,13 @@
 -export([accepts_zstd/1, zstd_compress/1, zstd_stream/0, zstd_flush/2, zstd_end/1, zstd_decompress/2,
          stream_socket/1, content_slice/3, page_token/3, page_state/3, parse/1, accept/2, encode/1, timestamp/1, etag/1, instance_id/0, read_chunked/2]).
 
+%% The window a frame declares is the memory its decoder must hold: a client
+%% keeps one decoder open for the life of a session stream, and klauspost's
+%% decoder allocates twice the window below 2 MiB. 64 KiB keeps a client's
+%% stream decoder near 200 KiB (down from 1.2 MiB at level 1's 512 KiB) and
+%% costs about 2% more bytes on a real session stream.
+-define(zstd_window_log, 16).
+
 parse(Bytes) ->
     try
         Push = fun(Key, Value, Acc) ->
@@ -166,11 +173,13 @@ accepts_zstd(Header) ->
         Quality > 0
     catch _:_ -> false end.
 
-zstd_compress(Data) -> zstd:compress(Data, #{compressionLevel => 1}).
+zstd_compress(Data) -> zstd:compress(Data, zstd_params()).
 
 zstd_stream() ->
-    {ok, Context} = zstd:context(compress, #{compressionLevel => 1}),
+    {ok, Context} = zstd:context(compress, zstd_params()),
     Context.
+
+zstd_params() -> #{compressionLevel => 1, windowLog => ?zstd_window_log}.
 
 %% Everything written so far, decodable by a reader without waiting for more.
 zstd_flush(Context, Data) ->

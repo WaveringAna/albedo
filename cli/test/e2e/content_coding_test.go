@@ -73,6 +73,21 @@ func decoded(t *testing.T, res *http.Response) []byte {
 	return data
 }
 
+// The window a coded body's first frame declares: the memory a client's
+// decoder holds for it, since klauspost allocates twice the window below
+// 2 MiB. albedo_http_api compresses with windowLog 16, so no frame may ask
+// for more. A session stream keeps its decoder for the client's whole life.
+const codedWindowBytes = 64 << 10
+
+func windowOf(t *testing.T, coded []byte) uint64 {
+	t.Helper()
+	var header zstd.Header
+	if err := header.Decode(coded); err != nil {
+		t.Fatalf("coded body header: %v", err)
+	}
+	return header.WindowSize
+}
+
 // A large upload crosses zstd-coded once the daemon advertises it, the reply
 // and its history come back coded and identical to identity, the session
 // stream decodes frame by frame, and the attached image is served as itself.
@@ -108,7 +123,22 @@ func TestZstdCodingAndRawImages(t *testing.T) {
 	if coded.Header.Get("Content-Encoding") != "zstd" || !strings.Contains(coded.Header.Get("Vary"), "Accept-Encoding") || plain.Header.Get("Content-Encoding") != "" {
 		t.Fatalf("history coding: %q vary %q, identity %q", coded.Header.Get("Content-Encoding"), coded.Header.Get("Vary"), plain.Header.Get("Content-Encoding"))
 	}
-	history := decoded(t, coded)
+	codedBytes, err := io.ReadAll(coded.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if window := windowOf(t, codedBytes); window > codedWindowBytes {
+		t.Errorf("the coded history declares a %d byte window, want at most %d", window, codedWindowBytes)
+	}
+	historyDecoder, err := zstd.NewReader(bytes.NewReader(codedBytes), zstd.WithDecoderConcurrency(1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	history, err := io.ReadAll(historyDecoder)
+	historyDecoder.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !bytes.Equal(history, decoded(t, plain)) {
 		t.Fatal("the zstd history differs from identity")
 	}
@@ -147,7 +177,15 @@ func TestZstdCodingAndRawImages(t *testing.T) {
 	if stream.Header.Get("Content-Encoding") != "zstd" {
 		t.Fatal("the session stream was not zstd-coded")
 	}
-	frames, err := zstd.NewReader(stream.Body, zstd.WithDecoderConcurrency(1))
+	codedStream := bufio.NewReaderSize(stream.Body, 1<<20)
+	head, err := codedStream.Peek(18)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if window := windowOf(t, head); window > codedWindowBytes {
+		t.Errorf("the session stream declares a %d byte window, want at most %d", window, codedWindowBytes)
+	}
+	frames, err := zstd.NewReader(codedStream, zstd.WithDecoderConcurrency(1))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -200,7 +200,10 @@ compressed when `Accept-Encoding` admits `zstd`, and so is a session or
 collection event stream, flushed after every frame. Limits and `ETag` values
 describe the decoded representation, and these responses add
 `Vary: Accept-Encoding`. Image resources are never coded. The daemon needs
-OTP 29, whose `zstd` can flush a stream between frames.
+OTP 29, whose `zstd` can flush a stream between frames. Frames use a 64 KiB
+window (`windowLog 16` in `albedo_http_api`), not level 1's 512 KiB default:
+the window is the memory a client's decoder must hold, and an event stream
+keeps one decoder for the client's whole life.
 When `GET /server` lists the `zstd_requests` capability, a request body may use
 `Content-Encoding: zstd`. It must be one frame that declares its decoded size,
 which must fit the route's limit; anything else is `400`. The CLI compresses

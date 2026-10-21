@@ -13,7 +13,12 @@ import (
 // advertises zstd_requests; smaller ones are not worth a frame.
 const compressedRequestBytes = 16 * 1024
 
-// The daemon compresses with a small window; anything larger is refused.
+// The window a frame declares is the memory the decoder must hold for it, and
+// below 2 MiB klauspost allocates twice that: the daemon compresses with a
+// 64 KiB window (albedo_http_api's zstd_params), so the decoder a session's
+// stream keeps for the life of the client costs about 200 KiB. This cap only
+// refuses a frame no daemon of ours sends; level 1's default window is
+// 512 KiB, which is what a daemon that predates the 64 KiB window declares.
 const zstdWindowBytes = 8 << 20
 
 // EncodeAll is safe for concurrent use; one encoder amortises its tables
