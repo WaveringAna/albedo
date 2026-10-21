@@ -71,4 +71,4 @@ ffi_usage = "off"
 # albedo's own rules (tools/lint).
 albedo_clock = "error"
 albedo_text_scalars = "error"
-albedo_table_ownership = "off"
+albedo_table_ownership = "error"

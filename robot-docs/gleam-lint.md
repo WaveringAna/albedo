@@ -13,12 +13,11 @@ nix develop -c test/gleam-lint.sh
 
 The default uses the focused policy in `gleam.toml`. `--review` adds checks that
 need caller and failure-contract inspection, using `test/manual/glinter-review.toml`.
-`--all` uses `test/manual/glinter-all.toml`. `--albedo` also enables
-`albedo_table_ownership` (below). The optional profiles run through a temporary
-project with symlinks to this checkout. The commit hook runs the default
+`--all` uses `test/manual/glinter-all.toml`. Both optional profiles run through a
+temporary project with symlinks to this checkout. The commit hook runs the default
 profile when Gleam files or lint configuration change; it checks all source and
 test modules. `test.sh` runs the same profile before the build and test suites.
-The optional profiles are not commit requirements.
+Neither optional profile is a commit requirement.
 
 For manual review and audit reports, run:
 
@@ -40,23 +39,23 @@ The default enables eleven rules as errors:
 | Invalid arithmetic | `division_by_zero` |
 | Suppression hygiene | `nolint_unused`, `nolint_inline` |
 
-Of albedo's own rules, `albedo_clock` and `albedo_text_scalars` are in the default
-profile. Rule files are in `tools/lint/src/albedo_lint/rules/`, each tied to a sentence in a
-robot-docs page, and `test/harness/albedo_lint_test.py` feeds each one small
-modules it must flag and ones it must leave alone.
+Albedo's own rules are in the default profile too. Rule files are in
+`tools/lint/src/albedo_lint/rules/`, each tied to a sentence in a robot-docs
+page, and `test/harness/albedo_lint_test.py` feeds each one small modules it
+must flag and ones it must leave alone.
 
-| Rule | Invariant | Findings today |
-| --- | --- | --- |
-| `albedo_clock` | No clock external or `gleam/time/timestamp` outside `albedo/clock` (runtime.md, clocks). | 0, in the default profile |
-| `albedo_text_scalars` | No `string.length`, `slice`, `drop_start` or `drop_end` in `src/` outside `albedo/text_scalars` (runtime.md, Unicode scalar limits). | 0, in the default profile |
-| `albedo_table_ownership` | A table an extension creates is named in SQL only by that extension (extensions.md). Core tables are not checked. | 8, all `cells` and `cell_traces` read by the daemon, `--albedo` only |
+| Rule | Invariant |
+| --- | --- |
+| `albedo_clock` | No clock external or `gleam/time/timestamp` outside `albedo/clock` (runtime.md, clocks). |
+| `albedo_text_scalars` | No `string.length`, `slice`, `drop_start` or `drop_end` in `src/` outside `albedo/text_scalars` (runtime.md, Unicode scalar limits). |
+| `albedo_table_ownership` | A table an extension creates is named in SQL only by that extension (extensions.md). Core tables are not checked: the daemon reaches `cells` and `cell_traces` through `python/cell_storage`. |
 
 glinter hands a module rule the source and not the path, so `albedo-lint` reads
 every file once and finds a module's path by its source text; a rule that
 depends on the path (the owner is exempt) relies on that. Add a rule by copying
-one of the three; the project's config names it in `gleam.toml` like a
-built-in. A rule goes in the default profile once its findings are fixed or
-annotated.
+one of the three and naming it in `gleam.toml` like a built-in. A real exception
+takes an own-line `// nolint: <rule> -- <reason>`; two exist for
+`albedo_text_scalars` (title and source-page grapheme counting).
 
 A default run promotes all findings to errors and exits unsuccessfully when it
 finds one.
