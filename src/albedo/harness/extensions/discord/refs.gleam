@@ -5,6 +5,7 @@
 //// per bot, so they mean the same after a restart.
 
 import albedo/daemon/store
+import albedo/text_scalars
 import gleam/dynamic/decode
 import gleam/int
 import gleam/list
@@ -235,7 +236,7 @@ fn without_hash(text: String) -> String {
 
 /// Discord ids are 17 to 20 digits; anything shorter is a number or a handle.
 fn snowflake(text: String) -> Bool {
-  let length = string.length(text)
+  let length = text_scalars.length(text)
   length >= 17
   && length <= 20
   && list.all(string.to_graphemes(text), fn(digit) {

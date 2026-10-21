@@ -1,5 +1,6 @@
 //// Bounded live projection of a streaming tool's JSON arguments.
 
+import albedo/text_scalars
 import gleam/dict.{type Dict}
 import gleam/int
 import gleam/list
@@ -538,7 +539,7 @@ fn unicode_escape(scanner: Scanner, character: String) -> Scanner {
     _ -> ""
   }
   let digits = digits <> character
-  case string.length(digits) == 4 {
+  case text_scalars.length(digits) == 4 {
     False -> Scanner(..scanner, code_escape: Unicode(digits))
     True ->
       case int.base_parse(digits, 16) {

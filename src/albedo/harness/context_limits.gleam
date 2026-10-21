@@ -9,6 +9,7 @@
 //// the cap to the provider's ceiling.
 
 import albedo/harness/cache_ttl
+import albedo/text_scalars
 import gleam/dict.{type Dict}
 import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
@@ -187,8 +188,14 @@ pub fn parse_tokens(raw: String) -> Result(Int, String) {
     string.ends_with(cleaned, "k"),
     string.ends_with(cleaned, "m")
   {
-    True, _ -> #(string.drop_end(cleaned, 1), 1000)
-    _, True -> #(string.drop_end(cleaned, 1), 1_000_000)
+    True, _ -> #(
+      text_scalars.take(cleaned, text_scalars.length(cleaned) - 1),
+      1000,
+    )
+    _, True -> #(
+      text_scalars.take(cleaned, text_scalars.length(cleaned) - 1),
+      1_000_000,
+    )
     _, _ -> #(cleaned, 1)
   }
   use tokens <- result.try(case string.split_once(number, ".") {
@@ -206,7 +213,7 @@ pub fn parse_tokens(raw: String) -> Result(Int, String) {
           use frac <- result.try(
             int.parse(frac_part) |> result.replace_error(invalid_tokens(raw)),
           )
-          let scale = ten_pow(string.length(frac_part))
+          let scale = ten_pow(text_scalars.length(frac_part))
           case whole >= 0 && frac >= 0 && scale <= multiplier {
             True -> Ok(whole * multiplier + frac * { multiplier / scale })
             False -> Error(invalid_tokens(raw))

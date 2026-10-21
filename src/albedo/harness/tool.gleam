@@ -9,6 +9,7 @@ import albedo/daemon/store
 import albedo/harness/compaction
 import albedo/harness/extension
 import albedo/openai_api/types
+import albedo/text_scalars
 import gleam/dict
 import gleam/dynamic/decode
 import gleam/float
@@ -150,10 +151,10 @@ fn image_description(image: types.Image) -> String {
   mime <> " " <> int.to_string(width) <> "x" <> int.to_string(height)
 }
 
-/// `value` cut to `maximum` graphemes with an ellipsis.
+/// `value` cut to `maximum` scalars with an ellipsis.
 pub fn excerpt(value: String, maximum: Int) -> String {
-  case string.length(value) > maximum {
-    True -> string.slice(value, 0, maximum) <> "…"
+  case text_scalars.length(value) > maximum {
+    True -> text_scalars.take(value, maximum) <> "…"
     False -> value
   }
 }
@@ -264,6 +265,7 @@ pub fn source_page(
     pending -> keep_grapheme(page, pending)
   }
   let content = page.kept |> list.reverse |> string.concat
+  // nolint: albedo_text_scalars -- Page offsets count graphemes.
   Ok(#(content, offset + string.length(content), page.more))
 }
 

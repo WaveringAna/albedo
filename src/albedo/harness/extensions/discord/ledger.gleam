@@ -736,7 +736,7 @@ pub fn note_sent(
 
 /// Snowflakes compare as integers: by length, then by digits.
 pub fn newer(candidate: String, than: String) -> Bool {
-  case string.length(candidate) - string.length(than) {
+  case text_scalars.length(candidate) - text_scalars.length(than) {
     0 -> string.compare(candidate, than) == order.Gt
     difference -> difference > 0
   }
@@ -814,7 +814,7 @@ fn validate_owner(owner: String) -> Result(Nil, Error) {
 }
 
 fn validate_snowflake(value: String, label: String) -> Result(Nil, Error) {
-  let length = string.length(value)
+  let length = text_scalars.length(value)
   case length >= 17 && length <= 20 && ascii(value, "0123456789") {
     True -> Ok(Nil)
     False -> Error(Invalid(label <> " must be a Discord id of 17–20 digits"))

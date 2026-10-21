@@ -16,6 +16,7 @@ import albedo/harness/host
 import albedo/harness/rpc
 import albedo/harness/search
 import albedo/harness/tool
+import albedo/text_scalars
 import gleam/dynamic
 import gleam/dynamic/decode
 import gleam/int
@@ -243,7 +244,7 @@ fn dispatch(
         case
           string.trim(task),
           string.trim(model),
-          string.length(verifier) <= 4096
+          text_scalars.length(verifier) <= 4096
         {
           "", _, _ -> Error("task is empty; say what the child should do")
           _, "", _ ->
@@ -396,7 +397,7 @@ fn dispatch(
     }
     "agents.progress" -> {
       use note <- result.try(text(args, "text"))
-      case string.trim(note), string.length(note) > 512 {
+      case string.trim(note), text_scalars.length(note) > 512 {
         "", _ -> Error("progress text is empty")
         _, True ->
           Error("progress is at most 512 characters; mail anything longer")

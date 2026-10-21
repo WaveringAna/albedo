@@ -2,6 +2,7 @@
 //// in the tag, so a reloaded transcript can label a note the way the live
 //// stream did.
 
+import albedo/text_scalars
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
@@ -41,12 +42,20 @@ pub fn parse(text: String) -> Option(#(String, String)) {
   case string.ends_with(text, close) {
     False -> None
     True -> {
-      let inner = string.drop_end(text, string.length(close))
+      let inner =
+        text_scalars.take(
+          text,
+          text_scalars.length(text) - text_scalars.length(close),
+        )
       case string.split_once(inner, ">") {
         Ok(#("<system-note", body)) -> Some(#("note", body))
         Ok(#("<system-note origin=\"" <> origin, body)) ->
           case string.ends_with(origin, "\"") {
-            True -> Some(#(string.drop_end(origin, 1), body))
+            True ->
+              Some(#(
+                text_scalars.take(origin, text_scalars.length(origin) - 1),
+                body,
+              ))
             False -> None
           }
         _ -> None

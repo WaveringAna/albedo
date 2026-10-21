@@ -13,12 +13,12 @@ nix develop -c test/gleam-lint.sh
 
 The default uses the focused policy in `gleam.toml`. `--review` adds checks that
 need caller and failure-contract inspection, using `test/manual/glinter-review.toml`.
-`--all` uses `test/manual/glinter-all.toml`. `--albedo` is the default profile with the two albedo rules
-that still have findings turned on (below). Both optional profiles run through a
-temporary project with symlinks to this checkout. The commit hook runs the default
+`--all` uses `test/manual/glinter-all.toml`. `--albedo` also enables
+`albedo_table_ownership` (below). The optional profiles run through a temporary
+project with symlinks to this checkout. The commit hook runs the default
 profile when Gleam files or lint configuration change; it checks all source and
 test modules. `test.sh` runs the same profile before the build and test suites.
-Neither optional profile is a commit requirement.
+The optional profiles are not commit requirements.
 
 For manual review and audit reports, run:
 
@@ -40,15 +40,15 @@ The default enables eleven rules as errors:
 | Invalid arithmetic | `division_by_zero` |
 | Suppression hygiene | `nolint_unused`, `nolint_inline` |
 
-Of albedo's own rules, `albedo_clock` is part of the default profile. Rule files
-are in `tools/lint/src/albedo_lint/rules/`, each tied to a sentence in a
+Of albedo's own rules, `albedo_clock` and `albedo_text_scalars` are in the default
+profile. Rule files are in `tools/lint/src/albedo_lint/rules/`, each tied to a sentence in a
 robot-docs page, and `test/harness/albedo_lint_test.py` feeds each one small
 modules it must flag and ones it must leave alone.
 
 | Rule | Invariant | Findings today |
 | --- | --- | --- |
 | `albedo_clock` | No clock external or `gleam/time/timestamp` outside `albedo/clock` (runtime.md, clocks). | 0, in the default profile |
-| `albedo_text_scalars` | No `string.length`, `slice`, `drop_start` or `drop_end` in `src/` outside `albedo/text_scalars` (runtime.md, Unicode scalar limits). | 64 in 31 files, `--albedo` only |
+| `albedo_text_scalars` | No `string.length`, `slice`, `drop_start` or `drop_end` in `src/` outside `albedo/text_scalars` (runtime.md, Unicode scalar limits). | 0, in the default profile |
 | `albedo_table_ownership` | A table an extension creates is named in SQL only by that extension (extensions.md). Core tables are not checked. | 8, all `cells` and `cell_traces` read by the daemon, `--albedo` only |
 
 glinter hands a module rule the source and not the path, so `albedo-lint` reads

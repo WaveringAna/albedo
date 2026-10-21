@@ -14,6 +14,7 @@ import albedo/harness/extensions/rolling/extension as rolling
 import albedo/harness/extensions/snapcompact/transcript
 import albedo/harness/settings
 import albedo/openai_api/types
+import albedo/text_scalars
 import gleam/dict.{type Dict}
 import gleam/dynamic/decode
 import gleam/int
@@ -768,7 +769,7 @@ fn image_note(image: types.Image) -> String {
   let #(_, width, height, _) = types.image_meta(image)
   let hash = image_hash(image)
   "[image "
-  <> string.slice(hash, 0, 8)
+  <> text_scalars.take(hash, 8)
   <> " "
   <> int.to_string(width)
   <> "x"
@@ -784,8 +785,8 @@ fn image_hash(image: types.Image) -> String {
 }
 
 fn cap(text: String, limit: Int) -> String {
-  case string.length(text) > limit {
-    True -> string.slice(text, 0, limit) <> " [+truncated]"
+  case text_scalars.length(text) > limit {
+    True -> text_scalars.take(text, limit) <> " [+truncated]"
     False -> text
   }
 }
@@ -822,7 +823,7 @@ pub fn bound(shape: Shape, limit: Int, text: String) -> #(String, Int) {
         pages
         |> list.drop(list.length(head))
         |> list.take(count - limit)
-        |> list.fold(0, fn(total, page) { total + string.length(page) })
+        |> list.fold(0, fn(total, page) { total + text_scalars.length(page) })
       #(string.concat(list.append(head, newest)), dropped)
     }
   }

@@ -8,6 +8,7 @@ import albedo/daemon/note
 import albedo/daemon/notice
 import albedo/daemon/transcript
 import albedo/openai_api/types
+import albedo/text_scalars
 import gleam/dynamic/decode
 import gleam/int
 import gleam/json
@@ -495,7 +496,7 @@ pub fn checkpoint(entry: Entry) -> Option(json.Json) {
         json.object([
           #("text", json.string(http_api.scalar_prefix(text, 256))),
           #("transcript_count", json.int(1)),
-          #("truncated", json.bool(string.length(text) > 256)),
+          #("truncated", json.bool(text_scalars.length(text) > 256)),
         ]),
       ),
     ])

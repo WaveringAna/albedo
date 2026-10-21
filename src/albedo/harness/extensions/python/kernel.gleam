@@ -7,6 +7,7 @@ import albedo/harness/location
 import albedo/harness/settings
 import albedo/harness/ssh
 import albedo/openai_api/types
+import albedo/text_scalars
 import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
 import gleam/erlang/process
@@ -531,7 +532,7 @@ fn boot_fresh(
   staged: Bool,
 ) -> Result(#(Kernel, link.Record), Error) {
   use runs <- result.try(runs)
-  let kernel = string.slice(new_id(), 0, 16)
+  let kernel = text_scalars.take(new_id(), 16)
   let record =
     link.Record(
       session: session,

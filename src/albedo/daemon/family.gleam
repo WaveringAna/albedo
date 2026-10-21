@@ -9,6 +9,7 @@ import albedo/daemon/operations
 import albedo/daemon/store
 import albedo/daemon/usage
 import albedo/harness/settings
+import albedo/text_scalars
 import gleam/dynamic/decode
 import gleam/int
 import gleam/list
@@ -224,7 +225,7 @@ pub fn valid_name(name: String) -> Result(Nil, String) {
   let allowed = string.to_graphemes("abcdefghijklmnopqrstuvwxyz0123456789-_")
   case
     name != ""
-    && string.length(name) <= 32
+    && text_scalars.length(name) <= 32
     && list.all(string.to_graphemes(name), list.contains(allowed, _))
   {
     False -> Error("name must be 1-32 characters of a-z, 0-9, '-' or '_'")
@@ -268,7 +269,7 @@ pub fn set_role(
   value: String,
 ) -> Result(Nil, String) {
   let value = string.trim(value)
-  case string.length(value) <= 512 {
+  case text_scalars.length(value) <= 512 {
     False -> Error("role is at most 512 characters")
     True ->
       store.write(db, "UPDATE sessions SET role=? WHERE id=?", [
@@ -290,7 +291,7 @@ pub fn set_verifier(
   command: String,
 ) -> Result(Nil, String) {
   let command = string.trim(command)
-  case string.length(command) <= 4096 {
+  case text_scalars.length(command) <= 4096 {
     False -> Error("verifier is at most 4096 characters")
     True ->
       store.write(db, "UPDATE session_family SET verifier=? WHERE session=?", [

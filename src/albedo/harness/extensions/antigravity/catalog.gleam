@@ -4,6 +4,7 @@
 import albedo/harness/extension
 import albedo/harness/extensions/models/extension as models
 import albedo/harness/settings
+import albedo/text_scalars
 import gleam/bool
 import gleam/dynamic/decode
 import gleam/int
@@ -155,7 +156,13 @@ fn split_id(id: String) -> #(String, Option(String)) {
       list.find_map(effort_suffixes, fn(pair) {
         case string.ends_with(id, pair.0) {
           True ->
-            Ok(#(string.drop_end(id, string.length(pair.0)), Some(pair.1)))
+            Ok(#(
+              text_scalars.take(
+                id,
+                text_scalars.length(id) - text_scalars.length(pair.0),
+              ),
+              Some(pair.1),
+            ))
           False -> Error(Nil)
         }
       })

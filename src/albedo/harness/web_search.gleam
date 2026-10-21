@@ -6,6 +6,7 @@ import albedo/harness/settings
 import albedo/openai_api
 import albedo/openai_api/stream
 import albedo/openai_api/types
+import albedo/text_scalars
 import gleam/dynamic/decode
 import gleam/erlang/process
 import gleam/int
@@ -92,7 +93,7 @@ pub fn failure(error: types.Error) -> String {
         json.parse(body, decode.at(["error", "message"], decode.string))
         |> result.unwrap(body)
         |> string.trim
-        |> string.slice(0, 300)
+        |> text_scalars.take(300)
       }
     types.InvalidRequest(message)
     | types.ConnectionError(message)

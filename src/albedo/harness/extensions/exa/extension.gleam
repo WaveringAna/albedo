@@ -5,6 +5,7 @@
 import albedo/harness/extension
 import albedo/harness/settings
 import albedo/harness/web_search
+import albedo/text_scalars
 import gleam/bit_array
 import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
@@ -95,7 +96,7 @@ fn search(query: web_search.Query) -> Result(web_search.Answer, String) {
         "Exa answered HTTP "
         <> int.to_string(status)
         <> ": "
-        <> string.slice(string.trim(reply), 0, 300),
+        <> text_scalars.take(string.trim(reply), 300),
       )
   }
 }

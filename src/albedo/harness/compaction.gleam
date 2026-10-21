@@ -4,6 +4,7 @@ import albedo/daemon/note
 import albedo/daemon/store
 import albedo/harness/extensions/python/kernel
 import albedo/openai_api/types
+import albedo/text_scalars
 import gleam/dynamic/decode
 import gleam/int
 import gleam/json
@@ -937,9 +938,9 @@ fn summary_output(text: String) -> String {
 }
 
 fn summary_bounded(text: String, limit: Int) -> String {
-  case string.length(text) > limit {
+  case text_scalars.length(text) > limit {
     True ->
-      string.slice(text, 0, limit)
+      text_scalars.take(text, limit)
       <> "\n[remainder omitted from compaction summary input]"
     False -> text
   }

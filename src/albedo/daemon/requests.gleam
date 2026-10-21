@@ -16,6 +16,7 @@ import albedo/daemon/store
 import albedo/daemon/stream_trace
 import albedo/harness/compaction
 import albedo/openai_api/types
+import albedo/text_scalars
 import gleam/bit_array
 import gleam/crypto
 import gleam/dynamic/decode
@@ -76,8 +77,8 @@ pub fn outcome(result: Result(a, types.Error)) -> Outcome {
 const detail_limit = 2000
 
 fn bounded(text: String) -> String {
-  case string.length(text) > detail_limit {
-    True -> string.slice(text, 0, detail_limit) <> "…[truncated]"
+  case text_scalars.length(text) > detail_limit {
+    True -> text_scalars.take(text, detail_limit) <> "…[truncated]"
     False -> text
   }
 }
@@ -218,7 +219,7 @@ fn short_hex(digest: BitArray) -> String {
   digest
   |> bit_array.base16_encode
   |> string.lowercase
-  |> string.slice(0, 12)
+  |> text_scalars.take(12)
 }
 
 fn input_identity(input: types.Input) -> String {

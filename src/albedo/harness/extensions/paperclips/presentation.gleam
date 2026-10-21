@@ -1,4 +1,5 @@
 import albedo/harness/extensions/paperclips/ledger as paperclips
+import albedo/text_scalars
 import gleam/dict
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -16,6 +17,7 @@ pub fn title(vent: paperclips.Vent) -> String {
 
 fn short_title(message: String) -> String {
   let flat = string.replace(message, "\n", " ")
+  // nolint: albedo_text_scalars -- Titles keep whole graphemes.
   case string.length(flat) <= title_columns {
     True -> flat
     False ->
@@ -67,7 +69,7 @@ fn session_label(
 ) -> String {
   case session {
     Some(session) ->
-      dict.get(labels, session) |> result.unwrap(string.slice(session, 0, 8))
+      dict.get(labels, session) |> result.unwrap(text_scalars.take(session, 8))
     None -> "—"
   }
 }

@@ -4,6 +4,7 @@ import albedo/daemon/mail
 import albedo/daemon/store
 import albedo/daemon/usage
 import albedo/daemon/webhook_intake
+import albedo/text_scalars
 import gleam/bit_array
 import gleam/dynamic/decode
 import gleam/json
@@ -151,7 +152,7 @@ fn letter(delivery: Delivery) -> mail.Letter {
   let preview =
     delivery.body
     |> bit_array.to_string
-    |> result.map(fn(text) { string.slice(text, 0, 4000) })
+    |> result.map(fn(text) { text_scalars.take(text, 4000) })
     |> result.unwrap("[binary payload; read the delivery by id]")
   mail.Letter(
     delivery.id,

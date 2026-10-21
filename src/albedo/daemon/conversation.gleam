@@ -18,6 +18,7 @@ import albedo/harness/cache_fade
 import albedo/harness/extensions/python/cell_storage
 import albedo/harness/extensions/python/cells as journal
 import albedo/openai_api/types
+import albedo/text_scalars
 import gleam/bool
 import gleam/dynamic/decode
 import gleam/int
@@ -1167,8 +1168,8 @@ pub fn title(text: String) -> String {
 /// cut with an ellipsis.
 pub fn excerpt(text: String, limit: Int) -> String {
   let clean = session_configuration.clean_name(text) |> option.unwrap("")
-  case string.length(clean) > limit {
-    True -> string.slice(clean, 0, limit - 1) <> "…"
+  case text_scalars.length(clean) > limit {
+    True -> text_scalars.take(clean, limit - 1) <> "…"
     False -> clean
   }
 }

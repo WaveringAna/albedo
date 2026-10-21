@@ -9,6 +9,7 @@ import albedo/harness/languages.{type Language}
 import albedo/harness/location
 import albedo/harness/ssh
 import albedo/harness/vcs
+import albedo/text_scalars
 import gleam/bit_array
 import gleam/bool
 import gleam/dict.{type Dict}
@@ -722,8 +723,8 @@ fn changed_at(changed: List(String), name: String) -> Int {
 fn subpath(root: String, dir: String) -> String {
   case dir == root, root {
     True, _ -> ""
-    False, "/" -> string.drop_start(dir, 1)
-    False, _ -> string.drop_start(dir, string.length(root) + 1)
+    False, "/" -> text_scalars.drop(dir, 1)
+    False, _ -> text_scalars.drop(dir, text_scalars.length(root) + 1)
   }
 }
 
@@ -731,12 +732,12 @@ fn subpath(root: String, dir: String) -> String {
 /// (git's untracked directories) is dropped.
 fn inside(path: String, prefix: String) -> Result(String, Nil) {
   let path = case string.ends_with(path, "/") {
-    True -> string.drop_end(path, 1)
+    True -> text_scalars.take(path, text_scalars.length(path) - 1)
     False -> path
   }
   case prefix, string.starts_with(path, prefix <> "/") {
     "", _ -> Ok(path)
-    _, True -> Ok(string.drop_start(path, string.length(prefix) + 1))
+    _, True -> Ok(text_scalars.drop(path, text_scalars.length(prefix) + 1))
     _, False -> Error(Nil)
   }
 }

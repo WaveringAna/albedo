@@ -4,6 +4,7 @@ import albedo/daemon/images
 import albedo/daemon/store
 import albedo/harness/extensions/python/kernel as python
 import albedo/openai_api/types
+import albedo/text_scalars
 import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
 import gleam/json.{type Json}
@@ -254,7 +255,7 @@ pub fn first_line(source: String) -> String {
   |> string.split("\n")
   |> list.find(fn(line) { string.trim(line) != "" })
   |> result.unwrap("")
-  |> string.slice(0, 120)
+  |> text_scalars.take(120)
 }
 
 @external(erlang, "albedo_native", "new_id")

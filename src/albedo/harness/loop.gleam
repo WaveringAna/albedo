@@ -20,6 +20,7 @@ import albedo/harness/extensions/python/cells as journal
 import albedo/harness/hook
 import albedo/harness/runtime
 import albedo/openai_api/types
+import albedo/text_scalars
 import gleam/dynamic/decode
 import gleam/erlang/process
 import gleam/int
@@ -769,10 +770,10 @@ fn display_text(items: List(types.Input)) -> String {
   |> bounded(20_000, "\n[remainder omitted]")
 }
 
-/// Truncated views of oversized text: `limit` graphemes, then why it ends.
+/// Truncated views of oversized text: `limit` scalars, then why it ends.
 fn bounded(text: String, limit: Int, note: String) -> String {
-  case string.length(text) > limit {
-    True -> string.slice(text, 0, limit) <> note
+  case text_scalars.length(text) > limit {
+    True -> text_scalars.take(text, limit) <> note
     False -> text
   }
 }

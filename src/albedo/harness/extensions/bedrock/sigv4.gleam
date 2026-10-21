@@ -1,6 +1,7 @@
 //// AWS SigV4 signing for Amazon Bedrock, from credentials a caller hands in
 //// directly: no profile files, no SSO cache, no instance metadata.
 
+import albedo/text_scalars
 import gleam/bit_array
 import gleam/crypto
 import gleam/int
@@ -34,7 +35,7 @@ fn amz_date(epoch_seconds: Int) -> #(String, String) {
 
 fn pad(n: Int, width: Int) -> String {
   let text = int.to_string(n)
-  case width - string.length(text) {
+  case width - text_scalars.length(text) {
     missing if missing > 0 -> string.repeat("0", missing) <> text
     _ -> text
   }

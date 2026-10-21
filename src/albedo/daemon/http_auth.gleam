@@ -10,6 +10,7 @@ import albedo/harness/oauth
 import albedo/harness/runtime
 import albedo/harness/runtime/catalog as session_catalog
 import albedo/harness/settings as extension_settings
+import albedo/text_scalars
 import gleam/bit_array
 import gleam/bytes_tree
 import gleam/dict.{type Dict}
@@ -24,7 +25,6 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 import gleam/result
-import gleam/string
 import mist
 
 pub fn settings(
@@ -284,7 +284,7 @@ pub fn login(
         ))
         use _ <- result.try(
           case
-            string.length(supplied) > 0
+            text_scalars.length(supplied) > 0
             && bit_array.byte_size(bit_array.from_string(supplied)) <= 16_384
           {
             True -> Ok(Nil)

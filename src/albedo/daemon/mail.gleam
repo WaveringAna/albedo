@@ -15,6 +15,7 @@ import albedo/daemon/family
 import albedo/daemon/migrations/mail_kinds
 import albedo/daemon/store
 import albedo/daemon/usage
+import albedo/text_scalars
 import gleam/dynamic/decode
 import gleam/json
 import gleam/list
@@ -348,7 +349,7 @@ pub fn record_failure(
   store.write(
     db,
     "UPDATE mail SET attempts=attempts+1,last_error=? WHERE id=? AND delivered_at IS NULL",
-    [sqlight.text(string.slice(reason, 0, 500)), sqlight.text(id)],
+    [sqlight.text(text_scalars.take(reason, 500)), sqlight.text(id)],
   )
 }
 

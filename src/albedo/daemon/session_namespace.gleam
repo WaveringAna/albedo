@@ -8,6 +8,7 @@ import albedo/harness/location
 import albedo/harness/runtime
 import albedo/harness/runtime/state as runtime_state
 import albedo/harness/ssh
+import albedo/text_scalars
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -331,7 +332,7 @@ type Running {
 }
 
 fn short(text: String) -> String {
-  string.slice(string.trim(text), 0, 100)
+  text_scalars.take(string.trim(text), 100)
 }
 
 /// Built from what the port owner observes and the cells journal, never from

@@ -68,8 +68,7 @@ module_complexity = "off"
 deep_nesting = "off"
 string_inspect = "off"
 ffi_usage = "off"
-# albedo's own rules (tools/lint). text_scalars and table_ownership have
-# existing findings, so they run only under `test/gleam-lint.sh --albedo`.
+# albedo's own rules (tools/lint).
 albedo_clock = "error"
-albedo_text_scalars = "off"
+albedo_text_scalars = "error"
 albedo_table_ownership = "off"

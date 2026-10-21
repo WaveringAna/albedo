@@ -2,6 +2,7 @@
 //// Re-read each call; SSO, role chaining and instance metadata are not resolved.
 
 import albedo/harness/extensions/bedrock/sigv4
+import albedo/text_scalars
 import gleam/bit_array
 import gleam/dict.{type Dict}
 import gleam/dynamic.{type Dynamic}
@@ -242,7 +243,11 @@ fn find_section(
 fn is_header(line: String, header: String) -> Bool {
   string.starts_with(line, "[")
   && string.ends_with(line, "]")
-  && string.trim(string.slice(line, 1, string.length(line) - 2)) == header
+  && string.trim(text_scalars.take(
+    text_scalars.drop(line, 1),
+    text_scalars.length(line) - 2,
+  ))
+  == header
 }
 
 fn collect(

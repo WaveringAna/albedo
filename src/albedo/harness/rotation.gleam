@@ -10,6 +10,7 @@
 
 import albedo/harness/extension
 import albedo/openai_api/types
+import albedo/text_scalars
 import gleam/bit_array
 import gleam/crypto
 import gleam/dynamic/decode
@@ -130,7 +131,7 @@ pub fn key_label(key: String) -> String {
   |> bit_array.from_string
   |> crypto.hash(crypto.Sha256, _)
   |> bit_array.base16_encode
-  |> string.slice(0, 8)
+  |> text_scalars.take(8)
   |> string.lowercase
 }
 

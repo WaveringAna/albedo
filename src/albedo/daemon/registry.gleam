@@ -30,6 +30,7 @@ import albedo/harness/extensions/schedule/ledger as schedule
 import albedo/harness/location
 import albedo/harness/oauth
 import albedo/harness/runtime
+import albedo/text_scalars
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Subject}
 import gleam/int
@@ -811,7 +812,7 @@ fn child_model(
         True ->
           Ok(#(
             profile,
-            string.drop_start(requested, string.length(prefix)),
+            text_scalars.drop(requested, text_scalars.length(prefix)),
             available,
           ))
         False -> Error(Nil)

@@ -7,6 +7,7 @@ import albedo/openai_api
 import albedo/openai_api/decoding
 import albedo/openai_api/replay
 import albedo/openai_api/types
+import albedo/text_scalars
 import gleam/bit_array
 import gleam/bool
 import gleam/crypto.{Sha256}
@@ -601,8 +602,11 @@ pub fn claude_name(name: String) -> String {
         |> crypto.hash(Sha256, _)
         |> bit_array.base16_encode
         |> string.lowercase
-        |> string.slice(0, 16)
-      "mcp__albedo__" <> string.slice(name, 4, 24) <> "_" <> digest
+        |> text_scalars.take(16)
+      "mcp__albedo__"
+      <> text_scalars.take(text_scalars.drop(name, 4), 24)
+      <> "_"
+      <> digest
     }
     False -> canonical_name(name)
   }

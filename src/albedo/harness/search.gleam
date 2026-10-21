@@ -10,6 +10,7 @@ import albedo/daemon/conversation
 import albedo/daemon/store
 import albedo/harness/compaction
 import albedo/harness/tool
+import albedo/text_scalars
 import gleam/bool
 import gleam/dynamic/decode
 import gleam/int
@@ -36,7 +37,7 @@ pub type Match {
 /// `pattern` trimmed, checked, and lowercased for matching.
 pub fn needle(pattern: String) -> Result(String, String) {
   let pattern = string.trim(pattern)
-  case pattern != "" && string.length(pattern) <= 200 {
+  case pattern != "" && text_scalars.length(pattern) <= 200 {
     True -> Ok(string.lowercase(pattern))
     False -> Error("search pattern must be 1..200 characters")
   }
@@ -296,7 +297,7 @@ fn probe(needle: String) -> String {
         False -> #(longest, "")
         True -> {
           let current = current <> grapheme
-          case string.length(current) > string.length(longest) {
+          case text_scalars.length(current) > text_scalars.length(longest) {
             True -> #(current, current)
             False -> #(longest, current)
           }
@@ -336,11 +337,11 @@ pub fn kind(text: String) -> String {
 /// contains `needle`, case-insensitively.
 pub fn preview(text: String, needle: String) -> String {
   let at = case string.split_once(string.lowercase(text), needle) {
-    Ok(#(before, _)) -> string.length(before)
+    Ok(#(before, _)) -> text_scalars.length(before)
     Error(_) -> 0
   }
   case at > 120 {
-    True -> "…" <> tool.excerpt(string.drop_start(text, at - 100), 400)
+    True -> "…" <> tool.excerpt(text_scalars.drop(text, at - 100), 400)
     False -> tool.excerpt(text, 400)
   }
 }
