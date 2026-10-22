@@ -1,16 +1,19 @@
 <script lang="ts">
   import { frameUrl } from '../api';
-  import { artifacts, PageHost } from '../artifacts.svelte';
+  import { artifacts, PageHost, pageHosts } from '../artifacts.svelte';
   import { boards } from '../boards.svelte';
   import { prefs } from '../prefs.svelte';
+  import { tying } from '../tie.svelte';
 
   // One version of an artifact's page, live: the body of an artifact window
   // on the canvas and of the artifact that opens inside a chat on a phone.
   // The page runs sandboxed in a frame of its own (robot-docs/artifacts.md);
   // this answers its bridge, holds what the loop guard holds, and shows what
   // broke in it. `version` pins one version; null follows the newest, which
-  // `latest` says is at least that.
+  // `latest` says is at least that. `windowId` is the canvas window it
+  // fills, which notes tie into.
   let {
+    windowId,
     artifactId,
     sessionId,
     latest = 0,
@@ -19,6 +22,7 @@
     inline = false,
     onfailures,
   }: {
+    windowId?: string;
     artifactId: string;
     sessionId: string;
     latest?: number;
@@ -54,6 +58,14 @@
 
   $effect(() => {
     onfailures?.(host.failures);
+  });
+
+  $effect(() => {
+    if (!windowId) return;
+    pageHosts.set(windowId, host);
+    return () => {
+      if (pageHosts.get(windowId) === host) pageHosts.delete(windowId);
+    };
   });
 
   $effect(() => {
@@ -93,9 +105,10 @@
     await host.say(`The page failed:\n${list}\n\nartifacts.errors("${detail.id}") has the details.`).catch(() => (asked = false));
   }
 
-  // Too small to use, or the canvas is being moved: the page lets the
-  // pointer through, so dragging and panning carry on over it.
-  const resting = $derived((boards.board?.viewport.zoom ?? 1) < READABLE && !inline);
+  // Too small to use, the canvas is being moved, or a note's tie is drawn
+  // over it: the page lets the pointer through, so the drag carries on over
+  // it (the tie asks the page what it is over instead).
+  const resting = $derived(((boards.board?.viewport.zoom ?? 1) < READABLE && !inline) || !!tying.note);
   const height = $derived(inline && host.height ? Math.min(Math.max(host.height, 160), window.innerHeight * 0.7) : null);
 </script>
 

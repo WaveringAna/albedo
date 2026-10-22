@@ -30,8 +30,9 @@ export type ArtifactWindow = Node<{ artifact: string; sessionId: string; version
 export type Target =
   | { kind: 'window'; window: string }
   | { kind: 'entry'; window: string; entry: string; step?: boolean; quote: string }
-  | { kind: 'lines'; window: string; path: string; change: number; side: 'additions' | 'deletions'; start: number; end: number; quote: string };
-/** A note on the canvas: free, or tied to a window, a message or step in a chat, or lines in a diff. */
+  | { kind: 'lines'; window: string; path: string; change: number; side: 'additions' | 'deletions'; start: number; end: number; quote: string }
+  | { kind: 'element'; window: string; selector: string; version: number; quote: string };
+/** A note on the canvas: free, or tied to a window, a message or step in a chat, lines in a diff, or a part of an artifact's page. */
 export type NoteWindow = Node<{ text: string; target?: Target; sent?: boolean }, 'note'>;
 export type Window = SessionWindow | ReviewWindow | TerminalWindow | ArtifactWindow | NoteWindow;
 

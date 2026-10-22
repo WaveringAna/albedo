@@ -82,6 +82,7 @@ The daemon injects `priv/artifacts/bridge.js` into every HTML file it serves, wi
 - **Theme.** `:root` gets albedo's colours as CSS variables, from the window when it says (`ui/notifications/host-context-changed`), else from `prefers-color-scheme`: `--albedo-bg`, `--albedo-surface`, `--albedo-text`, `--albedo-muted`, `--albedo-faint`, `--albedo-accent`, `--albedo-border`, `--albedo-added`, `--albedo-danger`, `--albedo-sans`, `--albedo-mono`, plus `color-scheme` and `data-albedo-theme` (`light` or `dark`).
 - **Messages.** `albedo.send(text)` asks the window to post `text` to the chat as you, and resolves to `{sent: true}` or `{sent: false, reason}` (no window, or held by the loop guard). In a tab of its own there is no chat to post to.
 - **Size.** Its document's height is posted as `ui/notifications/size-changed`, for the phone, which fits an artifact to its content.
+- **Notes.** A canvas note can be tied to a part of the page. While a note's tie is drawn over the page, the window posts `albedo/point` `{x, y}` (page pixels) and the page answers `albedo/pointed` with the part under it: the nearest heading, paragraph, list item, control, media, table cell, landmark or element with an id or role, as a CSS selector (an `#id` where one is unique, else `tag:nth-of-type(n)` steps from `body`), a quote (its text, alt or value, at most 600 characters) and its rect. For tied notes the window posts `albedo/watch` `{selectors}` (at most 64; sent again when the page loads again), and the page reports `albedo/rects` `{rects: {selector: rect or null}}` at once and after every scroll, resize or DOM change, a frame at most.
 
 The page and the window speak JSON-RPC 2.0 over `postMessage`, a subset of [MCP Apps](https://github.com/modelcontextprotocol/ext-apps/blob/main/specification/2026-01-26/apps.mdx), so a page written for it mostly works here:
 
@@ -93,6 +94,7 @@ The page and the window speak JSON-RPC 2.0 over `postMessage`, a subset of [MCP 
 | `ui/notifications/size-changed` | sizes the phone's inline view |
 | `albedo/error` | marks the window's title bar and lists the failure under the page |
 | `albedo/wheel` (a pinch or ctrl-wheel over the page) | replays it on the frame, so it zooms the canvas |
+| `albedo/pointed`, `albedo/rects` (answers to the window's `albedo/point` and `albedo/watch`) | outlines the part a tie would land on; draws the line and tint to each tied part |
 | `tools/call` and anything else | an error: pages cannot reach the agent's tools |
 
 **The loop guard.** A message sent with a gesture always goes; the bridge counts one click or key press for one message, since a timer a click started still runs inside the browser's activation window. Without one (a timer, a render loop), a page may send five a minute; past that the window holds them behind a button that says how many are waiting. It guards against a buggy page starting turn after turn, never against a person using one.

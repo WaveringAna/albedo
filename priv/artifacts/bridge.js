@@ -226,8 +226,100 @@
       else call.resolve(data.result);
     } else if (data.method === 'ui/notifications/host-context-changed') {
       context(data.params);
+    } else if (data.method === 'albedo/point') {
+      point(data.params);
+    } else if (data.method === 'albedo/watch') {
+      follow(data.params);
     }
   });
+
+  // Notes. A note on the canvas can be tied to a part of the page: while its
+  // tie is drawn over the page the window asks what is under the pointer, and
+  // for every part a note is tied to, where it is now.
+  var PARTS = 'h1,h2,h3,h4,h5,h6,p,li,dt,dd,button,a,label,img,svg,canvas,video,figure,blockquote,pre,table,tr,td,th,input,select,textarea,article,section,aside,nav,header,footer,form,[role],[id]';
+  function partAt(x, y) {
+    var element = document.elementFromPoint(x, y);
+    if (element && element.closest) element = element.closest(PARTS) || element;
+    if (!element || element === document.body || element === document.documentElement) return null;
+    // An svg's shapes are one picture.
+    if (element.ownerSVGElement) element = element.ownerSVGElement;
+    return element;
+  }
+  function selectorOf(element) {
+    var steps = [];
+    for (var node = element; node && node !== document.body && node !== document.documentElement; node = node.parentElement) {
+      if (node.id && document.querySelectorAll('#' + CSS.escape(node.id)).length === 1) {
+        steps.unshift('#' + CSS.escape(node.id));
+        return steps.join(' > ');
+      }
+      var tag = node.tagName.toLowerCase();
+      var same = 0;
+      var index = 0;
+      for (var sibling = node.parentElement && node.parentElement.firstElementChild; sibling; sibling = sibling.nextElementSibling) {
+        if (sibling.tagName === node.tagName) same++;
+        if (sibling === node) index = same;
+      }
+      steps.unshift(same > 1 ? tag + ':nth-of-type(' + index + ')' : tag);
+    }
+    steps.unshift('body');
+    return steps.join(' > ');
+  }
+  function quoteOf(element) {
+    var tag = element.tagName.toLowerCase();
+    var text = tag === 'img' ? element.alt || '' : tag === 'input' || tag === 'textarea' ? element.value || element.placeholder || '' : element.innerText || element.textContent || '';
+    text = String(text).replace(/[ \t]+/g, ' ').replace(/\s*\n\s*/g, '\n').trim();
+    if (!text) return 'a <' + tag + '>';
+    return text.length > 600 ? text.slice(0, 600) + '…' : text;
+  }
+  function box(element) {
+    var rect = element.getBoundingClientRect();
+    return { x: rect.left, y: rect.top, width: rect.width, height: rect.height };
+  }
+  function point(params) {
+    if (!params || typeof params.x !== 'number' || typeof params.y !== 'number') return;
+    var element = partAt(params.x, params.y);
+    send({
+      method: 'albedo/pointed',
+      params: element
+        ? { x: params.x, y: params.y, selector: selectorOf(element), quote: quoteOf(element), rect: box(element) }
+        : { x: params.x, y: params.y, selector: null }
+    });
+  }
+  var watched = [];
+  var measuring = 0;
+  function locate() {
+    measuring = 0;
+    var rects = {};
+    watched.forEach(function (selector) {
+      var element = null;
+      try {
+        element = document.querySelector(selector);
+      } catch (_) {}
+      rects[selector] = element ? box(element) : null;
+    });
+    send({ method: 'albedo/rects', params: { rects: rects } });
+  }
+  function soon() {
+    if (watched.length && !measuring) measuring = requestAnimationFrame(locate);
+  }
+  function follow(params) {
+    watched = params && Array.isArray(params.selectors) ? params.selectors.filter(function (item) {
+      return typeof item === 'string';
+    }).slice(0, 64) : [];
+    soon();
+  }
+  if (embedded) {
+    window.addEventListener('scroll', soon, true);
+    window.addEventListener('resize', soon);
+    if (typeof MutationObserver === 'function') {
+      var changes = new MutationObserver(soon);
+      var observe = function () {
+        changes.observe(document.documentElement, { subtree: true, childList: true, attributes: true, characterData: true });
+      };
+      if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', observe);
+      else observe();
+    }
+  }
 
   // What breaks, the agent hears about: it keeps the newest twenty.
   var reported = 0;

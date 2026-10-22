@@ -1,3 +1,4 @@
+import { pageHosts, type PageHost } from './artifacts.svelte';
 import type { Target } from './board.svelte';
 import { parseDiff } from './review';
 
@@ -5,7 +6,9 @@ import { parseDiff } from './review';
 // is dropped. Targets are found in the DOM by what they show, so a tie
 // survives the window redrawing: a window by its node id, a chat message or
 // step by `data-entry`, diff lines by the diff's `data-diff` key and the
-// line's number inside Pierre's shadow root.
+// line's number inside Pierre's shadow root. An artifact's page is another
+// document, so it is asked instead: what is under a point, and where the
+// parts notes are tied to are (by CSS selector), through its bridge.
 
 /** Diffs on screen by key, so a dropped note can quote the lines it lands on. */
 export const diffs = new Map<string, { path: string; change: number; diff: string }>();
@@ -38,12 +41,16 @@ export function quoteLines(diff: string, side: 'additions' | 'deletions', start:
     .join('\n');
 }
 
-/** What a note dropped at a point on screen would be about, and the element that shows it. */
-export function pick(x: number, y: number): { target: Target; element: Element } | undefined {
+/** What a note dropped at a point on screen would be about, and where that is on screen. */
+export function pick(x: number, y: number): { target: Target; rect: DOMRect } | undefined {
   const hit = document.elementsFromPoint(x, y).find((element) => !element.closest('.svelte-flow__node-note'));
   if (!hit) return undefined;
   const window = windowOf(hit);
   if (!window) return undefined;
+
+  const page = pageHosts.get(window);
+  const part = page && pagePart(window, page, x, y);
+  if (part) return part;
 
   if (hit.tagName.toLowerCase() === 'diffs-container' && hit.shadowRoot) {
     const row = (hit.shadowRoot.elementsFromPoint(x, y) as Element[]).map((element) => element.closest<HTMLElement>('[data-line]')).find(Boolean);
@@ -51,16 +58,50 @@ export function pick(x: number, y: number): { target: Target; element: Element }
     if (row && known) {
       const number = Number(row.dataset.line);
       const side = row.dataset.lineType?.includes('deletion') ? 'deletions' : 'additions';
-      return { target: { kind: 'lines', window, path: known.path, change: known.change, side, start: number, end: number, quote: quoteLines(known.diff, side, number, number) }, element: row };
+      return { target: { kind: 'lines', window, path: known.path, change: known.change, side, start: number, end: number, quote: quoteLines(known.diff, side, number, number) }, rect: row.getBoundingClientRect() };
     }
   }
 
   const entry = hit.closest<HTMLElement>('[data-entry]');
   if (entry) {
     const step = entry.classList.contains('tool') || entry.classList.contains('thought');
-    return { target: { kind: 'entry', window, entry: entry.dataset.entry!, step, quote: excerpt(entry.innerText) }, element: entry };
+    return { target: { kind: 'entry', window, entry: entry.dataset.entry!, step, quote: excerpt(entry.innerText) }, rect: entry.getBoundingClientRect() };
   }
-  return { target: { kind: 'window', window }, element: hit.closest('.svelte-flow__node')! };
+  return { target: { kind: 'window', window }, rect: hit.closest('.svelte-flow__node')!.getBoundingClientRect() };
+}
+
+/** How far, in the page's pixels, the page's last answer may be from the pointer and still count. */
+const NEAR = 24;
+
+/**
+ * The part of an artifact's page under a point, as the page last said. The
+ * page answers a moment later, so a drag reads the answer to its last move.
+ */
+function pagePart(window: string, page: PageHost, x: number, y: number): { target: Target; rect: DOMRect } | undefined {
+  const { rect, scale } = page.frameBox() ?? {};
+  if (!rect || !scale || x < rect.left || x > rect.right || y < rect.top || y > rect.bottom) return undefined;
+  page.point(x, y);
+  const answer = page.pointed;
+  if (!answer?.selector || Math.hypot(answer.x - (x - rect.left) / scale, answer.y - (y - rect.top) / scale) > NEAR) return undefined;
+  const shown = page.onScreen(answer.rect);
+  if (!shown) return undefined;
+  return { target: { kind: 'element', window, selector: answer.selector, version: page.version, quote: answer.quote }, rect: shown };
+}
+
+/** Where a part of an artifact's page is on screen, held inside the page, or nothing while it is out of sight. */
+function pageBox(target: Extract<Target, { kind: 'element' }>): DOMRect | null {
+  const page = pageHosts.get(target.window);
+  if (!page) return null;
+  page.watch(target.selector);
+  const part = page.rects.get(target.selector);
+  const frame = page.frameBox()?.rect;
+  const rect = part && page.onScreen(part);
+  if (!rect || !frame) return null;
+  const top = Math.max(rect.top, frame.top);
+  const bottom = Math.min(rect.bottom, frame.bottom);
+  const left = Math.max(rect.left, frame.left);
+  const right = Math.min(rect.right, frame.right);
+  return bottom > top && right > left ? new DOMRect(left, top, right - left, bottom - top) : null;
 }
 
 export function targetAt(x: number, y: number): Target | undefined {
@@ -70,7 +111,7 @@ export function targetAt(x: number, y: number): Target | undefined {
 /** The element a target points at now, when it is on screen. */
 export function anchorOf(target: Target): Element | null {
   const window = document.querySelector(`.svelte-flow__node[data-id="${CSS.escape(target.window)}"]`);
-  if (!window || target.kind === 'window') return window;
+  if (!window || target.kind === 'window' || target.kind === 'element') return window;
   if (target.kind === 'entry') return window.querySelector(`[data-entry="${CSS.escape(target.entry)}"]`) ?? window;
   const host = window.querySelector(`[data-diff="${CSS.escape(diffKey(target.window, target.path, target.change))}"] diffs-container`);
   const rows = [...(host?.shadowRoot?.querySelectorAll<HTMLElement>(`[data-line="${target.end}"]`) ?? [])];
@@ -84,6 +125,7 @@ export function anchorOf(target: Target): Element | null {
  */
 export function targetBox(target: Target): DOMRect | null {
   if (target.kind === 'window') return null;
+  if (target.kind === 'element') return pageBox(target);
   const first = anchorOf(target);
   if (!first) return null;
   let rect = first.getBoundingClientRect();
@@ -109,6 +151,11 @@ export function targetBox(target: Target): DOMRect | null {
 export function anchorPoint(target: Target, from: { x: number; y: number }): { x: number; y: number } | null {
   const anchor = anchorOf(target);
   if (!anchor) return null;
+  if (target.kind === 'element') {
+    const node = anchor.getBoundingClientRect();
+    const part = pageBox(target);
+    return { x: from.x > node.left + node.width / 2 ? node.right : node.left, y: part ? part.top + Math.min(part.height / 2, 12) : node.top + 22 };
+  }
   const root = anchor.getRootNode();
   const light = root instanceof ShadowRoot ? root.host : anchor;
   const node = light.closest('.svelte-flow__node')?.getBoundingClientRect();
@@ -126,6 +173,7 @@ export function describe(target: Target | undefined, title: (window: string) => 
   if (!target) return 'a loose note';
   if (target.kind === 'window') return `on ${title(target.window)}`;
   if (target.kind === 'entry') return `on ${target.step ? 'a step' : 'a message'} in ${title(target.window)}`;
+  if (target.kind === 'element') return `on “${target.quote.split('\n')[0].slice(0, 40)}” in ${title(target.window)}`;
   const name = target.path.split('/').pop();
   return `on ${name}:${target.start === target.end ? target.start : `${target.start}–${target.end}`}${target.side === 'deletions' ? ' (removed)' : ''}`;
 }

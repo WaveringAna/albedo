@@ -52,6 +52,21 @@ class Artifacts {
 
 export const artifacts = new Artifacts();
 
+// What a page says of itself is checked before it is drawn or quoted.
+function rect(value: any): PageRect | null {
+  const fields = [value?.x, value?.y, value?.width, value?.height];
+  if (!fields.every((field) => typeof field === 'number' && Number.isFinite(field))) return null;
+  return { x: value.x, y: value.y, width: Math.max(0, value.width), height: Math.max(0, value.height) };
+}
+
+function pointed(value: any): Pointed | null {
+  if (typeof value?.x !== 'number' || typeof value?.y !== 'number') return null;
+  const part = rect(value.rect);
+  if (typeof value.selector !== 'string' || !value.selector || value.selector.length > 1000 || typeof value.quote !== 'string' || !part)
+    return { x: value.x, y: value.y, selector: null };
+  return { x: value.x, y: value.y, selector: value.selector, quote: value.quote.slice(0, 601), rect: part };
+}
+
 // The client's palette, as the page's --albedo-* variables. The client's own
 // values are expressions over its seed colours (color-mix, var()), which mean
 // nothing inside the page, so each is resolved to a colour here first.
@@ -88,6 +103,15 @@ export const UNPROMPTED_PER_MINUTE = 5;
 
 type Request = { jsonrpc: '2.0'; id?: string | number; method?: string; params?: any };
 
+/** A part of a page, in the page's own pixels. */
+export type PageRect = { x: number; y: number; width: number; height: number };
+
+/** What the page said is under a point of it: the part a note would be tied to. */
+export type Pointed = { x: number; y: number; selector: string; quote: string; rect: PageRect } | { x: number; y: number; selector: null };
+
+/** The bridge of each artifact window on the board, by window id, for notes tied into its page. */
+export const pageHosts = new Map<string, PageHost>();
+
 /**
  * The window's side of one page's bridge: JSON-RPC over postMessage, the
  * subset of MCP Apps a page here may use. A message sent right after the
@@ -102,6 +126,11 @@ export class PageHost {
   failures = $state<string[]>([]);
   /** The page's own height, as it last said. */
   height = $state<number | null>(null);
+  /** What the page last said is under the pointer, while a note's tie is drawn over it. */
+  pointed: Pointed | null = null;
+  /** Where each part notes are tied to is now, as the page last said; null when it is gone. */
+  rects = new Map<string, PageRect | null>();
+  #watched: string[] = [];
   #unprompted: number[] = [];
 
   constructor(
@@ -113,6 +142,43 @@ export class PageHost {
   reset() {
     this.failures = [];
     this.height = null;
+    this.pointed = null;
+    this.rects.clear();
+  }
+
+  /** The version of the page shown. */
+  get version(): number {
+    return this.page().version;
+  }
+
+  /** The page itself, on screen, and how much the canvas scales it. */
+  frameBox(): { rect: DOMRect; scale: number } | null {
+    const frame = this.frame();
+    if (!frame?.isConnected) return null;
+    const rect = frame.getBoundingClientRect();
+    return { rect, scale: frame.clientWidth ? rect.width / frame.clientWidth : 1 };
+  }
+
+  /** Asks the page what is under a point of the screen; the answer lands in `pointed`. */
+  point(x: number, y: number) {
+    const box = this.frameBox();
+    if (!box) return;
+    this.notify('albedo/point', { x: (x - box.rect.left) / box.scale, y: (y - box.rect.top) / box.scale });
+  }
+
+  /** Has the page report where the part a selector names is, now and as it moves. */
+  watch(selector: string) {
+    if (this.#watched.includes(selector)) return;
+    this.#watched = [...this.#watched, selector].slice(-64);
+    this.notify('albedo/watch', { selectors: this.#watched });
+  }
+
+  /** Where a page rect is on screen. */
+  onScreen(part: PageRect): DOMRect | null {
+    const box = this.frameBox();
+    if (!box) return null;
+    const { rect, scale } = box;
+    return new DOMRect(rect.left + part.x * scale, rect.top + part.y * scale, part.width * scale, part.height * scale);
   }
 
   receive(event: MessageEvent) {
@@ -130,6 +196,8 @@ export class PageHost {
           hostContext: { ...this.context(), displayMode: 'inline' },
         });
       case 'ui/notifications/initialized':
+        // A page loaded again starts with nothing to watch.
+        if (this.#watched.length) this.notify('albedo/watch', { selectors: this.#watched });
         return;
       case 'ui/message':
         return void this.#message(id, params);
@@ -141,6 +209,14 @@ export class PageHost {
         return;
       case 'albedo/wheel':
         return this.#wheel(params);
+      case 'albedo/pointed':
+        this.pointed = pointed(params);
+        return;
+      case 'albedo/rects':
+        for (const [selector, part] of Object.entries(params?.rects ?? {})) {
+          if (this.#watched.includes(selector)) this.rects.set(selector, rect(part));
+        }
+        return;
       default:
         // tools/call among them: a page cannot reach the agent's tools.
         if (id !== undefined) this.#fail(id, -32601, `${method} is not available to an artifact`);

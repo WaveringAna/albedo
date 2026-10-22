@@ -48,7 +48,7 @@
     {/if}
   {/snippet}
 
-  <ArtifactView artifactId={data.artifact} sessionId={data.sessionId} latest={data.latest} version={data.version} {reloads} onfailures={(found) => (failures = found)} />
+  <ArtifactView windowId={id} artifactId={data.artifact} sessionId={data.sessionId} latest={data.latest} version={data.version} {reloads} onfailures={(found) => (failures = found)} />
 </WindowFrame>
 
 <style>

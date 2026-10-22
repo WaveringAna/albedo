@@ -71,7 +71,7 @@
         const start = noteEnd(tying.note, tying.x);
         preview = start ? curve(local(start), local({ x: tying.x, y: tying.y })) : null;
         const found = pick(tying.x, tying.y);
-        const rect = found?.element.getBoundingClientRect();
+        const rect = found?.rect;
         landing = rect ? { x: rect.left - origin.left, y: rect.top - origin.top, width: rect.width, height: rect.height, window: found!.target.kind === 'window' } : null;
       } else [preview, landing] = [null, null];
       frame = requestAnimationFrame(draw);
