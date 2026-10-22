@@ -648,8 +648,14 @@ class DaemonTest(unittest.TestCase):
         def prepare(app):
             install = app.root / "erlang"
             shutil.copytree(root, install, symlinks=True)
+            # A copy of the nix store keeps its read-only directories.
+            for directory, _, _ in os.walk(install):
+                os.chmod(directory, 0o755)
+            # erl finds its root from its own path, but nix's erl is a wrapper
+            # that runs the original by absolute path; ERL_ROOTDIR wins in both.
             app.daemon.env.update(
                 ALBEDO_INSPECT="1",
+                ERL_ROOTDIR=str(install),
                 PATH=f"{install / 'bin'}{os.pathsep}{app.daemon.env['PATH']}",
             )
 
