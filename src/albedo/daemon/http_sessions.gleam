@@ -1,6 +1,7 @@
 //// Session HTTP operations preserve admission decisions and session-owned execution.
 
 import albedo/daemon/bus
+import albedo/daemon/child_models
 import albedo/daemon/context_snapshot
 import albedo/daemon/conversation
 import albedo/daemon/family
@@ -19,6 +20,7 @@ import albedo/daemon/registry.{
 }
 import albedo/daemon/requests
 import albedo/daemon/session
+import albedo/daemon/session/creation as session_creation
 import albedo/daemon/session_configuration
 import albedo/daemon/session_deletion
 import albedo/daemon/session_workspace
@@ -110,7 +112,23 @@ pub fn create(
       registry.host(registry) |> result.map_error(http_api.failure),
     )
     let ledger = runtime.ledger(host)
-    case actor.call(registry, 15_000, CreateIdentified(id, submitted, _)) {
+    // Resolved here, not in the registry: listing models can wait on an
+    // endpoint. A missing parent is left for the registry to report.
+    let choice = case submitted {
+      session_creation.ChildSession(parent, _, _, _, _, model, _) ->
+        conversation.get(ledger, parent)
+        |> result.map(child_models.resolve(
+          host,
+          config.home,
+          _,
+          option.unwrap(model, ""),
+        ))
+        |> option.from_result
+      _ -> None
+    }
+    case
+      actor.call(registry, 15_000, CreateIdentified(id, submitted, choice, _))
+    {
       Error("session_exists") ->
         creation_failure(ledger, id, http_api.failure("session_exists"), None)
       Error("session_deleted") ->

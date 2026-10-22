@@ -5,6 +5,7 @@ import albedo/clock
 
 import albedo/daemon/agents
 import albedo/daemon/bus
+import albedo/daemon/child_models
 import albedo/daemon/configuration
 import albedo/daemon/conversation
 import albedo/daemon/family
@@ -31,7 +32,6 @@ import albedo/harness/extensions/schedule/ledger as schedule
 import albedo/harness/location
 import albedo/harness/oauth
 import albedo/harness/runtime
-import albedo/text_scalars
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Subject}
 import gleam/int
@@ -67,9 +67,13 @@ fn sweep_interval(config: Config) -> Int {
 }
 
 pub type Message {
+  /// A session under a client-chosen id. A child carries the provider and
+  /// model its creator resolved (see `child_models`), so the registry never
+  /// lists models itself.
   CreateIdentified(
     String,
     session_creation.Intent,
+    Option(child_models.Choice),
     Subject(Result(operations.Receipt, String)),
   )
 
@@ -81,15 +85,6 @@ pub type Message {
     String,
     Subject(Result(conversation.Info, String)),
   )
-  /// A child of the first session: its name among its siblings, its task, and
-  /// a model, or "" for the parent's.
-  CreateChild(
-    String,
-    String,
-    String,
-    String,
-    Subject(Result(#(conversation.Info, family.Member), String)),
-  )
   Lookup(String, Subject(Result(session.Session, String)))
   /// A session created in the store by some other path, such as the archive a
   /// rewind keeps: hold it like any other, so a lookup finds it.
@@ -98,8 +93,13 @@ pub type Message {
   Rewarm(String)
   Existing(String, Subject(Result(Option(session.Session), String)))
   SessionDeleted(String)
-  /// What an agent asks of other sessions, through the agents seam.
-  AgentOp(agents.Op, Subject(Result(agents.Reply, String)))
+  /// What an agent asks of other sessions, through the agents seam. A spawn or
+  /// start carries the provider and model its caller resolved.
+  AgentOp(
+    agents.Op,
+    Option(child_models.Choice),
+    Subject(Result(agents.Reply, String)),
+  )
   List(Subject(List(conversation.Info)))
   Logins(Subject(List(oauth.Login)))
   Host(Subject(Result(runtime.Runtime, String)))
@@ -161,8 +161,8 @@ fn handle(state: State, message: Message) -> actor.Next(State, a) {
 
 fn serve(state: State, message: Message) -> actor.Next(State, a) {
   case message {
-    CreateIdentified(id, creation, reply) -> {
-      let #(state, outcome) = create_identified(state, id, creation)
+    CreateIdentified(id, creation, choice, reply) -> {
+      let #(state, outcome) = create_identified(state, id, creation, choice)
       process.send(reply, outcome)
       actor.continue(state)
     }
@@ -220,13 +220,8 @@ fn serve(state: State, message: Message) -> actor.Next(State, a) {
         Error(_) -> actor.continue(state)
       }
     }
-    CreateChild(parent, name, task, model, reply) -> {
-      let #(state, created) = create_child(state, parent, name, task, model)
-      process.send(reply, created)
-      actor.continue(state)
-    }
-    AgentOp(op, reply) -> {
-      let #(state, answer) = agent_op(state, op)
+    AgentOp(op, choice, reply) -> {
+      let #(state, answer) = agent_op(state, op, choice)
       process.send(reply, answer)
       actor.continue(state)
     }
@@ -407,7 +402,7 @@ fn serve(state: State, message: Message) -> actor.Next(State, a) {
 /// A registry that is not open answers without the store, which may be gone.
 fn refuse(state: State, message: Message) -> Nil {
   case message {
-    CreateIdentified(_, _, reply) -> process.send(reply, Error(closed))
+    CreateIdentified(_, _, _, reply) -> process.send(reply, Error(closed))
     ReadHealth(reply) ->
       process.send(
         reply,
@@ -417,11 +412,10 @@ fn refuse(state: State, message: Message) -> Nil {
         }),
       )
     Create(_, _, _, reply) -> process.send(reply, Error(closed))
-    CreateChild(_, _, _, _, reply) -> process.send(reply, Error(closed))
     Lookup(_, reply) -> process.send(reply, Error(closed))
     Adopt(_) | Rewarm(_) -> Nil
     Existing(_, reply) -> process.send(reply, Error(closed))
-    AgentOp(_, reply) -> process.send(reply, Error(closed))
+    AgentOp(_, _, reply) -> process.send(reply, Error(closed))
     List(reply) -> process.send(reply, [])
     Logins(reply) -> process.send(reply, runtime.logins(state.host))
     Host(reply) -> process.send(reply, Error(closed))
@@ -577,7 +571,37 @@ pub fn start(
           process.send(self, Rewarm(parent))
         })
         // Agents start and stop other sessions from kernel host routes.
-        agents.register(fn(op) { actor.call(self, 60_000, AgentOp(op, _)) })
+        // Model choices are resolved here, in the caller's process: listing a
+        // provider's models can wait on its endpoint.
+        agents.register(fn(op) {
+          let resolve = fn(id, model) {
+            conversation.get(ledger, id)
+            |> result.replace_error("session not found")
+            |> result.try(child_models.resolve(host, config.home, _, model))
+          }
+          case op {
+            agents.Models(id) ->
+              Ok(
+                agents.AvailableModels(case conversation.get(ledger, id) {
+                  Ok(info) -> child_models.available(host, config.home, info)
+                  Error(_) -> []
+                }),
+              )
+            agents.Spawn(parent, _, _, model) ->
+              actor.call(self, 60_000, AgentOp(
+                op,
+                Some(resolve(parent, model)),
+                _,
+              ))
+            agents.Start(caller, _, _, model, _, _) ->
+              actor.call(self, 60_000, AgentOp(
+                op,
+                Some(resolve(caller, model)),
+                _,
+              ))
+            _ -> actor.call(self, 60_000, AgentOp(op, None, _))
+          }
+        })
         mail.on_waiting(fn() { process.send(self, MailWaiting) })
         // A kernel reattached after a restart wakes its idle session, whose
         // actor nothing has loaded yet.
@@ -792,88 +816,13 @@ fn activate(
   }
 }
 
-fn provider_models(
-  state: State,
-  provider: configuration.Provider,
-) -> List(String) {
-  // A generic extension (openai) serves many gateways; the profile's endpoint
-  // names which catalog provider's models it lists.
-  let endpoint =
-    session_provider.profile_endpoint(state.config.home, provider.name)
-  list.unique([
-    provider.model,
-    ..runtime.model_names(state.host, provider.extension, endpoint)
-  ])
-}
-
-fn child_model(
-  state: State,
-  parent: conversation.Info,
-  requested: String,
-) -> Result(#(configuration.Provider, String), String) {
-  use profiles <- result.try(configuration.providers(state.config.home))
-  let models =
-    list.map(profiles, fn(profile) {
-      #(profile, provider_models(state, profile))
-    })
-  let qualified =
-    list.find_map(models, fn(pair) {
-      let #(profile, available) = pair
-      let prefix = profile.name <> "/"
-      case string.starts_with(requested, prefix) {
-        True ->
-          Ok(#(
-            profile,
-            text_scalars.drop(requested, text_scalars.length(prefix)),
-            available,
-          ))
-        False -> Error(Nil)
-      }
-    })
-  case qualified {
-    Ok(#(profile, model, available)) ->
-      case list.contains(available, model) {
-        True -> Ok(#(profile, model))
-        False -> Error("model is not available from provider " <> profile.name)
-      }
-    Error(_) -> {
-      use current <- result.try(configuration.named(
-        state.config.home,
-        parent.provider,
-      ))
-      let model = case requested {
-        "" -> parent.model
-        _ -> requested
-      }
-      case list.contains(provider_models(state, current), model) {
-        True -> Ok(#(current, model))
-        False -> {
-          let matches =
-            list.filter(models, fn(pair) {
-              let #(profile, available) = pair
-              profile.name != current.name && list.contains(available, model)
-            })
-          case matches {
-            [#(profile, _)] -> Ok(#(profile, model))
-            [] -> Ok(#(current, model))
-            _ ->
-              Error(
-                "model is available from multiple providers; use provider/model",
-              )
-          }
-        }
-      }
-    }
-  }
-}
-
 /// A root peer, owned by its starter and handed a request as its first letter.
 fn create_peer(
   state: State,
   caller: String,
   task: String,
   name: String,
-  model: String,
+  choice: child_models.Choice,
   cwd: String,
   role: String,
 ) -> #(State, Result(conversation.Info, String)) {
@@ -891,11 +840,7 @@ fn create_peer(
       location.workspace(requested_cwd)
       |> result.map_error(fn(failure) { failure.detail }),
     )
-    use #(provider, selected_model) <- result.try(child_model(
-      state,
-      cached,
-      model,
-    ))
+    use #(provider, selected_model) <- result.try(choice)
     let info =
       conversation.Info(
         ..cached,
@@ -964,7 +909,7 @@ fn create_child(
   parent: String,
   name: String,
   task: String,
-  model: String,
+  choice: child_models.Choice,
 ) -> #(State, Result(#(conversation.Info, family.Member), String)) {
   let db = runtime.ledger(state.host)
   let created = {
@@ -978,11 +923,7 @@ fn create_child(
       Error(_) -> cached
     }
     use _ <- result.try(family.valid_name(name))
-    use #(provider, selected_model) <- result.try(child_model(
-      state,
-      above,
-      model,
-    ))
+    use #(provider, selected_model) <- result.try(choice)
     let efforts =
       session_provider.model_efforts(
         state.host,
@@ -1042,7 +983,9 @@ fn create_child(
 fn agent_op(
   state: State,
   op: agents.Op,
+  choice: Option(child_models.Choice),
 ) -> #(State, Result(agents.Reply, String)) {
+  let choice = option.unwrap(choice, Error("the model choice was not resolved"))
   let worker = fn(id) {
     case dict.get(state.sessions, id) {
       Ok(#(_, Some(active))) -> Some(active)
@@ -1050,13 +993,13 @@ fn agent_op(
     }
   }
   case op {
-    agents.Spawn(parent, name, task, model) -> {
-      let #(state, created) = create_child(state, parent, name, task, model)
+    agents.Spawn(parent, name, task, _) -> {
+      let #(state, created) = create_child(state, parent, name, task, choice)
       #(state, result.map(created, fn(pair) { agents.Spawned(pair.1) }))
     }
-    agents.Start(caller, task, name, model, cwd, role) -> {
+    agents.Start(caller, task, name, _, cwd, role) -> {
       let #(state, created) =
-        create_peer(state, caller, task, name, model, cwd, role)
+        create_peer(state, caller, task, name, choice, cwd, role)
       #(state, result.map(created, agents.Started))
     }
     agents.Running(id) -> #(state, Ok(agents.RunningState(bus.is_running(id))))
@@ -1096,28 +1039,11 @@ fn agent_op(
       }
       #(state, closed |> result.replace(agents.Closed))
     }
-    agents.Models(id) -> {
-      let listed = case dict.get(state.sessions, id) {
-        Error(_) -> []
-        Ok(#(info, _)) -> {
-          let profiles =
-            configuration.providers(state.config.home)
-            |> result.unwrap([])
-          let #(same, other) =
-            list.partition(profiles, fn(profile) {
-              profile.name == info.provider
-            })
-          let same_models = list.flat_map(same, provider_models(state, _))
-          let other_models =
-            list.flat_map(other, fn(profile) {
-              provider_models(state, profile)
-              |> list.map(fn(model) { profile.name <> "/" <> model })
-            })
-          list.unique([info.model, ..list.append(same_models, other_models)])
-        }
-      }
-      #(state, Ok(agents.AvailableModels(listed)))
-    }
+    // The agents seam answers this itself; listing can wait on endpoints.
+    agents.Models(_) -> #(
+      state,
+      Error("models are listed outside the registry"),
+    )
   }
 }
 
@@ -1152,6 +1078,7 @@ fn create_identified(
   state: State,
   id: String,
   intent: session_creation.Intent,
+  choice: Option(child_models.Choice),
 ) -> #(State, Result(operations.Receipt, String)) {
   let db = runtime.ledger(state.host)
   let submitted = session_creation.encode(intent) |> json.to_string
@@ -1247,15 +1174,7 @@ fn create_identified(
             ),
           )
         }
-        session_creation.ChildSession(
-          parent,
-          address,
-          _name,
-          _,
-          _,
-          model,
-          effort,
-        ) -> {
+        session_creation.ChildSession(parent, address, _name, _, _, _, effort) -> {
           use above <- result.try(
             conversation.get(db, parent)
             |> result.map_error(session_creation.failure),
@@ -1265,7 +1184,7 @@ fn create_identified(
             |> result.map_error(session_creation.failure),
           )
           use #(provider, model) <- result.try(
-            child_model(state, above, option.unwrap(model, ""))
+            option.unwrap(choice, Error("the model choice was not resolved"))
             |> result.map_error(session_creation.failure),
           )
           use effort <- result.try(

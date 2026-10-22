@@ -95,6 +95,12 @@ than copying the full window per token. missing events require a transcript rese
 the orchestrator feed batches every 100 ms and skips activity serialization when
 nobody is watching.
 
+a child's or peer's provider and model are resolved before the registry is asked
+(`daemon/child_models.gleam`, called from the agents seam and from
+`PUT /sessions/{id}`), and `agents.models()` never reaches the registry: listing a
+generic profile's models can wait on its endpoint, and the registry answers every
+request in the daemon. resolution lists only the profiles a choice needs.
+
 run jobs start at once, at low priority (`nice`, and utility QoS on macOS), so a
 busy swarm yields to the person at the machine. jobs never pause for admission,
 and their deadlines count wall time after the program starts.

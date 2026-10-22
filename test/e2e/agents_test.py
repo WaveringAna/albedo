@@ -59,6 +59,29 @@ class AgentsTests(unittest.TestCase):
             }
             for profile, name in ((self.alpha, "alpha"), (self.beta, "beta"))
         }
+        if self._testMethodName == "test_a_stalled_endpoint_never_stalls_the_daemon":
+            # Accepts connections and never answers, like a gateway whose host
+            # is up and whose server is wedged.
+            stalled = socket.create_server(("127.0.0.1", 0))
+            held = []
+
+            def hold():
+                while True:
+                    try:
+                        held.append(stalled.accept()[0])
+                    except OSError:
+                        return
+
+            threading.Thread(target=hold, daemon=True).start()
+            self.addCleanup(lambda: [c.close() for c in held])
+            self.addCleanup(stalled.close)
+            providers[f"stalled-{self.provider.route}"] = {
+                "extension": "openai",
+                "baseUrl": f"http://127.0.0.1:{stalled.getsockname()[1]}/v1",
+                "apiKey": "key",
+                "model": f"fixture-stalled-{self.provider.route}",
+                "protocol": "chat_completions",
+            }
 
         # The cached catalog lists a model for the fixture endpoint that no profile names.
         # models.json is daemon-wide, so only the exclusive catalog test writes it.
@@ -1011,6 +1034,45 @@ class AgentsTests(unittest.TestCase):
         self.assertEqual(
             (made["provider_profile"], made["model"]), (self.beta, "fixture-listed")
         )
+        self.app.idle(made["id"])
+
+    def test_a_stalled_endpoint_never_stalls_the_daemon(self):
+        # Spawning a child lists provider models, and a generic profile asks its
+        # endpoint. That ran inside the registry, which every request waits on:
+        # an endpoint that never answered held it for seconds per spawn, and
+        # every request in the daemon failed with 503 meanwhile.
+        parent = self.app.session()
+        latencies, stop = [], threading.Event()
+
+        def probe():
+            while not stop.is_set():
+                began = time.monotonic()
+                try:
+                    self.app.api("/server").close()
+                    status = 200
+                except urllib.error.HTTPError as error:
+                    status = error.code
+                latencies.append((time.monotonic() - began, status))
+                time.sleep(0.05)
+
+        prober = threading.Thread(target=probe)
+        prober.start()
+        try:
+            # A bare model the parent's provider does not list: every profile
+            # is asked, the stalled one included.
+            made = self.spawn(
+                parent, "scout", "scan", f"fixture-beta-{self.provider.route}"
+            )
+        finally:
+            stop.set()
+            prober.join()
+        self.assertEqual(made["provider_profile"], self.beta)
+        self.assertEqual([s for _, s in latencies if s != 200], [])
+        self.assertLess(max(t for t, _ in latencies), 2, latencies)
+        # The endpoint's failure is remembered: the next spawn does not wait.
+        began = time.monotonic()
+        self.spawn(parent, "scout-2", "scan", f"fixture-beta-{self.provider.route}")
+        self.assertLess(time.monotonic() - began, 2)
         self.app.idle(made["id"])
 
     def test_request_to_missing_session_is_rejected(self):

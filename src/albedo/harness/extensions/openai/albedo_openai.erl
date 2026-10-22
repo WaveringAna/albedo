@@ -1,11 +1,15 @@
 -module(albedo_openai).
 %% Generic OpenAI-compatible provider: the model ids a configured endpoint
-%% serves, asked live from its own /models route.
+%% serves, asked from its own /models route and remembered for a while, so an
+%% endpoint that never answers costs one timeout per window, not one per
+%% caller (the model picker and every agent spawn list every profile).
 
 -export([models/2]).
 
 -define(FETCH_TIMEOUT_MS, 5000).
 -define(CONNECT_TIMEOUT_MS, 2000).
+-define(LISTED_TTL_MS, 300000).
+-define(FAILED_TTL_MS, 60000).
 
 %% The ids ${Endpoint}/models lists, sent with the key of the saved openai
 %% profile at that endpoint (none when no profile has one). The endpoints
@@ -14,7 +18,20 @@ models(Home0, Endpoint0) ->
     Endpoint = string:trim(unicode:characters_to_binary(Endpoint0), trailing, "/"),
     case curated(Endpoint) of
         true -> {error, <<"models.dev lists this endpoint">>};
-        false -> fetch(Endpoint, key(Home0, Endpoint))
+        false -> remembered(Endpoint, key(Home0, Endpoint))
+    end.
+
+%% A changed key (a new login) is a different entry, so it is asked at once.
+remembered(Endpoint, Key) ->
+    Entry = {?MODULE, models, Endpoint, erlang:phash2(Key)},
+    Now = erlang:monotonic_time(millisecond),
+    case persistent_term:get(Entry, none) of
+        {Until, Result} when Until > Now -> Result;
+        _ ->
+            Result = fetch(Endpoint, Key),
+            Ttl = case Result of {ok, _} -> ?LISTED_TTL_MS; _ -> ?FAILED_TTL_MS end,
+            persistent_term:put(Entry, {erlang:monotonic_time(millisecond) + Ttl, Result}),
+            Result
     end.
 
 curated(Endpoint) ->
