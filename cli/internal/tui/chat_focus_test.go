@@ -144,3 +144,14 @@ func TestFocusBeforeAnyChatReadsNothing(t *testing.T) {
 		t.Fatal("blur without a chat asked for a command")
 	}
 }
+
+// The page view asks for a status read when it changes something, and nothing
+// stops that message arriving while the login screen holds a selected session
+// whose chat has not been built.
+func TestStatusBeforeAnyChatReadsNothing(t *testing.T) {
+	session := daemon.Session{ID: "s"}
+	app := NewAppModel(daemon.NewConnection(daemon.ConnectionSnapshot{Port: 1}, nil), Bootstrap{}, &session, "", true, nil)
+	if _, cmd := app.Update(PageViewChangedMsg{}); cmd != nil {
+		t.Fatalf("a page change without a chat asked for %T", cmd())
+	}
+}

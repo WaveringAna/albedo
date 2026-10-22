@@ -135,7 +135,12 @@ func (m ChatModel) clearCopyStatusCmd() tea.Cmd {
 	})
 }
 
+// statusCmd reads nothing before any session is open: the app then holds a
+// zero chat with no client.
 func (m ChatModel) statusCmd() tea.Cmd {
+	if m.client == nil {
+		return nil
+	}
 	client, ctx, id, generation, revision := m.client, m.streamCtx, m.SessionID, m.Generation, m.statusRevision
 	return func() tea.Msg {
 		status, glances, err := client.GetSessionStatus(ctx)
