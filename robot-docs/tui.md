@@ -146,3 +146,7 @@ a terminal that reports focus (`ReportFocus`, bubbletea's `FocusMsg`/`BlurMsg`) 
 ## tests
 
 unit tests here catch what the daemon e2e cannot drive: key routing, stale replies, in-flight save rendering, footer fitting. the screen-level scenarios in `cli/test/e2e` drive the real daemon through the same keys. when a screen changes keys, update both and the gallery state that shows the footer.
+
+## artifacts
+
+Each artifact a burst made or revised gets a row under it, open or closed, at the newest version the burst wrote: `↗ open artifact albedo made for you: <title>`, or `↗ open artifact albedo updated: <title> · v<n>` after the first version (`artifactRow`, `newestArtifacts`; the summary says `made <title>` or `updated <title>`, as the web client does). A click opens that version in the browser without blocking the screen: the TUI reads the artifact's key from `GET /extensions/artifacts/items/{id}`, finds `albedo web` through `$ALBEDO_HOME/web.json` (`webui.ManifestAlive`: its pid lives and its url answers) or starts `albedo web --no-open` detached, logging to `$ALBEDO_HOME/web.log`, and waits up to 8 s for it, then opens `<url>/frame/{id}.{key}/{version}/{entry}`. A deleted artifact says so.

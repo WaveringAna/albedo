@@ -493,6 +493,10 @@ func (r TranscriptRenderer) RenderToolTrace(trace *daemon.ToolTrace, flags Displ
 		if act.Kind == "read" && edits(act.Target) {
 			continue
 		}
+		if act.Kind == "artifact" {
+			rows = append(rows, DefaultStyles.Faint.Render(artifactRow(act, width)))
+			continue
+		}
 		rows = append(rows, DefaultStyles.Faint.Render(r.traceLine(act.Kind, act.Target, isPath(act), width)))
 		if act.Kind == "display" && act.Detail != "" {
 			rows = append(rows, r.renderDisplayRows(act.Target, act.Detail, width)...)

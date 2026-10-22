@@ -104,6 +104,9 @@ type entryFacts struct {
 	looked    []lookup
 	displayed []lookup
 	ran       []string
+	made      []string
+	updated   []string
+	artifacts []daemon.ToolActivity
 	py        []string
 	used      []string
 	changes   []daemon.FileChange
@@ -156,6 +159,16 @@ func factsOf(entry HistoryEntry) entryFacts {
 				f.displayed = append(f.displayed, lookup{key, activity.Target, activity.Detail})
 			case "run":
 				f.ran = append(f.ran, commandName(activity.Target))
+			case "artifact":
+				if activity.Artifact == nil {
+					break
+				}
+				f.artifacts = append(f.artifacts, activity)
+				if activity.Artifact.Version > 1 {
+					f.updated = append(f.updated, oneLine(activity.Target))
+				} else {
+					f.made = append(f.made, oneLine(activity.Target))
+				}
 			}
 		}
 		return f
@@ -186,6 +199,9 @@ type burst struct {
 	looked    []lookup
 	displayed []lookup
 	ran       tally
+	made      tally
+	updated   tally
+	artifacts []daemon.ToolActivity
 	py        tally
 	used      tally
 	changes   []daemon.FileChange
@@ -212,6 +228,9 @@ func (b *burst) merge(f entryFacts, entry HistoryEntry) {
 	b.ran.addAll(f.ran)
 	b.py.addAll(f.py)
 	b.used.addAll(f.used)
+	b.made.addAll(f.made)
+	b.updated.addAll(f.updated)
+	b.artifacts = append(b.artifacts, f.artifacts...)
 	b.added += f.added
 	b.removed += f.removed
 	b.changes = append(b.changes, f.changes...)
@@ -285,6 +304,8 @@ func (r TranscriptRenderer) summary(b burst, width int, n namer) string {
 		{verb: "displayed", noun: "items", n: len(b.displayed), items: queries(b.displayed)},
 		{verb: "edited", noun: "files", n: len(edited), items: pathGroups(edited)},
 		{verb: "ran", noun: "commands", n: len(b.ran.keys), items: b.ran.counted()},
+		{verb: "made", noun: "artifacts", n: len(b.made.keys), items: b.made.keys},
+		{verb: "updated", noun: "artifacts", n: len(b.updated.keys), items: b.updated.keys},
 		{verb: "python", noun: "cells", n: len(b.py.keys), items: b.py.counted()},
 		{verb: "used", noun: "tools", n: len(b.used.keys), items: b.used.counted()},
 	} {
@@ -466,6 +487,10 @@ func (r TranscriptRenderer) RenderBurst(entries []HistoryEntry, flags DisplayFla
 	for _, disp := range b.displayed {
 		rows = append(rows, r.foldDisplay(disp, width)...)
 	}
+	// what the burst made stays one press away, open or not
+	for _, act := range newestArtifacts(b.artifacts) {
+		rows = append(rows, markChrome+artifactRow(act, width))
+	}
 	if flags.Diffs {
 		for _, change := range b.changes {
 			if change.Kind == "diff" {
@@ -476,6 +501,22 @@ func (r TranscriptRenderer) RenderBurst(entries []HistoryEntry, flags DisplayFla
 		}
 	}
 	return strings.Join(rows, "\n")
+}
+
+// newestArtifacts keeps each artifact once, at the newest version the burst
+// made, in the order the burst first touched them.
+func newestArtifacts(activities []daemon.ToolActivity) []daemon.ToolActivity {
+	var kept []daemon.ToolActivity
+	at := map[string]int{}
+	for _, act := range activities {
+		if i, seen := at[act.Artifact.ID]; seen {
+			kept[i] = act
+			continue
+		}
+		at[act.Artifact.ID] = len(kept)
+		kept = append(kept, act)
+	}
+	return kept
 }
 
 // steps is one row for each thing a burst's calls did, in order: the full

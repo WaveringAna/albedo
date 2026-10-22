@@ -9,9 +9,15 @@ import (
 )
 
 // ToolActivity records display-only execution evidence, not model-facing tool output.
+type ArtifactActivity struct {
+	ID      string `json:"id"`
+	Version int64  `json:"version"`
+}
+
 type ToolActivity struct {
-	Kind   string `json:"kind"` // "read" | "search" | "list" | "run" | "web" | "display" | "mcp" | "cua"
-	Target string `json:"target"`
+	Kind     string            `json:"kind"` // "read" | "search" | "list" | "run" | "web" | "display" | "mcp" | "cua" | "artifact"
+	Target   string            `json:"target"`
+	Artifact *ArtifactActivity `json:"artifact,omitempty"`
 	// Detail is the markdown a web search answered with or display() showed; empty otherwise.
 	Detail string `json:"detail,omitempty"`
 	// MS and OK are how long the call took and whether it worked, when it
@@ -53,6 +59,10 @@ func ParseToolTrace(data json.RawMessage) *ToolTrace {
 	for _, act := range trace.Activities {
 		switch act.Kind {
 		case "read", "search", "list", "run", "web", "display", "mcp", "cua":
+		case "artifact":
+			if act.Artifact == nil || act.Artifact.ID == "" || act.Artifact.Version < 1 {
+				return nil
+			}
 		default:
 			return nil
 		}

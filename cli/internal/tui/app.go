@@ -100,6 +100,8 @@ type AppModel struct {
 
 func (m *AppModel) newChatModel(session *daemon.Session) ChatModel {
 	chat := NewChatModel(session, daemon.NewChatClient(m.Conn, session.ID))
+	chat.artifactConn = m.Conn
+	chat.openBrowser = m.openBrowser
 	if pending, ok := m.pendingBySession[session.ID]; ok {
 		chat.pendingUsers = slices.Clone(pending.users)
 		chat.pendingContinuations = maps.Clone(pending.continuations)

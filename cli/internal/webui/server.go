@@ -40,6 +40,7 @@ type Server struct {
 	upstream Upstream
 	proxy    *httputil.ReverseProxy
 	static   http.Handler
+	frames   *httputil.ReverseProxy
 }
 
 // New checks that dist holds a built client and draws a fresh launch key.
@@ -58,6 +59,7 @@ func New(dist string, upstream Upstream) (*Server, error) {
 		ModifyResponse: s.observe,
 		ErrorHandler:   s.unreachable,
 	}
+	s.frames = &httputil.ReverseProxy{Rewrite: s.rewriteFrame, FlushInterval: -1, ModifyResponse: s.observeFrame, ErrorHandler: s.unreachable}
 	return s, nil
 }
 
@@ -85,6 +87,12 @@ func (s *Server) LaunchURL(addr string) string {
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Every answer on the frame route is sandboxed, refusals included.
+	if strings.HasPrefix(r.URL.Path, "/frame/") {
+		for name, value := range frameHeaders {
+			w.Header().Set(name, value)
+		}
+	}
 	if !s.allowed(r.Host) {
 		http.Error(w, "albedo web does not answer on this name", http.StatusMisdirectedRequest)
 		return
@@ -95,6 +103,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if key := r.URL.Query().Get("key"); key != "" && r.URL.Path == "/" {
 		s.signIn(w, r, key)
+		return
+	}
+	if strings.HasPrefix(r.URL.Path, "/frame/") {
+		s.frame(w, r)
 		return
 	}
 	if r.URL.Path == "/api" || strings.HasPrefix(r.URL.Path, "/api/") {
@@ -116,6 +128,57 @@ func (s *Server) signIn(w http.ResponseWriter, r *http.Request, key string) {
 	}
 	http.SetCookie(w, &http.Cookie{Name: cookieName, Value: s.key, Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode})
 	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+// frameHeaders sandbox an artifact's page wherever it is opened, in a frame
+// or a tab of its own, and let its own module scripts and fetches (from an
+// opaque origin) read the files (robot-docs/artifacts.md).
+var frameHeaders = map[string]string{
+	"Content-Security-Policy":      "sandbox allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-modals allow-downloads allow-pointer-lock",
+	"Access-Control-Allow-Origin":  "*",
+	"Cross-Origin-Resource-Policy": "cross-origin",
+	"Referrer-Policy":              "no-referrer",
+	"X-Content-Type-Options":       "nosniff",
+}
+
+// frame serves an artifact's files from the daemon. The key in the path is
+// the capability, so it needs no sign-in, and a page may only read and save
+// its own state and failures.
+func (s *Server) frame(w http.ResponseWriter, r *http.Request) {
+	allowed := r.Method == http.MethodGet || r.Method == http.MethodHead
+	if r.Method == http.MethodPost {
+		allowed = strings.HasSuffix(r.URL.Path, "/.albedo/state") || strings.HasSuffix(r.URL.Path, "/.albedo/errors")
+	}
+	if !allowed {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	s.frames.ServeHTTP(w, r)
+}
+
+func (s *Server) rewriteFrame(pr *httputil.ProxyRequest) {
+	endpoint := s.upstream.Snapshot()
+	target := &url.URL{Scheme: "http", Host: fmt.Sprintf("127.0.0.1:%d", endpoint.Port)}
+	pr.SetURL(target)
+	pr.Out.URL.Path = "/extensions/artifacts" + pr.In.URL.Path
+	pr.Out.URL.RawPath = ""
+	if pr.In.URL.RawPath != "" {
+		pr.Out.URL.RawPath = "/extensions/artifacts" + pr.In.URL.RawPath
+	}
+	pr.Out.Host = target.Host
+	pr.Out.Header.Del("Origin")
+	pr.Out.Header.Del("Cookie")
+	pr.Out.Header.Del("Referer")
+	pr.Out.Header.Set("Authorization", "Bearer "+endpoint.Token)
+}
+
+// observeFrame drops any copy of the frame headers the daemon sent: ServeHTTP
+// already set them on the answer, and the proxy would add these beside them.
+func (s *Server) observeFrame(response *http.Response) error {
+	for name := range frameHeaders {
+		response.Header.Del(name)
+	}
+	return s.observe(response)
 }
 
 func (s *Server) forward(w http.ResponseWriter, r *http.Request) {

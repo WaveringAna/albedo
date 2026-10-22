@@ -23,9 +23,11 @@ const (
 	// verbMore shows or folds the rest of a long message of yours, of a
 	// note, or of a web search's answer.
 	verbMore = "more"
+	// verbArtifact opens an artifact page in the browser.
+	verbArtifact = "artifact"
 )
 
-var actionMark = regexp.MustCompile(`\x1b_albedo:(copy|open|more):([0-9a-f]+-[0-9a-f]+)\x1b\\`)
+var actionMark = regexp.MustCompile(`\x1b_albedo:(copy|open|more|artifact):([A-Za-z0-9._:-]+)\x1b\\`)
 
 type rowAction struct{ verb, key string }
 
@@ -60,6 +62,9 @@ func (m *ChatModel) actAt(row int) tea.Cmd {
 		return m.copyReply(act.key)
 	case verbOpen:
 		m.toggleBurst(act.key, row)
+	case verbArtifact:
+		m.AddNotice("opening artifact in your browser…")
+		return m.openArtifactAction(act.key)
 	case verbMore:
 		if !m.toggleFold(act.key, row) {
 			m.toggleLookup(act.key, row)

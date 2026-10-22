@@ -9,9 +9,10 @@ func TestParseToolTraceKeepsEveryKindTheKernelRecords(t *testing.T) {
 	trace := ParseToolTrace([]byte(`{"activities":[
 		{"kind":"run","target":"go test","ms":1500,"ok":true},
 		{"kind":"mcp","target":"fake/echo","ms":3,"ok":false},
-		{"kind":"cua","target":"click"}
+		{"kind":"cua","target":"click"},
+        {"kind":"artifact","target":"release timeline","artifact":{"id":"abc","version":2}}
 	],"changes":[]}`))
-	if trace == nil || len(trace.Activities) != 3 {
+	if trace == nil || len(trace.Activities) != 4 {
 		t.Fatalf("trace dropped: %+v", trace)
 	}
 	if run := trace.Activities[0]; run.MS == nil || *run.MS != 1500 || run.OK == nil || !*run.OK {

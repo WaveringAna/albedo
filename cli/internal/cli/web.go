@@ -81,8 +81,25 @@ The client is read from web/dist in the albedo checkout, or from ALBEDO_WEB_DIST
 		if err != nil {
 			return fmt.Errorf("cannot listen on %s:%d (use --port to pick another): %w", bind, port, err)
 		}
-		bound := strconv.Itoa(listener.Addr().(*net.TCPAddr).Port)
+		boundPort := listener.Addr().(*net.TCPAddr).Port
+		bound := strconv.Itoa(boundPort)
 		link := server.LaunchURL(net.JoinHostPort("127.0.0.1", bound))
+		manifestPath := webui.ManifestPath()
+		ownsManifest := true
+		if existing, readErr := webui.ReadManifest(manifestPath); readErr == nil && webui.ManifestAlive(existing) {
+			ownsManifest = false
+		}
+		if ownsManifest {
+			if err := webui.WriteManifest(manifestPath, webui.Manifest{PID: os.Getpid(), Port: boundPort, URL: "http://127.0.0.1:" + bound}); err != nil {
+				listener.Close()
+				return fmt.Errorf("cannot write web.json: %w", err)
+			}
+			defer func() {
+				if current, readErr := webui.ReadManifest(manifestPath); readErr == nil && current.PID == os.Getpid() {
+					_ = os.Remove(manifestPath)
+				}
+			}()
+		}
 		out := cmd.OutOrStdout()
 		if _, err := fmt.Fprintf(out, "albedo web is serving at %s\n", link); err != nil {
 			listener.Close()

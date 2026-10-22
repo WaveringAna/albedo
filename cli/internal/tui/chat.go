@@ -105,9 +105,11 @@ type ChatModel struct {
 	Pastes promptPastes
 	// window is the context window of windowModel, read once per model so
 	// the footer can say how full the context is.
-	window  *int
-	client  *daemon.ChatClient
-	History *BoundedHistory
+	window       *int
+	client       *daemon.ChatClient
+	artifactConn *daemon.Connection
+	openBrowser  func(string)
+	History      *BoundedHistory
 
 	// Selection coordinates use frameLines, the whole transcript as last
 	// drawn, so a selection can extend beyond the viewport.
@@ -339,6 +341,14 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 	var cmds []tea.Cmd
 
 	switch msg := msg.(type) {
+
+	case artifactOpenResult:
+		if msg.Err != nil {
+			m.AddError(msg.Err.Error())
+		} else if msg.Notice != "" {
+			m.AddNotice(msg.Notice)
+		}
+		return m, nil
 
 	case ChatStatusPollMsg:
 		if msg.SessionID != m.SessionID || msg.Generation != m.Generation || msg.Poll != m.statusPoll || m.streamStopped {

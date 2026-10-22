@@ -139,3 +139,17 @@ func TestEvictionKeepsTheLiveBurstCurrent(t *testing.T) {
 		t.Fatalf("live burst froze across eviction: %q", rows)
 	}
 }
+
+func TestBurstSummaryIncludesArtifactClausesAfterRun(t *testing.T) {
+	m := newTestChatModel(t, &daemon.Session{ID: "s"})
+	m.Workspace = "/w"
+	trace := &daemon.ToolTrace{Activities: []daemon.ToolActivity{
+		{Kind: "run", Target: "go test ./..."},
+		{Kind: "artifact", Target: "counter", Artifact: &daemon.ArtifactActivity{ID: "a", Version: 1}},
+		{Kind: "artifact", Target: "second page", Artifact: &daemon.ArtifactActivity{ID: "b", Version: 2}},
+	}}
+	row := m.Renderer.summary(collect([]HistoryEntry{{Kind: EntryTool, ToolTrace: trace}}), 200, m.Renderer.namer())
+	if !strings.Contains(row, "ran go test") || !strings.Contains(row, "made counter") || !strings.Contains(row, "updated second page") {
+		t.Fatalf("summary: %q", row)
+	}
+}

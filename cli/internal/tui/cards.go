@@ -119,6 +119,10 @@ func (r TranscriptRenderer) cardCalls(trace *daemon.ToolTrace, flags DisplayFlag
 	}
 	var rows []string
 	for _, act := range trace.Activities {
+		if act.Kind == "artifact" {
+			rows = append(rows, markChrome+panel(artifactRow(act, width)))
+			continue
+		}
 		head := callGlyph(act) + " " + DefaultStyles.Busy.Render(act.Kind) + " "
 		took := ""
 		if act.MS != nil {

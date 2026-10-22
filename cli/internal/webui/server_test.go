@@ -215,3 +215,43 @@ func TestMissingBuildNamesTheFix(t *testing.T) {
 		t.Fatal("an empty dist was accepted")
 	}
 }
+
+func TestArtifactFrameBoundary(t *testing.T) {
+	var got *http.Request
+	server, _ := newServer(t, func(w http.ResponseWriter, r *http.Request) {
+		got = r.Clone(context.Background())
+		w.Header().Set("Content-Type", "text/html")
+		// A copy from the daemon must not stand beside the frame's own.
+		w.Header().Set("Access-Control-Allow-Origin", "https://elsewhere")
+		_, _ = w.Write([]byte("<h1>ok</h1>"))
+	})
+	req := request(http.MethodGet, "/frame/id.key/1/index.html", "")
+	req.Header.Set("Cookie", "albedo_web=bad")
+	req.Header.Set("Origin", "https://elsewhere")
+	req.Header.Set("Referer", "https://elsewhere/")
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, req)
+	if response.Code != http.StatusOK || got == nil || got.URL.Path != "/extensions/artifacts/frame/id.key/1/index.html" {
+		t.Fatalf("frame answered %d, request %+v", response.Code, got)
+	}
+	if got.Header.Get("Authorization") != "Bearer secret" || got.Header.Get("Cookie") != "" || got.Header.Get("Origin") != "" || got.Header.Get("Referer") != "" {
+		t.Fatalf("browser headers crossed boundary: %+v", got.Header)
+	}
+	for key, want := range frameHeaders {
+		if values := response.Header().Values(key); len(values) != 1 || values[0] != want {
+			t.Errorf("%s = %q", key, values)
+		}
+	}
+	for _, method := range []string{http.MethodPut, http.MethodDelete} {
+		response = httptest.NewRecorder()
+		server.ServeHTTP(response, request(method, "/frame/id.key/1/index.html", ""))
+		if response.Code != http.StatusMethodNotAllowed {
+			t.Errorf("%s answered %d", method, response.Code)
+		}
+	}
+	response = httptest.NewRecorder()
+	server.ServeHTTP(response, request(http.MethodPost, "/frame/id.key/1/index.html", ""))
+	if response.Code != http.StatusMethodNotAllowed {
+		t.Errorf("post file answered %d", response.Code)
+	}
+}
