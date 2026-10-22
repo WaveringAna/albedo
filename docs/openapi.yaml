@@ -32,6 +32,7 @@ tags:
 - name: auth
 - name: work
 - name: paperclips
+- name: artifacts
 - name: web-search
 - name: schedule
 - name: links
@@ -2690,6 +2691,246 @@ paths:
           $ref: '#/components/schemas/ID'
         description: Queue the deletion note for this session after the durable edit.
       - $ref: '#/components/parameters/IfMatch'
+  /extensions/artifacts/items:
+    get:
+      operationId: listArtifacts
+      summary: List artifacts, newest change first
+      tags:
+      - artifacts
+      responses:
+        '200':
+          description: Successful result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ArtifactPage'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '405':
+          $ref: '#/components/responses/Problem405'
+        '406':
+          $ref: '#/components/responses/Problem406'
+        '503':
+          $ref: '#/components/responses/Problem503'
+      description: Requires enabled extension artifacts. Artifacts outlive their session; `session_deleted`
+        marks one whose session is gone.
+      parameters:
+      - $ref: '#/components/parameters/Limit'
+      - $ref: '#/components/parameters/Next'
+      - name: session
+        in: query
+        required: false
+        description: Only this session's artifacts.
+        schema:
+          $ref: '#/components/schemas/ID'
+  /extensions/artifacts/items/{artifact_id}:
+    get:
+      operationId: getArtifact
+      summary: Read one artifact with its versions
+      tags:
+      - artifacts
+      responses:
+        '200':
+          description: Successful result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ArtifactDetail'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '405':
+          $ref: '#/components/responses/Problem405'
+        '406':
+          $ref: '#/components/responses/Problem406'
+        '503':
+          $ref: '#/components/responses/Problem503'
+        '404':
+          $ref: '#/components/responses/Problem404'
+      parameters:
+      - name: artifact_id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ArtifactID'
+    delete:
+      operationId: deleteArtifact
+      summary: Delete an artifact and every version of it
+      tags:
+      - artifacts
+      responses:
+        '204':
+          description: Deleted.
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '405':
+          $ref: '#/components/responses/Problem405'
+        '406':
+          $ref: '#/components/responses/Problem406'
+        '503':
+          $ref: '#/components/responses/Problem503'
+        '404':
+          $ref: '#/components/responses/Problem404'
+      parameters:
+      - name: artifact_id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ArtifactID'
+  /extensions/artifacts/frame/{frame}/{version}/{path}:
+    get:
+      operationId: getArtifactFile
+      summary: Serve one file of one artifact version
+      tags:
+      - artifacts
+      responses:
+        '200':
+          description: The file, with its content type. An HTML file has the page bridge injected at the start
+            of its head.
+          content:
+            '*/*':
+              schema:
+                type: string
+                format: binary
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '405':
+          $ref: '#/components/responses/Problem405'
+        '406':
+          $ref: '#/components/responses/Problem406'
+        '503':
+          $ref: '#/components/responses/Problem503'
+        '404':
+          $ref: '#/components/responses/Problem404'
+      description: '`albedo web` forwards `/frame/...` here; see robot-docs/artifacts.md. A wrong key answers
+        404. `path` may contain `/`; one ending in `/` serves its index.html.'
+      parameters:
+      - name: frame
+        in: path
+        required: true
+        description: The artifact's id and capability key, joined by a dot.
+        schema:
+          type: string
+          maxLength: 128
+      - name: version
+        in: path
+        required: true
+        schema:
+          type: integer
+          minimum: 1
+      - name: path
+        in: path
+        required: true
+        schema:
+          type: string
+          maxLength: 512
+  /extensions/artifacts/frame/{frame}/{version}/.albedo/state:
+    post:
+      operationId: saveArtifactState
+      summary: Save the page's localStorage
+      tags:
+      - artifacts
+      responses:
+        '204':
+          description: Saved.
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '405':
+          $ref: '#/components/responses/Problem405'
+        '406':
+          $ref: '#/components/responses/Problem406'
+        '503':
+          $ref: '#/components/responses/Problem503'
+        '404':
+          $ref: '#/components/responses/Problem404'
+        '413':
+          $ref: '#/components/responses/Problem413'
+      parameters:
+      - name: frame
+        in: path
+        required: true
+        description: The artifact's id and capability key, joined by a dot.
+        schema:
+          type: string
+          maxLength: 128
+      - name: version
+        in: path
+        required: true
+        schema:
+          type: integer
+          minimum: 1
+      requestBody:
+        required: true
+        content:
+          text/plain:
+            schema:
+              $ref: '#/components/schemas/ArtifactState'
+        description: JSON sent as text/plain, so a sandboxed page can send it without a preflight.
+  /extensions/artifacts/frame/{frame}/{version}/.albedo/errors:
+    post:
+      operationId: reportArtifactError
+      summary: Record a failure in the page
+      tags:
+      - artifacts
+      responses:
+        '204':
+          description: Recorded.
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '405':
+          $ref: '#/components/responses/Problem405'
+        '406':
+          $ref: '#/components/responses/Problem406'
+        '503':
+          $ref: '#/components/responses/Problem503'
+        '404':
+          $ref: '#/components/responses/Problem404'
+        '413':
+          $ref: '#/components/responses/Problem413'
+      parameters:
+      - name: frame
+        in: path
+        required: true
+        description: The artifact's id and capability key, joined by a dot.
+        schema:
+          type: string
+          maxLength: 128
+      - name: version
+        in: path
+        required: true
+        schema:
+          type: integer
+          minimum: 1
+      requestBody:
+        required: true
+        content:
+          text/plain:
+            schema:
+              $ref: '#/components/schemas/ArtifactError'
+        description: JSON sent as text/plain, so a sandboxed page can send it without a preflight.
   /extensions/paperclips/items:
     get:
       operationId: listPaperclips
@@ -7855,12 +8096,137 @@ components:
           $ref: '#/components/schemas/Warnings'
       required: [run_id, state, cancelled_input_ids, warnings]
       additionalProperties: false
+    ArtifactID:
+      type: string
+      pattern: ^[a-z0-9]{12}$
+    Artifact:
+      type: object
+      properties:
+        id:
+          $ref: '#/components/schemas/ArtifactID'
+        key:
+          type: string
+          pattern: ^[0-9a-f]{32}$
+          description: The capability that serves its pages, `/frame/{id}.{key}/{version}/{path}`.
+        title:
+          type: string
+          maxLength: 1000
+        version:
+          type: integer
+          minimum: 1
+        versions:
+          type: integer
+          minimum: 1
+        entry:
+          type: string
+          maxLength: 512
+        session_id:
+          $ref: '#/components/schemas/ID'
+        session_name:
+          type: [string, 'null']
+          maxLength: 1000
+        session_deleted:
+          type: boolean
+        workspace:
+          type: string
+          maxLength: 4096
+        created_at:
+          $ref: '#/components/schemas/Counter'
+        updated_at:
+          $ref: '#/components/schemas/Counter'
+        bytes:
+          $ref: '#/components/schemas/Counter'
+      required: [id, key, title, version, versions, entry, session_id, session_name, session_deleted, workspace,
+        created_at, updated_at, bytes]
+      additionalProperties: false
+    ArtifactPage:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Artifact'
+          maxItems: 200
+        next:
+          type: [string, 'null']
+          maxLength: 4096
+      required: [items, next]
+      additionalProperties: false
+    ArtifactFile:
+      type: object
+      properties:
+        path:
+          type: string
+          maxLength: 512
+        size:
+          $ref: '#/components/schemas/Counter'
+      required: [path, size]
+      additionalProperties: false
+    ArtifactVersion:
+      type: object
+      properties:
+        version:
+          type: integer
+          minimum: 1
+        entry:
+          type: string
+          maxLength: 512
+        created_at:
+          $ref: '#/components/schemas/Counter'
+        cell_id:
+          type: [string, 'null']
+          maxLength: 1000
+        files:
+          type: array
+          items:
+            $ref: '#/components/schemas/ArtifactFile'
+          maxItems: 2000
+        bytes:
+          $ref: '#/components/schemas/Counter'
+      required: [version, entry, created_at, cell_id, files, bytes]
+      additionalProperties: false
+    ArtifactDetail:
+      allOf:
+      - $ref: '#/components/schemas/Artifact'
+      - type: object
+        properties:
+          history:
+            type: array
+            description: Every version, newest first.
+            items:
+              $ref: '#/components/schemas/ArtifactVersion'
+        required: [history]
+    ArtifactState:
+      type: object
+      description: The page's localStorage.
+      additionalProperties:
+        type: string
+    ArtifactError:
+      type: object
+      properties:
+        message:
+          type: string
+          maxLength: 4000
+        source:
+          type: string
+          maxLength: 2000
+        line:
+          type: integer
+          minimum: 0
+        column:
+          type: integer
+          minimum: 0
+        stack:
+          type: string
+          maxLength: 8000
+      required: [message]
+      additionalProperties: false
     ToolActivity:
       type: object
       properties:
         kind:
           type: string
-          enum: [read, search, list, run, web, display, mcp, cua]
+          enum: [read, search, list, run, web, display, mcp, cua, artifact]
         target:
           type: string
           maxLength: 1000
@@ -7875,6 +8241,17 @@ components:
         ok:
           type: boolean
           description: Whether the call worked, when it ended while its cell's trace was open.
+        artifact:
+          type: object
+          description: The artifact version an `artifact` activity made; its title is the target.
+          properties:
+            id:
+              $ref: '#/components/schemas/ArtifactID'
+            version:
+              type: integer
+              minimum: 1
+          required: [id, version]
+          additionalProperties: false
       required: [kind, target]
       additionalProperties: false
     FileDiff:

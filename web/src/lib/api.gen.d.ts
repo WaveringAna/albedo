@@ -685,6 +685,98 @@ export interface paths {
         patch: operations["patchWork"];
         trace?: never;
     };
+    "/extensions/artifacts/items": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List artifacts, newest change first
+         * @description Requires enabled extension artifacts. Artifacts outlive their session; `session_deleted` marks one whose session is gone.
+         */
+        get: operations["listArtifacts"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/extensions/artifacts/items/{artifact_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read one artifact with its versions */
+        get: operations["getArtifact"];
+        put?: never;
+        post?: never;
+        /** Delete an artifact and every version of it */
+        delete: operations["deleteArtifact"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/extensions/artifacts/frame/{frame}/{version}/{path}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Serve one file of one artifact version
+         * @description `albedo web` forwards `/frame/...` here; see robot-docs/artifacts.md. A wrong key answers 404. `path` may contain `/`; one ending in `/` serves its index.html.
+         */
+        get: operations["getArtifactFile"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/extensions/artifacts/frame/{frame}/{version}/.albedo/state": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Save the page's localStorage */
+        post: operations["saveArtifactState"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/extensions/artifacts/frame/{frame}/{version}/.albedo/errors": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Record a failure in the page */
+        post: operations["reportArtifactError"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/extensions/paperclips/items": {
         parameters: {
             query?: never;
@@ -2705,9 +2797,57 @@ export interface components {
             cancelled_input_ids: components["schemas"]["ID"][];
             warnings: components["schemas"]["Warnings"];
         };
+        ArtifactID: string;
+        Artifact: {
+            id: components["schemas"]["ArtifactID"];
+            /** @description The capability that serves its pages, `/frame/{id}.{key}/{version}/{path}`. */
+            key: string;
+            title: string;
+            version: number;
+            versions: number;
+            entry: string;
+            session_id: components["schemas"]["ID"];
+            session_name: string | null;
+            session_deleted: boolean;
+            workspace: string;
+            created_at: components["schemas"]["Counter"];
+            updated_at: components["schemas"]["Counter"];
+            bytes: components["schemas"]["Counter"];
+        };
+        ArtifactPage: {
+            items: components["schemas"]["Artifact"][];
+            next: string | null;
+        };
+        ArtifactFile: {
+            path: string;
+            size: components["schemas"]["Counter"];
+        };
+        ArtifactVersion: {
+            version: number;
+            entry: string;
+            created_at: components["schemas"]["Counter"];
+            cell_id: string | null;
+            files: components["schemas"]["ArtifactFile"][];
+            bytes: components["schemas"]["Counter"];
+        };
+        ArtifactDetail: components["schemas"]["Artifact"] & {
+            /** @description Every version, newest first. */
+            history: components["schemas"]["ArtifactVersion"][];
+        };
+        /** @description The page's localStorage. */
+        ArtifactState: {
+            [key: string]: string;
+        };
+        ArtifactError: {
+            message: string;
+            source?: string;
+            line?: number;
+            column?: number;
+            stack?: string;
+        };
         ToolActivity: {
             /** @enum {string} */
-            kind: "read" | "search" | "list" | "run" | "web" | "display" | "mcp" | "cua";
+            kind: "read" | "search" | "list" | "run" | "web" | "display" | "mcp" | "cua" | "artifact";
             target: string;
             /** @description What the person watching sees of the result, as markdown; a web search's answer and sources, or displayed content. */
             detail?: string;
@@ -2715,6 +2855,11 @@ export interface components {
             ms?: number;
             /** @description Whether the call worked, when it ended while its cell's trace was open. */
             ok?: boolean;
+            /** @description The artifact version an `artifact` activity made; its title is the target. */
+            artifact?: {
+                id: components["schemas"]["ArtifactID"];
+                version: number;
+            };
         };
         FileDiff: {
             path: string;
@@ -6407,6 +6552,195 @@ export interface operations {
             413: components["responses"]["Problem413"];
             415: components["responses"]["Problem415"];
             428: components["responses"]["Problem428"];
+            503: components["responses"]["Problem503"];
+        };
+    };
+    listArtifacts: {
+        parameters: {
+            query?: {
+                limit?: components["parameters"]["Limit"];
+                next?: components["parameters"]["Next"];
+                /** @description Only this session's artifacts. */
+                session?: components["schemas"]["ID"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ArtifactPage"];
+                };
+            };
+            400: components["responses"]["Problem400"];
+            401: components["responses"]["Problem401"];
+            403: components["responses"]["Problem403"];
+            405: components["responses"]["Problem405"];
+            406: components["responses"]["Problem406"];
+            503: components["responses"]["Problem503"];
+        };
+    };
+    getArtifact: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                artifact_id: components["schemas"]["ArtifactID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ArtifactDetail"];
+                };
+            };
+            400: components["responses"]["Problem400"];
+            401: components["responses"]["Problem401"];
+            403: components["responses"]["Problem403"];
+            404: components["responses"]["Problem404"];
+            405: components["responses"]["Problem405"];
+            406: components["responses"]["Problem406"];
+            503: components["responses"]["Problem503"];
+        };
+    };
+    deleteArtifact: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                artifact_id: components["schemas"]["ArtifactID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["Problem400"];
+            401: components["responses"]["Problem401"];
+            403: components["responses"]["Problem403"];
+            404: components["responses"]["Problem404"];
+            405: components["responses"]["Problem405"];
+            406: components["responses"]["Problem406"];
+            503: components["responses"]["Problem503"];
+        };
+    };
+    getArtifactFile: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The artifact's id and capability key, joined by a dot. */
+                frame: string;
+                version: number;
+                path: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The file, with its content type. An HTML file has the page bridge injected at the start of its head. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "*/*": string;
+                };
+            };
+            400: components["responses"]["Problem400"];
+            401: components["responses"]["Problem401"];
+            403: components["responses"]["Problem403"];
+            404: components["responses"]["Problem404"];
+            405: components["responses"]["Problem405"];
+            406: components["responses"]["Problem406"];
+            503: components["responses"]["Problem503"];
+        };
+    };
+    saveArtifactState: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The artifact's id and capability key, joined by a dot. */
+                frame: string;
+                version: number;
+            };
+            cookie?: never;
+        };
+        /** @description JSON sent as text/plain, so a sandboxed page can send it without a preflight. */
+        requestBody: {
+            content: {
+                "text/plain": components["schemas"]["ArtifactState"];
+            };
+        };
+        responses: {
+            /** @description Saved. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["Problem400"];
+            401: components["responses"]["Problem401"];
+            403: components["responses"]["Problem403"];
+            404: components["responses"]["Problem404"];
+            405: components["responses"]["Problem405"];
+            406: components["responses"]["Problem406"];
+            413: components["responses"]["Problem413"];
+            503: components["responses"]["Problem503"];
+        };
+    };
+    reportArtifactError: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The artifact's id and capability key, joined by a dot. */
+                frame: string;
+                version: number;
+            };
+            cookie?: never;
+        };
+        /** @description JSON sent as text/plain, so a sandboxed page can send it without a preflight. */
+        requestBody: {
+            content: {
+                "text/plain": components["schemas"]["ArtifactError"];
+            };
+        };
+        responses: {
+            /** @description Recorded. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["Problem400"];
+            401: components["responses"]["Problem401"];
+            403: components["responses"]["Problem403"];
+            404: components["responses"]["Problem404"];
+            405: components["responses"]["Problem405"];
+            406: components["responses"]["Problem406"];
+            413: components["responses"]["Problem413"];
             503: components["responses"]["Problem503"];
         };
     };

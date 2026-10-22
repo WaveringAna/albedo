@@ -138,6 +138,19 @@ class Trace:
         }
         self.activities[(f"display:{len(self.activities)}", label)] = entry
 
+    def artifact(self, id: str, version: int, title: str) -> None:
+        if self.sealed:
+            return
+        if len(self.activities) >= 64:
+            self.truncated = True
+            return
+        entry: dict[str, object] = {
+            "kind": "artifact",
+            "target": title[:1000],
+            "artifact": {"id": id, "version": version},
+        }
+        self.activities[(f"artifact:{len(self.activities)}", id)] = entry
+
     def finish(self) -> dict[str, object]:
         if self.sealed:
             raise RuntimeError("trace is already sealed")
@@ -235,6 +248,16 @@ def note(kind: str, target: str, detail: str = "") -> Done:
     if capture is None:
         return _ignored
     return capture.trace.activity(kind, target, detail)
+
+
+def artifact(id: str, version: int, title: str) -> bool:
+    """Record that the running cell made or revised an artifact, so both
+    clients can open it. Answers whether a cell's trace was there to take it."""
+    capture = current()
+    if capture is None:
+        return False
+    capture.trace.artifact(id, version, title)
+    return True
 
 
 Result = TypeVar("Result")

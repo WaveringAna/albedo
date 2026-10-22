@@ -63,14 +63,18 @@ class SettingsTest(unittest.TestCase):
             **fields,
         }
 
-    def discovery(self, session=None):
-        return self.read(f"/sessions/{session or self.session}/catalog")["discovery"]
+    def discovery(self, session=None, kind=None):
+        # One section is one page here; the whole discovery is longer than one.
+        query = f"?kind={kind}" if kind else ""
+        return self.read(f"/sessions/{session or self.session}/catalog{query}")[
+            "discovery"
+        ]
 
     def commands(self):
         return self.read(f"/sessions/{self.session}/catalog")["loaded"]["commands"]
 
     def choice(self, name, *, kind="instructions", enabled=False, global_default=False):
-        catalog = self.discovery()
+        catalog = self.discovery(kind=kind)
         row = next(
             row for row in catalog["candidates"] if row["preference_key"] == name
         )

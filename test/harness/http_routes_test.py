@@ -39,6 +39,9 @@ def dispatch_routes(source: str, prefix: str) -> set[str]:
                     segments.append(segment[1:-1])
                 elif re.fullmatch(r"[a-z_][a-z_0-9]*", segment):
                     segments.append("{}")
+                elif re.fullmatch(r"\.\.[a-z_][a-z_0-9]*", segment):
+                    # The rest of the path, one `{path}` parameter that may hold `/`.
+                    segments.append("{}")
                 else:
                     raise AssertionError(f"unsupported route segment: {segment}")
             routes.add(f"{method.upper()} {prefix}/{'/'.join(segments)}")

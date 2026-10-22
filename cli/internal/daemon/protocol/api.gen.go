@@ -126,6 +126,88 @@ type AgentRequest struct {
 	Text    string `json:"text"`
 }
 
+// Artifact defines model for Artifact.
+type Artifact struct {
+	Bytes     Counter    `json:"bytes"`
+	CreatedAt Counter    `json:"created_at"`
+	Entry     string     `json:"entry"`
+	ID        ArtifactID `json:"id"`
+
+	// Key The capability that serves its pages, `/frame/{id}.{key}/{version}/{path}`.
+	Key            string `json:"key"`
+	SessionDeleted bool   `json:"session_deleted"`
+
+	// SessionID Opaque identity. Never infer a resource type or route from its contents.
+	SessionID   ID      `json:"session_id"`
+	SessionName *string `json:"session_name" nullable:"true"`
+	Title       string  `json:"title"`
+	UpdatedAt   Counter `json:"updated_at"`
+	Version     int64   `json:"version"`
+	Versions    int64   `json:"versions"`
+	Workspace   string  `json:"workspace"`
+}
+
+// ArtifactDetail defines model for ArtifactDetail.
+type ArtifactDetail struct {
+	Bytes     Counter `json:"bytes"`
+	CreatedAt Counter `json:"created_at"`
+	Entry     string  `json:"entry"`
+
+	// History Every version, newest first.
+	History []ArtifactVersion `json:"history"`
+	ID      ArtifactID        `json:"id"`
+
+	// Key The capability that serves its pages, `/frame/{id}.{key}/{version}/{path}`.
+	Key            string `json:"key"`
+	SessionDeleted bool   `json:"session_deleted"`
+
+	// SessionID Opaque identity. Never infer a resource type or route from its contents.
+	SessionID   ID      `json:"session_id"`
+	SessionName *string `json:"session_name" nullable:"true"`
+	Title       string  `json:"title"`
+	UpdatedAt   Counter `json:"updated_at"`
+	Version     int64   `json:"version"`
+	Versions    int64   `json:"versions"`
+	Workspace   string  `json:"workspace"`
+}
+
+// ArtifactError defines model for ArtifactError.
+type ArtifactError struct {
+	Column  *int64  `json:"column,omitempty"`
+	Line    *int64  `json:"line,omitempty"`
+	Message string  `json:"message"`
+	Source  *string `json:"source,omitempty"`
+	Stack   *string `json:"stack,omitempty"`
+}
+
+// ArtifactFile defines model for ArtifactFile.
+type ArtifactFile struct {
+	Path string  `json:"path"`
+	Size Counter `json:"size"`
+}
+
+// ArtifactID defines model for ArtifactID.
+type ArtifactID = string
+
+// ArtifactPage defines model for ArtifactPage.
+type ArtifactPage struct {
+	Items []Artifact `json:"items"`
+	Next  *string    `json:"next" nullable:"true"`
+}
+
+// ArtifactState The page's localStorage.
+type ArtifactState map[string]string
+
+// ArtifactVersion defines model for ArtifactVersion.
+type ArtifactVersion struct {
+	Bytes     Counter        `json:"bytes"`
+	CellID    *string        `json:"cell_id" nullable:"true"`
+	CreatedAt Counter        `json:"created_at"`
+	Entry     string         `json:"entry"`
+	Files     []ArtifactFile `json:"files"`
+	Version   int64          `json:"version"`
+}
+
 // Auth defines model for Auth.
 type Auth struct {
 	Accounts  []Account       `json:"accounts"`
@@ -3131,6 +3213,12 @@ type TokenObservation struct {
 
 // ToolActivity defines model for ToolActivity.
 type ToolActivity struct {
+	// Artifact The artifact version an `artifact` activity made; its title is the target.
+	Artifact *struct {
+		ID      ArtifactID `json:"id"`
+		Version int64      `json:"version"`
+	} `json:"artifact,omitempty"`
+
 	// Detail What the person watching sees of the result, as markdown; a web search's answer and sources, or displayed content.
 	Detail *string `json:"detail,omitempty"`
 	Kind   string  `json:"kind"`
@@ -3517,6 +3605,15 @@ type AnswerLoginParams struct {
 	IfMatch IfMatch `json:"If-Match"`
 }
 
+// ListArtifactsParams defines parameters for ListArtifacts.
+type ListArtifactsParams struct {
+	Limit *Limit `form:"limit,omitempty" json:"limit,omitempty"`
+	Next  *Next  `form:"next,omitempty" json:"next,omitempty"`
+
+	// Session Only this session's artifacts.
+	Session *ID `form:"session,omitempty" json:"session,omitempty"`
+}
+
 // DeleteDiscordBotParams defines parameters for DeleteDiscordBot.
 type DeleteDiscordBotParams struct {
 	Revision int64 `form:"revision" json:"revision"`
@@ -3861,6 +3958,12 @@ type AnswerLoginApplicationMergePatchPlusJSONRequestBody = LoginPatch
 // CreateLoginJSONRequestBody defines body for CreateLogin for application/json ContentType.
 type CreateLoginJSONRequestBody = LoginRequest
 
+// ReportArtifactErrorTextRequestBody defines body for ReportArtifactError for text/plain ContentType.
+type ReportArtifactErrorTextRequestBody = ArtifactError
+
+// SaveArtifactStateTextRequestBody defines body for SaveArtifactState for text/plain ContentType.
+type SaveArtifactStateTextRequestBody = ArtifactState
+
 // CreateDiscordBotJSONRequestBody defines body for CreateDiscordBot for application/json ContentType.
 type CreateDiscordBotJSONRequestBody = DiscordBotCreate
 
@@ -4091,6 +4194,58 @@ type ClientInterface interface {
 	//
 	// Corresponds with PUT /auth/logins/{login_id} (the `CreateLogin` operationId).
 	CreateLogin(ctx context.Context, loginID UUIDv7, body CreateLoginJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ReportArtifactErrorWithBody Record a failure in the page
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with POST /extensions/artifacts/frame/{frame}/{version}/.albedo/errors (the `ReportArtifactError` operationId).
+	ReportArtifactErrorWithBody(ctx context.Context, frame string, version int64, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ReportArtifactErrorWithTextBody Record a failure in the page
+	//
+	// Takes a body of the `text/plain` content type.
+	//
+	// Corresponds with POST /extensions/artifacts/frame/{frame}/{version}/.albedo/errors (the `ReportArtifactError` operationId).
+	ReportArtifactErrorWithTextBody(ctx context.Context, frame string, version int64, body ReportArtifactErrorTextRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// SaveArtifactStateWithBody Save the page's localStorage
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with POST /extensions/artifacts/frame/{frame}/{version}/.albedo/state (the `SaveArtifactState` operationId).
+	SaveArtifactStateWithBody(ctx context.Context, frame string, version int64, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// SaveArtifactStateWithTextBody Save the page's localStorage
+	//
+	// Takes a body of the `text/plain` content type.
+	//
+	// Corresponds with POST /extensions/artifacts/frame/{frame}/{version}/.albedo/state (the `SaveArtifactState` operationId).
+	SaveArtifactStateWithTextBody(ctx context.Context, frame string, version int64, body SaveArtifactStateTextRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetArtifactFile Serve one file of one artifact version
+	//
+	// `albedo web` forwards `/frame/...` here; see robot-docs/artifacts.md. A wrong key answers 404. `path` may contain `/`; one ending in `/` serves its index.html.
+	//
+	// Corresponds with GET /extensions/artifacts/frame/{frame}/{version}/{path} (the `GetArtifactFile` operationId).
+	GetArtifactFile(ctx context.Context, frame string, version int64, path string, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ListArtifacts List artifacts, newest change first
+	//
+	// Requires enabled extension artifacts. Artifacts outlive their session; `session_deleted` marks one whose session is gone.
+	//
+	// Corresponds with GET /extensions/artifacts/items (the `ListArtifacts` operationId).
+	ListArtifacts(ctx context.Context, params *ListArtifactsParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// DeleteArtifact Delete an artifact and every version of it
+	//
+	// Corresponds with DELETE /extensions/artifacts/items/{artifact_id} (the `DeleteArtifact` operationId).
+	DeleteArtifact(ctx context.Context, artifactID ArtifactID, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetArtifact Read one artifact with its versions
+	//
+	// Corresponds with GET /extensions/artifacts/items/{artifact_id} (the `GetArtifact` operationId).
+	GetArtifact(ctx context.Context, artifactID ArtifactID, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// ListDiscordBots List Discord bots of every session without tokens
 	//
@@ -5106,6 +5261,138 @@ func (c *Client) CreateLoginWithBody(ctx context.Context, loginID UUIDv7, conten
 // Corresponds with PUT /auth/logins/{login_id} (the `CreateLogin` operationId).
 func (c *Client) CreateLogin(ctx context.Context, loginID UUIDv7, body CreateLoginJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewCreateLoginRequest(c.Server, loginID, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// ReportArtifactErrorWithBody Record a failure in the page
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with POST /extensions/artifacts/frame/{frame}/{version}/.albedo/errors (the `ReportArtifactError` operationId).
+func (c *Client) ReportArtifactErrorWithBody(ctx context.Context, frame string, version int64, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewReportArtifactErrorRequestWithBody(c.Server, frame, version, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// ReportArtifactErrorWithTextBody Record a failure in the page
+//
+// Takes a body of the `text/plain` content type.
+//
+// Corresponds with POST /extensions/artifacts/frame/{frame}/{version}/.albedo/errors (the `ReportArtifactError` operationId).
+func (c *Client) ReportArtifactErrorWithTextBody(ctx context.Context, frame string, version int64, body ReportArtifactErrorTextRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewReportArtifactErrorRequestWithTextBody(c.Server, frame, version, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// SaveArtifactStateWithBody Save the page's localStorage
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with POST /extensions/artifacts/frame/{frame}/{version}/.albedo/state (the `SaveArtifactState` operationId).
+func (c *Client) SaveArtifactStateWithBody(ctx context.Context, frame string, version int64, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewSaveArtifactStateRequestWithBody(c.Server, frame, version, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// SaveArtifactStateWithTextBody Save the page's localStorage
+//
+// Takes a body of the `text/plain` content type.
+//
+// Corresponds with POST /extensions/artifacts/frame/{frame}/{version}/.albedo/state (the `SaveArtifactState` operationId).
+func (c *Client) SaveArtifactStateWithTextBody(ctx context.Context, frame string, version int64, body SaveArtifactStateTextRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewSaveArtifactStateRequestWithTextBody(c.Server, frame, version, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// GetArtifactFile Serve one file of one artifact version
+//
+// `albedo web` forwards `/frame/...` here; see robot-docs/artifacts.md. A wrong key answers 404. `path` may contain `/`; one ending in `/` serves its index.html.
+//
+// Corresponds with GET /extensions/artifacts/frame/{frame}/{version}/{path} (the `GetArtifactFile` operationId).
+func (c *Client) GetArtifactFile(ctx context.Context, frame string, version int64, path string, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetArtifactFileRequest(c.Server, frame, version, path)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// ListArtifacts List artifacts, newest change first
+//
+// Requires enabled extension artifacts. Artifacts outlive their session; `session_deleted` marks one whose session is gone.
+//
+// Corresponds with GET /extensions/artifacts/items (the `ListArtifacts` operationId).
+func (c *Client) ListArtifacts(ctx context.Context, params *ListArtifactsParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewListArtifactsRequest(c.Server, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// DeleteArtifact Delete an artifact and every version of it
+//
+// Corresponds with DELETE /extensions/artifacts/items/{artifact_id} (the `DeleteArtifact` operationId).
+func (c *Client) DeleteArtifact(ctx context.Context, artifactID ArtifactID, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewDeleteArtifactRequest(c.Server, artifactID)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// GetArtifact Read one artifact with its versions
+//
+// Corresponds with GET /extensions/artifacts/items/{artifact_id} (the `GetArtifact` operationId).
+func (c *Client) GetArtifact(ctx context.Context, artifactID ArtifactID, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetArtifactRequest(c.Server, artifactID)
 	if err != nil {
 		return nil, err
 	}
@@ -7337,6 +7624,308 @@ func NewCreateLoginRequestWithBody(server string, loginID UUIDv7, contentType st
 	}
 
 	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewReportArtifactErrorRequestWithTextBody calls the generic ReportArtifactError builder with text/plain body
+func NewReportArtifactErrorRequestWithTextBody(server string, frame string, version int64, body ReportArtifactErrorTextRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	if stringer, ok := interface{}(body).(fmt.Stringer); ok {
+		bodyReader = strings.NewReader(stringer.String())
+	} else {
+		return nil, fmt.Errorf("text/plain is not supported for complex types, define a String() method on ArtifactError to marshal it as text")
+	}
+	return NewReportArtifactErrorRequestWithBody(server, frame, version, "text/plain", bodyReader)
+}
+
+// NewReportArtifactErrorRequestWithBody constructs an http.Request for the ReportArtifactError method, with any body, and a specified content type
+func NewReportArtifactErrorRequestWithBody(server string, frame string, version int64, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "frame", frame, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	var pathParam1 string
+
+	pathParam1, err = runtime.StyleParamWithOptions("simple", false, "version", version, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "integer", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/extensions/artifacts/frame/%s/%s/.albedo/errors", pathParam0, pathParam1)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewSaveArtifactStateRequestWithTextBody calls the generic SaveArtifactState builder with text/plain body
+func NewSaveArtifactStateRequestWithTextBody(server string, frame string, version int64, body SaveArtifactStateTextRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	if stringer, ok := interface{}(body).(fmt.Stringer); ok {
+		bodyReader = strings.NewReader(stringer.String())
+	} else {
+		return nil, fmt.Errorf("text/plain is not supported for complex types, define a String() method on ArtifactState to marshal it as text")
+	}
+	return NewSaveArtifactStateRequestWithBody(server, frame, version, "text/plain", bodyReader)
+}
+
+// NewSaveArtifactStateRequestWithBody constructs an http.Request for the SaveArtifactState method, with any body, and a specified content type
+func NewSaveArtifactStateRequestWithBody(server string, frame string, version int64, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "frame", frame, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	var pathParam1 string
+
+	pathParam1, err = runtime.StyleParamWithOptions("simple", false, "version", version, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "integer", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/extensions/artifacts/frame/%s/%s/.albedo/state", pathParam0, pathParam1)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewGetArtifactFileRequest constructs an http.Request for the GetArtifactFile method
+func NewGetArtifactFileRequest(server string, frame string, version int64, path string) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "frame", frame, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	var pathParam1 string
+
+	pathParam1, err = runtime.StyleParamWithOptions("simple", false, "version", version, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "integer", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	var pathParam2 string
+
+	pathParam2, err = runtime.StyleParamWithOptions("simple", false, "path", path, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/extensions/artifacts/frame/%s/%s/%s", pathParam0, pathParam1, pathParam2)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewListArtifactsRequest constructs an http.Request for the ListArtifacts method
+func NewListArtifactsRequest(server string, params *ListArtifactsParams) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/extensions/artifacts/items")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		// queryValues collects non-styled parameters (passthrough, JSON)
+		// that are safe to round-trip through url.Values.Encode().
+		queryValues := queryURL.Query()
+		// rawQueryFragments collects pre-encoded query fragments from
+		// styled parameters, preserving literal commas as delimiters
+		// per the OpenAPI spec (e.g. "color=blue,black,brown").
+		var rawQueryFragments []string
+
+		if params.Limit != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "limit", *params.Limit, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "integer", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if params.Next != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "next", *params.Next, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if params.Session != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "session", *params.Session, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if encoded := queryValues.Encode(); encoded != "" {
+			rawQueryFragments = append(rawQueryFragments, encoded)
+		}
+		queryURL.RawQuery = strings.Join(rawQueryFragments, "&")
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewDeleteArtifactRequest constructs an http.Request for the DeleteArtifact method
+func NewDeleteArtifactRequest(server string, artifactID ArtifactID) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "artifact_id", artifactID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/extensions/artifacts/items/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodDelete, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewGetArtifactRequest constructs an http.Request for the GetArtifact method
+func NewGetArtifactRequest(server string, artifactID ArtifactID) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "artifact_id", artifactID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/extensions/artifacts/items/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
 
 	return req, nil
 }
