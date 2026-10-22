@@ -131,3 +131,16 @@ func TestOnlyTheNewestScheduledPollReadsStatus(t *testing.T) {
 		t.Fatal("the newest poll did not read status")
 	}
 }
+
+// A terminal reports focus as soon as the program starts, often while the
+// session picker or the login screen is up and no chat has a client yet.
+func TestFocusBeforeAnyChatReadsNothing(t *testing.T) {
+	var app AppModel
+	updated, cmd := app.Update(tea.FocusMsg{})
+	if cmd != nil {
+		t.Fatalf("focus without a chat asked for %T", cmd())
+	}
+	if _, cmd := updated.Update(tea.BlurMsg{}); cmd != nil {
+		t.Fatal("blur without a chat asked for a command")
+	}
+}

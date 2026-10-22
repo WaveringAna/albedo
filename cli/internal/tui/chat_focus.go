@@ -27,10 +27,11 @@ func (m *ChatModel) statusPollCmd() tea.Cmd {
 }
 
 // focus follows the terminal's focus: losing it stops the face, and regaining
-// it reads status at once and lets the face move again.
+// it reads status at once and lets the face move again. Before any session is
+// open the app holds a zero chat with no client, and focus has nothing to read.
 func (m *ChatModel) focus(focused bool) tea.Cmd {
 	m.blurred = !focused
-	if m.blurred {
+	if m.blurred || m.client == nil {
 		return nil
 	}
 	return tea.Batch(m.startAnimation(), m.statusCmd())
