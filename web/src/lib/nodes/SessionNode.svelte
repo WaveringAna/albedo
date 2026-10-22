@@ -5,6 +5,7 @@
   import { place } from '../format';
   import { boards } from '../boards.svelte';
   import { busy } from '../live.svelte';
+  import ArtifactsButton from '../ArtifactsButton.svelte';
   import JobsButton from '../JobsButton.svelte';
   import LiveFace from '../LiveFace.svelte';
   import { sessions } from '../sessions.svelte';
@@ -17,6 +18,7 @@
 
 <WindowFrame {id} selected={!!selected} title={session?.name || 'untitled session'}>
   {#snippet meta()}
+    <ArtifactsButton sessionId={data.sessionId} busy={working} onopen={(artifact) => boards.board?.openArtifact(artifact.id, data.sessionId, artifact.version, id)} />
     <JobsButton sessionId={data.sessionId} onopen={(job) => boards.board?.openTerminal(data.sessionId, job, id)} />
     {#if working}<LiveFace {session} />{/if}
     {#if session}<span title={session.workspace}>{place(session.workspace)}</span>{/if}

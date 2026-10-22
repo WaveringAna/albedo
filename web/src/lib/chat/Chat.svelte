@@ -16,6 +16,7 @@
   import WorkSteps from './WorkSteps.svelte';
   import ReviewView from '../views/ReviewView.svelte';
   import TerminalView from '../views/TerminalView.svelte';
+  import ArtifactsButton from '../ArtifactsButton.svelte';
   import JobsButton from '../JobsButton.svelte';
   import { headline } from '../jobs.svelte';
   import ModelPicker from './ModelPicker.svelte';
@@ -395,7 +396,10 @@
           {/key}
         </section>
       {/if}
-      <span class="jobs"><JobsButton {sessionId} up onopen={(job) => (terminal = { job, command: '' })} /></span>
+      <span class="jobs">
+        <ArtifactsButton {sessionId} busy={running} up onopen={(found) => (artifact = { id: found.id, version: found.version, title: found.title })} />
+        <JobsButton {sessionId} up onopen={(job) => (terminal = { job, command: '' })} />
+      </span>
     {/if}
     <Composer onsend={send} busy={running} {commands} oncommand={command} compact={inline} extra={session && !inline ? modelChip : undefined} onpopout={inline ? undefined : popout} onstop={() => interruptSession(sessionId)} />
   </div>
@@ -704,6 +708,8 @@
     background: var(--hover);
   }
   .jobs {
+    display: flex;
+    gap: 2px;
     align-self: flex-start;
     margin: 0 0 4px 6px;
   }
