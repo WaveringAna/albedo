@@ -1,7 +1,7 @@
 <script lang="ts" module>
   export interface Item {
     key: string;
-    kind: 'command' | 'session';
+    kind: 'command' | 'session' | 'artifact';
     label: string;
     detail?: string;
     hint?: string;

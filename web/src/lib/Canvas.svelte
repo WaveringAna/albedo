@@ -10,6 +10,7 @@
   import TerminalNode from './nodes/TerminalNode.svelte';
   import Tethers from './Tethers.svelte';
   import SessionNode from './nodes/SessionNode.svelte';
+  import ArtifactNode from './nodes/ArtifactNode.svelte';
 
   // Mounted again on every tab switch (keyed on the board), so each board
   // opens on its own saved view.
@@ -23,7 +24,7 @@
   // alt (option) drags a window by any part of it, not only its title bar.
   let { board, onpalette, minimap, mapWidth }: { board: Board; onpalette: () => void; minimap: boolean; mapWidth: number } = $props();
 
-  const nodeTypes: NodeTypes = { session: SessionNode, review: ReviewNode, terminal: TerminalNode, note: NoteNode };
+  const nodeTypes: NodeTypes = { session: SessionNode, review: ReviewNode, terminal: TerminalNode, artifact: ArtifactNode, note: NoteNode };
 
   // A double-click on empty canvas leaves a note there. Holding space, a
   // double-click anywhere, over windows too, takes the view there instead.

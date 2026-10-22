@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { NodeProps } from '@xyflow/svelte';
   import { describe, targetAt } from '../anchors';
+  import { artifacts } from '../artifacts.svelte';
   import type { NoteWindow } from '../board.svelte';
   import { boards } from '../boards.svelte';
   import { sendable, sendNotes } from '../notes';
@@ -22,6 +23,7 @@
       const node = board?.nodes.find((candidate) => candidate.id === window);
       if (!node || node.type === 'note') return 'a closed window';
       const name = sessions.byId.get(node.data.sessionId)?.name || 'untitled session';
+      if (node.type === 'artifact') return `the artifact “${artifacts.get(node.data.artifact)?.title ?? '…'}”`;
       return node.type === 'review' ? `the review of ${name}` : node.type === 'terminal' ? `a terminal of ${name}` : name;
     }),
   );

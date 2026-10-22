@@ -3,12 +3,13 @@
   import { busy } from '../live.svelte';
   import { boards } from '../boards.svelte';
   import { copyText, interruptSession, uuidv7, type Session } from '../api';
+  import ArtifactView from '../views/ArtifactView.svelte';
   import { sessions } from '../sessions.svelte';
   import { sendNotes } from '../notes';
   import type { Attached } from './attachments';
   import LiveFace from '../LiveFace.svelte';
   import { face, formatElapsed } from '../moods';
-  import { Transcript } from '../transcript.svelte';
+  import { Transcript, type Made } from '../transcript.svelte';
   import Composer from './Composer.svelte';
   import Markdown from './Markdown.svelte';
   import Receipt from './Receipt.svelte';
@@ -20,9 +21,10 @@
   import ModelPicker from './ModelPicker.svelte';
   import { catalogue, invoke, type Command } from '../commands';
 
-  // On the canvas a chat is a window, whose reviews and notes open beside
-  // it. `inline` is the phone's single chat: a review opens inside the chat,
-  // under the line that asked for it, and there are no notes.
+  // On the canvas a chat is a window, whose reviews, artifacts and notes open
+  // beside it. `inline` is the phone's single chat: a review opens inside the
+  // chat, under the line that asked for it, an artifact above the composer,
+  // and there are no notes.
   let {
     sessionId,
     session,
@@ -34,6 +36,13 @@
   let shown = $state<{ at: string; turnId: string; from: number; jump?: { path: string; at: number } } | null>(null);
   /** A job's output opened inside the phone's chat, where there is no canvas to put a window on. */
   let terminal = $state<{ job: string; command: string } | null>(null);
+  /** An artifact opened inside the phone's chat. */
+  let artifact = $state<Made | null>(null);
+
+  function openArtifact(made: Made) {
+    if (inline) artifact = made;
+    else boards.board?.openArtifact(made.id, sessionId, made.version, windowId);
+  }
 
   /** Opens a turn's review: beside the window, or under the line it was asked from. */
   function review(at: string, turnId: string, from: number, path?: string) {
@@ -72,6 +81,18 @@
   const unseen = $derived(!pinned && leftAt !== null && end !== leftAt);
   let settled = $state(false);
   let older = false;
+
+  // What the agent makes while the chat is open opens as it arrives: beside
+  // the chat on the canvas, inside it on a phone.
+  let opened = 0;
+  $effect(() => {
+    const made = transcript.made;
+    for (const item of made.slice(opened)) {
+      if (inline) artifact = item;
+      else boards.board?.artifactMade(item.id, sessionId, item.version, windowId);
+    }
+    opened = made.length;
+  });
 
   onMount(() => {
     transcript
@@ -297,7 +318,7 @@
             <Markdown text={group.text} />
           </div>
         {:else if group.kind === 'work'}
-          <WorkSteps steps={group.steps} live={running && group === last} {transcript} session={view} onreview={(turnId, from, path) => review(group.key, turnId, from, path)} />
+          <WorkSteps steps={group.steps} live={running && group === last} {transcript} session={view} onreview={(turnId, from, path) => review(group.key, turnId, from, path)} onartifact={openArtifact} />
         {:else if group.kind === 'end'}
           <p class="end">
             <span class="face kaomoji" title={group.mood}>{face(group.mood, group.seed)}</span>
@@ -352,6 +373,17 @@
       </section>
     {/if}
     {#if inline}
+      {#if artifact}
+        <section class="inline-artifact" aria-label="artifact">
+          <header>
+            <span title={artifact.title}>{artifact.title}</span>
+            <button onclick={() => (artifact = null)} aria-label="close the artifact">close</button>
+          </header>
+          {#key artifact.id}
+            <ArtifactView artifactId={artifact.id} sessionId={sessionId} latest={artifact.version} inline />
+          {/key}
+        </section>
+      {/if}
       {#if terminal}
         <section class="inline-terminal" aria-label="terminal">
           <header>
@@ -619,7 +651,8 @@
     color: var(--text);
     background: var(--hover);
   }
-  .inline-terminal {
+  .inline-terminal,
+  .inline-artifact {
     display: flex;
     flex-direction: column;
     height: min(45vh, 360px);
@@ -628,7 +661,13 @@
     background: var(--well);
     border-radius: 12px;
   }
-  .inline-terminal header {
+  /* An artifact takes the height of its page, up to most of the screen. */
+  .inline-artifact {
+    height: auto;
+    max-height: 70vh;
+  }
+  .inline-terminal header,
+  .inline-artifact header {
     display: flex;
     flex: none;
     align-items: center;
@@ -639,14 +678,18 @@
     font-size: 12px;
     background: var(--title-bar);
   }
-  .inline-terminal header span {
+  .inline-terminal header span,
+  .inline-artifact header span {
     min-width: 0;
     overflow: hidden;
-    font-family: var(--mono);
     white-space: nowrap;
     text-overflow: ellipsis;
   }
-  .inline-terminal header button {
+  .inline-terminal header span {
+    font-family: var(--mono);
+  }
+  .inline-terminal header button,
+  .inline-artifact header button {
     padding: 2px 8px;
     color: var(--muted);
     font: inherit;
@@ -655,7 +698,8 @@
     border-radius: 6px;
     cursor: pointer;
   }
-  .inline-terminal header button:hover {
+  .inline-terminal header button:hover,
+  .inline-artifact header button:hover {
     color: var(--text);
     background: var(--hover);
   }

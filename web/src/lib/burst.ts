@@ -114,7 +114,7 @@ function clause(verb: string, items: string[]): string | null {
 /** The burst's one line, with counts kept apart so they can be coloured. */
 export function summarize(steps: Step[], workspace: string): Summary {
   const name = namer(workspace);
-  const read = new Tally(), edited = new Tally(), searched = new Tally(), ran = new Tally(), python = new Tally(), used = new Tally();
+  const read = new Tally(), edited = new Tally(), searched = new Tally(), ran = new Tally(), made = new Tally(), updated = new Tally(), python = new Tally(), used = new Tally();
   let thoughts = 0, thoughtMs = 0, failed = 0, added = 0, removed = 0;
   for (const step of steps) {
     if (step.kind === 'thinking') {
@@ -137,6 +137,7 @@ export function summarize(steps: Step[], workspace: string): Summary {
         else if (activity.kind === 'list') read.add(name(activity.target.replace(/\/?$/, '/')));
         else if (activity.kind === 'search') searched.add(oneLine(activity.target));
         else if (activity.kind === 'run') ran.add(commandName(activity.target));
+        else if (activity.kind === 'artifact') (activity.artifact?.version === 1 ? made : updated).add(oneLine(activity.target));
       }
       continue;
     }
@@ -151,6 +152,8 @@ export function summarize(steps: Step[], workspace: string): Summary {
     clause('searched', searched.keys),
     clause('edited', pathGroups(edits)),
     clause('ran', ran.counted()),
+    clause('made', made.keys),
+    clause('updated', updated.keys),
     clause('python', python.counted()),
     clause('used', used.counted()),
   ].filter(Boolean);

@@ -32,7 +32,7 @@
       })
       .filter((section) => section.rows.length);
   });
-  const onBoard = $derived(new Set(boards.board?.nodes.flatMap((node) => (node.type === 'note' ? [] : [node.data.sessionId]))));
+  const onBoard = $derived(new Set(boards.board?.nodes.flatMap((node) => (node.type === 'note' || node.type === 'artifact' ? [] : [node.data.sessionId]))));
 
   function submit(event: SubmitEvent) {
     event.preventDefault();

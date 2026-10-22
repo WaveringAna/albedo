@@ -16,6 +16,8 @@
   import Settings from './lib/Settings.svelte';
   import { sessions } from './lib/sessions.svelte';
   import Tabs from './lib/Tabs.svelte';
+  import { deleteArtifact, listArtifacts, type Artifact } from './lib/api';
+  import { artifacts } from './lib/artifacts.svelte';
 
   const RAIL_KEY = 'albedo.rail';
   const MINIMAP_KEY = 'albedo.minimap';
@@ -26,6 +28,14 @@
   let aboutOpen = $state(false);
   let newOpen = $state(false);
   let search = $state<HTMLInputElement>();
+  /** The gallery of every artifact, in the palette: to open one, or to delete one. */
+  let gallery = $state<'open' | 'delete' | null>(null);
+  let shelf = $state<Artifact[]>([]);
+
+  // The palette finds artifacts too, so the list is read whenever it opens.
+  $effect(() => {
+    if (paletteOpen || gallery) listArtifacts().then((found) => (shelf = found), () => {});
+  });
 
   $effect(() => localStorage.setItem(RAIL_KEY, railOpen ? 'open' : 'closed'));
   $effect(() => localStorage.setItem(MINIMAP_KEY, minimap ? 'on' : 'off'));
@@ -145,7 +155,39 @@
     { label: 'theme: follow the system', run: () => (prefs.theme = 'system') },
     { label: 'theme: light', run: () => (prefs.theme = 'light') },
     { label: 'theme: dark', run: () => (prefs.theme = 'dark') },
+    { label: 'open an artifact…', run: () => (gallery = 'open') },
+    { label: 'delete an artifact…', run: () => (gallery = 'delete') },
   ];
+
+  /** Opens an artifact beside the chat it came from, when that chat is on the board. */
+  function openArtifact(artifact: Artifact) {
+    const chat = `session:${artifact.session_id}`;
+    const parent = boards.board?.nodes.some((node) => node.id === chat) ? chat : undefined;
+    boards.board?.openArtifact(artifact.id, artifact.session_id, artifact.version, parent);
+  }
+
+  async function removeArtifact(artifact: Artifact) {
+    await deleteArtifact(artifact.id);
+    artifacts.forget(artifact.id);
+    boards.board?.remove(`artifact:${artifact.id}`);
+    shelf = shelf.filter((item) => item.id !== artifact.id);
+  }
+
+  function artifactItems(query: string, deleting = false): Item[] {
+    return rank(shelf, query, (artifact) => `${artifact.title} ${artifact.session_name ?? ''}`).map<Item>((artifact) => ({
+      key: `artifact:${artifact.id}`,
+      kind: 'artifact',
+      label: deleting ? `delete “${artifact.title}”` : artifact.title,
+      detail: [
+        artifact.versions > 1 ? `v${artifact.version}` : '',
+        artifact.session_deleted ? 'from a deleted session' : artifact.session_name || place(artifact.workspace),
+        ago(new Date(artifact.updated_at).toISOString()),
+      ]
+        .filter(Boolean)
+        .join(' · '),
+      run: () => (deleting ? removeArtifact(artifact) : openArtifact(artifact)),
+    }));
+  }
 
   function searchEverything(query: string): Item[] {
     const found = rank(
@@ -163,7 +205,7 @@
       }));
     const reopen = boards.closed.map((entry) => ({ label: `open board: ${entry.name}`, run: () => boards.show(entry.id) }));
     const actions = rank([...commands, ...reopen], query, (command) => command.label).map<Item>((command) => ({ key: `command:${command.label}`, kind: 'command', ...command }));
-    return query ? [...found, ...actions] : [...actions, ...found];
+    return query ? [...found, ...artifactItems(query).slice(0, 20), ...actions] : [...actions, ...found];
   }
 
   /** Zooms in or out by 5 points, landing on a multiple of 5. */
@@ -321,6 +363,16 @@
 
 {#if paletteOpen}
   <Palette placeholder="open a session or run a command…" search={searchEverything} onclose={() => (paletteOpen = false)} />
+{/if}
+
+{#if gallery}
+  {#key gallery}
+    <Palette
+      placeholder={gallery === 'open' ? 'open an artifact…' : 'delete an artifact, for good…'}
+      search={(query) => artifactItems(query, gallery === 'delete')}
+      onclose={() => (gallery = null)}
+    />
+  {/key}
 {/if}
 
 <style>

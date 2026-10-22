@@ -18,6 +18,12 @@ export type ReviewWindow = Node<{ sessionId: string; turnId: string; from: numbe
 /** A background job's output, following the job; `job` is its id in the session's kernel. */
 export type TerminalWindow = Node<{ sessionId: string; job: string; parent?: string }, 'terminal'>;
 /**
+ * A page the agent made, beside the chat it came from. `version` pins one
+ * version, or is null to follow the newest; `latest` is the newest version
+ * this board has heard of, so a window learns of the next one without asking.
+ */
+export type ArtifactWindow = Node<{ artifact: string; sessionId: string; version: number | null; latest: number; parent?: string }, 'artifact'>;
+/**
  * What a note is about. The quote is taken when the note is tied, so a sent
  * note says what it pointed at even if that has since scrolled or closed.
  */
@@ -27,9 +33,12 @@ export type Target =
   | { kind: 'lines'; window: string; path: string; change: number; side: 'additions' | 'deletions'; start: number; end: number; quote: string };
 /** A note on the canvas: free, or tied to a window, a message or step in a chat, or lines in a diff. */
 export type NoteWindow = Node<{ text: string; target?: Target; sent?: boolean }, 'note'>;
-export type Window = SessionWindow | ReviewWindow | TerminalWindow | NoteWindow;
+export type Window = SessionWindow | ReviewWindow | TerminalWindow | ArtifactWindow | NoteWindow;
 
 export const NOTE = { width: 260 };
+const ARTIFACT = { width: 720 };
+/** Below this zoom a window's text is too small to read, so the view does not zoom out past it on its own. */
+const READABLE = 0.6;
 /** Notes float over windows, whichever window was picked last. */
 const NOTE_LAYER = 1000;
 const HANDLES = { note: '.note-handle' };
@@ -70,6 +79,8 @@ export class Board {
   #key: string;
   #save: ReturnType<typeof setTimeout> | undefined;
   #whenShown: ((flow: Flow) => void) | null = null;
+  /** Artifact windows the reader closed, which a new version does not open again. */
+  #dismissed = new Set<string>();
   #stop: () => void;
 
   constructor(id: string) {
@@ -152,6 +163,48 @@ export class Board {
     this.#open({ id: `terminal:${sessionId}:${job}`, type: 'terminal', data: { sessionId, job, parent } }, 640);
   }
 
+  /** Opens an artifact, beside the window it was asked from when there is one. */
+  openArtifact(artifact: string, sessionId: string, latest: number, parent?: string) {
+    const id = `artifact:${artifact}`;
+    this.#dismissed.delete(id);
+    this.#heard(id, latest);
+    this.#add({ id, type: 'artifact', data: { artifact, sessionId, version: null, latest, parent } }, ARTIFACT.width);
+    this.#show(id, parent);
+  }
+
+  /**
+   * The agent made or revised an artifact in a chat on this board. An open
+   * window moves to the new version in place, one the reader closed stays
+   * closed, and otherwise one opens beside the chat. The view moves only when
+   * that chat is the window being worked in, and then shows both.
+   */
+  artifactMade(artifact: string, sessionId: string, version: number, parent: string) {
+    const id = `artifact:${artifact}`;
+    if (this.nodes.some((node) => node.id === id)) return this.#heard(id, version);
+    const chat = this.nodes.find((node) => node.id === parent);
+    if (!chat || this.#dismissed.has(id)) return;
+    this.#add({ id, type: 'artifact', data: { artifact, sessionId, version: null, latest: version, parent } }, ARTIFACT.width);
+    if (chat.selected) this.#show(id, parent);
+  }
+
+  /** Selects a window and shows it, whole, beside the one it came from when that is on the board. */
+  #show(id: string, parent?: string) {
+    this.nodes = this.nodes.map((node) => ({ ...node, selected: node.id === id }));
+    const beside = parent && this.nodes.some((node) => node.id === parent);
+    this.#withFlow(() => (beside ? this.revealTogether([parent, id]) : this.reveal(id)));
+  }
+
+  /** Pins an artifact window to one version, or with null follows the newest. */
+  pinArtifact(id: string, version: number | null) {
+    this.nodes = this.nodes.map((node) => (node.id === id && node.type === 'artifact' ? { ...node, data: { ...node.data, version } } : node));
+  }
+
+  #heard(id: string, version: number) {
+    this.nodes = this.nodes.map((node) =>
+      node.id === id && node.type === 'artifact' && node.data.latest < version ? { ...node, data: { ...node.data, latest: version } } : node,
+    );
+  }
+
   /** Puts a note on the canvas at a point in canvas coordinates; returns its id. */
   addNote(position: { x: number; y: number }, target?: Target, text = ''): string {
     const id = `note:${uuidv7()}`;
@@ -211,13 +264,16 @@ export class Board {
   }
 
   #open(window: Pick<Exclude<Window, NoteWindow>, 'id' | 'type' | 'data'>, width = SIZE.width) {
-    if (!this.nodes.some((node) => node.id === window.id)) {
-      const height = Math.round(Math.min(860, Math.max(480, (paneRect()?.height ?? 800) / this.viewport.zoom - 140)));
-      const anchor = this.nodes.find((node) => node.id === window.data.parent && node.type !== 'note');
-      const placed = { ...window, position: this.#freeSpot(height, width, anchor), width, height, dragHandle: '.window-handle' } as Window;
-      this.nodes = [...this.nodes, placed];
-    }
+    this.#add(window, width);
     this.focus(window.id);
+  }
+
+  #add(window: Pick<Exclude<Window, NoteWindow>, 'id' | 'type' | 'data'>, width: number) {
+    if (this.nodes.some((node) => node.id === window.id)) return;
+    const height = Math.round(Math.min(860, Math.max(480, (paneRect()?.height ?? 800) / this.viewport.zoom - 140)));
+    const anchor = this.nodes.find((node) => node.id === window.data.parent && node.type !== 'note');
+    const placed = { ...window, position: this.#freeSpot(height, width, anchor), width, height, dragHandle: '.window-handle' } as Window;
+    this.nodes = [...this.nodes, placed];
   }
 
   /** Puts a window at a point in canvas coordinates, selected, as dragging it does. */
@@ -231,6 +287,7 @@ export class Board {
   }
 
   remove(id: string) {
+    if (id.startsWith('artifact:')) this.#dismissed.add(id);
     this.nodes = this.nodes.filter((node) => node.id !== id);
   }
 
@@ -254,6 +311,32 @@ export class Board {
     if (!dx && !dy) return;
     this.viewport = { x: x + dx, y: y + dy, zoom };
     this.flow.setViewport(this.viewport, { duration: 240 });
+  }
+
+  /**
+   * Shows several windows whole: by panning when they fit at this zoom, else
+   * by zooming out as far as still reads; past that, the last one is shown.
+   */
+  revealTogether(ids: string[]) {
+    const nodes = this.nodes.filter((node) => ids.includes(node.id));
+    const pane = paneRect();
+    if (!nodes.length || !pane || !this.flow) return;
+    const margin = 24;
+    const top = margin + 48;
+    const left = Math.min(...nodes.map((node) => node.position.x));
+    const right = Math.max(...nodes.map((node) => node.position.x + (node.width ?? SIZE.width)));
+    const upper = Math.min(...nodes.map((node) => node.position.y));
+    const lower = Math.max(...nodes.map((node) => node.position.y + (node.height ?? 720)));
+    const fits = Math.min((pane.width - 2 * margin) / (right - left), (pane.height - top - margin) / (lower - upper));
+    const zoom = Math.min(this.viewport.zoom, fits);
+    if (zoom < READABLE) return this.reveal(ids.at(-1)!);
+    const moved = zoom !== this.viewport.zoom;
+    let { x, y } = this.viewport;
+    if (moved || left * zoom + x < margin || right * zoom + x > pane.width - margin) x = (pane.width - (right - left) * zoom) / 2 - left * zoom;
+    if (moved || upper * zoom + y < top || lower * zoom + y > pane.height - margin) y = top - upper * zoom;
+    if (!moved && x === this.viewport.x && y === this.viewport.y) return;
+    this.viewport = { x, y, zoom };
+    this.flow.setViewport(this.viewport, { duration: 300 });
   }
 
   /** Selects the window nearest in a direction from the selected one and shows it. */

@@ -18,6 +18,20 @@ export type Block =
   | { kind: 'end'; key: string; turnId: string | null; from: number; mood: Mood; seed: number; elapsedMs: number; tools: number; text: string; changed: { files: number; added: number; removed: number } }
   | { kind: 'progress'; key: string; name: string; preview: string };
 
+/** An artifact a cell made or revised: its id, the version, and its title. */
+export interface Made {
+  id: string;
+  version: number;
+  title: string;
+}
+
+/** The artifacts a trace says its cell made or revised. */
+export function madeIn(trace: Trace | undefined): Made[] {
+  return (trace?.activities ?? []).flatMap((activity) =>
+    activity.kind === 'artifact' && activity.artifact ? [{ id: activity.artifact.id, version: activity.artifact.version, title: activity.target }] : [],
+  );
+}
+
 /** Output the session is writing now, before it commits: one message of thinking or reply. */
 interface Live {
   id: string;
@@ -112,6 +126,13 @@ function referenced(entry: HistoryEntry): boolean {
   return entry.content.some((part) => part.kind === 'reference' && !part.reference.field.startsWith('image-'));
 }
 
+/** What a tool result that just arrived made, reading its trace if the page only referenced it. */
+async function madeBy(entry: HistoryEntry): Promise<Made[]> {
+  if (entry.kind !== 'tool_result') return [];
+  const traced = entry.content.some((part) => part.kind === 'reference' && part.reference.field === 'trace') ? await hydrate(entry) : entry;
+  return madeIn(traceOf(traced));
+}
+
 /** Replaces an entry's references with the content they name. */
 export async function hydrate(entry: HistoryEntry): Promise<HistoryEntry> {
   if (!referenced(entry)) return { ...entry, content_complete: true };
@@ -145,6 +166,11 @@ export class Transcript {
   #replacing: 'all' | string[] = [];
   more = $state(false);
   error = $state<string | null>(null);
+  /**
+   * Artifacts made or revised since the chat opened, oldest first, so the
+   * chat can open them as they arrive; history read on opening never adds.
+   */
+  made = $state.raw<Made[]>([]);
 
   blocks = $derived(this.#blocks());
   groups = $derived(group(this.blocks));
@@ -182,6 +208,9 @@ export class Transcript {
   async poll() {
     if (this.#polling) return;
     this.#polling = true;
+    // A read racing the first load may return history from before the chat
+    // opened; only what follows that load counts as arriving.
+    const opened = !this.loading;
     try {
       for (;;) {
         const last = this.entries.at(-1);
@@ -191,6 +220,8 @@ export class Transcript {
         if (fresh.length) {
           const arrived = await this.#hydrateText(fresh);
           this.entries = [...this.entries, ...arrived];
+          const made = opened ? (await Promise.all(arrived.map(madeBy))).flat() : [];
+          if (made.length) this.made = [...this.made, ...made];
           const answered = new Set(arrived.map((entry) => entry.input_id));
           this.pending = this.pending.filter((send) => !answered.has(send.id));
         }

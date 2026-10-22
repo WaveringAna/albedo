@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { Session } from '../api';
   import { summarize, type Step } from '../burst';
-  import { jsonField, type Block, type Transcript } from '../transcript.svelte';
+  import { jsonField, madeIn, type Block, type Made, type Transcript } from '../transcript.svelte';
   import Markdown from './Markdown.svelte';
   import ToolStep from './ToolStep.svelte';
 
@@ -14,7 +14,15 @@
     transcript,
     session,
     onreview,
-  }: { steps: Block[]; live: boolean; transcript: Transcript; session: Session | undefined; onreview: (turnId: string, from: number, path?: string) => void } = $props();
+    onartifact,
+  }: {
+    steps: Block[];
+    live: boolean;
+    transcript: Transcript;
+    session: Session | undefined;
+    onreview: (turnId: string, from: number, path?: string) => void;
+    onartifact: (made: Made) => void;
+  } = $props();
 
   let chosen = $state<boolean | null>(null);
   let element = $state<HTMLElement>();
@@ -48,6 +56,14 @@
     if (turnId && from !== null) onreview(turnId, from, path);
   }
 
+  // Each artifact this stretch made or revised, at its newest version, as a
+  // line that opens it.
+  const made = $derived.by(() => {
+    const newest = new Map<string, Made>();
+    for (const step of steps) if (step.kind === 'tool') for (const item of madeIn(step.trace)) newest.set(item.id, item);
+    return [...newest.values()];
+  });
+
   // Thoughts show their first lines; a click shows the rest.
   let whole = $state(new Set<string>());
   function toggle(key: string) {
@@ -69,6 +85,14 @@
     <button class="counts" onclick={review} title="show these changes in the review"><span class="added">+{summary.added}</span> <span class="removed">−{summary.removed}</span></button>
   {/if}
   </div>
+  {#each made as item (item.id)}
+    <button class="artifact" onclick={() => onartifact(item)} title="open {item.title}">
+      <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><rect x="2" y="3" width="12" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="1.4" /><path d="M2 6h12" stroke="currentColor" stroke-width="1.4" /></svg>
+      <span class="verb">{item.version === 1 ? 'made' : 'updated'}</span>
+      <span class="title">{item.title}</span>
+      {#if item.version > 1}<span class="version">v{item.version}</span>{/if}
+    </button>
+  {/each}
   {#if open}
     <div class="steps">
       {#each steps as step (step.key)}
@@ -164,6 +188,44 @@
     padding: 8px 12px;
     background: var(--well);
     border-radius: 10px;
+  }
+  .artifact {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    max-width: 100%;
+    margin: 4px -6px 0;
+    padding: 4px 8px 4px 6px;
+    color: var(--muted);
+    font: inherit;
+    font-size: 12.5px;
+    text-align: left;
+    background: none;
+    border: 0;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background-color 100ms ease, color 100ms ease;
+  }
+  .artifact:hover {
+    color: var(--text);
+    background: var(--hover);
+  }
+  .artifact svg {
+    flex: none;
+    color: var(--accent);
+  }
+  .artifact .title {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--accent);
+    font-weight: 560;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+  .artifact .version {
+    flex: none;
+    color: var(--faint);
+    font-variant-numeric: tabular-nums;
   }
   .running {
     display: flex;

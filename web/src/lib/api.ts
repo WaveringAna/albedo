@@ -35,7 +35,7 @@ async function request<T>(method: string, path: string, init: { signal?: AbortSi
     const problem = body?.error ?? body ?? {};
     throw new ApiError(response.status, problem.code ?? 'http_error', problem.detail ?? problem.title ?? response.statusText);
   }
-  return response.json();
+  return response.status === 204 ? (undefined as T) : response.json();
 }
 
 function get<T>(path: string, signal?: AbortSignal): Promise<T> {
@@ -205,4 +205,34 @@ export function sendCommand(sessionId: string, inputId: string, commandId: strin
 export function sendMessage(sessionId: string, inputId: string, text: string, images: ImageUpload[] = []): Promise<unknown> {
   const body = images.length ? { kind: 'message', text, images } : { kind: 'message', text };
   return request('PUT', `/sessions/${sessionId}/inputs/${inputId}`, { body });
+}
+
+export type Artifact = components['schemas']['Artifact'];
+export type ArtifactDetail = components['schemas']['ArtifactDetail'];
+export type ArtifactVersion = components['schemas']['ArtifactVersion'];
+
+/** Every artifact, newest change first; with `session`, only that session's. */
+export function listArtifacts(options: { session?: string; limit?: number; signal?: AbortSignal } = {}): Promise<Artifact[]> {
+  const query = new URLSearchParams({ limit: String(options.limit ?? 200) });
+  if (options.session) query.set('session', options.session);
+  return get<{ items: Artifact[] }>(`/extensions/artifacts/items?${query}`, options.signal).then((page) => page.items);
+}
+
+/** One artifact with every version, newest first. */
+export function getArtifact(id: string, signal?: AbortSignal): Promise<ArtifactDetail> {
+  return get(`/extensions/artifacts/items/${id}`, signal);
+}
+
+/** Deletes an artifact and all its versions, from the gallery and for good. */
+export function deleteArtifact(id: string): Promise<void> {
+  return request('DELETE', `/extensions/artifacts/items/${id}`);
+}
+
+/**
+ * Where one version's page is served: `albedo web`'s sandboxed frame route,
+ * whose key is the capability (robot-docs/artifacts.md).
+ */
+export function frameUrl(artifact: Pick<Artifact, 'id' | 'key'>, version: number, entry: string): string {
+  const path = entry.split('/').map(encodeURIComponent).join('/');
+  return `/frame/${artifact.id}.${artifact.key}/${version}/${path}`;
 }
